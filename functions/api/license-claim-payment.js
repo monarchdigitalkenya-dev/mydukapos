@@ -22,6 +22,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { getLicense, saveLicense, resolveClientId, getGroupMainRecord } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -47,6 +48,12 @@ export async function onRequestPost(context) {
   if (!record) {
     return jsonResponse({ error: 'Invalid or expired link.' }, 404);
   }
+  // zip 273: this route answers an expired / locked link on purpose (that is when "I have paid" is pressed), so it cannot require a valid licence; it is
+  // limited per shop and per caller instead, and only ever FLAGS a record for the owner to confirm by hand.
+  const rlc = await checkRateLimit(env, 'claim', clientId);
+  if (!rlc.ok) return rateLimitResponse('payment claims', rlc, CORS_HEADERS);
+  const rli = await checkRateLimit(env, 'claimIp', (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown').slice(0, 60));
+  if (!rli.ok) return rateLimitResponse('payment claims', rli, CORS_HEADERS);
 
   let body = {};
   try {

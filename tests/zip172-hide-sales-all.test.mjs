@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
+// the header buttons and the 💰 Sales panel are added by the apps' start-up code a moment after the page loads: wait for them (a busy machine is slower)
+const ready = (d, id) => until(() => !!d.getElementById(id), 15000);
 
 const APPS = ['index.html', 'water/index.html', 'hospital/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hotel/index.html'];
 
@@ -19,6 +21,7 @@ test('Hide folds the header, Show brings it back and the choice is remembered (n
   for (const a of APPS.filter((x) => x !== 'hotel/index.html')) {
     const { w, d, close } = await boot(a, { wait: 3000 });
     try {
+      await ready(d, 'hdr-hide-btn');
       d.getElementById('hdr-hide-btn').click();
       assert.ok(d.body.classList.contains('hdr-hidden'), a);
       assert.equal(w.localStorage.getItem('pos_hdr_hidden'), '1', a);
@@ -33,6 +36,7 @@ test('💰 Sales shows the day total / cash / M-Pesa, leaves voided sales out, a
   for (const a of APPS.filter((x) => x !== 'hotel/index.html')) {
     const { w, d, close } = await boot(a, { wait: 1200 });
     try {
+      await ready(d, 'my-sales-toggle-btn');
       const out = JSON.parse(w.eval(`(() => {
         const now = new Date().toISOString();
         salesLog.push({ id: 't1', timestamp: now, cashAmount: 300, mpesaAmount: 200, servedBy: 'Ann', items: [{ price: 500, qty: 1 }] },

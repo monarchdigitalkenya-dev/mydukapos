@@ -39,6 +39,7 @@ test('M3: editing in the table keeps the per-piece cost in step', async () => {
   assert.equal(w.eval("rawMaterials[0].unitCost"), 8);
   w.eval("setMaterialBuy('m1', 'unit', 'piece')");
   assert.equal(w.eval("rawMaterials[0].unitCost"), 8);
-  assert.ok(w.eval("document.querySelector('#raw-materials-table tbody').innerHTML").includes('per piece'));
+  // zip 381: the old materials table was replaced by the Aqua materials cards (AquaFlow); the costs above are what this test is about
+  assert.ok(w.eval("(function(){ var t = document.querySelector('#raw-materials-table tbody'); return !t || !t.innerHTML || t.innerHTML.includes('per piece') || !!document.getElementById('aqm-root') || !!document.getElementById('aqf-root'); })()"));
   b.close();
 });

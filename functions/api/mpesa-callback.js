@@ -19,7 +19,7 @@
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
-import { noteStkPayment } from './_till-store.js';
+import { noteStkPayment, parseMoney } from './_till-store.js';
 
 function txKey(clientId, id) {
   return `mpesa-tx:${clientId}:${id}`;
@@ -53,12 +53,14 @@ export async function onRequestPost(context) {
   // zip 185: only a real, licensed shop's id is believed (a made-up ?c= used to create records for any id)
   if (String(callback.CheckoutRequestID).length > 100 || !(await shopKnown(env, clientId))) return ack();
 
+  // zip 381: KCB / Co-op send ResultCode as TEXT ("0"); compared as === 0 a PAID prompt was saved as FAILED. Read as a number.
+  const paidOk = callback.ResultCode !== undefined && callback.ResultCode !== null && callback.ResultCode !== '' && Number(callback.ResultCode) === 0;
   const kvKey = txKey(clientId, callback.CheckoutRequestID);
   const existingRaw = await env.mydukapos_kv.get(kvKey);
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
   // A completed payment is final: a repeated or late callback for the same CheckoutRequestID never turns it back into "failed".
   // (zip 263: a success the status query already confirmed has no receipt yet; the real callback may still add it, and only it)
-  if (existing.status === 'success' && (existing.receiptNumber || callback.ResultCode !== 0)) return ack();
+  if (existing.status === 'success' && (existing.receiptNumber || !paidOk)) return ack();
   // zip 143: only a callback carrying this shop's key is believed (see _callback-key.js). A prompt sent before the key existed (the
   // moment of an update) is still accepted for that prompt.
   const signed = await checkCallback(env, clientId, 'stk', request.url);
@@ -67,28 +69,28 @@ export async function onRequestPost(context) {
   // this shop created — mpesa-stkpush.js stored a pending record under that exact CheckoutRequestID. An id we never issued is not a result.
   if (signed.legacy && !existing.createdAt) return ack();
 
-  if (callback.ResultCode === 0) {
+  if (paidOk) {
     const items = callback.CallbackMetadata && callback.CallbackMetadata.Item;
     // zip 140: also indexed by the M-Pesa receipt number, so a code typed on a till can be checked against Safaricom's own record
     const receipt = String(extractMetadataValue(items, 'MpesaReceiptNumber') || '').toUpperCase();
     if (/^[A-Z0-9]{8,14}$/.test(receipt)) {
-      await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${receipt}`, JSON.stringify({ source: 'stk', amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone || '', at: Date.now(), checkoutRequestId: callback.CheckoutRequestID, ...(signed.legacy ? { legacy: true } : {}) }), { expirationTtl: 400 * 24 * 3600 });
+      await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${receipt}`, JSON.stringify({ source: 'stk', amount: parseMoney(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone || '', at: Date.now(), checkoutRequestId: callback.CheckoutRequestID, ...(signed.legacy ? { legacy: true } : {}) }), { expirationTtl: 400 * 24 * 3600 });
     }
     await env.mydukapos_kv.put(kvKey, JSON.stringify({
       ...existing,
       status: 'success',
       resultDesc: callback.ResultDesc,
       receiptNumber: extractMetadataValue(items, 'MpesaReceiptNumber'),
-      amount: extractMetadataValue(items, 'Amount') || existing.amount,
+      amount: parseMoney(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0,
       phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone,
       transactionDate: extractMetadataValue(items, 'TransactionDate'),
       completedAt: Date.now(),
     }));
     // zip 153: the same fact goes to the D1 ledger (idempotent on the CheckoutRequestID; a repeat changes nothing)
-    await recordGatewayTxn(env, clientId, { provider: 'stk', txnId: callback.CheckoutRequestID, code: receipt, amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0,
+    await recordGatewayTxn(env, clientId, { provider: 'stk', txnId: callback.CheckoutRequestID, code: receipt, amount: parseMoney(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0,
       phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, status: 'RECEIVED' });
     // zip 264: also listed under Sales Counter -> Till (see _till-store.js noteStkPayment)
-    await noteStkPayment(env, clientId, { checkoutId: callback.CheckoutRequestID, receipt, amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, transactionDate: extractMetadataValue(items, 'TransactionDate'), provider: existing.provider || 'daraja' });
+    await noteStkPayment(env, clientId, { checkoutId: callback.CheckoutRequestID, receipt, amount: parseMoney(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, transactionDate: extractMetadataValue(items, 'TransactionDate'), provider: existing.provider || 'daraja' });
   } else {
     // Common causes: customer entered wrong PIN too many times, cancelled the
     // prompt, or it timed out on their phone (ResultCode 1032 = cancelled by user).

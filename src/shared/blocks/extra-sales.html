@@ -1,0 +1,271 @@
+<!-- EXTRA SALES (zip 357) ---------------------------------------------------------------------------------------------------------
+     Money > Daily Sales > "➕ Unrecorded / Extra Sales": record the TOTAL of sales made without ringing up each product (forgot / no time).
+       - Quick entry: amount, how it was paid (Cash / M-Pesa / Card / Bank), profit margin % (default 20, remembered on this device), note.
+       - Profit = amount x margin; cost recovery = amount - profit. Shown live before saving.
+       - Each entry is saved as ONE ordinary sale in the sales log (a single line "Unrecorded / extra sales", isService, no stock touched,
+         cost = cost recovery), so Daily Sales, the cash drawer, M-Pesa totals, Profits, reports, sync and the server ledger all count it
+         exactly once - the same path a bill payment takes. Voiding it uses the normal Void (reason + audit), which takes it out everywhere.
+       - Daily summary for any day: product sales vs extra sales - revenue, profit, cost recovery, and the total.
+     Ids / classes: xs-*. Functions: window.xsRecord, window.xsDaySummary, window.xsRender. -->
+<style id="xs-css">
+#xs-card { margin-bottom: 14px; border-radius: 14px; border: 1px solid var(--border-color, #dfe5e8); background: var(--bg-surface, #fff); overflow: hidden; }
+#xs-card .xs-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 14px; cursor: pointer;
+  background-color: #0f5f55; background-image: linear-gradient(135deg, rgba(15,118,110,.96), rgba(19,78,74,.98)), repeating-linear-gradient(45deg, rgba(255,255,255,.07) 0 2px, transparent 2px 9px); color: #fff; }
+#xs-card .xs-head h3 { margin: 0; font-size: 16px; color: #fff; }
+#xs-card .xs-head .xs-today { font-size: 13px; opacity: .95; }
+#xs-card .xs-body { padding: 14px; }
+#xs-card .xs-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+#xs-card .xs-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--text-muted, #5f6b73); margin: 0; }
+#xs-card .xs-form input, #xs-card .xs-form select { width: 100% !important; max-width: none !important; box-sizing: border-box; min-height: 44px; font-size: 16px; }
+#xs-card .xs-amt input { font-size: 20px; font-weight: 800; }
+#xs-card .xs-calc { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+#xs-card .xs-calc div { border-radius: 10px; padding: 9px 10px; background: var(--bg-surface-alt, #f4f7f8); text-align: center; }
+#xs-card .xs-calc span { display: block; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--text-muted, #6b7780); }
+#xs-card .xs-calc b { display: block; font-size: 16px; margin-top: 2px; white-space: nowrap; }
+#xs-card .xs-calc .xs-p b { color: #138a5a; } #xs-card .xs-calc .xs-c b { color: #2471a3; }
+#xs-card .xs-save { width: 100%; min-height: 48px; font-size: 16px; }
+#xs-card .xs-err { color: #c0392b; font-size: 13px; min-height: 1em; margin: 6px 0 0; }
+#xs-card .xs-sum { margin-top: 16px; border-top: 1px dashed var(--border-color, #cfd8dc); padding-top: 12px; }
+#xs-card .xs-sum-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+#xs-card .xs-sum-top h4 { margin: 0; font-size: 14px; }
+#xs-card .xs-sum-top input { max-width: 170px; min-height: 38px; }
+#xs-card .xs-tbl-wrap { overflow-x: auto; }
+#xs-card table.xs-tbl { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 420px; }
+#xs-card table.xs-tbl th { text-align: right; font-size: 11px; letter-spacing: .4px; text-transform: uppercase; color: var(--text-muted, #6b7780); padding: 6px 8px; border-bottom: 2px solid var(--border-color, #e1e6ea); }
+#xs-card table.xs-tbl th:first-child, #xs-card table.xs-tbl td:first-child { text-align: left; }
+#xs-card table.xs-tbl td { text-align: right; padding: 8px; border-bottom: 1px solid var(--border-color, #eef1f3); white-space: nowrap; }
+#xs-card table.xs-tbl tr.xs-total td { font-weight: 800; border-top: 2px solid var(--border-color, #cfd8dc); }
+#xs-card .xs-note { font-size: 11.5px; color: var(--text-muted, #7f8c8d); margin: 6px 0 0; }
+#xs-card .xs-list { display: grid; gap: 6px; margin-top: 10px; }
+#xs-card .xs-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px; background: var(--bg-surface-alt, #f6f8f9); font-size: 13px; }
+#xs-card .xs-item.xs-void { opacity: .55; text-decoration: line-through; }
+#xs-card.xs-closed .xs-body { display: none; }
+#xs-card .xs-void-btn { background: #fff !important; color: #c0392b !important; border: 1.5px solid #e3a59d !important; font-weight: 700; }
+#xs-card .xs-head h3 { border: 0 !important; padding: 0 !important; }
+@media (max-width: 640px) {
+  #xs-card .xs-calc { gap: 6px; }
+  #xs-card .xs-calc div { padding: 8px 4px; }
+  #xs-card .xs-calc b { font-size: 12.5px; }
+  #xs-card .xs-calc span { font-size: 10px; letter-spacing: .2px; }
+  #xs-card table.xs-tbl { min-width: 0; }
+  #xs-card table.xs-tbl thead { display: none; }
+  #xs-card table.xs-tbl tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 6px; padding: 8px 0; border-bottom: 1px solid var(--border-color, #e6eaec); }
+  #xs-card table.xs-tbl td { border: 0; padding: 0; text-align: left; font-size: 12.5px; white-space: normal; }
+  #xs-card table.xs-tbl td:first-child { grid-column: 1 / -1; font-weight: 700; font-size: 13.5px; }
+  #xs-card table.xs-tbl td:nth-child(2) { display: none; }
+  #xs-card table.xs-tbl td[data-l]::before { content: attr(data-l); display: block; font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--text-muted, #7a868e); }
+  #xs-card .xs-form { grid-template-columns: 1fr 1fr; }
+  #xs-card .xs-form .xs-amt, #xs-card .xs-form label:last-child { grid-column: 1 / -1; }
+  #xs-card table.xs-tbl tr.xs-total td { border-top: 0; }
+  #xs-card table.xs-tbl tr.xs-total { border-top: 2px solid var(--border-color, #cfd8dc); border-bottom: 0; }
+}
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__xsOn) return; window.__xsOn = true;
+    var MKEY = 'pos_extra_margin', OKEY = 'pos_extra_card_open';
+    var LINE_NAME = 'Unrecorded / extra sales';
+    function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+    function kes(n) { try { return money(n); } catch (e) { return 'KES ' + (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function $(id) { return document.getElementById(id); }
+    function toast(m, e) { try { showToast(m, !!e); } catch (x) { /* none */ } }
+    function marginDefault() { try { var v = Number(localStorage.getItem(MKEY)); return isFinite(v) && v >= 0 && v <= 100 && localStorage.getItem(MKEY) !== null ? v : 20; } catch (e) { return 20; } }
+    function log() { try { if (typeof siteSales === 'function') return siteSales(); return Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } }   // Aqua: the site being viewed
+    function dayKey(t) { try { if (typeof bizDayKey === 'function') return bizDayKey(t || Date.now()); } catch (e) { /* below */ } var d = new Date(t || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function bounds(key) {
+        try { if (typeof bizDayBounds === 'function') { var b = bizDayBounds(key); if (b) return b; } } catch (e) { /* below */ }
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key); if (!m) return null;
+        var f = new Date(+m[1], +m[2] - 1, +m[3]).getTime(); return { from: f, to: f + 86400000 - 1 };
+    }
+    function saleTotal(s) {
+        try { if (typeof reportSaleTotal === 'function') return Number(reportSaleTotal(s)) || 0; } catch (e) { /* below */ }
+        return (s.items || []).reduce(function (t, l) { return t + (Number(l.price) || 0) * (Number(l.qty) || 0); }, 0);
+    }
+    function saleCost(s) {
+        try { if (typeof reportSaleCost === 'function') return Number(reportSaleCost(s)) || 0; } catch (e) { /* below */ }
+        return (s.items || []).reduce(function (t, l) { return t + (Number(l.wholesalePrice) || 0) * (Number(l.qty) || 0); }, 0);
+    }
+    function isExtra(s) { return !!(s && (s.extraSale || (s.items || []).some(function (l) { return l && l.isExtraSale; }))); }
+
+    /* the numbers for one day: product sales vs extra sales (voided sales left out, exactly like Daily Sales) */
+    window.xsDaySummary = function (key, toKey) {
+        var b = bounds(key || dayKey());
+        if (b && toKey && toKey !== key) { var b2 = bounds(toKey); if (b2) b = { from: b.from, to: b2.to }; }
+        var out = { rec: { n: 0, rev: 0, cost: 0 }, xs: { n: 0, rev: 0, cost: 0 }, list: [] };
+        if (!b) return out;
+        log().forEach(function (s) {
+            if (!s) return; var t = new Date(s.timestamp).getTime(); if (!(t >= b.from && t <= b.to)) return;
+            if (isExtra(s)) out.list.push(s);
+            if (s.voided || s.paid === false) return;
+            var g = isExtra(s) ? out.xs : out.rec;
+            g.n++; g.rev = r2(g.rev + saleTotal(s)); g.cost = r2(g.cost + saleCost(s));
+        });
+        ['rec', 'xs'].forEach(function (k) { out[k].profit = r2(out[k].rev - out[k].cost); });
+        out.total = { n: out.rec.n + out.xs.n, rev: r2(out.rec.rev + out.xs.rev), cost: r2(out.rec.cost + out.xs.cost) };
+        out.total.profit = r2(out.total.rev - out.total.cost);
+        out.list.sort(function (a, c) { return new Date(c.timestamp) - new Date(a.timestamp); });
+        return out;
+    };
+
+    /* save one entry as an ordinary sale. opts: { amount, margin, method: cash|mpesa|card|bank, ref, note } */
+    window.xsRecord = function (opts) {
+        opts = opts || {};
+        var amount = r2(opts.amount), margin = Number(opts.margin), method = String(opts.method || 'cash');
+        if (!(amount > 0) || amount > 100000000) return { ok: false, why: 'Enter the total amount sold, e.g. 10000.' };
+        if (!isFinite(margin) || margin < 0 || margin > 100) return { ok: false, why: 'The profit margin must be between 0 and 100 %.' };
+        if (['cash', 'mpesa', 'card', 'bank'].indexOf(method) < 0) method = 'cash';
+        var profit = r2(amount * margin / 100), cost = r2(amount - profit);
+        var ref = String(opts.ref || '').trim().toUpperCase().slice(0, 30);
+        var note = String(opts.note || '').trim().slice(0, 140);
+        var id; try { id = genSaleId(); } catch (e) { id = 'xs-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8); }
+        var by = ''; try { by = activeServerName(); } catch (e) { by = ''; }
+        var sale = {
+            id: id, timestamp: new Date().toISOString(), paid: true, servedBy: by,
+            customerName: note ? 'Extra sales — ' + note : 'Unrecorded / extra sales',
+            extraSale: { marginPct: margin, profit: profit, costRecovery: cost, note: note || undefined },
+            items: [{ code: null, cartKey: 'xs-' + id, name: LINE_NAME, price: amount, qty: 1, unit: 'pcs', wholesalePrice: cost, isService: true, isAdhoc: true, isExtraSale: true, vatCategory: 'A' }],
+            paymentMethod: method,
+            cashAmount: method === 'cash' ? amount : 0,
+            mpesaAmount: method === 'mpesa' ? amount : 0,
+            cardAmount: (method === 'card' || method === 'bank') ? amount : 0,
+            amountTendered: method === 'cash' ? amount : undefined,
+            mpesaReceiptNumber: (method === 'mpesa' || method === 'bank') && ref ? ref : undefined,
+            mpesaCode: method === 'mpesa' && ref ? ref : undefined,
+        };
+        if (method === 'bank') sale.bankAmount = amount;
+        sale.total = amount;                                                  // Aqua reports read sale.total; the others read the lines (same figure)
+        sale.items[0].fixedCostAtSale = cost; sale.items[0].costAtSale = cost; // Aqua's cost of goods reads these snapshots
+        try { if (typeof aquaSaleRevenueFactor === 'function') { sale.items[0].type = 'item'; sale.orderType = 'walkin'; } } catch (e) { /* not Aqua */ }
+        try { if (typeof recordSiteId === 'function') sale.siteId = recordSiteId(); } catch (e) { /* single site */ }
+        try { if (typeof generateReceiptRef === 'function') sale.refNumber = generateReceiptRef(); } catch (e) { /* the id is the reference */ }
+        try { if (typeof currentBranchId !== 'undefined' && currentBranchId) sale.branchId = currentBranchId; } catch (e) { /* single branch */ }
+        try {
+            salesLog.push(sale);
+            if (typeof safeSetItem === 'function') safeSetItem('pos_sales_log', JSON.stringify(salesLog)); else localStorage.setItem('pos_sales_log', JSON.stringify(salesLog));
+        } catch (e) { return { ok: false, why: 'Could not save: ' + ((e && e.message) || 'storage error') }; }
+        try { if (typeof finishSaleReceipt === 'function') finishSaleReceipt(sale, function () {}); } catch (e) { /* kept retrying by ensureSaleSaved */ }
+        try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next sync sends it */ }
+        try { if (typeof logAudit === 'function') logAudit('extra-sale', 'Unrecorded / extra sales ' + kes(amount) + ' (' + method + ', margin ' + margin + '%)' + (note ? ' — ' + note : '')); } catch (e) { /* audit is optional */ }
+        try { if (typeof renderDailySales === 'function') renderDailySales(); } catch (e) { /* cosmetic */ }
+        return { ok: true, sale: sale, profit: profit, cost: cost };
+    };
+
+    function calc() {
+        var a = Number(String(($('xs-amount') || {}).value || '').replace(/,/g, '')) || 0;
+        var m = Number(($('xs-margin') || {}).value); if (!isFinite(m)) m = 0;
+        var p = r2(a * Math.min(100, Math.max(0, m)) / 100);
+        var set = function (id, v) { var el = $(id); if (el) el.textContent = kes(v); };
+        set('xs-c-amt', a); set('xs-c-profit', p); set('xs-c-cost', r2(a - p));
+        var ref = $('xs-ref-wrap'), meth = ($('xs-method') || {}).value; if (ref) ref.style.display = meth === 'mpesa' || meth === 'bank' ? '' : 'none';
+    }
+    function rowHtml(lbl, g, cls) { return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + lbl + '</td><td>' + g.n + '</td><td data-l="Revenue">' + kes(g.rev) + '</td><td data-l="Profit">' + kes(g.profit) + '</td><td data-l="Cost recovery">' + kes(g.cost) + '</td></tr>'; }
+    window.xsRender = function () {
+        var card = $('xs-card'); if (!card) return;
+        var key = ($('xs-day') || {}).value || dayKey();
+        var S = window.xsDaySummary(key);
+        var today = window.xsDaySummary(dayKey());
+        var hd = $('xs-head-today'); if (hd) hd.textContent = today.xs.n ? 'Today: ' + kes(today.xs.rev) + ' in ' + today.xs.n + ' entr' + (today.xs.n === 1 ? 'y' : 'ies') : 'Nothing recorded today';
+        var box = $('xs-sum-body'); if (!box) return;
+        box.innerHTML = '<div class="xs-tbl-wrap"><table class="xs-tbl"><thead><tr><th></th><th>Sales</th><th>Revenue</th><th>Profit</th><th>Cost recovery</th></tr></thead><tbody>'
+            + rowHtml('🛒 Product sales (recorded)', S.rec) + rowHtml('➕ Unrecorded / extra sales', S.xs)
+            + rowHtml('Total for the day', S.total, 'xs-total') + '</tbody></table></div>'
+            + '<p class="xs-note">Product sales profit uses each item\'s cost price; extra sales use the margin entered with them. Revenue matches Daily Sales.</p>'
+            + (S.list.length ? '<div class="xs-list">' + S.list.map(function (s) {
+                var x = s.extraSale || {}; var amt = saleTotal(s);
+                return '<div class="xs-item' + (s.voided ? ' xs-void' : '') + '"><span><strong>' + kes(amt) + '</strong> · ' + esc(String(s.paymentMethod || '').toUpperCase()) + ' · margin ' + esc(x.marginPct != null ? x.marginPct : '?') + '% · ' + new Date(s.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + (s.servedBy ? ' · ' + esc(s.servedBy) : '') + (x.note ? ' · ' + esc(x.note) : '') + (s.voided ? ' · VOIDED' : '') + '</span>'
+                    + (s.voided ? '' : '<button type="button" class="settings-small-btn xs-void-btn" data-xs-void="' + esc(s.id) + '">Void</button>') + '</div>';
+            }).join('') + '</div>' : '');
+    };
+    function save() {
+        var err = $('xs-err'); if (err) err.textContent = '';
+        var r = window.xsRecord({ amount: String(($('xs-amount') || {}).value || '').replace(/,/g, ''), margin: ($('xs-margin') || {}).value, method: ($('xs-method') || {}).value, ref: ($('xs-ref') || {}).value, note: ($('xs-note') || {}).value });
+        if (!r.ok) { if (err) err.textContent = r.why; return; }
+        try { localStorage.setItem(MKEY, String(Number(($('xs-margin') || {}).value))); } catch (e) { /* this visit */ }
+        ['xs-amount', 'xs-ref', 'xs-note'].forEach(function (id) { var el = $(id); if (el) el.value = ''; });
+        calc(); window.xsRender();
+        toast('Extra sales of ' + kes(r.sale.items[0].price) + ' recorded — profit ' + kes(r.profit) + ', cost recovery ' + kes(r.cost) + '.');
+    }
+    function build() {
+        var tab = $('daily-sales-tab'); if (!tab || $('xs-card')) return !!$('xs-card');
+        var open = true; try { open = localStorage.getItem(OKEY) !== '0'; } catch (e) { open = true; }
+        var card = document.createElement('div'); card.id = 'xs-card'; if (!open) card.className = 'xs-closed';
+        card.innerHTML = '<div class="xs-head" role="button" tabindex="0" aria-expanded="' + open + '" id="xs-toggle"><h3>➕ Unrecorded / Extra Sales</h3><span class="xs-today" id="xs-head-today"></span></div>'
+            + '<div class="xs-body">'
+            + '<p class="settings-hint" style="margin:0 0 10px;">Sold something without ringing up the products? Enter the total here. It is added to today\'s sales and the cash / M-Pesa totals once, with the profit worked out from the margin.</p>'
+            + '<div class="xs-form">'
+            + '<label class="xs-amt">Total amount (KES)<input type="text" inputmode="decimal" id="xs-amount" placeholder="e.g. 10000" autocomplete="off"></label>'
+            + '<label>Profit margin (%)<input type="number" id="xs-margin" min="0" max="100" step="0.5" value="' + marginDefault() + '"></label>'
+            + '<label>Paid by<select id="xs-method"><option value="cash">💵 Cash</option><option value="mpesa">📱 M-Pesa</option><option value="card">💳 Card</option><option value="bank">🏦 Bank</option></select></label>'
+            + '<label id="xs-ref-wrap" style="display:none;">M-Pesa / bank ref (optional)<input type="text" id="xs-ref" maxlength="30" autocomplete="off"></label>'
+            + '<label>Note (optional)<input type="text" id="xs-note" maxlength="140" placeholder="e.g. evening rush"></label>'
+            + '</div>'
+            + '<div class="xs-calc"><div><span>Sales</span><b id="xs-c-amt"></b></div><div class="xs-p"><span>Profit</span><b id="xs-c-profit"></b></div><div class="xs-c"><span>Cost recovery</span><b id="xs-c-cost"></b></div></div>'
+            + '<button type="button" class="btn-main xs-save" id="xs-save">💾 Record extra sales</button><p class="xs-err" id="xs-err"></p>'
+            + '<div class="xs-sum"><div class="xs-sum-top"><h4>📊 Daily summary</h4><input type="date" id="xs-day" value="' + dayKey() + '"></div><div id="xs-sum-body"></div></div>'
+            + '</div>';
+        var panel = tab.querySelector('.panel');
+        if (panel) panel.insertBefore(card, panel.querySelector('h3') ? panel.querySelector('h3').nextSibling : panel.firstChild); else tab.insertBefore(card, tab.firstChild);
+        var tog = function () { var c = $('xs-card'); var nowOpen = c.classList.toggle('xs-closed') === false; $('xs-toggle').setAttribute('aria-expanded', String(nowOpen)); try { localStorage.setItem(OKEY, nowOpen ? '1' : '0'); } catch (e) { /* none */ } };
+        $('xs-toggle').addEventListener('click', tog);
+        $('xs-toggle').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tog(); } });
+        ['xs-amount', 'xs-margin'].forEach(function (id) { $(id).addEventListener('input', calc); });
+        $('xs-method').addEventListener('change', calc);
+        $('xs-amount').addEventListener('keydown', function (e) { if (e.key === 'Enter') save(); });
+        $('xs-save').addEventListener('click', save);
+        $('xs-day').addEventListener('change', window.xsRender);
+        card.addEventListener('click', function (e) {
+            var b = e.target.closest && e.target.closest('[data-xs-void]'); if (!b) return;
+            var id = b.getAttribute('data-xs-void');
+            try { if (typeof requestVoidSale === 'function') requestVoidSale(id, 'sales'); else toast('Void it from the sales list.', true); } catch (x) { toast('Could not void: ' + x.message, true); }
+            setTimeout(window.xsRender, 400);
+        });
+        calc(); window.xsRender();
+        return true;
+    }
+    function boot() { var tries = 0; (function go() { if (build() || ++tries > 40) return; setTimeout(go, 300); })(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    /* the printed Sales Report gets the same split under its table, for the period being printed */
+    function reportBox(S, label) {
+        var row = function (l, g) { return '<tr><td>' + l + '</td><td>' + g.n + '</td><td>KES ' + g.rev.toFixed(2) + '</td><td>KES ' + g.profit.toFixed(2) + '</td><td>KES ' + g.cost.toFixed(2) + '</td></tr>'; };
+        return '<div class="xs-report" style="margin-top:14px;border:1.5px solid #0f766e;border-radius:10px;padding:10px 12px;">'
+            + '<div style="font-weight:800;margin-bottom:6px;">Product sales vs Unrecorded / extra sales — ' + esc(label) + '</div>'
+            + '<table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;"></th><th>Sales</th><th>Revenue</th><th>Profit</th><th>Cost recovery</th></tr></thead><tbody>'
+            + row('Product sales (recorded)', S.rec) + row('Unrecorded / extra sales', S.xs)
+            + '<tr style="font-weight:800;border-top:2px solid #333;">' + row('Total', S.total).slice(4) + '</tbody></table></div>';
+    }
+    function wrapAll() {
+    try {
+        if (typeof window.previewSalesReport === 'function' && !window.previewSalesReport.__xs) {
+            var origP = window.previewSalesReport;
+            var wrapP = function () {
+                var r = origP.apply(this, arguments);
+                try {
+                    var body = $('sales-report-body'); if (!body) return r;
+                    var fEl = $('report-from-date'), tEl = $('report-to-date'), rg = null;
+                    if (fEl && tEl && fEl.value && tEl.value) rg = { from: fEl.value, to: tEl.value };            // the report's own From / To
+                    else if (typeof salesTablePeriodRange === 'function') rg = salesTablePeriodRange();
+                    if (!rg || !rg.from) return r;
+                    var S = window.xsDaySummary(rg.from, rg.to); if (!S.xs.n) return r;
+                    var old = body.querySelector('.xs-report'); if (old) old.remove();
+                    body.insertAdjacentHTML('beforeend', reportBox(S, rg.from === rg.to ? rg.from : rg.from + ' to ' + rg.to));
+                } catch (e) { /* the report itself is drawn */ }
+                return r;
+            };
+            wrapP.__xs = true; window.previewSalesReport = wrapP;
+        }
+    } catch (e) { /* not in this app */ }
+    /* keep the summary fresh after any sale / void / sync while the Daily Sales tab is open */
+    try {
+        if (typeof window.renderDailySales === 'function' && !window.renderDailySales.__xs) {
+            var orig = window.renderDailySales;
+            var wrapped = function () { var r = orig.apply(this, arguments); try { window.xsRender(); } catch (e) { /* cosmetic */ } return r; };
+            wrapped.__xs = true; window.renderDailySales = wrapped;
+        }
+    } catch (e) { /* the summary refreshes when the day is changed */ }
+    }
+    wrapAll();
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wrapAll); else setTimeout(wrapAll, 0);
+})();
+</script>

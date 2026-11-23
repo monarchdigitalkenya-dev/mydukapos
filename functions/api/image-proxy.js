@@ -15,6 +15,7 @@
 // ever returns image content-types — never arbitrary files.
 
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 6MB — generous; the frontend downsizes further anyway
 
@@ -55,6 +56,8 @@ export async function onRequestGet(context) {
   // zip 143: only a shop's own app may use this proxy (it was open to the whole internet — free bandwidth for anyone)
   const license = await requireValidLicense(request, env);
   if (!license.valid) return errorResponse('This link is not active.', 403);
+  const rll = await checkRateLimit(env, 'lookup', license.clientId);    // zip 273
+  if (!rll.ok) return rateLimitResponse('picture lookups', rll);
   const requestUrl = new URL(request.url);
   const target = requestUrl.searchParams.get('url');
   if (!target) return errorResponse('Missing url parameter.');

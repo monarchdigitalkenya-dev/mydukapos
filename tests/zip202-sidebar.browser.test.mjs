@@ -76,7 +76,7 @@ test('owner (shop): every group and tab is there, every permitted tab has an ent
   await withApp(async (browser, base) => {
     const { page, errors } = await open(browser, base, APPS[0]);
     const g = await groups(page);
-    for (const id of ['logistics', 'stock', 'fin', 'rep', 'cust', 'staff', 'biz', 'sys']) assert.ok(g.includes(id), 'group ' + id);
+    for (const id of ['sell', 'stock', 'fin', 'rep', 'people', 'biz', 'sys']) assert.ok(g.includes(id), 'group ' + id);   // zip 304: Sell, Stock, Money, Reports, People, Business, System
     const e = await entries(page);
     assert.ok(e.includes('sales-tab') && e.includes('dashboard-tab'));
     const real = await page.evaluate(() => Array.from(document.querySelectorAll('.tab-link[data-tab]')).filter((b) => b.style.display !== 'none').map((b) => b.dataset.tab));
@@ -102,7 +102,7 @@ test('staff with Sales Counter + Stock Take sees only those (Stock > Stock Take)
     assert.deepEqual(await groups(page), ['stock']);
     const html = await page.evaluate(() => document.querySelector('#snav .sn-list').textContent);
     const whole = await page.evaluate(() => document.getElementById('snav').textContent);
-    for (const w of ['Inventory', 'Restock', 'Add New Items', 'Barcode', 'Finances', 'Reports', 'Settings', 'Staff']) assert.ok(!html.includes(w), w + ' is not mentioned');
+    for (const w of ['Inventory', 'Restock', 'Add New Items', 'Barcode', 'Money', 'Reports', 'Settings', 'Staff']) assert.ok(!html.includes(w), w + ' is not mentioned');
     assert.match(whole, /Clock Out/); assert.match(whole, /Ann/);
   });
 });
@@ -160,7 +160,7 @@ test('phone: the sidebar is a drawer (hamburger opens it, choosing a page or tap
     assert.equal(await page.evaluate(() => getComputedStyle(document.body).paddingLeft), '0px');
     await page.tap('#snav-burger'); await page.waitForTimeout(400);
     assert.ok((await left()) > 200, 'opened over the page');
-    await page.tap('#snav .sn-parent[data-grp="logistics"]'); await page.waitForTimeout(300);
+    await page.tap('#snav .sn-parent[data-grp="stock"]'); await page.waitForTimeout(300);
     await page.tap('#snav [data-go="restock-tab"]'); await page.waitForTimeout(400);
     assert.equal(await page.evaluate(() => document.querySelector('.tab-content.active').id), 'restock-tab');
     assert.ok((await left()) <= 0, 'closed after choosing');

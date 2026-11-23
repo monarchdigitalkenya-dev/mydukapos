@@ -1,0 +1,731 @@
+<!-- CW UI 2 ------------------------------------------------------------------------------------------
+     Car Wash & Cleaning app, block "cw-ui2": Customers & Vehicles (profiles), Billing & Payments (invoices, deposits, part payments, refunds,
+     M-Pesa prompts), Loyalty, SMS log, Staff & Teams, Reports (filters, Excel / CSV / PDF), Settings, Activity Log, and the job action dialogs
+     (assign, cancel, release / deliver, payment, refund, complaint, edit). Written ONLY into carwash/index.html; never hand-edit it there.
+     Plain global functions, ES2018 max, every global name starts with cw / Cw / CW_. After editing run `npm run sync`. -->
+<style>
+/* zip 362: Price List on a phone - each service becomes a small card (labels from the column it came from) */
+@media (max-width: 760px) {
+  #cw-app .cw-pl thead { display: none; }
+  #cw-app .cw-pl tr[data-pl] { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 12px 4px; border-bottom: 1px solid #e2e8f0; }
+  #cw-app .cw-pl tr[data-pl] td { border: 0; padding: 0; text-align: left; }
+  #cw-app .cw-pl tr[data-pl] td::before { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #64748b; margin-bottom: 3px; }
+  #cw-app .cw-pl tr[data-pl] td:first-child { grid-column: 1 / -1; }
+  #cw-app .cw-pl tr[data-pl] td:last-child { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
+  #cw-app .cw-pl tr[data-pl] input:not([type="checkbox"]), #cw-app .cw-pl tr[data-pl] select { max-width: none !important; width: 100%; }
+  #cw-app .cw-pl-car tr[data-pl] td:nth-child(1)::before { content: 'Service'; } #cw-app .cw-pl-car tr[data-pl] td:nth-child(2)::before { content: 'Section'; }
+  #cw-app .cw-pl-car tr[data-pl] td:nth-child(3)::before { content: 'Price (KES)'; } #cw-app .cw-pl-car tr[data-pl] td:nth-child(4)::before { content: 'Duration (min)'; }
+  #cw-app .cw-pl-car tr[data-pl] td:nth-child(5)::before { content: 'Loyalty'; } #cw-app .cw-pl-car tr[data-pl] td:nth-child(6)::before { content: 'Active'; }
+  #cw-app .cw-pl-cl tr[data-pl] td:nth-child(1)::before { content: 'Service'; } #cw-app .cw-pl-cl tr[data-pl] td:nth-child(2)::before { content: 'Type'; }
+  #cw-app .cw-pl-cl tr[data-pl] td:nth-child(3)::before { content: 'Price (KES)'; } #cw-app .cw-pl-cl tr[data-pl] td:nth-child(4)::before { content: 'Unit'; }
+  #cw-app .cw-pl-cl tr[data-pl] td:nth-child(5)::before { content: 'Duration (min)'; } #cw-app .cw-pl-cl tr[data-pl] td:nth-child(6)::before { content: 'Loyalty'; } #cw-app .cw-pl-cl tr[data-pl] td:nth-child(7)::before { content: 'Active'; }
+  #cw-app .cw-pl tr.cw-plper { display: block; } #cw-app .cw-pl tr.cw-plper td { display: block; }
+  #cw-app .cw-plhead { flex-direction: column; align-items: stretch !important; }
+}
+</style>
+<script>
+/* ================================ CUSTOMERS ================================ */
+CW_UI.cq = '';
+CW_UI.pages.customers = function (me) {
+  var q = cwStr(CW_UI.cq).trim().toLowerCase(), qp = q.replace(/\D/g, ''), qPlate = cwNormPlate(q);
+  var plateOwners = {}; if (qPlate.length >= 2) cwVehicles.forEach(function (v) { if (v && !v._deleted && v.plate.indexOf(qPlate) !== -1) plateOwners[v.customerId] = true; });
+  var list = cwLive(cwCustomers).filter(function (c) {
+    if (!q) return true;
+    return cwStr(c.name).toLowerCase().indexOf(q) !== -1 || (qp.length >= 3 && (cwStr(c.phone).indexOf(qp.charAt(0) === '0' ? '254' + qp.slice(1) : qp) !== -1)) || plateOwners[c.id];
+  });
+  var visits = {}, last = {};
+  cwJobs.forEach(function (j) { if (!j || j._deleted || cwIsCancelled(j)) return; visits[j.customerId] = (visits[j.customerId] || 0) + 1; var t = cwNum(j.receivedAt); if (t > (last[j.customerId] || 0)) last[j.customerId] = t; });
+  list.sort(function (a, b) { return (last[b.id] || cwNum(b.createdAt)) - (last[a.id] || cwNum(a.createdAt)); });
+  var h = '<div class="cw-row" style="margin-bottom:12px"><input id="cw-cq" placeholder="Search name, phone or plate" value="' + cwEsc(CW_UI.cq) + '" style="max-width:340px"><span class="cw-sp"></span>' + (cwCan('customers.edit', me) ? '<button class="cw-btn" data-cw="custnew">＋ New customer</button>' : '') + '</div>';
+  h += '<div class="cw-kpis">' + cwKpi('Customers', cwLive(cwCustomers).length) + cwKpi('Vehicles', cwLive(cwVehicles).length) + cwKpi('Returning', Object.keys(visits).filter(function (k) { return visits[k] > 1; }).length) + cwKpi('Showing', list.length) + '</div>';
+  h += '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Customer</th><th>Phone</th><th>Type</th><th>Vehicles</th><th class="cw-num">Visits</th><th>Last visit</th></tr></thead><tbody>'
+    + (list.length ? list.slice(0, 300).map(function (c) { var vs = cwVehiclesOf(c.id); return '<tr class="cw-click" data-cw="cust" data-id="' + cwEsc(c.id) + '"><td><b>' + cwEsc(c.name) + '</b>' + (c.migrated ? ' <span class="cw-small cw-mut">· imported</span>' : '') + '</td><td>' + cwEsc(cwFmtPhone(c.phone)) + '</td><td class="cw-small">' + cwEsc((CW_CUST_TYPES.filter(function (t) { return t.k === c.type; })[0] || { l: '' }).l) + '</td><td>' + vs.slice(0, 3).map(function (v) { return '<span class="cw-plate" style="font-size:11px;margin-right:4px">' + cwEsc(cwFmtPlate(v.plate)) + '</span>'; }).join('') + (vs.length > 3 ? ' +' + (vs.length - 3) : '') + '</td><td class="cw-num">' + (visits[c.id] || 0) + '</td><td class="cw-small">' + cwFmtDate(last[c.id]) + '</td></tr>'; }).join('') : '<tr><td colspan="6" class="cw-empty"><b>👥</b>No customers match.</td></tr>')
+    + '</tbody></table></div>' + (list.length > 300 ? '<p class="cw-small cw-mut">Showing the 300 most recent — search to narrow down.</p>' : '');
+  return h;
+};
+function cwOpenCustomer(id, focusVehId) {
+  var draw = function () { var c = cwFind(cwCustomers, id); if (!c) { cwCloseModal(); cwToast('Customer not found.', true); return; } cwOpenModal(cwCustomerHtml(c, focusVehId), false, draw); };
+  draw();
+}
+function cwCustomerHtml(c, focusVehId) {
+  var me = cwMe(), cfg = cwCfg(), vs = cwVehiclesOf(c.id), jobs = cwJobsOf(c.id), pays = cwPayments.filter(function (p) { return p && p.customerId === c.id; }).sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); });
+  var spent = 0; pays.forEach(function (p) { if (!p.reversedAt) spent += cwNum(p.amount); });
+  var edit = cwCan('customers.edit', me);
+  var h = cwPH('👤 ' + cwEsc(c.name), (cwCan('checkin', me) ? '<button class="cw-btn sm" data-cw="ckfor" data-id="' + cwEsc(c.id) + '">Check in a car</button><button class="cw-btn sm ghost" data-cw="cleanfor" data-id="' + cwEsc(c.id) + '">Cleaning job</button>' : '')) + '<div class="cw-pb">';
+  h += '<div class="cw-kpis">' + cwKpi('Visits', jobs.filter(function (j) { return !cwIsCancelled(j); }).length) + cwKpi('Vehicles', vs.length) + (cwCan('dash.money', me) || me.owner ? cwKpi('Total paid', cwMoney(spent)) : '') + cwKpi('Customer since', cwFmtDate(c.createdAt)) + '</div>';
+  h += '<div class="cw-card"><h3>Details</h3><div class="cw-form">'
+    + cwFld('Name', 'cw-cu-name', c.name, edit) + cwFld('Primary phone', 'cw-cu-phone', cwFmtPhone(c.phone), edit) + cwFld('Alternative phone', 'cw-cu-alt', cwFmtPhone(c.altPhone), edit)
+    + cwFld('Email', 'cw-cu-email', c.email, edit, 'email') + cwSel('Gender', 'cw-cu-gender', CW_GENDERS, c.gender, edit) + cwSel('Preferred contact method', 'cw-cu-pref', CW_CONTACT_PREFS, c.contactPref, edit)
+    + '<div class="cw-f"><label>Customer type</label><select id="cw-cu-type"' + (edit ? '' : ' disabled') + '>' + CW_CUST_TYPES.map(function (t) { return '<option value="' + t.k + '"' + (c.type === t.k ? ' selected' : '') + '>' + t.l + '</option>'; }).join('') + '</select></div>'
+    + cwFld('Location', 'cw-cu-loc', c.location, edit) + cwFld('Estate', 'cw-cu-estate', c.estate, edit) + cwFld('Town', 'cw-cu-town', c.town, edit) + cwFld('Building name', 'cw-cu-bld', c.building, edit) + cwFld('House number', 'cw-cu-house', c.house, edit) + cwFld('Floor', 'cw-cu-floor', c.floor, edit)
+    + '<div class="cw-f full"><label>Notes</label><textarea id="cw-cu-notes"' + (edit ? '' : ' readonly') + '>' + cwEsc(c.notes || '') + '</textarea></div></div>'
+    + (edit || cwCan('customers.delete', me) ? '<div class="cw-row" style="margin-top:10px">' + (cwCan('customers.delete', me) ? '<button class="cw-btn sm bad" data-cw="custdel" data-id="' + cwEsc(c.id) + '">🗑 Delete customer</button>' : '') + '<span class="cw-sp"></span>' + (edit ? '<button class="cw-btn" data-cw="custsave" data-id="' + cwEsc(c.id) + '">💾 Save details</button>' : '') + '</div>' : '') + '</div>';
+  /* vehicles + loyalty per vehicle */
+  h += '<div class="cw-card" style="margin-top:14px"><h3>🚗 Vehicles</h3>' + (vs.length ? vs.map(function (v) {
+    var acc = cwLoyaltyAccount(cwLoyalty, cwLoyaltyKey({ kind: 'car', customerId: c.id }, c.phone, v.plate, cfg), cfg, cwJobs);
+    var pct = Math.round(acc.current_cycle_count / acc.n * 100);
+    return '<div style="padding:10px 0;border-bottom:1px solid #f1f5f9' + (focusVehId === v.id ? ';background:#ecfeff;border-radius:10px;padding:10px' : '') + '"><div class="cw-row"><span class="cw-plate">' + cwEsc(cwFmtPlate(v.plate)) + '</span><b>' + cwEsc([v.make, v.model, v.year ? '(' + v.year + ')' : ''].filter(Boolean).join(' ')) + '</b><span class="cw-mut cw-small">' + cwEsc(v.colour || '') + ' · ' + cwEsc(cwVehCatLabel(cfg, v.category)) + '</span><span class="cw-sp"></span>' + (edit ? '<button class="cw-btn sm sec" data-cw="vehedit" data-id="' + cwEsc(v.id) + '">Edit</button>' : '') + '</div>'
+      + (cfg.loyalty.enabled !== false ? '<div class="cw-small" style="margin-top:6px">' + (acc.available > 0 ? '<span class="cw-free">🎁 ' + acc.available + ' FREE wash available</span>' : '⭐ ' + acc.current_cycle_count + '/' + acc.n + ' paid washes in this cycle') + ' · ' + acc.paid_visits + ' paid · ' + acc.free_visits_redeemed + ' free redeemed · last visit ' + cwFmtDate(acc.last_visit_date) + '</div><div class="cw-prog"><i style="width:' + (acc.available > 0 ? 100 : pct) + '%"></i></div>' : '')
+      + (v.notes ? '<div class="cw-small cw-mut" style="margin-top:4px">' + cwEsc(v.notes) + '</div>' : '') + '</div>';
+  }).join('') : '<div class="cw-mut">No vehicles registered.</div>') + (edit ? '<button class="cw-btn sm ghost" style="margin-top:10px" data-cw="vehnew" data-id="' + cwEsc(c.id) + '">＋ Register another vehicle</button>' : '') + '</div>';
+  var clAcc = cwLoyaltyAccounts({ customers: [c], jobs: cwJobs, loyalty: cwLoyalty, cfg: cfg }).filter(function (a) { return a.kind === 'clean' && a.customerId === c.id; });
+  if (clAcc.length) h += '<div class="cw-card" style="margin-top:14px"><h3>🧽 Cleaning loyalty</h3>' + clAcc.map(function (a) { return '<div class="cw-small" style="padding:4px 0">' + (a.cleanType ? cwEsc(cwCleanType(a.cleanType).l) + ': ' : 'All cleaning: ') + (a.available > 0 ? '<span class="cw-free">🎁 ' + a.available + ' FREE</span>' : a.current_cycle_count + '/' + a.n) + ' · ' + a.paid_visits + ' paid</div>'; }).join('') + '</div>';
+  /* visits */
+  h += '<div class="cw-card" style="margin-top:14px"><h3>🧾 Visits &amp; jobs <small>' + jobs.length + '</small></h3>' + (jobs.length ? '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Job</th><th>What</th><th>Status</th><th class="cw-num">Total</th><th>Payment</th></tr></thead><tbody>' + jobs.slice(0, 60).map(function (j) { var t = cwTotals(j); return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(j.id) + '"><td>' + cwEsc(j.no) + '<div class="cw-small cw-mut">' + cwFmtDT(j.receivedAt) + '</div></td><td>' + cwJobTitle(j) + '<div class="cw-small cw-mut">' + cwEsc(cwArr(j.items).map(function (i) { return i.name; }).join(' + ')) + '</div></td><td>' + cwStatusBadge(j) + '</td><td class="cw-num">' + cwMoney(t.total) + '</td><td>' + cwPayBadge(t) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div class="cw-mut">No visits yet.</div>') + '</div>';
+  if (cwCan('payments', me) || me.owner) h += '<div class="cw-card" style="margin-top:14px"><h3>💳 Payment history</h3>' + (pays.length ? '<table class="cw-tbl"><tbody>' + pays.slice(0, 40).map(function (p) { return '<tr' + (p.reversedAt ? ' style="opacity:.5"' : '') + '><td>' + cwFmtDT(p.at) + '</td><td>' + cwEsc(p.jobNo || '') + '</td><td>' + cwEsc(cwMethodLabel(p.method)) + (p.ref ? ' · ' + cwEsc(p.ref) : '') + '</td><td class="cw-num">' + cwMoney(p.amount) + '</td></tr>'; }).join('') + '</tbody></table>' : '<div class="cw-mut">No payments yet.</div>') + '</div>';
+  var sms = cwSms.filter(function (s) { return s && s.customerId === c.id; }).sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); });
+  if (cwCan('sms.view', me) || cwCan('sms.resend', me)) h += '<div class="cw-card" style="margin-top:14px"><h3>✉️ SMS history</h3>' + (sms.length ? sms.slice(0, 25).map(function (s) { return cwSmsRow(s, me); }).join('') : '<div class="cw-mut">No messages yet.</div>') + '</div>';
+  var ks = cwComplaints.filter(function (k) { return k && k.customerId === c.id; });
+  h += '<div class="cw-card" style="margin-top:14px"><h3>⚠️ Complaints &amp; notes</h3>' + (ks.length ? ks.map(function (k) { return '<div class="cw-small" style="padding:4px 0"><b>' + cwEsc(k.jobNo) + '</b> · ' + cwEsc(k.kind) + ' · ' + cwFmtDate(k.at) + ' — ' + cwEsc(k.text) + (k.resolved ? ' ✅' : '') + '</div>'; }).join('') : '<div class="cw-mut">None.</div>') + '</div>';
+  return h + '</div>';
+}
+function cwSel(label, id, list, val, edit) { return '<div class="cw-f"><label>' + label + '</label><select id="' + id + '"' + (edit ? '' : ' disabled') + '>' + list.map(function (t) { return '<option value="' + cwEsc(t.k) + '"' + ((val || '') === t.k ? ' selected' : '') + '>' + cwEsc(t.l) + '</option>'; }).join('') + '</select></div>'; }
+/* the vehicle-type options of this business, plus the vehicle's own type when it is an older one no longer on the list */
+function cwCatOptions(cfg, cur) { var l = cfg.vehicleCats.slice(); if (cur && !l.some(function (x) { return x.k === cur; })) l.push({ k: cur, l: cwVehCatLabel(cfg, cur) }); return l; }
+function cwFld(label, id, val, edit, type) { return '<div class="cw-f"><label>' + label + '</label><input id="' + id + '" value="' + cwEsc(val || '') + '"' + (type ? ' type="' + type + '"' : '') + (edit ? '' : ' readonly') + '></div>'; }
+function cwOpenVehicle(custId, vehId) {
+  var v = vehId ? cwFind(cwVehicles, vehId) : null, cfg = cwCfg();
+  var h = cwPH(v ? '🚗 Edit ' + cwEsc(cwFmtPlate(v.plate)) : '🚗 Register a vehicle') + '<div class="cw-pb"><div class="cw-card"><div class="cw-form">'
+    + cwFld('Registration number *', 'cw-ve-plate', v ? cwFmtPlate(v.plate) : '', true) + cwSel('Vehicle type', 'cw-ve-cat', cwCatOptions(cfg, v && v.category), v ? v.category : cwDefaultCat(cfg), true)
+    + cwFld('Make', 'cw-ve-make', v && v.make, true) + cwFld('Model', 'cw-ve-model', v && v.model, true) + cwFld('Year', 'cw-ve-year', v && v.year, true) + cwFld('Colour', 'cw-ve-colour', v && v.colour, true)
+    + '<div class="cw-f full"><label>Vehicle notes</label><textarea id="cw-ve-notes">' + cwEsc(v ? v.notes || '' : '') + '</textarea></div></div>'
+    + '<div class="cw-row" style="margin-top:14px">' + (v ? '<button class="cw-btn sm bad" data-cw="vehdel" data-id="' + cwEsc(v.id) + '">🗑 Delete vehicle</button>' : '') + '<span class="cw-sp"></span><button class="cw-btn sec" data-cw="cust" data-id="' + cwEsc(custId) + '">Back</button><button class="cw-btn" data-cw="vehsave" data-id="' + cwEsc(vehId || '') + '" data-c="' + cwEsc(custId) + '">💾 Save vehicle</button></div></div></div>';
+  cwOpenModal(h, true);
+}
+function cwOpenNewCustomer() {
+  var h = cwPH('👤 New customer') + '<div class="cw-pb"><div class="cw-card"><div class="cw-form">' + cwFld('Name *', 'cw-nc-name', '', true) + cwFld('Phone *', 'cw-nc-phone', '', true) + cwFld('Alternative phone', 'cw-nc-alt', '', true)
+    + cwFld('Email', 'cw-nc-email', '', true, 'email') + cwSel('Gender', 'cw-nc-gender', CW_GENDERS, '', true) + cwSel('Preferred contact method', 'cw-nc-pref', CW_CONTACT_PREFS, '', true)
+    + '<div class="cw-f"><label>Customer type</label><select id="cw-nc-type">' + CW_CUST_TYPES.map(function (t) { return '<option value="' + t.k + '">' + t.l + '</option>'; }).join('') + '</select></div>'
+    + cwFld('Location', 'cw-nc-loc', '', true) + cwFld('Estate', 'cw-nc-estate', '', true) + cwFld('Town', 'cw-nc-town', '', true) + cwFld('Building', 'cw-nc-bld', '', true) + cwFld('House number', 'cw-nc-house', '', true) + cwFld('Floor', 'cw-nc-floor', '', true)
+    + '<div class="cw-f full"><label>Notes</label><textarea id="cw-nc-notes"></textarea></div></div><div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="close">Cancel</button><button class="cw-btn" data-cw="custcreate">💾 Save customer</button></div></div></div>';
+  cwOpenModal(h, true);
+}
+
+/* ================================ BILLING & PAYMENTS ================================ */
+CW_UI.payTab = 'due';
+CW_UI.pages.payments = function (me) {
+  var now = cwNow(), todayF = { from: cwDayStart(cwDayKey(now)), to: cwDayStart(cwDayKey(now)) + CW_DAY };
+  var daily = cwReportDaily(cwState(), todayF);
+  var due = cwJobs.filter(function (j) { return j && !j._deleted && !cwIsCancelled(j) && !j.free && cwTotals(j).balance > 0.009; }).sort(function (a, b) { return cwNum(a.receivedAt) - cwNum(b.receivedAt); });
+  var refundDue = cwJobs.filter(function (j) { return j && !j._deleted && cwIsCancelled(j) && cwTotals(j).net > 0; });
+  var dueTotal = 0; due.forEach(function (j) { dueTotal += cwTotals(j).balance; });
+  var h = '<div class="cw-kpis">' + cwKpi('Collected today', cwMoney(daily.totals.cash + daily.totals.mpesa + daily.totals.other), '', '#16a34a') + cwKpi('Cash today', cwMoney(daily.totals.cash)) + cwKpi('M-Pesa today', cwMoney(daily.totals.mpesa)) + cwKpi('Other today', cwMoney(daily.totals.other)) + cwKpi('Outstanding', cwMoney(dueTotal), due.length + ' job(s)', '#dc2626') + (refundDue.length ? cwKpi('Refunds due', refundDue.length, 'cancelled jobs with money', '#dc2626') : '') + '</div>';
+  h += '<div class="cw-chips" style="margin-bottom:12px">' + [['due', 'Awaiting payment'], ['today', 'Today\'s payments'], ['all', 'All payments']].map(function (t) { return '<button class="cw-chip ' + (CW_UI.payTab === t[0] ? 'on' : '') + '" data-cw="paytab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+  if (CW_UI.payTab === 'due') {
+    h += '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Job</th><th>Customer</th><th>Status</th><th class="cw-num">Total</th><th class="cw-num">Paid</th><th class="cw-num">Balance</th><th></th></tr></thead><tbody>'
+      + (due.length ? due.map(function (j) { var c = cwJobCustomer(j) || {}, t = cwTotals(j); return '<tr><td class="cw-click" data-cw="job" data-id="' + cwEsc(j.id) + '">' + cwJobTitle(j) + '<div class="cw-small cw-mut">' + cwEsc(j.no) + '</div></td><td>' + cwEsc(c.name || '') + '<div class="cw-small cw-mut">' + cwEsc(cwFmtPhone(c.phone)) + '</div></td><td>' + cwStatusBadge(j) + '</td><td class="cw-num">' + cwMoney(t.total) + '</td><td class="cw-num">' + cwMoney(t.net) + '</td><td class="cw-num"><b>' + cwMoney(t.balance) + '</b></td><td>' + (cwCan('payments', me) ? '<button class="cw-btn sm ok" data-cw="pay" data-id="' + cwEsc(j.id) + '">💵 Pay</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="7" class="cw-empty"><b>🎉</b>Nothing outstanding.</td></tr>') + '</tbody></table></div>';
+    if (refundDue.length) h += '<div class="cw-sec">Cancelled jobs holding money</div><div class="cw-tblw"><table class="cw-tbl"><tbody>' + refundDue.map(function (j) { return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(j.id) + '"><td>' + cwEsc(j.no) + '</td><td>' + cwEsc((cwJobCustomer(j) || {}).name || '') + '</td><td class="cw-num">' + cwMoney(cwTotals(j).net) + ' paid</td></tr>'; }).join('') + '</tbody></table></div>';
+  } else {
+    var ps = cwPayments.filter(function (p) { return p && (CW_UI.payTab === 'all' || cwInRange(p.at, todayF)); }).sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); }).slice(0, 400);
+    h += '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>When</th><th>Job</th><th>Customer</th><th>Type</th><th>Method</th><th>Reference</th><th>Received by</th><th class="cw-num">Amount</th></tr></thead><tbody>'
+      + (ps.length ? ps.map(function (p) { var c = cwFind(cwCustomers, p.customerId) || {}; return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(p.jobId) + '"' + (p.reversedAt ? ' style="opacity:.45;text-decoration:line-through" title="Reversed: ' + cwEsc(p.reverseReason || '') + '"' : '') + '><td class="cw-small">' + cwFmtDT(p.at) + '</td><td>' + cwEsc(p.jobNo || '') + '</td><td>' + cwEsc(c.name || '') + '</td><td>' + cwEsc(p.type) + '</td><td>' + cwEsc(cwMethodLabel(p.method)) + '</td><td class="cw-small">' + cwEsc(p.ref || '') + '</td><td class="cw-small">' + cwEsc(p.byName || p.by || '') + '</td><td class="cw-num">' + cwMoney(p.amount) + '</td></tr>'; }).join('') : '<tr><td colspan="8" class="cw-empty">No payments.</td></tr>') + '</tbody></table></div>';
+  }
+  return h;
+};
+function cwOpenPay(jobId, refund) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var t = cwTotals(job), cfg = cwCfg(), ms = cwPayMethods(cfg), c = cwJobCustomer(job) || {};
+  var amt = refund ? t.net : Math.max(0, t.balance);
+  var h = cwPH((refund ? '↩ Refund — ' : '💵 Payment — ') + cwEsc(job.no)) + '<div class="cw-pb"><div class="cw-card">'
+    + '<div class="cw-row" style="margin-bottom:12px"><div><div class="cw-mut cw-small">Total</div><b>' + cwMoney(t.total) + '</b></div><div><div class="cw-mut cw-small">Paid</div><b>' + cwMoney(t.net) + '</b></div><div><div class="cw-mut cw-small">Balance</div><b style="color:#dc2626">' + cwMoney(Math.max(0, t.balance)) + '</b></div></div>'
+    + '<div class="cw-form"><div class="cw-f"><label>Amount (KES) *</label><input id="cw-pay-amt" type="number" min="1" step="0.01" value="' + amt + '"></div>'
+    + '<div class="cw-f"><label>Method</label><select id="cw-pay-method">' + ms.map(function (m) { return '<option value="' + cwEsc(m.k) + '">' + cwEsc(m.l) + '</option>'; }).join('') + '</select></div>'
+    + (refund ? '' : '<div class="cw-f"><label>Payment type</label><select id="cw-pay-type"><option value="payment">Payment</option><option value="deposit">Deposit</option></select></div>')
+    + '<div class="cw-f"><label>Transaction reference <i>(M-Pesa code)</i></label><input id="cw-pay-ref" style="text-transform:uppercase" placeholder="e.g. SGH7K2LMNP"></div>'
+    + '<div class="cw-f full"><label>' + (refund ? 'Reason for refund *' : 'Note') + '</label><input id="cw-pay-note"></div></div>'
+    + (!refund && cwPayStkOk() ? '<div class="cw-card" style="margin-top:12px;background:#f0fdf4;border-color:#bbf7d0"><b>📲 M-Pesa prompt (STK push)</b><div class="cw-row" style="margin-top:8px;flex-wrap:nowrap"><input id="cw-stk-phone" value="' + cwEsc(cwFmtPhone(c.phone)) + '" placeholder="07XX XXX XXX"><button class="cw-btn ok" id="cw-stk-btn" type="button" data-cw="stk">Send prompt</button></div><div id="cw-stk-status" class="cw-small" style="margin-top:6px"></div></div>' : '')
+    + '<div class="cw-row" style="margin-top:16px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn ' + (refund ? 'bad' : 'ok') + '" data-cw="' + (refund ? 'refundsave' : 'paysave') + '" data-id="' + cwEsc(job.id) + '">' + (refund ? '↩ Record refund' : '✅ Record payment') + '</button></div></div></div>';
+  cwOpenModal(h, true);
+  CW_UI.stk = null;
+}
+function cwPayStkOk() { try { return typeof createMpesaStkFlow === 'function' && typeof MPESA_STK_URL !== 'undefined'; } catch (e) { return false; } }
+function cwPaySave(jobId, refund) {
+  var o = { jobId: jobId, amount: cwVal('cw-pay-amt'), method: cwVal('cw-pay-method'), ref: cwVal('cw-pay-ref'), note: cwVal('cw-pay-note'), type: refund ? 'refund' : cwVal('cw-pay-type') };
+  if (refund && !cwStr(o.note).trim()) { cwToast('Give a reason for the refund.', true); return; }
+  var r = cwRecordPayment(o);
+  if (!r.ok) { cwToast(r.error, true); return; }
+  cwToast(refund ? '↩ Refund recorded.' : '✅ ' + cwMoney(Math.abs(r.payment.amount)) + ' recorded' + (r.totals && r.totals.balance <= 0.009 ? ' — job fully paid.' : '. Balance ' + cwMoney(r.totals.balance) + '.'));
+  cwOpenJob(jobId); cwRefresh();
+}
+
+/* ---- invoice: one per job, printable / save as PDF ---- */
+function cwInvoice(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var cfg = cwCfg(), b = cfg.business, c = cwJobCustomer(job) || {}, v = cwJobVehicle(job), t = cwTotals(job), pays = cwJobPayments(job).filter(function (p) { return !p.reversedAt; });
+  var pay = cfg.payments || {};
+  var css = 'body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:0;padding:28px;font-size:13px}.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0e7490;padding-bottom:14px}.top h1{margin:0;color:#0e7490;font-size:26px;letter-spacing:.04em}.biz b{font-size:18px}.biz img{max-height:60px;max-width:160px;display:block;margin-bottom:6px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#0e7490;color:#fff;text-align:left;padding:8px}td{padding:8px;border-bottom:1px solid #e2e8f0}.n{text-align:right}.tot td{font-weight:bold;border-top:2px solid #0f172a}.meta{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.box{border:1px solid #cbd5e1;border-radius:8px;padding:10px}.free{background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:8px;border-radius:8px;margin-top:12px;font-weight:bold}.foot{margin-top:24px;color:#475569;font-size:12px;border-top:1px solid #e2e8f0;padding-top:10px}@page{margin:12mm}';
+  var html = '<div class="top"><div class="biz">' + (b.logo ? '<img src="' + cwEsc(b.logo) + '" alt="">' : '') + '<b>' + cwEsc(b.name || 'Car Wash') + '</b><br>' + cwEsc(b.address || '') + (b.location ? '<br>' + cwEsc(b.location) : '') + (b.phone ? '<br>Tel: ' + cwEsc(b.phone) : '') + (b.email ? '<br>' + cwEsc(b.email) : '') + '</div>'
+    + '<div style="text-align:right"><h1>INVOICE</h1><div><b>' + cwEsc(job.invoiceNo || cwInvoiceNo(job)) + '</b></div><div>Job: ' + cwEsc(job.no) + '</div><div>Date: ' + cwFmtDT(job.receivedAt) + '</div><div>Status: <b>' + cwEsc(cwPayLabel(t.status)) + '</b></div></div></div>'
+    + '<div class="meta"><div class="box"><b>Bill to</b><br>' + cwEsc(c.name || '') + '<br>' + cwEsc(cwFmtPhone(c.phone)) + (c.email ? '<br>' + cwEsc(c.email) : '') + (c.location || c.estate ? '<br>' + cwEsc([c.location, c.estate, c.house].filter(Boolean).join(', ')) : '') + '</div>'
+    + '<div class="box"><b>' + (job.kind === 'clean' ? 'Cleaning' : 'Vehicle') + '</b><br>' + (v ? cwEsc(cwFmtPlate(v.plate)) + ' · ' + cwEsc([v.make, v.model, v.year, v.colour].filter(Boolean).join(' ')) + ' · ' + cwEsc(cwVehCatLabel(cfg, v.category)) : cwEsc(cwCleanType(job.cleaning && job.cleaning.type).l) + (job.cleaning && job.cleaning.dims ? ' · ' + cwEsc(job.cleaning.dims) : '')) + '<br>Handled by: ' + cwEsc(cwStaffOnJob(job).map(function (a) { return a.name; }).join(', ') || '—') + '</div></div>'
+    + '<table><thead><tr><th>Service</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Amount</th></tr></thead><tbody>' + cwArr(job.items).map(function (it) { return '<tr><td>' + cwEsc(it.name) + '</td><td class="n">' + (it.qty || 1) + '</td><td class="n">' + cwAmt(it.price) + '</td><td class="n">' + cwAmt(it.price * (it.qty || 1)) + '</td></tr>'; }).join('')
+    + (t.delivery ? '<tr><td>Delivery</td><td></td><td></td><td class="n">' + cwAmt(t.delivery) + '</td></tr>' : '') + (t.discount ? '<tr><td>' + (job.free ? 'Loyalty reward (free service)' : 'Discount') + '</td><td></td><td></td><td class="n">-' + cwAmt(t.discount) + '</td></tr>' : '')
+    + '<tr class="tot"><td colspan="3">TOTAL (KES)</td><td class="n">' + cwAmt(t.total) + '</td></tr><tr><td colspan="3">Paid</td><td class="n">' + cwAmt(t.net) + '</td></tr><tr class="tot"><td colspan="3">BALANCE DUE (KES)</td><td class="n">' + cwAmt(Math.max(0, t.balance)) + '</td></tr></tbody></table>'
+    + (job.free ? '<div class="free">🎁 FREE loyalty service — thank you for your loyalty!</div>' : '')
+    + (pays.length ? '<table><thead><tr><th>Payment date</th><th>Method</th><th>Reference</th><th>Received by</th><th class="n">Amount</th></tr></thead><tbody>' + pays.map(function (p) { return '<tr><td>' + cwFmtDT(p.at) + '</td><td>' + cwEsc(cwMethodLabel(p.method)) + (p.type === 'refund' ? ' (refund)' : p.type === 'deposit' ? ' (deposit)' : '') + '</td><td>' + cwEsc(p.ref || '') + '</td><td>' + cwEsc(p.byName || '') + '</td><td class="n">' + cwAmt(p.amount) + '</td></tr>'; }).join('') + '</tbody></table>' : '')
+    + '<div class="foot">' + (pay.till ? 'Pay via M-Pesa Till: <b>' + cwEsc(pay.till) + '</b>. ' : '') + (pay.paybill ? 'M-Pesa Paybill <b>' + cwEsc(pay.paybill) + '</b>' + (pay.account ? ', Account <b>' + cwEsc(pay.account) + '</b>' : '') + '. ' : '') + cwEsc(pay.invoiceNotes || '') + '</div>';
+  cwPrintDoc('Invoice ' + (job.invoiceNo || job.no), html, css);
+  cwLog('invoice.print', job.no, job.invoiceNo || '', job.id);
+}
+function cwPrintDoc(title, html, css) {
+  var w = null; try { w = window.open('', '_blank'); } catch (e) { w = null; }
+  if (!w) { if (typeof printHTMLDirect === 'function') { try { printHTMLDirect(html, css); return; } catch (e2) { /* fall through */ } } cwToast('Allow pop-ups to print or save as PDF.', true); return; }
+  w.document.open(); w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + cwEsc(title) + '</title><style>' + css + '</style></head><body>' + html + '<script>setTimeout(function(){window.print()},350)<\/script></body></html>'); w.document.close();
+}
+
+/* ================================ LOYALTY ================================ */
+CW_UI.loyTab = 'eligible';
+CW_UI.pages.loyalty = function (me) {
+  var cfg = cwCfg(), rep = cwReportLoyalty(cwState(), {});
+  var h = (cfg.loyalty.enabled === false ? '<div class="cw-alert warn" style="margin-bottom:12px">Loyalty is switched off in Settings ▸ Loyalty.</div>' : '<div class="cw-alert info" style="margin-bottom:12px">🎁 Every paid wash earns one point (phone + plate). After <b>' + cwLoyaltyN(cfg, 'car') + '</b> paid washes the next wash is FREE automatically. Cleaning: <b>' + cwLoyaltyN(cfg, 'clean') + '</b> + 1, ' + (cfg.loyalty.cleanMode === 'separate' ? 'counted per cleaning category' : 'one programme for all cleaning') + '. Cancelled and unpaid jobs never earn points; refunds take the point back.</div>');
+  h += '<div class="cw-kpis">' + rep.cards.map(function (c) { return cwKpi(c[0], c[1]); }).join('') + '</div>';
+  h += '<div class="cw-chips" style="margin-bottom:12px">' + [['eligible', '🎁 Eligible now'], ['approaching', '⏳ Approaching'], ['top', '🏆 Top 20'], ['ledger', '📒 Ledger']].map(function (t) { return '<button class="cw-chip ' + (CW_UI.loyTab === t[0] ? 'on' : '') + '" data-cw="loytab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+  function rows(list) {
+    return '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Customer</th><th>Programme</th><th>Progress</th><th class="cw-num">Paid</th><th class="cw-num">Free earned</th><th class="cw-num">Redeemed</th><th>Last visit</th></tr></thead><tbody>' + (list.length ? list.map(function (a) {
+      return '<tr' + (a.customerId ? ' class="cw-click" data-cw="cust" data-id="' + cwEsc(a.customerId) + '"' : '') + '><td><b>' + cwEsc(a.customerName) + '</b><div class="cw-small cw-mut">' + cwEsc(cwFmtPhone(a.phone)) + '</div></td><td>' + (a.kind === 'car' ? '<span class="cw-plate">' + cwEsc(cwFmtPlate(a.plate)) + '</span>' : '🧽 ' + cwEsc(a.cleanType ? cwCleanType(a.cleanType).l : 'Cleaning')) + '</td><td style="min-width:150px">' + (a.available > 0 ? '<span class="cw-free">🎁 ' + a.available + ' FREE</span>' : a.current_cycle_count + '/' + a.n + '<div class="cw-prog"><i style="width:' + Math.round(a.current_cycle_count / a.n * 100) + '%"></i></div>') + '</td><td class="cw-num">' + a.paid_visits + '</td><td class="cw-num">' + a.free_visits_earned + '</td><td class="cw-num">' + a.free_visits_redeemed + '</td><td class="cw-small">' + cwFmtDate(a.last_visit_date) + '</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="cw-empty">Nobody here yet.</td></tr>') + '</tbody></table></div>';
+  }
+  if (CW_UI.loyTab === 'eligible') h += rows(rep.eligible);
+  else if (CW_UI.loyTab === 'approaching') h += rows(rep.approaching);
+  else if (CW_UI.loyTab === 'top') h += rows(rep.top);
+  else h += '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>When</th><th>Job</th><th>Entry</th><th>Programme</th><th>By</th></tr></thead><tbody>' + cwLoyalty.slice().sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); }).slice(0, 400).map(function (t) { return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(t.jobId) + '"><td class="cw-small">' + cwFmtDT(t.at) + '</td><td>' + cwEsc(t.jobNo || '') + '</td><td>' + ({ earn: '⭐ Point earned', reverse: '↩ Point reversed', redeem: '🎁 Free redeemed', unredeem: '↩ Redemption reversed' }[t.type] || t.type) + '</td><td class="cw-small">' + cwEsc(cwStr(t.key).replace(/^car\|/, '🚗 ').replace(/^clean\|/, '🧽 ').replace(/\|/g, ' · ')) + '</td><td class="cw-small">' + cwEsc(t.by || '') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  return h;
+};
+
+/* ================================ SMS ================================ */
+CW_UI.smsF = '';
+CW_UI.pages.sms = function (me) {
+  var cfg = cwCfg(), list = cwSms.filter(function (s) { return s && (!CW_UI.smsF || s.status === CW_UI.smsF); }).sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); });
+  var n = { sent: 0, pending: 0, failed: 0 }; cwSms.forEach(function (s) { if (s && n[s.status] !== undefined) n[s.status]++; });
+  var h = (cfg.sms.enabled === false ? '<div class="cw-alert warn" style="margin-bottom:12px">Automatic SMS is switched off (Settings ▸ SMS).</div>' : '') + (CW_ST.smsCfg === false ? '<div class="cw-alert" style="margin-bottom:12px">The SMS gateway is not set up yet — messages wait as "failed" until it is. ' + (me.owner ? '<a href="#" data-cw="sys" data-sec="sms">Set up SMS gateway</a>' : 'Ask the owner to set it up.') + '</div>' : '');
+  h += '<div class="cw-kpis">' + cwKpi('Sent', n.sent, '', '#16a34a') + cwKpi('Pending', n.pending, '', '#d97706') + cwKpi('Failed', n.failed, '', '#dc2626') + '</div>';
+  h += '<div class="cw-row" style="margin-bottom:12px"><div class="cw-chips">' + [['', 'All'], ['sent', 'Sent'], ['pending', 'Pending'], ['failed', 'Failed']].map(function (t) { return '<button class="cw-chip ' + (CW_UI.smsF === t[0] ? 'on' : '') + '" data-cw="smsf" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div><span class="cw-sp"></span>' + (n.pending ? '<button class="cw-btn sm" data-cw="smsflush">Send pending now</button>' : '') + '</div>';
+  h += '<div class="cw-card">' + (list.length ? list.slice(0, 300).map(function (s) { return cwSmsRow(s, me); }).join('') : '<div class="cw-empty"><b>✉️</b>No messages.</div>') + '</div>';
+  return h;
+};
+
+/* ================================ STAFF ================================ */
+CW_UI.pages.staff = function (me) {
+  var all = cwStaffAll().filter(function (m) { return m && !m.removed; }), cfg = cwCfg(), now = cwNow(), from = now - 30 * CW_DAY;
+  var rep = cwReportStaff(cwState(), { from: from, to: now + 1 }), perf = {}; rep.data.forEach(function (r) { perf[r.id] = r; });
+  var h = '<div class="cw-row" style="margin-bottom:12px"><div class="cw-alert info" style="flex:1">Staff sign in with their own PIN on the sign-in screen. Every status change, assignment and payment records who did it.</div>' + (me.owner ? '<button class="cw-btn" data-cw="staffnew">＋ Add staff</button>' : '') + '</div>';
+  h += '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Staff</th><th>Staff ID</th><th>Phone</th><th>Role</th><th>Responsibilities</th><th>Status</th><th class="cw-num">Open jobs</th><th class="cw-num">Jobs (30 d)</th><th></th></tr></thead><tbody>'
+    + (all.length ? all.map(function (m) { var p = perf[String(m.id)] || {}, role = cwMemberRole(m); return '<tr><td><b>' + cwEsc(m.name) + '</b></td><td>' + cwEsc(m.cwNo || '—') + '</td><td>' + cwEsc(cwFmtPhone(m.cwPhone) || '—') + '</td><td>' + cwEsc((CW_ROLES.filter(function (r) { return r.k === role; })[0] || { l: role === 'none' ? 'Access off' : role }).l) + '</td><td class="cw-small">' + cwEsc(m.cwDuties || '') + '</td><td>' + (m.cwActive === false ? '<span class="cw-badge" style="--b:#dc2626">Inactive</span>' : '<span class="cw-badge" style="--b:#16a34a">Active</span>') + '</td><td class="cw-num">' + (p.open || 0) + '</td><td class="cw-num">' + ((p.cars || 0) + (p.cleans || 0)) + '</td><td>' + (me.owner ? '<button class="cw-btn sm sec" data-cw="staffedit" data-id="' + cwEsc(m.id) + '">Edit</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="9" class="cw-empty"><b>👷</b>No staff yet.' + (me.owner ? ' Add your attendants, cashier and cleaning team.' : '') + '</td></tr>') + '</tbody></table></div>';
+  h += '<div class="cw-sec">Teams <span class="cw-small cw-mut" style="text-transform:none;letter-spacing:0;font-weight:500">used for carpet pickups and house / office cleaning</span></div><div class="cw-grid cw-g3">' + cwArr(cfg.teams).map(function (t) { return '<div class="cw-card"><h3>👥 ' + cwEsc(t.name) + (t.active === false ? ' <small>(inactive)</small>' : '') + '</h3><div class="cw-small">' + (cwArr(t.memberIds).map(function (id) { return cwEsc(cwStaffName(id) || '?'); }).join(', ') || 'No members') + '</div>' + (me.owner || me.role === 'manager' ? '<button class="cw-btn sm ghost" style="margin-top:8px" data-cw="teamedit" data-id="' + cwEsc(t.id) + '">Edit team</button>' : '') + '</div>'; }).join('') + (me.owner || me.role === 'manager' ? '<div class="cw-card" style="display:grid;place-items:center"><button class="cw-btn ghost" data-cw="teamedit" data-id="">＋ New team</button></div>' : '') + '</div>';
+  return h;
+};
+function cwOpenStaff(id) {
+  var m = id ? cwFind(cwStaffAll(), id) : null, role = m ? cwMemberRole(m) : 'attendant';
+  var h = cwPH(m ? '👷 ' + cwEsc(m.name) : '👷 Add staff member') + '<div class="cw-pb"><div class="cw-card"><div class="cw-form">'
+    + (m ? '<div class="cw-f"><label>Name</label><input value="' + cwEsc(m.name) + '" readonly></div><div class="cw-f"><label>Staff ID</label><input value="' + cwEsc(m.cwNo || '(given on save)') + '" readonly></div>' : cwFld('Name *', 'cw-st-name', '', true) + '<div class="cw-f"><label>PIN * <i>(4–8 digits, used to sign in)</i></label><input id="cw-st-pin" type="password" inputmode="numeric" autocomplete="new-password"></div>')
+    + '<div class="cw-f"><label>Role</label><select id="cw-st-role">' + CW_ROLES.filter(function (r) { return r.k !== 'owner'; }).map(function (r) { return '<option value="' + r.k + '"' + (role === r.k ? ' selected' : '') + '>' + r.l + '</option>'; }).join('') + '</select></div>'
+    + cwFld('Phone', 'cw-st-phone', m ? cwFmtPhone(m.cwPhone) : '', true) + '<div class="cw-f full"><label>Assigned responsibilities</label><input id="cw-st-duties" value="' + cwEsc(m ? m.cwDuties || '' : '') + '" placeholder="e.g. Bay 1 washing, interior detailing"></div>'
+    + (m ? '<div class="cw-f"><label>Account status</label><select id="cw-st-active"><option value="1"' + (m.cwActive !== false ? ' selected' : '') + '>Active</option><option value="0"' + (m.cwActive === false ? ' selected' : '') + '>Inactive (cannot use the app)</option></select></div><div class="cw-f"><label>Reset PIN <i>(leave empty to keep)</i></label><input id="cw-st-pin2" type="password" inputmode="numeric" autocomplete="new-password"></div>' : '')
+    + '</div>' + cwStaffTabsHtml(m, role) + '<div class="cw-alert info" style="margin-top:12px;font-size:12.5px"><b>What each role can do:</b> Manager — customers, jobs, assignments, operational reports. Receptionist / Cashier — customers, vehicles, check-in, billing and payments. Wash Attendant — sees only jobs assigned to them, updates status and photos. Cleaning Team — assigned cleaning jobs, progress and photos. Only the owner sees money reports and settings.</div>'
+    + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="close">Cancel</button><button class="cw-btn" data-cw="staffsave" data-id="' + cwEsc(id || '') + '">💾 Save</button></div></div></div>';
+  cwOpenModal(h, true);
+}
+/* zip 362: the screens (tabs) this staff member can open - ticked from their own list, or from their role when none was set */
+function cwStaffTabsHtml(m, role) {
+  var own = m ? cwCleanTabs(m.cwTabs) : null, on = own || cwRoleTabs(role);
+  return '<div class="cw-card" style="margin-top:12px;background:#f8fafc"><h3 style="margin-bottom:4px">🗂 Tabs this person can open <small id="cw-st-tabmode">' + (own ? 'own selection' : 'same as the role') + '</small></h3><p class="cw-small cw-mut" style="margin:0 0 8px">Tick the screens to show in their menu. Buttons inside a screen (edit, delete, take payment) still follow the role.</p><div class="cw-grid cw-g3" style="gap:4px 14px">'
+    + CW_TABS.map(function (t) { return '<label class="cw-row" style="gap:8px;padding:3px 0;flex-wrap:nowrap"><input type="checkbox" class="cw-st-tab" value="' + t.r + '"' + (on.indexOf(t.r) !== -1 ? ' checked' : '') + '> ' + cwEsc(t.l) + '</label>'; }).join('')
+    + '</div><button type="button" class="cw-btn sm sec" style="margin-top:8px" data-cw="sttabsrole">↺ Use the role\'s tabs</button></div>';
+}
+function cwStaffTabsPicked() { var b = document.querySelectorAll('.cw-st-tab'); if (!b.length) return undefined; return Array.prototype.filter.call(b, function (x) { return x.checked; }).map(function (x) { return x.value; }); }
+function cwOpenTeam(id) {
+  var cfg = cwCfg(), t = id ? cwFind(cfg.teams, id) : null, st = cwActiveStaff();
+  var h = cwPH(t ? '👥 ' + cwEsc(t.name) : '👥 New team') + '<div class="cw-pb"><div class="cw-card">' + cwFld('Team name *', 'cw-tm-name', t ? t.name : '', true)
+    + '<div class="cw-f" style="margin-top:12px"><label>Members</label>' + st.map(function (m) { return '<label class="cw-row" style="padding:5px 0;gap:8px"><input type="checkbox" class="cw-tm-m" value="' + cwEsc(m.id) + '"' + (t && cwArr(t.memberIds).indexOf(String(m.id)) !== -1 ? ' checked' : '') + '> ' + cwEsc(m.name) + '</label>'; }).join('') + '</div>'
+    + (t ? '<label class="cw-row" style="gap:8px;margin-top:8px"><input type="checkbox" id="cw-tm-active"' + (t.active !== false ? ' checked' : '') + '> Active</label>' : '')
+    + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="close">Cancel</button><button class="cw-btn" data-cw="teamsave" data-id="' + cwEsc(id || '') + '">💾 Save team</button></div></div></div>';
+  cwOpenModal(h, true);
+}
+
+/* ================================ REPORTS ================================ */
+CW_UI.rep = { kind: 'daily', range: 'today', from: '', to: '', staffId: '', service: '', method: '', status: '', jkind: '' };
+function cwRepRange(R) {
+  var now = cwNow(), today = cwDayStart(cwDayKey(now));
+  switch (R.range) {
+    case 'today': return { from: today, to: today + CW_DAY, label: 'Today' };
+    case 'yesterday': return { from: today - CW_DAY, to: today, label: 'Yesterday' };
+    case '7': return { from: today - 6 * CW_DAY, to: today + CW_DAY, label: 'Last 7 days' };
+    case '30': return { from: today - 29 * CW_DAY, to: today + CW_DAY, label: 'Last 30 days' };
+    case 'month': { var k = cwDayKey(now).slice(0, 8) + '01'; return { from: cwDayStart(k), to: today + CW_DAY, label: 'This month' }; }
+    case 'custom': { var f = R.from ? cwDayStart(R.from) : today, t = R.to ? cwDayStart(R.to) + CW_DAY : today + CW_DAY; return { from: f, to: t, label: (R.from || '…') + ' to ' + (R.to || '…') }; }
+    default: return { from: 0, to: 0, label: 'All time' };
+  }
+}
+function cwRepRun() {
+  var R = CW_UI.rep, rg = cwRepRange(R), f = { from: rg.from, to: rg.to, staffId: R.staffId, service: R.service, method: R.method, status: R.status, kind: R.jkind, now: cwNow() }, S = cwState();
+  var out = R.kind === 'staff' ? cwReportStaff(S, f) : R.kind === 'loyalty' ? cwReportLoyalty(S, f) : R.kind === 'customers' ? cwReportCustomers(S, f) : R.kind === 'ops' ? cwReportOps(S, f) : cwReportDaily(S, f);
+  out.rangeLabel = rg.label;
+  return out;
+}
+CW_UI.pages.reports = function (me) {
+  var R = CW_UI.rep, cfg = cwCfg();
+  var kinds = [['daily', '💰 Daily sales', 'reports.fin'], ['staff', '👷 Staff performance', 'reports.ops'], ['loyalty', '🎁 Loyalty', 'reports.ops'], ['customers', '👥 Customers', 'reports.ops'], ['ops', '⚙️ Operational', 'reports.ops']].filter(function (k) { return cwCan(k[2], me); });
+  if (!kinds.some(function (k) { return k[0] === R.kind; })) R.kind = kinds.length ? kinds[0][0] : 'ops';
+  var h = '<div class="cw-chips" style="margin-bottom:12px">' + kinds.map(function (k) { return '<button class="cw-chip ' + (R.kind === k[0] ? 'on' : '') + '" data-cw="repk" data-t="' + k[0] + '">' + k[1] + '</button>'; }).join('') + '</div>';
+  h += '<div class="cw-card" style="margin-bottom:14px"><div class="cw-row" style="align-items:flex-end">'
+    + '<div class="cw-f" style="min-width:150px"><label>Period</label><select id="cw-r-range">' + [['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['all', 'All time'], ['custom', 'Date range…']].map(function (x) { return '<option value="' + x[0] + '"' + (R.range === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div>'
+    + (R.range === 'custom' ? '<div class="cw-f"><label>From</label><input type="date" id="cw-r-from" value="' + cwEsc(R.from) + '"></div><div class="cw-f"><label>To</label><input type="date" id="cw-r-to" value="' + cwEsc(R.to) + '"></div>' : '')
+    + '<div class="cw-f" style="min-width:150px"><label>Employee</label><select id="cw-r-staff"><option value="">Everyone</option>' + cwStaffAll().filter(function (m) { return m && !m.removed; }).map(function (m) { return '<option value="' + cwEsc(m.id) + '"' + (R.staffId === String(m.id) ? ' selected' : '') + '>' + cwEsc(m.name) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f" style="min-width:150px"><label>Service type</label><select id="cw-r-svc"><option value="">All services</option>' + cwServicesOf(cfg).map(function (s) { return '<option value="' + cwEsc(s.id) + '"' + (R.service === s.id ? ' selected' : '') + '>' + cwEsc(s.name) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f" style="min-width:130px"><label>Job kind</label><select id="cw-r-kind"><option value="">Cars &amp; cleaning</option><option value="car"' + (R.jkind === 'car' ? ' selected' : '') + '>Cars</option><option value="clean"' + (R.jkind === 'clean' ? ' selected' : '') + '>Cleaning</option></select></div>'
+    + (R.kind === 'daily' ? '<div class="cw-f" style="min-width:130px"><label>Payment method</label><select id="cw-r-method"><option value="">All methods</option>' + cwPayMethods(cfg).map(function (m) { return '<option value="' + cwEsc(m.k) + '"' + (R.method === m.k ? ' selected' : '') + '>' + cwEsc(m.l) + '</option>'; }).join('') + '</select></div>' : '')
+    + (R.kind === 'ops' || R.kind === 'daily' ? '<div class="cw-f" style="min-width:140px"><label>Job status</label><select id="cw-r-status"><option value="">Any status</option>' + CW_FLOWS.car.concat(CW_FLOWS.pickup).filter(function (s, i, a) { return a.map(function (x) { return x.k; }).indexOf(s.k) === i; }).map(function (s) { return '<option value="' + s.k + '"' + (R.status === s.k ? ' selected' : '') + '>' + s.l + '</option>'; }).join('') + '</select></div>' : '')
+    + '</div></div>';
+  var out = cwRepRun();
+  h += '<div class="cw-row" style="margin-bottom:8px"><b style="font-size:16px">' + cwEsc(out.title) + '</b><span class="cw-mut">· ' + cwEsc(out.rangeLabel) + '</span><span class="cw-sp"></span><button class="cw-btn sm sec" data-cw="repx" data-t="xlsx">⬇ Excel</button><button class="cw-btn sm sec" data-cw="repx" data-t="csv">⬇ CSV</button><button class="cw-btn sm sec" data-cw="repx" data-t="pdf">🖨 PDF</button></div><div class="cw-kpis">' + out.cards.map(function (c) { return cwKpi(c[0], c[1]); }).join('') + '</div>';
+  if (R.kind === 'daily' && out.series && out.series.length > 1) { var mx = 1; out.series.forEach(function (x) { if (x[1] > mx) mx = x[1]; }); h += '<div class="cw-card" style="margin-bottom:14px"><h3>Collections by day</h3><div class="cw-bars">' + out.series.slice(-31).map(function (x) { return '<div title="' + cwEsc(x[0] + ': ' + cwMoney(x[1])) + '"><i style="height:' + Math.max(2, Math.round(Math.max(0, x[1]) / mx * 120)) + 'px"></i><small>' + x[0].slice(5) + '</small></div>'; }).join('') + '</div></div>'; }
+  h += cwTable(out.cols, out.rows);
+  if (R.kind === 'ops' && out.jobRows && out.jobRows.length) h += '<div class="cw-sec">Jobs</div>' + cwTable(['Job', 'Customer', 'Service', 'Status', 'Received', 'Completed', 'Turnaround'], out.jobRows);
+  if (R.kind === 'customers' && out.inactive && out.inactive.length) h += '<div class="cw-sec">Inactive customers</div>' + cwTable(['Customer', 'Phone', 'Last visit', 'Visits'], out.inactive.map(function (r) { return [r.c.name, cwFmtPhone(r.c.phone), cwFmtDate(r.last), r.visits]; }));
+  return h;
+};
+function cwTable(cols, rows) {
+  return '<div class="cw-tblw"><table class="cw-tbl"><thead><tr>' + cols.map(function (c) { return '<th>' + cwEsc(c) + '</th>'; }).join('') + '</tr></thead><tbody>' + (rows.length ? rows.map(function (r) { return '<tr>' + r.map(function (v) { return '<td' + (typeof v === 'number' ? ' class="cw-num"' : '') + '>' + (typeof v === 'number' ? cwEsc(String(cwRound(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')) : cwEsc(v)) + '</td>'; }).join('') + '</tr>'; }).join('') : '<tr><td colspan="' + cols.length + '" class="cw-empty">No records for these filters.</td></tr>') + '</tbody></table></div>';
+}
+function cwRepExport(kind) {
+  var out = cwRepRun(), cfg = cwCfg(), name = (cfg.business.name || 'CarWash').replace(/[^A-Za-z0-9]+/g, '_') + '_' + out.title.replace(/\s+/g, '_') + '_' + cwDayKey(cwNow());
+  var head = [[out.title + ' — ' + out.rangeLabel], []].concat(out.cards.map(function (c) { return [c[0], c[1]]; })).concat([[]]);
+  var aoa = head.concat([out.cols]).concat(out.rows);
+  cwLog('report.export', out.title, kind + ' · ' + out.rangeLabel);
+  if (kind === 'pdf') {
+    var css = 'body{font-family:Arial,sans-serif;padding:18px;font-size:12px}h1{font-size:20px;margin:0 0 4px;color:#0e7490}table{width:100%;border-collapse:collapse;margin-top:12px}th{background:#0e7490;color:#fff;text-align:left;padding:6px}td{padding:6px;border-bottom:1px solid #e2e8f0}.c{display:inline-block;border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px;margin:4px 6px 0 0}@page{margin:10mm}';
+    cwPrintDoc(out.title, '<h1>' + cwEsc(cfg.business.name || '') + ' — ' + cwEsc(out.title) + '</h1><div>' + cwEsc(out.rangeLabel) + ' · printed ' + cwFmtDT(cwNow()) + '</div><div>' + out.cards.map(function (c) { return '<span class="c">' + cwEsc(c[0]) + ': <b>' + cwEsc(c[1]) + '</b></span>'; }).join('') + '</div><table><thead><tr>' + out.cols.map(function (c) { return '<th>' + cwEsc(c) + '</th>'; }).join('') + '</tr></thead><tbody>' + out.rows.map(function (r) { return '<tr>' + r.map(function (v) { return '<td>' + cwEsc(v) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>', css);
+    return;
+  }
+  function csv() {
+    var text = aoa.map(function (r) { return r.map(function (v) { var s = cwStr(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(','); }).join('\r\n');
+    var blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  if (kind === 'csv') { csv(); return; }
+  var load = typeof loadSheetJs === 'function' ? loadSheetJs() : Promise.reject(new Error('no reader'));
+  Promise.resolve(load).then(function () {
+    var X = window.XLSX, wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = out.cols.map(function (c) { return { wch: Math.max(12, String(c).length + 4) }; });
+    X.utils.book_append_sheet(wb, ws, out.title.slice(0, 28));
+    X.writeFile(wb, name + '.xlsx');
+  }).catch(function () { cwToast('Excel needs the internet the first time — saved as CSV instead (opens in Excel).'); csv(); });
+}
+
+/* ================================ ACTIVITY ================================ */
+CW_UI.auQ = '';
+CW_UI.pages.activity = function () {
+  var q = cwStr(CW_UI.auQ).toLowerCase();
+  var list = cwAudit.filter(function (a) { return !q || [a.by, a.act, a.ref, a.detail].join(' ').toLowerCase().indexOf(q) !== -1; }).slice().reverse().slice(0, 500);
+  return '<div class="cw-row" style="margin-bottom:12px"><input id="cw-auq" placeholder="Filter by person, job number or action" value="' + cwEsc(CW_UI.auQ) + '" style="max-width:360px"><span class="cw-mut cw-small">Every sensitive action is kept here (newest first).</span></div>'
+    + cwTable(['When', 'Who', 'Role', 'Action', 'Reference', 'Detail'], list.map(function (a) { return [cwFmtDT(a.at), a.by, a.role, cwActLabel(a.act), a.ref, a.detail]; }));
+};
+
+/* ================================ PRICE LIST (zip 362) ================================
+   Every service and its price, edited in one place. Changes are kept as a draft (CW_UI.pl) until "Save price list", so moving to
+   another screen never loses typing. One price per service applies to every vehicle type; "Per type" sets a different price for a
+   vehicle type (blank = the main price). Jobs already checked in keep the prices they were created with. */
+CW_UI.pl = null;
+function cwPlDraft() {
+  /* an untouched draft always shows the saved list (a price changed on another device appears); typing makes it a draft that is kept */
+  if (CW_UI.pl && !CW_UI.pl.dirty) { var keepOpen = CW_UI.pl.open; CW_UI.pl = null; cwPlDraft().open = keepOpen || {}; return CW_UI.pl; }
+  if (!CW_UI.pl) { var cfg = cwCfg(); CW_UI.pl = { services: JSON.parse(JSON.stringify(cfg.services.filter(function (s) { return s && !s._deleted; }))), cats: JSON.parse(JSON.stringify(cfg.vehicleCats)), dirty: false, open: {} }; }
+  return CW_UI.pl;
+}
+function cwPlSections(d) { var out = []; CW_SECTIONS.forEach(function (x) { out.push(x); }); d.services.forEach(function (s) { var k = cwStr(s.category).trim(); if (s.kind === 'car' && k && out.indexOf(k) === -1) out.push(k); }); return out; }
+CW_UI.pages.prices = function (me) {
+  var d = cwPlDraft(), edit = cwCan('prices', me), cats = d.cats;
+  var cars = d.services.filter(function (s) { return s.kind === 'car'; }), cleans = d.services.filter(function (s) { return s.kind === 'clean'; });
+  var ro = edit ? '' : ' readonly disabled';
+  var h = '<div class="cw-row cw-plhead" style="margin-bottom:12px"><div class="cw-alert info" style="flex:1">🏷️ These are the prices used at check-in and on every invoice. A job already checked in keeps the price it was given. ' + (edit ? 'Edit, then press <b>Save price list</b>.' : '') + '</div>'
+    + '<button class="cw-btn ghost" data-cw="plprint">🖨 Print price list</button><button class="cw-btn ghost" data-cw="intakeblank">📝 Blank intake form</button></div>';
+  if (d.dirty) h += '<div class="cw-alert warn" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b>Unsaved changes.</b><span class="cw-sp"></span><button class="cw-btn sm sec" data-cw="pldiscard">Discard</button><button class="cw-btn sm" data-cw="plsave">💾 Save price list</button></div>';
+  h += '<datalist id="cw-pl-secs">' + cwPlSections(d).map(function (x) { return '<option value="' + cwEsc(x) + '">'; }).join('') + '</datalist>';
+  /* car services, one table per section */
+  cwSvcGroups(cars).forEach(function (g) {
+    h += '<div class="cw-card" style="margin-bottom:14px"><h3>🚗 ' + cwEsc(g.name) + ' <small>' + g.list.length + ' service' + (g.list.length === 1 ? '' : 's') + '</small></h3><div class="cw-tblw"><table class="cw-tbl cw-pl cw-pl-car"><thead><tr><th>Service</th><th>Section</th><th class="cw-num">Price (KES)</th><th>Duration (min)</th><th title="Counts towards the free wash">Loyalty</th><th title="Shown at check-in">Active</th><th></th></tr></thead><tbody>'
+      + g.list.map(function (s) {
+        var per = s.prices && Object.keys(s.prices).some(function (k) { return s.prices[k] !== '' && s.prices[k] != null; });
+        var row = '<tr data-pl="' + cwEsc(s.id) + '"><td><input data-k="name" value="' + cwEsc(s.name) + '"' + ro + '></td><td><input data-k="category" list="cw-pl-secs" value="' + cwEsc(s.category || '') + '" style="max-width:140px"' + ro + '></td>'
+          + '<td class="cw-num"><input data-k="price" type="number" min="0" step="any" inputmode="decimal" value="' + (s.price == null || s.price === '' ? '' : cwNum(s.price)) + '" placeholder="' + (per ? 'per type' : '0') + '" style="max-width:110px;text-align:right;font-weight:700"' + ro + '></td>'
+          + '<td><input data-k="minutes" type="number" min="0" value="' + cwNum(s.minutes) + '" style="max-width:80px"' + ro + '></td><td><input data-k="loyalty" type="checkbox"' + (s.loyalty !== false ? ' checked' : '') + ro + '></td><td><input data-k="active" type="checkbox"' + (s.active !== false ? ' checked' : '') + ro + '></td>'
+          + '<td style="white-space:nowrap">' + (edit ? '<button class="cw-btn sm ghost" data-cw="plper" data-id="' + cwEsc(s.id) + '" title="A different price for some vehicle types">' + (per ? '◆ ' : '') + 'Per type</button> <button class="cw-btn sm bad" data-cw="pldel" data-id="' + cwEsc(s.id) + '" title="Delete this service">🗑</button>' : '') + '</td></tr>';
+        if (d.open[s.id] || (per && !edit)) row += '<tr class="cw-plper" data-plp="' + cwEsc(s.id) + '"><td colspan="7"><div class="cw-row" style="gap:10px;flex-wrap:wrap"><span class="cw-small cw-mut">Price by vehicle type (blank = ' + cwMoney(cwNum(s.price)) + '):</span>' + cats.map(function (c) { var v = (s.prices || {})[c.k]; return '<label class="cw-small" style="display:flex;flex-direction:column;gap:2px">' + cwEsc(c.l) + '<input data-k="price:' + cwEsc(c.k) + '" type="number" min="0" step="any" value="' + (v == null || v === '' ? '' : cwNum(v)) + '" style="max-width:100px"' + ro + '></label>'; }).join('') + '</div></td></tr>';
+        return row;
+      }).join('') + '</tbody></table></div></div>';
+  });
+  if (!cars.length) h += '<div class="cw-card cw-empty" style="margin-bottom:14px"><b>🚗</b>No car services yet.</div>';
+  if (edit) h += '<div class="cw-row" style="margin-bottom:18px"><button class="cw-btn sm ghost" data-cw="pladd" data-t="car">＋ Add car service</button></div>';
+  /* carpets & cleaning */
+  h += '<div class="cw-card" style="margin-bottom:14px"><h3>🧶 Carpet / rug &amp; cleaning <small>one price per piece, seat or visit</small></h3><div class="cw-tblw"><table class="cw-tbl cw-pl cw-pl-cl"><thead><tr><th>Service</th><th>Type</th><th class="cw-num">Price (KES)</th><th>Unit</th><th>Duration (min)</th><th>Loyalty</th><th>Active</th><th></th></tr></thead><tbody>'
+    + (cleans.length ? cleans.map(function (s) { return '<tr data-pl="' + cwEsc(s.id) + '"><td><input data-k="name" value="' + cwEsc(s.name) + '"' + ro + '></td><td><select data-k="cleanType"' + ro + '>' + CW_CLEAN_TYPES.map(function (t) { return '<option value="' + t.k + '"' + (s.cleanType === t.k ? ' selected' : '') + '>' + t.l + '</option>'; }).join('') + '</select></td><td class="cw-num"><input data-k="price" type="number" min="0" step="any" value="' + cwNum(s.price) + '" style="max-width:110px;text-align:right;font-weight:700"' + ro + '></td><td><input data-k="unit" value="' + cwEsc(s.unit || '') + '" style="max-width:110px"' + ro + '></td><td><input data-k="minutes" type="number" min="0" value="' + cwNum(s.minutes) + '" style="max-width:90px"' + ro + '></td><td><input data-k="loyalty" type="checkbox"' + (s.loyalty !== false ? ' checked' : '') + ro + '></td><td><input data-k="active" type="checkbox"' + (s.active !== false ? ' checked' : '') + ro + '></td><td>' + (edit ? '<button class="cw-btn sm bad" data-cw="pldel" data-id="' + cwEsc(s.id) + '" title="Delete this service">🗑</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="8" class="cw-empty">No cleaning services yet.</td></tr>') + '</tbody></table></div>'
+    + (edit ? '<button class="cw-btn sm ghost" style="margin-top:8px" data-cw="pladd" data-t="clean">＋ Add carpet / cleaning service</button>' : '') + '</div>';
+  /* vehicle types */
+  h += '<div class="cw-card" style="margin-bottom:14px"><h3>🚙 Vehicle types <small>chosen at check-in; a service can have its own price per type</small></h3><div class="cw-row" style="gap:10px;flex-wrap:wrap">'
+    + cats.map(function (c, i) { return '<div class="cw-row" style="gap:4px;flex-wrap:nowrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:6px 8px"><input data-plcat="' + i + '" value="' + cwEsc(c.l) + '" style="max-width:130px"' + ro + '>' + (edit && cats.length > 1 ? '<button class="cw-btn sm sec" data-cw="plcatdel" data-i="' + i + '" title="Remove this vehicle type">✕</button>' : '') + '</div>'; }).join('')
+    + (edit ? '<button class="cw-btn sm ghost" data-cw="plcatadd">＋ Add vehicle type</button>' : '') + '</div></div>';
+  if (edit) h += '<div class="cw-row" style="margin-bottom:24px"><button class="cw-btn sec" data-cw="plstd">↺ Load the standard price list</button><span class="cw-sp"></span><button class="cw-btn sec" data-cw="pldiscard"' + (d.dirty ? '' : ' disabled') + '>Discard changes</button><button class="cw-btn" data-cw="plsave"' + (d.dirty ? '' : ' disabled') + '>💾 Save price list</button></div>';
+  return h;
+};
+/* every field typed into the draft (called on input / change) */
+function cwPlRead(el) {
+  var d = CW_UI.pl; if (!d || !el) return false;
+  if (el.hasAttribute('data-plcat')) { var c = d.cats[+el.getAttribute('data-plcat')]; if (c) { c.l = el.value; d.dirty = true; cwPlDirtyBar(); } return true; }
+  var tr = el.closest('tr[data-pl], tr[data-plp]'); if (!tr) return false;
+  var s = cwFind(d.services, tr.getAttribute('data-pl') || tr.getAttribute('data-plp')); if (!s) return false;
+  var k = el.getAttribute('data-k'), v = el.type === 'checkbox' ? el.checked : el.value;
+  if (!k) return false;
+  if (k.indexOf('price:') === 0) { s.prices = s.prices || {}; if (v === '') delete s.prices[k.slice(6)]; else s.prices[k.slice(6)] = Math.max(0, cwNum(v)); if (!Object.keys(s.prices).length) delete s.prices; }
+  else if (k === 'price') s.price = v === '' ? '' : Math.max(0, cwNum(v));
+  else if (k === 'minutes') s.minutes = Math.max(0, cwNum(v));
+  else s[k] = v;
+  if (!d.dirty) { d.dirty = true; cwPlDirtyBar(); }
+  return true;
+}
+function cwPlDirtyBar() { Array.prototype.forEach.call(document.querySelectorAll('[data-cw="plsave"][disabled], [data-cw="pldiscard"][disabled]'), function (b) { b.disabled = false; }); }
+function cwPlSave() {
+  var d = CW_UI.pl; if (!d) return;
+  if (!cwCan('prices')) { cwToast('You are not allowed to change prices.', true); return; }
+  var bad = '';
+  d.services.forEach(function (s) {
+    s.name = cwStr(s.name).trim(); if (!s.name) bad = bad || 'Every service needs a name.';
+    if (s.kind === 'car') { s.category = cwStr(s.category).trim() || 'Other services'; var per = s.prices && Object.keys(s.prices).length; if ((s.price === '' || s.price == null) && !per) bad = bad || s.name + ' needs a price.'; }
+    else if (s.price === '' || s.price == null) bad = bad || s.name + ' needs a price.';
+  });
+  var names = {}; d.services.forEach(function (s) { var k = s.kind + '|' + s.name.toLowerCase(); if (names[k]) bad = bad || 'Two services are called "' + s.name + '".'; names[k] = 1; });
+  var cats = d.cats.map(function (c) { return { k: c.k, l: cwStr(c.l).trim() || c.k }; });
+  if (bad) { cwToast(bad, true); return; }
+  var before = cwCfg();
+  cwSaveCfg({ services: d.services, vehicleCats: cats, catalog: before.catalog || 'custom' }, 'Price list');
+  var old = {}; before.services.forEach(function (s) { old[s.id] = s; });
+  var changed = d.services.filter(function (s) { var o = old[s.id]; return !o || cwNum(o.price) !== cwNum(s.price) || JSON.stringify(o.prices || {}) !== JSON.stringify(s.prices || {}) || o.name !== s.name; }).length;
+  var removed = before.services.filter(function (s) { return !cwFind(d.services, s.id); }).length;
+  cwLog('prices.save', 'Price list', changed + ' changed/added, ' + removed + ' removed');
+  CW_UI.pl = null; cwToast('Price list saved.'); cwRefresh();
+}
+function cwPlClick(a, t, id) {
+  var d = cwPlDraft();
+  switch (a) {
+    case 'plsave': cwPlSave(); return true;
+    case 'pldiscard': if (d.dirty && !confirm('Throw away the changes you have not saved?')) return true; CW_UI.pl = null; cwRender(); return true;
+    case 'plper': d.open[id] = !d.open[id]; cwRender(); return true;
+    case 'pldel': { var s = cwFind(d.services, id); if (!s || !confirm('Delete "' + s.name + '" from the price list?\n\nPast jobs keep it. It is removed when you save.')) return true; d.services = d.services.filter(function (x) { return x.id !== id; }); d.dirty = true; cwRender(); return true; }
+    case 'pladd': {
+      var k = t.getAttribute('data-t'), ns = k === 'clean' ? { id: cwRid('svc-'), kind: 'clean', name: 'New cleaning service', category: 'Carpet/Rug cleaning', cleanType: 'carpet', price: 0, unit: 'per piece', minutes: 60, loyalty: true, active: true } : { id: cwRid('svc-'), kind: 'car', name: 'New service', category: 'Other services', price: 0, minutes: 20, loyalty: true, active: true };
+      d.services.push(ns); d.dirty = true; cwRender();
+      setTimeout(function () { var i = document.querySelector('tr[data-pl="' + ns.id + '"] input[data-k="name"]'); if (i) { i.focus(); i.select(); } }, 30); return true;
+    }
+    case 'plcatadd': { var nm = prompt('Name of the new vehicle type (e.g. Motorbike, Bus):'); nm = cwStr(nm).trim(); if (!nm) return true; var key = nm.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'type'; var base = key, n = 2; while (d.cats.some(function (c) { return c.k === key; })) key = base + '_' + (n++); d.cats.push({ k: key, l: nm }); d.dirty = true; cwRender(); return true; }
+    case 'plcatdel': { var i = +t.getAttribute('data-i'), c = d.cats[i]; if (!c) return true; var used = cwVehicles.filter(function (v) { return v && !v._deleted && v.category === c.k; }).length; if (!confirm('Remove the vehicle type "' + c.l + '"?' + (used ? '\n\n' + used + ' saved vehicle(s) have this type: they keep it until edited.' : ''))) return true; d.cats.splice(i, 1); d.services.forEach(function (s) { if (s.prices) { delete s.prices[c.k]; if (!Object.keys(s.prices).length) delete s.prices; } }); d.dirty = true; cwRender(); return true; }
+    case 'plstd': {
+      if (!confirm('Load the standard price list (the Splash & Dash intake form: exterior, interior, other services and carpet/rug cleaning)?\n\nServices with the same name get the standard price; your other services stay. Nothing is saved until you press Save price list.')) return true;
+      cwDefaultServices().forEach(function (st) {
+        var same = d.services.filter(function (s) { return s.kind === st.kind && cwStr(s.name).trim().toLowerCase() === st.name.toLowerCase(); })[0];
+        if (same) { same.price = st.price; delete same.prices; same.category = st.category; same.active = true; } else d.services.push(JSON.parse(JSON.stringify(st)));
+      });
+      CW_VEH_CATS.forEach(function (c) { if (!d.cats.some(function (x) { return x.k === c.k; })) d.cats.push({ k: c.k, l: c.l }); });
+      d.dirty = true; cwRender(); cwToast('Standard prices loaded — check them, then Save price list.'); return true;
+    }
+    case 'plprint': cwPrintPriceList(); return true;
+    case 'intakeblank': cwIntakeForm(null); return true;
+    default: return false;
+  }
+}
+
+/* ================================ PRINTABLES (zip 362) ================================ */
+var CW_PRINT_CSS = 'body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:0;padding:0;font-size:11.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact}*{box-sizing:border-box}.hd{display:flex;justify-content:space-between;align-items:center;background:#0f172a;color:#fff;padding:10px 16px;border-radius:8px}.hd b{font-size:19px;letter-spacing:.03em;color:#facc15}.hd img{max-height:50px;max-width:140px;background:#fff;border-radius:6px;padding:3px}.hd .ct{text-align:right;font-size:11px;line-height:1.55}h1{text-align:center;font-size:22px;margin:8px 0 4px;letter-spacing:.04em}h2{font-size:13px;margin:9px 0 5px;padding-bottom:2px;border-bottom:3px solid #facc15;display:inline-block;padding-right:36px;text-transform:uppercase}.ln{display:flex;gap:12px;margin:4px 0}.ln>div{flex:1;background:#eef2f7;border-radius:4px;padding:4px 8px;min-height:22px}.ln>div i{font-style:normal;color:#475569;margin-right:6px}.ck{display:inline-flex;align-items:center;gap:5px;margin-right:14px}.bx{display:inline-block;width:12px;height:12px;border:1.5px solid #0f172a;border-radius:2px;text-align:center;line-height:10px;font-size:10px;font-weight:bold}.cols{display:grid;grid-template-columns:1fr 1fr;gap:4px 26px}.svc{display:flex;align-items:center;gap:7px;padding:2px 0}.svc .nm{flex:1;border-bottom:1px dotted #94a3b8}.svc .pr{white-space:nowrap;font-weight:bold}.st{text-align:center;font-weight:bold;margin:5px 0 3px;font-size:11px}.sig{display:grid;grid-template-columns:1.2fr 1.2fr .8fr;gap:14px;margin-top:6px}.sig div{border-bottom:1px solid #0f172a;padding:12px 0 2px;color:#475569}.ft{margin-top:10px;color:#475569;font-size:10.5px;text-align:center}table{width:100%;border-collapse:collapse}th{background:#0f172a;color:#fff;text-align:left;padding:6px 7px}td{padding:6px 7px;border-bottom:1px solid #e2e8f0}.n{text-align:right}@page{size:A4;margin:9mm}';
+function cwPrintHead(b) {
+  return '<div class="hd"><div style="display:flex;align-items:center;gap:12px">' + (b.logo ? '<img src="' + cwEsc(b.logo) + '" alt="">' : '') + '<div><b>' + cwEsc(b.name || 'Car Wash') + '</b>' + (b.address ? '<div style="font-size:11px;opacity:.85">' + cwEsc(b.address) + '</div>' : '') + '</div></div>'
+    + '<div class="ct">' + (b.phone ? cwEsc(b.phone) + '<br>' : '') + (b.email ? cwEsc(b.email) + '<br>' : '') + cwEsc(b.location || '') + '</div></div>';
+}
+function cwBox(on) { return '<span class="bx">' + (on ? '✓' : '') + '</span>'; }
+/* the client intake form / job card. job = null prints a blank form to fill in by hand */
+function cwIntakeForm(jobId) {
+  var job = jobId ? cwGetJob(jobId) : null, cfg = cwCfg(), b = cfg.business, c = job ? cwJobCustomer(job) || {} : {}, v = job ? cwJobVehicle(job) : null;
+  var picked = {}; if (job) cwArr(job.items).forEach(function (it) { if (it.serviceId) picked[it.serviceId] = true; });
+  var t = job ? cwTotals(job) : null, pays = job ? cwJobPayments(job).filter(function (p) { return !p.reversedAt && p.type !== 'refund'; }) : [];
+  var methods = {}; pays.forEach(function (p) { methods[p.method] = true; });
+  var when = job ? new Date(cwNum(job.receivedAt) + 3 * 3600000) : null;
+  var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  function fld(lbl, val) { return '<div><i>' + lbl + '</i>' + cwEsc(val || '') + '</div>'; }
+  function svcRow(s) { var pr = job && v ? cwPriceFor(s, v.category) : (s.price !== '' && s.price != null ? cwNum(s.price) : cwPriceFor(s, cwDefaultCat(cfg))); return '<div class="svc">' + cwBox(picked[s.id]) + '<span class="nm">' + cwEsc(s.name) + '</span><span class="pr">ksh ' + cwAmt(pr) + '/=</span></div>'; }
+  /* two columns balanced by number of lines (the form: Exterior on the left, Interior + Other services on the right) */
+  var groups = cwSvcGroups(cwServicesOf(cfg, 'car')), tot = 0, run = 0, half = 0; groups.forEach(function (g) { tot += g.list.length + 1; });
+  while (half < groups.length - 1 && run + groups[half].list.length + 1 <= Math.ceil(tot / 2) + 1) { run += groups[half].list.length + 1; half++; }
+  if (!half && groups.length > 1) half = 1;
+  var col = function (gs) { return gs.map(function (g) { return '<div class="st">' + cwEsc(g.name.toUpperCase()) + '</div>' + g.list.map(svcRow).join(''); }).join(''); };
+  var rugs = cwServicesOf(cfg, 'clean');
+  var extra = job ? cwArr(job.items).filter(function (it) { return !it.serviceId; }) : [];
+  var html = cwPrintHead(b) + '<h1>CLIENT INTAKE FORM</h1>'
+    + '<div class="ln">' + fld('DATE:', when ? cwPad(when.getUTCDate(), 2) + ' / ' + cwPad(when.getUTCMonth() + 1, 2) + ' / ' + when.getUTCFullYear() : '      /      /') + fld('DAY:', when ? days[when.getUTCDay()] : '') + fld('JOB No:', job ? job.no : '') + '</div>'
+    + '<h2>Client information</h2><div class="ln">' + fld('Name:', c.name) + '</div><div class="ln">' + fld('Phone Number:', cwFmtPhone(c.phone)) + fld('Email:', c.email) + '</div>'
+    + '<div class="ln"><div><i>Gender:</i>' + CW_GENDERS.filter(function (g) { return g.k; }).map(function (g) { return '<span class="ck">' + cwBox(c.gender === g.k) + g.l + '</span>'; }).join('') + '</div><div><i>Preferred Contact Method:</i>' + cwEsc(cwOptLabel(CW_CONTACT_PREFS, c.contactPref || '') === '—' ? '' : cwOptLabel(CW_CONTACT_PREFS, c.contactPref || '')) + '</div></div>'
+    + '<h2>Vehicle information</h2><div class="ln">' + fld('Make:', v && v.make) + fld('Model:', v && v.model) + '</div><div class="ln">' + fld('Year:', v && v.year) + fld('Color:', v && v.colour) + '</div><div class="ln">' + fld('License Plate:', v ? cwFmtPlate(v.plate) : '') + '</div>'
+    + '<div class="ln" style="background:none"><div style="background:none;padding-left:0"><b style="margin-right:12px">Vehicle Type:</b>' + cwCatOptions(cfg, v && v.category).map(function (x) { return '<span class="ck">' + cwBox(v && v.category === x.k) + cwEsc(x.l) + '</span>'; }).join('') + '</div></div>'
+    + '<h2>Service selection</h2><div class="cols"><div>' + col(groups.slice(0, half)) + '</div><div>' + col(groups.slice(half)) + '</div></div>'
+    + (extra.length ? '<div class="st" style="text-align:left">ADDITIONAL</div>' + extra.map(function (it) { return '<div class="svc">' + cwBox(true) + '<span class="nm">' + cwEsc(it.name) + '</span><span class="pr">ksh ' + cwAmt(it.price) + '/=</span></div>'; }).join('') : '')
+    + (rugs.length ? '<h2>Carpet / rug cleaning</h2><div class="ln" style="background:none"><div style="background:none;padding-left:0"><b style="margin-right:12px">Carpet/Rug Type:</b>' + rugs.map(function (s) { return '<span class="ck">' + cwBox(picked[s.id] || (job && job.serviceId === s.id)) + cwEsc(s.name.replace(/^Carpet\/Rug\s*/i, '')) + ' (Ksh ' + cwAmt(s.price) + ')</span>'; }).join('') + '</div></div>' : '')
+    + (job && job.instructions ? '<div class="ln">' + fld('Instructions:', job.instructions) + '</div>' : '') + (job && job.condition ? '<div class="ln">' + fld('Condition on arrival:', job.condition) + '</div>' : '')
+    + '<h2>Payment details</h2><div class="ln">' + fld('Total Amount KSH:', t ? cwAmt(t.total) + (t.free ? ' (FREE loyalty wash)' : '') + (t.balance > 0.009 ? '  ·  balance ' + cwAmt(t.balance) : '') : '') + '</div>'
+    + '<div class="ln" style="background:none"><div style="background:none;padding-left:0"><b style="margin-right:12px">Payment Method:</b>' + [['cash', 'Cash'], ['mpesa', 'MPESA'], ['card', 'Card']].map(function (m) { return '<span class="ck">' + cwBox(methods[m[0]]) + m[1] + '</span>'; }).join('') + '</div></div>'
+    + '<div class="sig"><div>Staff Name: ' + cwEsc(job ? cwStaffOnJob(job).map(function (a) { return a.name; }).join(', ') : '') + '</div><div>Signature:</div><div>Date:</div></div>'
+    + '<div class="sig"><div>Manager Name:</div><div>Signature:</div><div>Date:</div></div>'
+    + '<div class="sig"><div>Customer Name: ' + cwEsc(c.name || '') + '</div><div>Customer Signature:</div><div>Time out:</div></div>'
+    + '<div class="ft">Vehicles are left at the owner\'s risk. Please remove valuables before the wash.</div>';
+  cwPrintDoc(job ? 'Intake form ' + job.no : 'Client intake form', html, CW_PRINT_CSS);
+  if (job) cwLog('jobcard.print', job.no, '', job.id);
+}
+function cwPrintPriceList() {
+  var cfg = cwCfg(), b = cfg.business;
+  var html = cwPrintHead(b) + '<h1>PRICE LIST</h1><div style="text-align:center;color:#475569;margin-bottom:6px">Prices in Kenya Shillings · ' + cwFmtDate(cwNow()) + '</div>'
+    + cwSvcGroups(cwServicesOf(cfg, 'car')).map(function (g) {
+      var anyPer = g.list.some(function (s) { return s.prices && Object.keys(s.prices).length; });
+      return '<h2>' + cwEsc(g.name) + '</h2><table><thead><tr><th>Service</th>' + (anyPer ? cfg.vehicleCats.map(function (c) { return '<th class="n">' + cwEsc(c.l) + '</th>'; }).join('') : '<th class="n">Price (KES)</th>') + '</tr></thead><tbody>'
+        + g.list.map(function (s) { return '<tr><td>' + cwEsc(s.name) + '</td>' + (anyPer ? cfg.vehicleCats.map(function (c) { return '<td class="n">' + cwAmt(cwPriceFor(s, c.k)) + '</td>'; }).join('') : '<td class="n"><b>' + cwAmt(cwPriceFor(s, cwDefaultCat(cfg))) + '</b></td>') + '</tr>'; }).join('') + '</tbody></table>';
+    }).join('')
+    + (cwServicesOf(cfg, 'clean').length ? '<h2>Carpet / rug &amp; cleaning</h2><table><thead><tr><th>Service</th><th>Unit</th><th class="n">Price (KES)</th></tr></thead><tbody>' + cwServicesOf(cfg, 'clean').map(function (s) { return '<tr><td>' + cwEsc(s.name) + '</td><td>' + cwEsc(s.unit || '') + '</td><td class="n"><b>' + cwAmt(s.price) + '</b></td></tr>'; }).join('') + '</tbody></table>' : '')
+    + '<div class="ft">' + cwEsc((cfg.payments || {}).invoiceNotes || '') + '</div>';
+  cwPrintDoc('Price list', html, CW_PRINT_CSS);
+}
+/* 58 / 80 mm till receipt for a job (what was done, paid, balance, loyalty) */
+function cwReceipt(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var cfg = cwCfg(), b = cfg.business, c = cwJobCustomer(job) || {}, v = cwJobVehicle(job), t = cwTotals(job), pays = cwJobPayments(job).filter(function (p) { return !p.reversedAt; });
+  var acc = null; try { acc = job.kind === 'car' && v ? cwLoyaltyAccount(cwLoyalty, cwLoyaltyKey(job, c.phone, v.plate, cfg), cfg, cwJobs) : null; } catch (e) { acc = null; }
+  var css = 'body{font-family:"Courier New",monospace;width:72mm;margin:0 auto;padding:4mm 2mm;font-size:12px;color:#000}.c{text-align:center}.r{display:flex;justify-content:space-between;gap:6px}.hr{border-top:1px dashed #000;margin:6px 0}b.big{font-size:15px}@page{size:80mm auto;margin:0}@media print{body{width:auto}}';
+  var html = '<div class="c">' + (b.logo ? '<img src="' + cwEsc(b.logo) + '" alt="" style="max-width:40mm;max-height:18mm"><br>' : '') + '<b class="big">' + cwEsc(b.name || 'Car Wash') + '</b><br>' + cwEsc([b.location, b.phone].filter(Boolean).join(' · ')) + '</div><div class="hr"></div>'
+    + '<div class="r"><span>Job</span><b>' + cwEsc(job.no) + '</b></div><div class="r"><span>Date</span><span>' + cwFmtDT(job.receivedAt) + '</span></div><div class="r"><span>Customer</span><span>' + cwEsc(c.name || '') + '</span></div>'
+    + (v ? '<div class="r"><span>Vehicle</span><b>' + cwEsc(cwFmtPlate(v.plate)) + '</b></div>' : '') + '<div class="hr"></div>'
+    + cwArr(job.items).map(function (it) { return '<div class="r"><span>' + cwEsc(it.name) + ((it.qty || 1) > 1 ? ' x' + it.qty : '') + '</span><span>' + cwAmt(it.price * (it.qty || 1)) + '</span></div>'; }).join('')
+    + (t.delivery ? '<div class="r"><span>Delivery</span><span>' + cwAmt(t.delivery) + '</span></div>' : '') + (t.discount ? '<div class="r"><span>' + (job.free ? 'Loyalty reward' : 'Discount') + '</span><span>-' + cwAmt(t.discount) + '</span></div>' : '')
+    + '<div class="hr"></div><div class="r"><b>TOTAL KES</b><b>' + cwAmt(t.total) + '</b></div>'
+    + pays.map(function (p) { return '<div class="r"><span>' + cwEsc(cwMethodLabel(p.method)) + (p.type === 'refund' ? ' refund' : '') + (p.ref ? ' ' + cwEsc(p.ref) : '') + '</span><span>' + (p.type === 'refund' ? '-' : '') + cwAmt(p.amount) + '</span></div>'; }).join('')
+    + '<div class="r"><b>BALANCE</b><b>' + cwAmt(Math.max(0, t.balance)) + '</b></div>'
+    + (acc && cfg.loyalty.enabled !== false ? '<div class="hr"></div><div class="c">' + (acc.available > 0 ? '🎁 Your next wash is FREE!' : 'Loyalty: ' + acc.current_cycle_count + ' of ' + acc.n + ' paid washes') + '</div>' : '')
+    + '<div class="hr"></div><div class="c">' + cwEsc((cfg.payments || {}).invoiceNotes || 'Thank you!') + '</div>';
+  cwPrintDoc('Receipt ' + job.no, html, css);
+  cwLog('receipt.print', job.no, '', job.id);
+}
+
+/* ================================ SETTINGS ================================ */
+CW_UI.setTab = 'business';
+CW_UI.pages.settings = function (me) {
+  var cfg = cwCfg(), T = CW_UI.setTab;
+  var tabs = [['business', '🏢 Business'], ['services', '🏷️ Price list'], ['loyalty', '🎁 Loyalty'], ['sms', '✉️ SMS'], ['payments', '💳 Payments'], ['staff', '👷 Staff & permissions'], ['general', '⚙️ General'], ['data', '🗂 Data & system']];
+  var h = '<div class="cw-chips" style="margin-bottom:14px">' + tabs.map(function (t) { return '<button class="cw-chip ' + (T === t[0] ? 'on' : '') + '" data-cw="settab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div><div class="cw-card">';
+  if (T === 'business') {
+    var b = cfg.business;
+    h += '<h3>Business profile <small>shown on invoices, SMS and the app header</small></h3><div class="cw-form">' + cwFld('Business name', 'cw-s-bname', b.name, true) + cwFld('Phone', 'cw-s-bphone', b.phone, true) + cwFld('Email', 'cw-s-bemail', b.email, true) + cwFld('Address', 'cw-s-baddr', b.address, true) + cwFld('Business location', 'cw-s-bloc', b.location, true)
+      + '<div class="cw-f"><label>Logo</label><div class="cw-row"><div class="cw-logo" style="width:54px;height:54px">' + (b.logo ? '<img src="' + cwEsc(b.logo) + '" alt="">' : 'CW') + '</div><label class="cw-btn sm ghost">Upload<input type="file" accept="image/*" data-cw-file="logo" style="display:none"></label>' + (b.logo ? '<button class="cw-btn sm sec" data-cw="logodel">Remove</button>' : '') + '</div></div></div>'
+      + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn" data-cw="savebiz">💾 Save business profile</button></div>';
+  } else if (T === 'services') {
+    h += '<h3>Services &amp; prices</h3><p>Services, prices and vehicle types are now edited in the <b>Price List</b> tab (left menu).</p><button class="cw-btn" data-cw="goprices">🏷️ Open Price List</button>';
+  } else if (T === 'loyalty') {
+    var l = cfg.loyalty;
+    h += '<h3>Digital loyalty — 9 + 1 free</h3><div class="cw-form"><label class="cw-row full" style="gap:8px"><input type="checkbox" id="cw-s-len"' + (l.enabled !== false ? ' checked' : '') + '> Loyalty programme on</label>'
+      + '<div class="cw-f"><label>Car wash: paid washes before a free one</label><input id="cw-s-carn" type="number" min="1" max="50" value="' + cwLoyaltyN(cfg, 'car') + '"></div>'
+      + '<label class="cw-row" style="gap:8px"><input type="checkbox" id="cw-s-clen"' + (l.cleanEnabled !== false ? ' checked' : '') + '> Loyalty for carpets &amp; cleaning</label>'
+      + '<div class="cw-f"><label>Cleaning: paid services before a free one</label><input id="cw-s-cln" type="number" min="1" max="50" value="' + cwLoyaltyN(cfg, 'clean') + '"></div>'
+      + '<div class="cw-f"><label>Cleaning categories</label><select id="cw-s-clmode"><option value="shared"' + (l.cleanMode !== 'separate' ? ' selected' : '') + '>One programme for all cleaning</option><option value="separate"' + (l.cleanMode === 'separate' ? ' selected' : '') + '>Separate programme per category (carpet, sofa…)</option></select></div>'
+      + '<label class="cw-row" style="gap:8px"><input type="checkbox" id="cw-s-lrem"' + (l.remind !== false ? ' checked' : '') + '> Send a reminder SMS when one more visit is needed</label></div>'
+      + '<p class="cw-small cw-mut">Which services count: tick "Loyalty" per service under Services &amp; prices. A free service never earns a point; cancelled, unpaid and refunded jobs never keep one.</p>'
+      + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn" data-cw="saveloy">💾 Save loyalty rules</button></div>';
+  } else if (T === 'sms') {
+    var sm = cfg.sms;
+    h += '<h3>SMS notifications <small>sent through your SMS gateway (sender ID is set there)</small></h3><label class="cw-row" style="gap:8px;margin-bottom:12px"><input type="checkbox" id="cw-s-smson"' + (sm.enabled !== false ? ' checked' : '') + '> Send automatic SMS</label>'
+      + CW_SMS_EVENTS.map(function (ev) { return '<div class="cw-card" style="margin-bottom:10px"><label class="cw-row" style="gap:8px;font-weight:700"><input type="checkbox" data-smsev="' + ev.k + '"' + (sm.events[ev.k] !== false ? ' checked' : '') + '> ' + cwEsc(ev.l) + '</label><textarea data-smstpl="' + ev.k + '" style="margin-top:8px">' + cwEsc(sm.templates[ev.k] || '') + '</textarea></div>'; }).join('')
+      + '<p class="cw-small cw-mut">Placeholders: {name} {plate} {services} {amount} {balance} {staff} {eta} {business} {visit_line} {pay_line} {item} {location} {cleaning} {delivery} {total} {expected} {count} {unit} {unit_plural} {job}</p>'
+      + '<div class="cw-row" style="margin-top:14px"><button class="cw-btn sec" data-cw="sys" data-sec="sms">📡 SMS gateway &amp; sender ID</button><button class="cw-btn sec" data-cw="smsdefault">Restore default texts</button><span class="cw-sp"></span><button class="cw-btn" data-cw="savesms">💾 Save SMS settings</button></div>';
+  } else if (T === 'payments') {
+    var p = cfg.payments;
+    h += '<h3>Payments &amp; invoices</h3><div class="cw-f"><label>Payment methods accepted</label><div class="cw-row">' + CW_PAY_METHODS.map(function (m) { return '<label class="cw-row" style="gap:6px"><input type="checkbox" data-paym="' + m.k + '"' + (cwArr(p.methods).indexOf(m.k) !== -1 ? ' checked' : '') + '> ' + m.l + '</label>'; }).join('') + '</div></div>'
+      + '<div class="cw-form" style="margin-top:12px"><div class="cw-f"><label>Other methods <i>(comma separated, e.g. Airtel Money, Cheque)</i></label><input id="cw-s-pcustom" value="' + cwEsc(cwArr(p.custom).join(', ')) + '"></div>'
+      + cwFld('M-Pesa Till number', 'cw-s-till', p.till, true) + cwFld('M-Pesa Paybill', 'cw-s-paybill', p.paybill, true) + cwFld('Paybill account', 'cw-s-acct', p.account, true) + '<div class="cw-f full"><label>Invoice footer note</label><input id="cw-s-invnote" value="' + cwEsc(p.invoiceNotes || '') + '"></div></div>'
+      + '<p class="cw-small cw-mut">M-Pesa prompts (STK push) and till confirmations use the payment gateway you connect under "M-Pesa gateway".</p>'
+      + '<div class="cw-row" style="margin-top:14px"><button class="cw-btn sec" data-cw="sys" data-sec="gateway">📲 M-Pesa gateway</button><span class="cw-sp"></span><button class="cw-btn" data-cw="savepay">💾 Save payment settings</button></div>';
+  } else if (T === 'staff') {
+    h += '<h3>Roles &amp; permissions</h3>' + cwTable(['Permission', 'Owner', 'Manager', 'Cashier', 'Attendant', 'Cleaning team'], [['Dashboard', 'dash'], ['Money figures', 'dash.money'], ['Check in / create jobs', 'checkin'], ['See all jobs', 'jobs.all'], ['See own assigned jobs', 'jobs.mine'], ['Update job status', 'status'], ['Assign staff', 'assign'], ['Customers & vehicles', 'customers'], ['Take payments', 'payments'], ['Refunds & reversals', 'refund'], ['Operational reports', 'reports.ops'], ['Financial reports', 'reports.fin'], ['SMS log', 'sms.view'], ['Resend SMS', 'sms.resend'], ['Photos', 'photos'], ['Settings & staff accounts', 'settings']].map(function (r) { return [r[0]].concat(['owner', 'manager', 'cashier', 'attendant', 'cleaner'].map(function (k) { return cwCan(r[1], { role: k }) ? '✅' : '—'; })); }))
+      + '<div class="cw-row" style="margin-top:12px"><span class="cw-sp"></span><button class="cw-btn" data-cw="go" data-r="staff">👷 Manage staff accounts</button></div>';
+  } else if (T === 'general') {
+    var g = cfg.general, nb = cfg.numbering;
+    h += '<h3>General</h3><div class="cw-form"><div class="cw-f"><label>Currency</label><input value="KES (Kenya Shilling)" readonly></div><div class="cw-f"><label>Time zone</label><input value="Africa/Nairobi (EAT, UTC+3)" readonly></div>'
+      + '<div class="cw-f"><label>Date format</label><select id="cw-s-dfmt"><option value="dmy"' + (g.dateFormat !== 'iso' && g.dateFormat !== 'us' ? ' selected' : '') + '>31/12/2026</option><option value="iso"' + (g.dateFormat === 'iso' ? ' selected' : '') + '>2026-12-31</option><option value="us"' + (g.dateFormat === 'us' ? ' selected' : '') + '>12/31/2026</option></select></div>'
+      + '<div class="cw-f"><label>Delayed after <i>(minutes past the estimated time)</i></label><input id="cw-s-grace" type="number" min="0" value="' + cwNum(g.delayGraceMin) + '"></div>'
+      + cwFld('Car job prefix', 'cw-s-ncar', nb.car, true) + cwFld('Cleaning job prefix', 'cw-s-nclean', nb.clean, true) + cwFld('Invoice prefix', 'cw-s-ninv', nb.invoice, true)
+      + '<div class="cw-f"><label>Example</label><input value="' + cwEsc(cwStr(nb.car).toUpperCase() + '-' + cwDayKey(cwNow()).replace(/-/g, '').slice(2) + '-001 · ' + cwStr(nb.invoice).toUpperCase() + '-' + cwDayKey(cwNow()).replace(/-/g, '').slice(2) + '-001') + '" readonly></div></div>'
+      + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn" data-cw="savegen">💾 Save</button></div>';
+  } else {
+    var mg = cfg.migration;
+    h += '<h3>Data &amp; system</h3>' + (mg ? '<div class="cw-alert ok">✅ Imported from the Services app on ' + cwFmtDT(mg.at) + ': <b>' + mg.jobs + '</b> jobs, ' + mg.customers + ' customers, ' + mg.vehicles + ' vehicles, ' + mg.payments + ' payments. The original records in Services were not changed.</div>' : '<div class="cw-alert info">No car wash records from the Services app were found for this business. If this business used Services ▸ Car Wash before, its history is imported automatically the first time this app syncs.</div>')
+      + '<div class="cw-row" style="margin-top:12px"><button class="cw-btn sec" data-cw="reimport">⟲ Look for Services car wash records again</button></div>'
+      + '<div class="cw-grid cw-g3" style="margin-top:14px">' + [['Customers', cwLive(cwCustomers).length], ['Vehicles', cwLive(cwVehicles).length], ['Jobs', cwJobs.length], ['Payments', cwPayments.length], ['Loyalty entries', cwLoyalty.length], ['SMS', cwSms.length]].map(function (x) { return cwKpi(x[0], x[1]); }).join('') + '</div>'
+      + '<h3 style="margin-top:18px">System settings</h3><p class="cw-small cw-mut">Shared with the whole platform: sync, devices, printers, SMS gateway, M-Pesa gateway, backups and your owner password.</p><div class="cw-row"><button class="cw-btn sec" data-cw="sys" data-sec="">🛠 Open system settings</button></div>';
+  }
+  return h + '</div>';
+};
+function cwOpenSys(section) {
+  document.body.classList.add('cw-sys');
+  try { var b = document.querySelector('.tab-link[data-tab="settings-tab"]'); if (b) b.click(); else if (typeof performTabSwitch === 'function') performTabSwitch(null, 'settings-tab'); } catch (e) { /* the settings tab opens on the next tap */ }
+  var map = { sms: 'settings-section-broadcast', gateway: 'settings-section-payment' };
+  setTimeout(function () { try { if (section && map[section] && typeof openSettingsSection === 'function') openSettingsSection(map[section]); } catch (e) { /* the section list is on screen */ } }, 120);
+  cwToast('System settings — tap "🚗 Back to Car Wash" when done.');
+}
+
+/* ================================ job action dialogs ================================ */
+function cwOpenAssign(jobId) {
+  var job = cwGetJob(jobId), st = cwActiveStaff(), cfg = cwCfg(); if (!job) return;
+  var on = {}; cwStaffOnJob(job).forEach(function (a) { on[a.staffId] = true; });
+  var h = cwPH('👷 Assign — ' + cwEsc(job.no)) + '<div class="cw-pb"><div class="cw-card">' + (cwArr(cfg.teams).length ? '<div class="cw-f"><label>Team</label><select id="cw-as-team"><option value="">—</option>' + cfg.teams.filter(function (t) { return t.active !== false; }).map(function (t) { return '<option value="' + cwEsc(t.id) + '"' + (job.teamId === t.id ? ' selected' : '') + '>' + cwEsc(t.name) + '</option>'; }).join('') + '</select></div>' : '')
+    + '<div class="cw-f" style="margin-top:10px"><label>Staff on this job</label>' + (st.length ? st.map(function (m) { return '<label class="cw-row" style="padding:6px 0;gap:8px"><input type="checkbox" class="cw-as-m" value="' + cwEsc(m.id) + '"' + (on[m.id] ? ' checked' : '') + '> <b>' + cwEsc(m.name) + '</b> <span class="cw-small cw-mut">' + cwEsc((CW_ROLES.filter(function (r) { return r.k === cwMemberRole(m); })[0] || { l: '' }).l) + '</span></label>'; }).join('') : '<div class="cw-mut">No active staff.</div>') + '</div>'
+    + '<p class="cw-small cw-mut">The history keeps every assignment, including people taken off the job.</p><div class="cw-row" style="margin-top:12px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn" data-cw="assignsave" data-id="' + cwEsc(job.id) + '">💾 Save</button></div></div></div>';
+  cwOpenModal(h, true);
+  var ts = cwEl('cw-as-team'); if (ts) ts.addEventListener('change', function () { var t = cwFind(cfg.teams, ts.value); if (t) Array.prototype.forEach.call(document.querySelectorAll('.cw-as-m'), function (cb) { if (cwArr(t.memberIds).indexOf(cb.value) !== -1) cb.checked = true; }); });
+}
+function cwOpenCollect(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var t = cwTotals(job), me = cwMe(), car = job.kind === 'car', del = cwFlowOf(job) === 'pickup';
+  var h = cwPH((car ? '🔑 Release vehicle — ' : '📦 Confirm delivery — ') + cwEsc(job.no)) + '<div class="cw-pb"><div class="cw-card">'
+    + (t.balance > 0.009 && !job.free ? '<div class="cw-alert warn">Outstanding balance: <b>' + cwMoney(t.balance) + '</b>. ' + (cwCan('payments', me) ? '<a href="#" data-cw="pay" data-id="' + cwEsc(job.id) + '">Record payment first</a>, or release with the balance recorded as owed.' : 'It will be recorded as owed.') + '</div>' : '<div class="cw-alert ok">' + (job.free ? '🎁 Free loyalty service.' : '✅ Fully paid.') + '</div>')
+    + '<div class="cw-form" style="margin-top:12px">' + cwFld(car ? 'Released by' : 'Delivered by', 'cw-co-by', me.name, true) + (del ? cwFld('Received by (customer side)', 'cw-co-recv', '', true) : '')
+    + '<label class="cw-row full" style="gap:8px"><input type="checkbox" id="cw-co-ok"> Customer confirmed ' + (car ? 'the vehicle is in good condition' : 'the items were received in good condition') + '</label><div class="cw-f full"><label>Note</label><input id="cw-co-note"></div></div>'
+    + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn ok" data-cw="collectsave" data-id="' + cwEsc(job.id) + '">✅ ' + (car ? 'Mark collected' : 'Mark delivered') + '</button></div></div></div>';
+  cwOpenModal(h, true);
+}
+function cwOpenCancel(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var t = cwTotals(job);
+  cwOpenModal(cwPH('✖ Cancel ' + cwEsc(job.no)) + '<div class="cw-pb"><div class="cw-card"><div class="cw-alert warn">A cancelled job earns no loyalty point' + (job.free ? ' and its free reward goes back to the customer' : '') + '.' + (t.net > 0 ? ' It holds <b>' + cwMoney(t.net) + '</b> already paid — the owner can refund it from the job.' : '') + '</div><div class="cw-f" style="margin-top:12px"><label>Reason *</label><input id="cw-cn-why" placeholder="e.g. Customer left before the wash"></div><div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn bad" data-cw="cancelsave" data-id="' + cwEsc(job.id) + '">Cancel the job</button></div></div></div>', true);
+}
+function cwOpenComplaint(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  cwOpenModal(cwPH('⚠️ ' + cwEsc(job.no) + ' — complaint, rework or note') + '<div class="cw-pb"><div class="cw-card"><div class="cw-f"><label>Kind</label><select id="cw-k-kind"><option value="complaint">Customer complaint</option><option value="rework">Rework needed</option><option value="note">Note</option></select></div><div class="cw-f" style="margin-top:10px"><label>Details *</label><textarea id="cw-k-text"></textarea></div><p class="cw-small cw-mut">Everyone who was assigned to or updated this job is listed as involved. Who is responsible is decided separately by a manager — never automatically.</p><div class="cw-row" style="margin-top:12px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn" data-cw="ksave" data-id="' + cwEsc(job.id) + '">💾 Save</button></div></div></div>', true);
+}
+function cwOpenResolve(kId) {
+  var k = cwFind(cwComplaints, kId); if (!k) return;
+  cwOpenModal(cwPH('⚖️ Decide — ' + cwEsc(k.jobNo)) + '<div class="cw-pb"><div class="cw-card"><p>' + cwEsc(k.text) + '</p><div class="cw-f"><label>Responsible <i>(only people involved in the job)</i></label>' + cwArr(k.involved).map(function (id) { return '<label class="cw-row" style="gap:8px;padding:5px 0"><input type="checkbox" class="cw-k-who" value="' + cwEsc(id) + '"' + (cwArr(k.attributedTo).indexOf(id) !== -1 ? ' checked' : '') + '> ' + cwEsc(cwStaffName(id) || id) + '</label>'; }).join('') + '</div><label class="cw-row" style="gap:8px;margin-top:8px"><input type="checkbox" id="cw-k-res"' + (k.resolved ? ' checked' : '') + '> Resolved</label><div class="cw-f" style="margin-top:8px"><label>Resolution</label><input id="cw-k-resn" value="' + cwEsc(k.resolution || '') + '"></div><div class="cw-row" style="margin-top:12px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(k.jobId) + '">Back</button><button class="cw-btn" data-cw="kresave" data-id="' + cwEsc(k.id) + '">💾 Save</button></div></div></div>', true);
+}
+function cwOpenEditJob(jobId) {
+  var job = cwGetJob(jobId); if (!job) return;
+  var me = cwMe();
+  CW_UI.ejJob = job.id;
+  var rows = cwArr(job.items).map(function (it, i) { return '<div class="cw-row cw-ej-row" data-li="' + i + '"><input class="cw-ej-name" value="' + cwEsc(it.name) + '"><input class="cw-ej-price" type="number" min="0" placeholder="Price" title="Price (KES)" value="' + cwNum(it.price) + '"><input class="cw-ej-qty" type="number" min="1" placeholder="Qty" title="Quantity" value="' + (it.qty || 1) + '"></div>'; }).join('');
+  cwOpenModal(cwPH('✏️ Edit ' + cwEsc(job.no)) + '<div class="cw-pb"><div class="cw-card"><label class="cw-small" style="font-weight:700">Services: name, price (KES), quantity — clear a name to remove the line</label><div id="cw-ej-lines" style="margin-top:6px">' + rows + '</div><div class="cw-form" style="margin:8px 0">' + cwSvcPickerHtml('ej', cwServicesOf(cwCfg(), job.kind === 'clean' ? 'clean' : 'car'), (cwJobVehicle(job) || {}).category, { label: '＋ Add a service from the price list' }) + '</div><button class="cw-btn sm ghost" data-cw="ejadd">＋ Blank line</button>'
+    + '<div class="cw-form" style="margin-top:12px"><div class="cw-f"><label>Discount (KES)</label><input id="cw-ej-disc" type="number" min="0" value="' + cwNum(job.discount) + '"></div><div class="cw-f"><label>Estimated minutes</label><input id="cw-ej-eta" type="number" min="0" value="' + cwNum(job.estMinutes) + '"></div>'
+    + (job.kind === 'clean' ? '<div class="cw-f"><label>Delivery charge</label><input id="cw-ej-del" type="number" min="0" value="' + cwNum(job.cleaning && job.cleaning.delivery) + '"></div>' : '')
+    + '<div class="cw-f full"><label>Special instructions</label><textarea id="cw-ej-notes">' + cwEsc(job.instructions || '') + '</textarea></div>'
+    + (job.free && (me.owner || me.role === 'manager') ? '<label class="cw-row full" style="gap:8px"><input type="checkbox" id="cw-ej-free" checked> FREE loyalty service (untick to charge normally; the reward stays available)</label>' : '') + '</div>'
+    + '<div class="cw-row" style="margin-top:14px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="job" data-id="' + cwEsc(job.id) + '">Back</button><button class="cw-btn" data-cw="ejsave" data-id="' + cwEsc(job.id) + '">💾 Save changes</button></div></div></div>', true);
+}
+
+/* ================================ second-level events ================================ */
+function cwOnClick2(e, t, a, id, me) {
+  var r;
+  if ((a.indexOf('pl') === 0 || a === 'intakeblank') && cwPlClick(a, t, id)) return;
+  switch (a) {
+    case 'jobcard': cwIntakeForm(id); return;
+    case 'receipt': cwReceipt(id); return;
+    case 'goprices': cwCloseModal(); CW_UI.route = 'prices'; cwRenderShell(); cwRender(); return;
+    case 'custnew': cwOpenNewCustomer(); return;
+    case 'custcreate': var dupc = cwCustomerByPhone(cwVal('cw-nc-phone')); if (dupc && !confirm('This phone number is already registered to ' + dupc.name + '. Update that customer with these details?')) return;
+      r = cwUpsertCustomer({ name: cwVal('cw-nc-name'), phone: cwVal('cw-nc-phone'), altPhone: cwVal('cw-nc-alt'), email: cwVal('cw-nc-email'), gender: cwVal('cw-nc-gender'), contactPref: cwVal('cw-nc-pref'), type: cwVal('cw-nc-type'), location: cwVal('cw-nc-loc'), estate: cwVal('cw-nc-estate'), town: cwVal('cw-nc-town'), building: cwVal('cw-nc-bld'), house: cwVal('cw-nc-house'), floor: cwVal('cw-nc-floor'), notes: cwVal('cw-nc-notes') });
+      if (!r.ok) { cwToast(r.error, true); return; } if (!cwVal('cw-nc-name').trim() || !cwNormPhone(cwVal('cw-nc-phone'))) { /* allowed: name or phone */ } cwToast(r.created ? 'Customer saved.' : 'This phone number was already registered — details updated.'); cwOpenCustomer(r.customer.id); cwRefresh(); return;
+    case 'custsave': if (!cwCan('customers.edit', me)) return; r = cwUpsertCustomer({ id: id, name: cwVal('cw-cu-name'), phone: cwVal('cw-cu-phone'), altPhone: cwVal('cw-cu-alt'), email: cwVal('cw-cu-email'), gender: cwVal('cw-cu-gender'), contactPref: cwVal('cw-cu-pref'), type: cwVal('cw-cu-type'), location: cwVal('cw-cu-loc'), estate: cwVal('cw-cu-estate'), town: cwVal('cw-cu-town'), building: cwVal('cw-cu-bld'), house: cwVal('cw-cu-house'), floor: cwVal('cw-cu-floor'), notes: cwVal('cw-cu-notes') });
+      cwToast(r.ok ? 'Saved.' : r.error, !r.ok); if (r.ok) cwRefresh(); return;
+    case 'custdel': { var dc = cwFind(cwCustomers, id); if (!dc) return; if (!confirm('Delete ' + dc.name + ' (' + cwFmtPhone(dc.phone) + ')' + (cwVehiclesOf(id).length ? ' and their ' + cwVehiclesOf(id).length + ' vehicle(s)' : '') + '?\n\nPast jobs, payments, invoices and reports keep the name. This cannot be undone.')) return;
+      r = cwDeleteCustomer(id); cwToast(r.ok ? 'Customer deleted.' : r.error, !r.ok); if (r.ok) { cwCloseModal(); cwRefresh(); } return; }
+    case 'vehdel': { var dv = cwFind(cwVehicles, id); if (!dv || !confirm('Delete vehicle ' + cwFmtPlate(dv.plate) + '? Its past jobs keep the plate.')) return; r = cwDeleteVehicle(id); cwToast(r.ok ? 'Vehicle deleted.' : r.error, !r.ok); if (r.ok) { cwOpenCustomer(dv.customerId); cwRefresh(); } return; }
+    case 'vehnew': cwOpenVehicle(id, ''); return;
+    case 'vehedit': { var v = cwFind(cwVehicles, id); if (v) cwOpenVehicle(v.customerId, v.id); return; }
+    case 'vehsave': { var cid = t.getAttribute('data-c'); r = cwUpsertVehicle({ id: id || undefined, plate: cwVal('cw-ve-plate'), category: cwVal('cw-ve-cat'), make: cwVal('cw-ve-make'), model: cwVal('cw-ve-model'), year: cwVal('cw-ve-year'), colour: cwVal('cw-ve-colour'), notes: cwVal('cw-ve-notes'), customerId: cid });
+      if (!r.ok && r.code === 'owner' && confirm(r.error + '\n\nMove it to this customer?')) r = cwUpsertVehicle({ id: id || undefined, plate: cwVal('cw-ve-plate'), category: cwVal('cw-ve-cat'), make: cwVal('cw-ve-make'), model: cwVal('cw-ve-model'), year: cwVal('cw-ve-year'), colour: cwVal('cw-ve-colour'), notes: cwVal('cw-ve-notes'), customerId: cid }, { transfer: true });
+      if (!r.ok) { cwToast(r.error, true); return; } cwToast('Vehicle saved.'); cwOpenCustomer(cid, r.vehicle.id); cwRefresh(); return; }
+    case 'ckfor': { cwCloseModal(); cwCkReset(); CW_UI.ck.custId = id; var vs = cwVehiclesOf(id); CW_UI.ck.vehId = vs.length === 1 ? vs[0].id : ''; CW_UI.route = 'checkin'; cwRenderShell(); cwRender(); return; }
+    case 'cleanfor': cwOpenCleanForm(id); return;
+    case 'paytab': CW_UI.payTab = t.getAttribute('data-t'); cwRender(); return;
+    case 'pay': cwOpenPay(id, false); return;
+    case 'refund': cwOpenPay(id, true); return;
+    case 'paysave': cwPaySave(id, false); return;
+    case 'refundsave': cwPaySave(id, true); return;
+    case 'stk': {
+      if (!CW_UI.stk) { try { CW_UI.stk = createMpesaStkFlow({ phoneInputId: 'cw-stk-phone', codeInputId: 'cw-pay-ref', statusElId: 'cw-stk-status', sendBtnId: 'cw-stk-btn', description: 'Car wash payment', sendLabel: 'Send prompt', amountFn: function () { return cwNum(cwVal('cw-pay-amt')); }, onConfirmed: function () { var m = cwEl('cw-pay-method'); if (m) m.value = 'mpesa'; cwToast('M-Pesa confirmed — press Record payment.'); } }); } catch (x) { CW_UI.stk = null; } }
+      if (CW_UI.stk && CW_UI.stk.send) CW_UI.stk.send(); else cwToast('M-Pesa prompts are not set up — type the M-Pesa code instead.', true);
+      return;
+    }
+    case 'reverse': { var why = prompt('Reason for reversing this payment:'); if (why === null) return; r = cwReversePayment(id, why); cwToast(r.ok ? 'Payment reversed.' : r.error, !r.ok); if (r.ok) cwRefresh(); return; }
+    case 'invoice': cwInvoice(id); return;
+    case 'assign': cwOpenAssign(id); return;
+    case 'assignsave': { var ids = Array.prototype.filter.call(document.querySelectorAll('.cw-as-m'), function (cb) { return cb.checked; }).map(function (cb) { return cb.value; }); r = cwAssign(id, ids, { teamId: cwEl('cw-as-team') ? cwVal('cw-as-team') : undefined }); cwToast(r.ok ? 'Assignment saved.' : r.error, !r.ok); if (r.ok) cwOpenJob(id); return; }
+    case 'collect': cwOpenCollect(id); return;
+    case 'collectsave': { var job = cwGetJob(id); if (!job) return; r = cwSetStatus(id, job.kind === 'car' ? 'collected' : 'delivered', { collection: { releasedBy: cwVal('cw-co-by'), confirmed: cwChecked('cw-co-ok'), note: cwVal('cw-co-note'), confirmedName: cwVal('cw-co-recv') } }); cwToast(r.ok ? (job.kind === 'car' ? '🔑 Vehicle released.' : '📦 Delivered.') : r.error, !r.ok); if (r.ok) { cwOpenJob(id); cwRefresh(); } return; }
+    case 'cancel': cwOpenCancel(id); return;
+    case 'cancelsave': r = cwSetStatus(id, 'cancelled', { note: cwVal('cw-cn-why') }); cwToast(r.ok ? 'Job cancelled.' : r.error, !r.ok); if (r.ok) { cwOpenJob(id); cwRefresh(); } return;
+    case 'complaint': cwOpenComplaint(id); return;
+    case 'ksave': r = cwAddComplaint({ jobId: id, kind: cwVal('cw-k-kind'), text: cwVal('cw-k-text') }); cwToast(r.ok ? 'Saved.' : r.error, !r.ok); if (r.ok) cwOpenJob(id); return;
+    case 'kresolve': cwOpenResolve(id); return;
+    case 'kresave': { var who = Array.prototype.filter.call(document.querySelectorAll('.cw-k-who'), function (cb) { return cb.checked; }).map(function (cb) { return cb.value; }); r = cwUpdateComplaint(id, { attributedTo: who, resolved: cwChecked('cw-k-res'), resolution: cwVal('cw-k-resn') }); cwToast(r.ok ? 'Saved.' : r.error, !r.ok); if (r.ok) cwOpenJob(r.complaint.jobId); return; }
+    case 'editjob': cwOpenEditJob(id); return;
+    case 'ejadd': { var box = cwEl('cw-ej-lines'); if (box) { var d = document.createElement('div'); d.className = 'cw-row cw-ej-row'; d.innerHTML = '<input class="cw-ej-name" placeholder="Service"><input class="cw-ej-price" type="number" min="0" placeholder="Price" value="0"><input class="cw-ej-qty" type="number" min="1" placeholder="Qty" value="1">'; box.appendChild(d); } return; }
+    case 'ejsave': {
+      var lines = Array.prototype.map.call(document.querySelectorAll('#cw-ej-lines > div'), function (row, i) { var j0 = cwGetJob(id), old = j0 && j0.items[i]; return { id: old ? old.id : undefined, serviceId: old ? old.serviceId : (row.getAttribute('data-sid') || ''), name: row.querySelector('.cw-ej-name').value, price: row.querySelector('.cw-ej-price').value, qty: row.querySelector('.cw-ej-qty').value }; }).filter(function (l) { return cwStr(l.name).trim(); });
+      if (!lines.length) { cwToast('Keep at least one service.', true); return; }
+      var patch = { items: lines, discount: cwVal('cw-ej-disc'), estMinutes: cwVal('cw-ej-eta'), instructions: cwVal('cw-ej-notes') };
+      var jj = cwGetJob(id); if (jj && jj.kind === 'clean' && cwEl('cw-ej-del')) patch.cleaning = { delivery: Math.max(0, cwRound(cwVal('cw-ej-del'))) };
+      if (cwEl('cw-ej-free') && !cwChecked('cw-ej-free')) patch.free = false;
+      r = cwEditJob(id, patch); cwToast(r.ok ? 'Job updated.' : r.error, !r.ok); if (r.ok) cwOpenJob(id); return;
+    }
+    case 'resend': r = cwSmsResend(id); cwToast(r.ok ? 'Sending again…' : r.error, !r.ok); return;
+    case 'smsf': CW_UI.smsF = t.getAttribute('data-t'); cwRender(); return;
+    case 'smsflush': CW_ST.smsCfg = null; cwSmsFlush().then(function (n) { cwToast(n ? n + ' message(s) sent.' : 'Nothing could be sent — check the SMS gateway.', !n); }); return;
+    case 'loytab': CW_UI.loyTab = t.getAttribute('data-t'); cwRender(); return;
+    case 'staffnew': cwOpenStaff(''); return;
+    case 'sttabsrole': { var rl = cwVal('cw-st-role'), on = cwRoleTabs(rl); Array.prototype.forEach.call(document.querySelectorAll('.cw-st-tab'), function (x) { x.checked = on.indexOf(x.value) !== -1; }); var md = cwEl('cw-st-tabmode'); if (md) md.textContent = 'same as the role'; return; }
+    case 'staffedit': cwOpenStaff(id); return;
+    case 'staffsave': {
+      if (!id) { cwAddStaff({ name: cwVal('cw-st-name'), pin: cwVal('cw-st-pin'), role: cwVal('cw-st-role'), phone: cwVal('cw-st-phone'), duties: cwVal('cw-st-duties'), tabs: cwStaffTabsPicked() }).then(function (res) { cwToast(res.ok ? '👷 ' + res.member.name + ' added (' + res.member.cwNo + '). They sign in with their PIN.' : res.error, !res.ok); if (res.ok) { cwCloseModal(); cwRefresh(); } }); return; }
+      r = cwUpdateStaff(id, { role: cwVal('cw-st-role'), phone: cwVal('cw-st-phone'), duties: cwVal('cw-st-duties'), active: cwVal('cw-st-active') === '1', tabs: cwStaffTabsPicked() });
+      if (!r.ok) { cwToast(r.error, true); return; }
+      var pin2 = cwVal('cw-st-pin2'); if (pin2) { cwSetStaffPin(id, pin2).then(function (res) { cwToast(res.ok ? 'Saved, PIN changed.' : res.error, !res.ok); }); } else cwToast('Saved.');
+      cwCloseModal(); cwRefresh(); return;
+    }
+    case 'teamedit': cwOpenTeam(id); return;
+    case 'teamsave': { var mids = Array.prototype.filter.call(document.querySelectorAll('.cw-tm-m'), function (cb) { return cb.checked; }).map(function (cb) { return cb.value; }); r = cwSaveTeam({ id: id || undefined, name: cwVal('cw-tm-name'), memberIds: mids, active: cwEl('cw-tm-active') ? cwChecked('cw-tm-active') : true }); cwToast(r.ok ? 'Team saved.' : r.error, !r.ok); if (r.ok) { cwCloseModal(); cwRefresh(); } return; }
+    case 'repk': CW_UI.rep.kind = t.getAttribute('data-t'); cwRender(); return;
+    case 'repx': cwRepExport(t.getAttribute('data-t')); return;
+    case 'settab': CW_UI.setTab = t.getAttribute('data-t'); cwRender(); return;
+    case 'sys': if (!me.owner) return; cwOpenSys(t.getAttribute('data-sec')); return;
+    case 'savebiz': { var cb = cwCfg(); cwSaveCfg({ business: Object.assign({}, cb.business, { name: cwVal('cw-s-bname').trim(), phone: cwVal('cw-s-bphone').trim(), email: cwVal('cw-s-bemail').trim(), address: cwVal('cw-s-baddr').trim(), location: cwVal('cw-s-bloc').trim() }) }, 'Business profile'); cwToast('Business profile saved.'); cwRefresh(); return; }
+    case 'logodel': { var cl = cwCfg(); cwSaveCfg({ business: Object.assign({}, cl.business, { logo: '' }) }, 'Logo'); cwRefresh(); return; }
+    case 'saveloy': cwSaveCfg({ loyalty: Object.assign({}, cwCfg().loyalty, { enabled: cwChecked('cw-s-len'), carN: Math.max(1, Math.round(cwNum(cwVal('cw-s-carn')))), cleanEnabled: cwChecked('cw-s-clen'), cleanN: Math.max(1, Math.round(cwNum(cwVal('cw-s-cln')))), cleanMode: cwVal('cw-s-clmode'), remind: cwChecked('cw-s-lrem') }) }, 'Loyalty rules'); cwToast('Loyalty rules saved.'); cwRefresh(); return;
+    case 'savesms': { var sm = cwCfg().sms, ev = {}, tp = {}; Array.prototype.forEach.call(document.querySelectorAll('[data-smsev]'), function (cb) { ev[cb.getAttribute('data-smsev')] = cb.checked; }); Array.prototype.forEach.call(document.querySelectorAll('[data-smstpl]'), function (ta) { tp[ta.getAttribute('data-smstpl')] = ta.value.trim() || CW_DEFAULT_TEMPLATES[ta.getAttribute('data-smstpl')]; }); cwSaveCfg({ sms: Object.assign({}, sm, { enabled: cwChecked('cw-s-smson'), events: ev, templates: tp }) }, 'SMS'); cwToast('SMS settings saved.'); cwRefresh(); return; }
+    case 'smsdefault': if (!confirm('Put back the standard message texts?')) return; cwSaveCfg({ sms: Object.assign({}, cwCfg().sms, { templates: Object.assign({}, CW_DEFAULT_TEMPLATES) }) }, 'SMS texts'); cwRefresh(); return;
+    case 'savepay': { var pm = []; Array.prototype.forEach.call(document.querySelectorAll('[data-paym]'), function (cb) { if (cb.checked) pm.push(cb.getAttribute('data-paym')); }); if (!pm.length) pm = ['cash']; cwSaveCfg({ payments: Object.assign({}, cwCfg().payments, { methods: pm, custom: cwVal('cw-s-pcustom').split(',').map(function (x) { return x.trim(); }).filter(Boolean).slice(0, 8), till: cwVal('cw-s-till').trim(), paybill: cwVal('cw-s-paybill').trim(), account: cwVal('cw-s-acct').trim(), invoiceNotes: cwVal('cw-s-invnote').trim() }) }, 'Payments'); cwToast('Payment settings saved.'); cwRefresh(); return; }
+    case 'savegen': { var nb = { car: cwVal('cw-s-ncar').replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'CW', clean: cwVal('cw-s-nclean').replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'CL', invoice: cwVal('cw-s-ninv').replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'INV' }; cwSaveCfg({ general: Object.assign({}, cwCfg().general, { dateFormat: cwVal('cw-s-dfmt'), delayGraceMin: Math.max(0, Math.round(cwNum(cwVal('cw-s-grace')))) }), numbering: nb }, 'General'); cwToast('Saved.'); cwRefresh(); return; }
+    case 'reimport': { try { localStorage.removeItem('pos_cw_hist_import'); } catch (x) { /* none */ } var n0 = cwJobs.length; try { if (typeof pullState === 'function') pullState(); } catch (x2) { /* offline */ } cwMigrateHistory().then(function () { cwToast(cwJobs.length > n0 ? (cwJobs.length - n0) + ' job(s) imported.' : 'Nothing new to import.'); cwRefresh(); }); return; }
+    default: return;
+  }
+}
+function cwOnChange2(e, t) {
+  if (t.getAttribute('data-cw-file') === 'logo') {
+    var f = t.files && t.files[0]; if (!f) return;
+    if (typeof compressImageToTarget !== 'function') { cwToast('Pictures are not available here.', true); return; }
+    Promise.resolve(compressImageToTarget(f, { maxW: 320, maxH: 320, maxBytes: 60 * 1024 })).then(function (r) { cwSaveCfg({ business: Object.assign({}, cwCfg().business, { logo: r.dataUrl }) }, 'Logo'); cwToast('Logo saved.'); cwRefresh(); }).catch(function () { cwToast('Could not read that picture.', true); });
+    return;
+  }
+  if (CW_UI.route === 'prices' && cwPlRead(t)) return;
+  if (t.id === 'cw-st-role') { var md = cwEl('cw-st-tabmode'); if (md && md.textContent === 'same as the role') { var on = cwRoleTabs(t.value); Array.prototype.forEach.call(document.querySelectorAll('.cw-st-tab'), function (x) { x.checked = on.indexOf(x.value) !== -1; }); } return; }
+  if (t.classList && t.classList.contains('cw-st-tab')) { var md2 = cwEl('cw-st-tabmode'); if (md2) md2.textContent = 'own selection'; return; }
+  var R = CW_UI.rep;
+  if (t.id === 'cw-r-range') { R.range = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-from') { R.from = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-to') { R.to = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-staff') { R.staffId = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-svc') { R.service = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-kind') { R.jkind = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-method') { R.method = t.value; cwRender(); return; }
+  if (t.id === 'cw-r-status') { R.status = t.value; cwRender(); return; }
+}
+function cwOnInput2(e, t) {
+  if (CW_UI.route === 'prices' && cwPlRead(t)) return;
+  if (t.id === 'cw-cq') { CW_UI.cq = t.value; clearTimeout(CW_UI.cqT); CW_UI.cqT = setTimeout(function () { var pos = t.selectionStart; cwRender(); var n = cwEl('cw-cq'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* none */ } } }, 250); return; }
+  if (t.id === 'cw-auq') { CW_UI.auQ = t.value; clearTimeout(CW_UI.auT); CW_UI.auT = setTimeout(function () { var pos = t.selectionStart; cwRender(); var n = cwEl('cw-auq'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* none */ } } }, 250); }
+}
+</script>

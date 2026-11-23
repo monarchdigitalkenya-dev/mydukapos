@@ -1,0 +1,180 @@
+<!-- GLOBAL SEARCH (zip 301) ----------------------------------------------------------------------------------------------------------
+     One search box for everything: items, services, dishes, drinks and their variants (by name, code, barcode, category), customers, staff, suppliers,
+     patients, recent sales (by receipt number or item) and every screen (tab) of the app. Open it with the 🔎 button in the header or Ctrl+K.
+     Type, use the arrow keys, press Enter (or tap): an item/dish opens its Edit popup or goes into the sale; anything else jumps to the screen that holds it.
+     It only offers what the signed-in person may open (hidden tabs are never listed). Nothing is changed by searching. Ids / classes: gs-*. -->
+<style id="gs-css">
+#gs-btn { margin: 0 4px; padding: 2px 8px; border-radius: 14px; border: 1px solid rgba(255,255,255,.7); background: transparent; color: inherit; font-size: 15px; cursor: pointer; line-height: 1.2; }
+#gs-modal { position: fixed; inset: 0; z-index: 100003; display: none; align-items: flex-start; justify-content: center; padding: calc(8vh / var(--pos-z,1)) 12px 12px; background: rgba(0,0,0,.45); box-sizing: border-box; }
+#gs-modal.open { display: flex; }
+#gs-modal .gs-card { width: min(640px, 100%); max-height: calc(84vh / var(--pos-z,1)); display: flex; flex-direction: column; background: var(--card, #fff); color: var(--text, #2c3e50); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,.4); overflow: hidden; }
+#gs-modal .gs-top { display: flex; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid rgba(127,140,141,.3); }
+#gs-modal .gs-top span { font-size: 18px; }
+#gs-q { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font-size: 17px; padding: 6px 2px; }
+#gs-modal .gs-x { border: 0; background: rgba(127,140,141,.18); color: inherit; border-radius: 8px; padding: 6px 10px; cursor: pointer; font-weight: 700; }
+#gs-list { overflow: auto; padding: 6px 8px 10px; -webkit-overflow-scrolling: touch; }
+#gs-list h5 { margin: 10px 6px 4px; font-size: 12px; color: #7f8c8d; letter-spacing: .02em; }
+.gs-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 10px; cursor: pointer; min-height: 44px; box-sizing: border-box; }
+.gs-row:hover, .gs-row.sel { background: rgba(41,128,185,.13); }
+.gs-row .gs-main { flex: 1; min-width: 0; }
+.gs-row .gs-t { font-weight: 600; overflow-wrap: anywhere; }
+.gs-row .gs-s { font-size: 12px; color: #7f8c8d; overflow-wrap: anywhere; }
+.gs-row .gs-go { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; background: #27ae60; color: #fff; }
+.gs-row .gs-go.alt { background: #2980b9; }
+.gs-empty { padding: 22px 12px; text-align: center; color: #7f8c8d; font-size: 14px; }
+.gs-hint { padding: 8px 14px; font-size: 11.5px; color: #7f8c8d; border-top: 1px solid rgba(127,140,141,.25); }
+@media (max-width: 700px) { #gs-modal { padding-top: 0; align-items: flex-end; } #gs-modal .gs-card { max-height: calc(92vh / var(--pos-z,1)); border-radius: 16px 16px 0 0; } }
+@media print { #gs-modal, #gs-btn { display: none !important; } }
+</style>
+<script id="gs-js">
+(function () {
+  'use strict';
+  var sel = -1, rows = [];
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function norm(s) { var t = String(s == null ? '' : s).toLowerCase(); try { t = t.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); } catch (e) { /* plain */ } return t; }
+  // the app's lists are page-level `let` variables: read each one directly (no eval), and treat a missing one as empty
+  var GET = {
+    inventory: function () { return typeof inventory === 'undefined' ? [] : inventory; }, svcCatalog: function () { return typeof svcCatalog === 'undefined' ? [] : svcCatalog; }, customers: function () { return typeof customers === 'undefined' ? [] : customers; }, staff: function () { return typeof staff === 'undefined' ? [] : staff; },
+    suppliers: function () { return typeof suppliers === 'undefined' ? [] : suppliers; }, patients: function () { return typeof patients === 'undefined' ? [] : patients; }, salesLog: function () { return typeof salesLog === 'undefined' ? [] : salesLog; }
+  };
+  function arr(name) { try { var v = GET[name](); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function tabBtn(id) { return document.querySelector('.tabs .tab-link[data-tab="' + id + '"]'); }
+  function tabOk(id) { var b = tabBtn(id); return !!(b && b.style.display !== 'none' && !b.hidden && !b.disabled); }
+  function go(id) { var b = tabBtn(id); if (b) { try { b.click(); } catch (e) { /* ok */ } } }
+  function isHotel() { return /\/hotel\//.test(location.pathname); }
+
+  // ---------- what can be found ----------
+  function build() {
+    var out = [];
+    var canSell = tabOk('sales-tab'), canInv = tabOk('inventory-list-tab') || tabOk('inventory-tab');
+    var inv = arr('inventory');
+    if (canSell || canInv) {
+      inv.forEach(function (p) {
+        if (!p || p.archived || p.removed) return;
+        var svc = p.type === 'service';
+        var kind = svc ? 'svc' : 'item';
+        var base = [p.name, p.code, p.category, p.barcode, p.pieceCode, p.supplier].join(' ');
+        var list = Array.isArray(p.variants) && p.hasVariants ? p.variants : null;
+        if (list && list.length) {
+          list.forEach(function (v) {
+            out.push({ kind: kind, title: p.name + ' (' + v.name + ')', sub: '#' + (v.code || '') + ' · KES ' + (Number(v.price) || 0).toFixed(2) + ' · ' + (Number(v.qty) || 0) + ' in stock', hay: base + ' ' + [v.name, v.code, v.pieceCode].join(' '), code: p.code, vid: v.id, price: Number(v.price) || 0 });
+          });
+        } else {
+          out.push({ kind: kind, title: p.name, sub: (p.code ? '#' + p.code + ' · ' : '') + (p.category ? p.category + ' · ' : '') + 'KES ' + (Number(p.price) || 0).toFixed(2) + (svc ? '' : ' · ' + (Number(p.qty) || 0) + ' in stock'), hay: base, code: p.code, price: Number(p.price) || 0 });
+        }
+      });
+    }
+    if (canSell) arr('svcCatalog').forEach(function (s) { if (s && !s.removed && !s.archived) out.push({ kind: 'svc', title: s.name || s.title || 'Service', sub: (s.category ? s.category + ' · ' : '') + (s.price != null ? 'KES ' + (Number(s.price) || 0).toFixed(2) : ''), hay: [s.name, s.title, s.category, s.code].join(' '), tab: 'svc-catalog-tab' }); });
+    if (tabOk('customers-tab') || canSell) arr('customers').forEach(function (c) { if (c && !c.removed) out.push({ kind: 'cust', title: c.name || c.phone || 'Customer', sub: [c.phone, c.email].filter(Boolean).join(' · '), hay: [c.name, c.phone, c.email, c.customerNo].join(' '), tab: 'customers-tab' }); });
+    if (tabOk('staff-tab')) arr('staff').forEach(function (s) { if (s && !s.removed) out.push({ kind: 'staff', title: s.name, sub: 'Staff', hay: s.name, tab: 'staff-tab' }); });
+    if (tabOk('restock-tab') || tabOk('orders-tab')) arr('suppliers').forEach(function (s) { if (s && !s.removed) out.push({ kind: 'sup', title: s.name || 'Supplier', sub: [s.phone, s.email].filter(Boolean).join(' · '), hay: [s.name, s.phone, s.email].join(' '), tab: tabOk('orders-tab') ? 'orders-tab' : 'restock-tab' }); });
+    var pt = arr('patients'); if (pt.length) pt.forEach(function (p) { if (p && !p.removed) { var tid = ['reception-tab', 'patients-tab', 'diagnosis-tab'].filter(tabOk)[0]; if (tid) out.push({ kind: 'pat', title: p.name || p.fullName || 'Patient', sub: [p.patientNo || p.id, p.phone].filter(Boolean).join(' · '), hay: [p.name, p.fullName, p.patientNo, p.id, p.phone, p.nationalId].join(' '), tab: tid }); } });
+    if (tabOk('daily-sales-tab')) arr('salesLog').slice(-400).forEach(function (s) { if (!s || s.voided) return; var names = (s.items || []).map(function (i) { return i.name; }).join(', '); out.push({ kind: 'sale', title: 'Sale ' + (s.refNumber || s.id || ''), sub: (s.timestamp ? new Date(s.timestamp).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ' · ' : '') + names.slice(0, 80), hay: [s.refNumber, s.id, s.customerName, s.customerPhone, s.servedBy, names].join(' '), tab: 'daily-sales-tab' }); });
+    var seen = {};
+    document.querySelectorAll('.tabs .tab-link[data-tab]').forEach(function (b) {
+      if (b.style.display === 'none' || b.hidden || seen[b.dataset.tab]) return; seen[b.dataset.tab] = 1;
+      var label = b.textContent.replace(/\s+/g, ' ').replace(/\d+$/, '').trim();
+      out.push({ kind: 'tab', title: label, sub: 'Open this screen', hay: label, tab: b.dataset.tab });
+    });
+    return out;
+  }
+  var KIND = { item: ['Items', '📦'], svc: [null, '🍽️'], cust: ['Customers', '👤'], staff: ['Staff', '🧑‍💼'], sup: ['Suppliers', '🚚'], pat: ['Patients', '🩺'], sale: ['Recent sales', '🧾'], tab: ['Screens', '🧭'] };
+  var ORDER = ['item', 'svc', 'cust', 'pat', 'staff', 'sup', 'sale', 'tab'];
+  function groupName(k) { return k === 'svc' ? (isHotel() ? 'Dishes, drinks & services' : 'Services') : KIND[k][0]; }
+
+  function score(it, toks) {
+    var h = norm(it.hay), t = norm(it.title), s = 0;
+    for (var i = 0; i < toks.length; i++) {
+      var k = toks[i], at = h.indexOf(k); if (at < 0) return -1;
+      s += (t.indexOf(k) === 0 ? 40 : (h.indexOf(' ' + k) >= 0 ? 20 : 8)) - Math.min(at, 20) * 0.1;
+    }
+    return s - t.length * 0.02;
+  }
+  function search(q) {
+    var toks = norm(q).split(/\s+/).filter(Boolean); if (!toks.length) return [];
+    var res = [];
+    build().forEach(function (it) { var sc = score(it, toks); if (sc >= 0) { it.sc = sc; res.push(it); } });
+    var by = {};
+    res.forEach(function (r) { (by[r.kind] = by[r.kind] || []).push(r); });
+    var out = [];
+    ORDER.forEach(function (k) { if (by[k]) { by[k].sort(function (a, b) { return b.sc - a.sc; }); out.push({ head: groupName(k) }); by[k].slice(0, 8).forEach(function (r) { out.push(r); }); } });
+    return out;
+  }
+
+  // ---------- actions ----------
+  function addToSale(it) {
+    close();
+    try { if (tabOk('sales-tab')) go('sales-tab'); } catch (e) { /* ok */ }
+    setTimeout(function () { try { addToCart(it.code, undefined, undefined, it.vid); } catch (e) { try { showToast('Could not add it to the sale.', true); } catch (e2) { /* ok */ } } }, 250);
+  }
+  function editItem(it) {
+    close();
+    var tid = tabOk('inventory-list-tab') ? 'inventory-list-tab' : 'inventory-tab';
+    var locked = false; try { locked = typeof isTabLocked === 'function' && isTabLocked(tid); } catch (e) { /* ok */ }
+    go(tid);
+    if (locked) return;
+    setTimeout(function () { try { openInventoryEditModal(it.code, it.vid); } catch (e) { /* the item list is open anyway */ } }, 300);
+  }
+  function open(it) {
+    if (it.kind === 'item' || it.kind === 'svc') { if (it.code) { if (tabOk('sales-tab') && it.kind !== 'item') addToSale(it); else if (tabOk('inventory-list-tab') || tabOk('inventory-tab')) editItem(it); else addToSale(it); return; } }
+    close(); if (it.tab) go(it.tab);
+  }
+
+  // ---------- UI ----------
+  function render() {
+    var q = $('gs-q').value, list = $('gs-list');
+    if (!q.trim()) { rows = []; sel = -1; list.innerHTML = '<div class="gs-empty">Type a name, code, barcode, phone number, receipt number or screen name.<br>Items, dishes, services, customers, staff and screens are all searched.</div>'; return; }
+    var res = search(q); rows = res.filter(function (r) { return !r.head; }); sel = rows.length ? 0 : -1;
+    if (!rows.length) { list.innerHTML = '<div class="gs-empty">Nothing matches "' + esc(q) + '". Try fewer letters or the code.</div>'; return; }
+    var h = '', n = -1;
+    res.forEach(function (r) {
+      if (r.head) { h += '<h5>' + esc(r.head) + '</h5>'; return; }
+      n++;
+      var sellable = (r.kind === 'item' || r.kind === 'svc') && r.code && tabOk('sales-tab');
+      var editable = (r.kind === 'item' || r.kind === 'svc') && r.code && (tabOk('inventory-list-tab') || tabOk('inventory-tab'));
+      h += '<div class="gs-row' + (n === sel ? ' sel' : '') + '" data-i="' + n + '" role="option"><span aria-hidden="true">' + KIND[r.kind][1] + '</span><div class="gs-main"><div class="gs-t">' + esc(r.title) + '</div><div class="gs-s">' + esc(r.sub) + '</div></div>' +
+        (sellable ? '<button type="button" class="gs-go" data-act="sell" data-i="' + n + '">Add to sale</button>' : '') + (editable ? '<button type="button" class="gs-go alt" data-act="edit" data-i="' + n + '">Edit</button>' : '') + (!sellable && !editable ? '<button type="button" class="gs-go alt" data-act="open" data-i="' + n + '">Open</button>' : '') + '</div>';
+    });
+    list.innerHTML = h;
+  }
+  function mark() { document.querySelectorAll('#gs-list .gs-row').forEach(function (r, i) { r.classList.toggle('sel', i === sel); if (i === sel && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' }); }); }
+  function ensure() {
+    if ($('gs-modal')) return;
+    var m = document.createElement('div'); m.id = 'gs-modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-label', 'Search everything');
+    m.innerHTML = '<div class="gs-card"><div class="gs-top"><span aria-hidden="true">🔎</span><input id="gs-q" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search items, dishes, services, customers, screens…" aria-label="Search"><button type="button" class="gs-x" id="gs-close">Esc</button></div><div id="gs-list" role="listbox"></div><div class="gs-hint">↑ ↓ to choose · Enter to open · Ctrl+K opens this anywhere</div></div>';
+    document.body.appendChild(m);
+    m.addEventListener('mousedown', function (e) { if (e.target === m) close(); });
+    $('gs-close').onclick = close;
+    $('gs-q').addEventListener('input', render);
+    $('gs-q').addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (rows.length) { sel = (sel + 1) % rows.length; mark(); } }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (rows.length) { sel = (sel - 1 + rows.length) % rows.length; mark(); } }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); if (rows[sel]) open(rows[sel]); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    $('gs-list').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-act]') : null, row = e.target.closest ? e.target.closest('.gs-row') : null;
+      var i = b ? +b.dataset.i : (row ? +row.dataset.i : -1); var it = rows[i]; if (!it) return;
+      if (b && b.dataset.act === 'sell') addToSale(it); else if (b && b.dataset.act === 'edit') editItem(it); else open(it);
+    });
+  }
+  function openUI() { ensure(); $('gs-modal').classList.add('open'); $('gs-q').value = ''; render(); setTimeout(function () { try { $('gs-q').focus(); } catch (e) { /* ok */ } }, 20); }
+  function close() { var m = $('gs-modal'); if (m) m.classList.remove('open'); }
+  window.globalSearchOpen = openUI; window.globalSearchClose = close; window.globalSearchRun = search;
+
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && String(e.key).toLowerCase() === 'k') { e.preventDefault(); var m = $('gs-modal'); if (m && m.classList.contains('open')) close(); else openUI(); }
+  }, true);
+
+  function install() {
+    if ($('gs-btn')) return;
+    var anchor = $('guide-header-btn') || $('sync-status');
+    if (!anchor || !anchor.parentNode) return;
+    var b = document.createElement('button'); b.id = 'gs-btn'; b.type = 'button'; b.textContent = '🔎'; b.title = 'Search everything (Ctrl+K)'; b.setAttribute('aria-label', 'Search everything');
+    b.onclick = openUI; anchor.parentNode.insertBefore(b, anchor);
+  }
+  function boot() { var n = 0; (function tick() { try { install(); } catch (e) { /* retried */ } if (!$('gs-btn') && ++n < 40) setTimeout(tick, 500); })(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

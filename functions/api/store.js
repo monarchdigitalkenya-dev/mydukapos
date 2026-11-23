@@ -41,6 +41,8 @@
 //     code, or pricing, none of which touch quantity/stock at all. Only the
 //     fields actually present in the body are changed; anything omitted is
 //     left as-is.
+//   { action: 'setExtras', entries: [{ storeItemId | code, extras: { category?, supplier?, notes?, reorderLevel?, minimumPrice?, parentId?, variantName?, isGroup? } }] }
+//     (zip 301) descriptive details only; never touches quantity. updateFields accepts the same extras.
 //   { action: 'removeFromStore', items: [{ storeItemId, qty }] }
 //     Deducts the given quantities from the store (never below zero, and
 //     never more than what's actually there). Does NOT touch the caller's
@@ -59,6 +61,7 @@ import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { ledgerDb } from './_ledger.js';
 import { handleStoreD1 } from './_store-d1.js';
+import { cleanExtras, applyExtras, EXTRA_KEYS } from './_store-extra.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -125,9 +128,11 @@ function mergeItemsIntoStore(storeItems, incoming) {
     const qty = Math.max(0, parseFloat(inc.qty) || 0);
     const code = String(inc.code || '').trim();
 
-    const existing = code
+    // zip 336: a line WITH a code also finds the store's code-less line of the same name (which then takes the code) - it used to make a second line
+    let existing = code
       ? storeItems.find((s) => s.code && s.code.toLowerCase() === code.toLowerCase())
       : storeItems.find((s) => !s.code && s.name.toLowerCase() === name.toLowerCase());
+    if (!existing && code) { existing = storeItems.find((s) => !s.code && s.name.toLowerCase() === name.toLowerCase()); if (existing) existing.code = code; }
     if (existing) {
       existing.qty += qty;
       if (inc.price !== undefined && inc.price !== '') existing.price = parseFloat(inc.price) || existing.price;
@@ -179,7 +184,7 @@ export async function onRequestPost(context) {
   const db = ledgerDb(env);
   if (db) {
     try {
-      return await handleStoreD1(env, db, { body, groupId, record, getLicense, json: jsonResponse });
+      return await handleStoreD1(env, db, { body, groupId, record, getLicense, json: jsonResponse, request, cors: CORS_HEADERS });
     } catch (e) {
       return jsonResponse({ error: 'The store database is unavailable right now \u2014 nothing was changed. Try again.', detail: String(e && e.message || e).slice(0, 160) }, 503);
     }
@@ -279,6 +284,9 @@ export async function onRequestPost(context) {
       const unit = String(f.unit).trim();
       if (unit) storeItem.unit = unit;
     }
+    const ex = cleanExtras(f);
+    if (ex.error) return jsonResponse({ error: ex.error }, 400);
+    Object.assign(storeItem, applyExtras(storeItem, ex));
 
     await saveStoreItems(env, groupId, items);
     await appendStoreLog(env, groupId, {
@@ -287,6 +295,21 @@ export async function onRequestPost(context) {
       detail: `Updated: ${Object.keys(f).join(', ')}`,
       servedBy: body.servedBy || null,
     });
+    return jsonResponse({ items });
+  }
+
+  // zip 301: set the extra details (category, supplier, notes, reorder level, minimum price, variant link) of several items at once, found by id or by code.
+  if (body.action === 'setExtras') {
+    const entries = (Array.isArray(body.entries) ? body.entries : []).slice(0, 200);
+    if (!entries.length) return jsonResponse({ error: 'Nothing to update.' }, 400);
+    const items = await getStoreItems(env, groupId);
+    for (const e of entries) {
+      const it = e.storeItemId ? items.find((s) => s.id === e.storeItemId) : (e.code ? items.find((s) => s.code && s.code.toLowerCase() === String(e.code).toLowerCase()) : null);
+      if (!it) continue;
+      const ex = cleanExtras(e.extras); if (ex.error) return jsonResponse({ error: ex.error }, 400);
+      Object.assign(it, applyExtras(it, ex));
+    }
+    await saveStoreItems(env, groupId, items);
     return jsonResponse({ items });
   }
 
@@ -310,11 +333,32 @@ export async function onRequestPost(context) {
       await appendStoreLog(env, groupId, {
         action: 'withdraw',
         itemName: w.name,
-        detail: `${w.qty} ${w.unit || 'pcs'} taken to own inventory`,
+        detail: `${w.qty} ${w.unit || 'pcs'} taken to own inventory${body.purpose ? ' — ' + String(body.purpose).slice(0, 120) : ''}`,
         servedBy: body.servedBy || null,
       });
     }
     return jsonResponse({ items: remaining, withdrawn });
+  }
+
+  // zip 293: a sale of store stock at the sales counter (log-only; idempotent on saleId).
+  if (body.action === 'logSale') {
+    const saleId = String(body.saleId || '').slice(0, 60);
+    const lines = (Array.isArray(body.lines) ? body.lines : []).slice(0, 60);
+    if (!saleId || !lines.length) return jsonResponse({ error: 'Nothing to log.' }, 400);
+    const log = await getStoreLog(env, groupId);
+    if (log.some((e) => e.saleId === saleId)) return jsonResponse({ ok: true, replay: true });
+    for (const l of lines) {
+      const qty = parseFloat(l.qty) || 0;
+      if (qty <= 0) continue;
+      const amt = parseFloat(l.amount) || 0;
+      log.push({
+        id: randomToken(10), timestamp: new Date().toISOString(), saleId, action: 'sale', itemName: String(l.name || 'Item').slice(0, 120),
+        detail: `Sold ${qty} ${l.unit || 'pcs'}${amt ? ' for KES ' + amt.toFixed(2) : ''} at the sales counter${body.receipt ? ' — receipt ' + String(body.receipt).slice(0, 40) : ''}`,
+        servedBy: body.servedBy || null,
+      });
+    }
+    await env.mydukapos_kv.put(logKey(groupId), JSON.stringify(log.slice(-500)));
+    return jsonResponse({ ok: true });
   }
 
   if (body.action === 'deleteItem') {

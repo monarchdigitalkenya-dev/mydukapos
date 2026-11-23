@@ -24,7 +24,7 @@ async function cash(w, setup) { w.eval(`currentCart = {}; ${setup}; currentPayme
 // a Pay Later sale: cart, customer, amount paid now (cash)
 async function billSale(w, setup, upfront, extraSetup = '') {
   w.eval(`currentCart = {}; ${setup}; currentPaymentMethod = 'bill'; ${extraSetup}`);
-  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'bill-upfront-amount-input', upfront);
+  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', upfront);
   w.eval("billUpfrontMethod = 'cash'");
   await w.eval('checkoutCart()');
 }
@@ -126,7 +126,7 @@ test('M-A: a bill payment on OLD data (no costShare) still counts no cost', () =
 test('M-D: a bill of 1000 + 200 delivery fee with 500 paid shows 700 owed (was 500) and is not closed by paying 500', async () => {
   const b = await open([BIG]); const { w } = b;
   w.eval("currentCart = {}; addToCart('B1'); currentPaymentMethod = 'bill'; setOrderType('delivery'); setDeliveryPaymentMode('now')");
-  set(w, 'delivery-address-input', 'Kilimani'); set(w, 'delivery-fee-input', 200); set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'bill-upfront-amount-input', 500);
+  set(w, 'delivery-address-input', 'Kilimani'); set(w, 'delivery-fee-input', 200); set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', 500);
   w.eval("billUpfrontMethod = 'cash'");
   await w.eval('checkoutCart()');
   const bill = bills(w)[0];
@@ -147,7 +147,7 @@ test('M-E: a bill of 500 standard + 500 zero-rated, settled with 400, sends paym
   w.eval("currentCart = {}; addToCart('B2'); addToCart('B2'); currentPaymentMethod = 'bill'");
   // 2 x 500 zero-rated = 1000 Z; add 1 x 1000 standard
   w.eval("addToCart('B1')");
-  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'bill-upfront-amount-input', 0);
+  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', 0);
   await w.eval('checkoutCart()');
   const id = bills(w)[0].id;
   settle(w, id, 400);
@@ -162,7 +162,7 @@ test('M-E: a bill of 500 standard + 500 zero-rated, settled with 400, sends paym
 test('M-F: a bill part-payment split of cash -100 + M-Pesa 600 (= 500) is refused', async () => {
   const b = await open([BIG]); const { w } = b;
   w.eval("currentCart = {}; addToCart('B1'); currentPaymentMethod = 'bill'; billUpfrontMethod = 'split'");
-  set(w, 'bill-customer-name-input', 'W'); set(w, 'bill-upfront-amount-input', 500);
+  set(w, 'bill-customer-name-input', 'W'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', 500);
   set(w, 'bill-upfront-split-cash-input', -100); set(w, 'bill-upfront-split-mpesa-input', 600); set(w, 'bill-upfront-split-bank-input', 0); set(w, 'bill-upfront-split-card-input', 0);
   await w.eval('checkoutCart()');
   assert.equal(bills(w).length, 0, 'nothing was recorded'); assert.match(toasts(w), /cannot be negative/);

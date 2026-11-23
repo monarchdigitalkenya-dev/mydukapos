@@ -1,0 +1,456 @@
+<!-- BORROW & LEND (zip 369) ------------------------------------------------------------------------------------------------------------
+     Trade Credits only tracked MONEY between this shop and another business. Real shops lend each other ITEMS, and settle in whatever way
+     is easiest: the same items back, other items instead, money, part of each - or never. This tab covers all of that in plain steps:
+       📥 I borrowed items  - stock goes UP now, and the other shop is owed the value.
+       📤 I lent items      - stock goes DOWN now, and the other shop owes me the value.
+       Then, any time, on the loan:  ↩️ items come back (the same items)  ·  🔁 pay with other items  ·  💵 pay money  ·  ✍️ write off.
+       Part payments, due dates, a statement to send on WhatsApp, an "undo this entry" that puts the stock back, and the history of each loan.
+     The records are kept inside the existing Trade Credits list (kind "goods"), so syncing, the totals on the Trade Credits tab and staff
+     roles work as they already did; the old Settle button on such an entry sends you here instead of closing it without the items.
+     Stock moves go through the same stock log as Restock / Stock Take. Money paid here is only tracked (as Trade Credits always was);
+     it is not added to Expenses. Ids: sl-*. -->
+<style id="sl-css">
+.sl-wrap { max-width: 780px; }
+.sl-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e3e8ec); border-radius: 14px; padding: 14px; margin: 0 0 14px; }
+.sl-card h3, .sl-card h4 { margin: 0 0 4px; }
+.sl-sub { margin: 0 0 12px; font-size: 13px; opacity: .75; }
+.sl-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; }
+.sl-big { min-height: 64px; border-radius: 14px; border: 0; color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; width: 100%; margin: 0; transition: transform .12s; }
+.sl-big:active { transform: scale(.97); }
+.sl-big.sl-in { background: #c0392b; } .sl-big.sl-out { background: #16a085; }
+.sl-sum { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.sl-sum div { flex: 1; min-width: 140px; border-radius: 12px; padding: 10px 12px; background: var(--bg-surface-alt, #f4f6f7); }
+.sl-sum b { display: block; font-size: 20px; } .sl-sum span { font-size: 12px; opacity: .7; }
+.sl-sum .sl-red b { color: #c0392b; } .sl-sum .sl-green b { color: #16a085; }
+.sl-party { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.sl-party b { font-size: 16px; }
+.sl-owe { font-weight: 800; } .sl-owe.sl-r { color: #c0392b; } .sl-owe.sl-g { color: #16a085; }
+.sl-loan { border-top: 1px solid var(--border-color, #eef1f3); padding: 10px 0 2px; margin-top: 10px; font-size: 14px; }
+.sl-tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 999px; background: #eaf2f8; color: #1f618d; margin-right: 6px; }
+.sl-tag.sl-late { background: #fdecea; color: #b03a2e; }
+.sl-items { margin: 4px 0 6px; padding: 0; list-style: none; opacity: .9; }
+.sl-items li { padding: 1px 0; }
+.sl-btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.sl-btn { width: auto; margin: 0; padding: 9px 13px; min-height: 40px; border-radius: 10px; border: 1.5px solid var(--border-color, #cfd8de); background: var(--bg-surface, #fff); color: inherit; font-weight: 700; font-size: 14px; cursor: pointer; }
+.sl-btn.sl-main { background: #2980b9; border-color: #2980b9; color: #fff; }
+.sl-btn.sl-danger { border-color: #e6b0aa; color: #b03a2e; }
+.sl-save { width: 100%; margin-top: 12px; min-height: 48px; font-size: 16px; font-weight: 800; border-radius: 12px; border: 0; background: #16a085; color: #fff; cursor: pointer; }
+.sl-save:disabled { opacity: .55; }
+.sl-line { display: grid; grid-template-columns: 1fr 80px 100px 28px; gap: 6px; margin: 0 0 8px; align-items: center; }
+.sl-line input, .sl-wrap input, .sl-wrap select { min-height: 40px; box-sizing: border-box; width: 100%; }
+.sl-x { width: auto; margin: 0; padding: 0; border: 0; background: transparent; font-size: 20px; cursor: pointer; color: #b03a2e; }
+.sl-link { background: none; border: 0; color: #2980b9; font-weight: 700; cursor: pointer; padding: 4px 0; width: auto; margin: 0; }
+.sl-back { margin: 0 0 10px; }
+.sl-note { font-size: 13px; padding: 8px 10px; border-radius: 10px; background: #fef9e7; margin: 8px 0; }
+.sl-lab { font-size: 13px; font-weight: 700; display: block; margin: 10px 0 4px; }
+.sl-hist { font-size: 13px; opacity: .85; } .sl-hist div { padding: 2px 0; }
+.sl-empty { opacity: .65; font-size: 13px; padding: 6px 2px; }
+.sl-pop { animation: sl-pop .22s ease-out; }
+@keyframes sl-pop { from { transform: translateY(4px); opacity: .4; } to { transform: none; opacity: 1; } }
+@media (max-width: 560px) { .sl-two { grid-template-columns: 1fr; } .sl-line { grid-template-columns: 1fr 1fr; } .sl-line .sl-x { justify-self: end; } }
+@media (prefers-reduced-motion: reduce) { .sl-pop { animation: none; } .sl-big { transition: none; } }
+</style>
+<script id="sl-js">
+(function () {
+  'use strict';
+  var TAB = 'shop-loans-tab', BTN = 'shop-loans-tab-btn';
+  var S = { view: 'main', dir: 'i_owe', id: null, mode: null, form: null, busy: false };
+  function $(id) { return document.getElementById(id); }
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { return 'KES ' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function r3(n) { return Math.round((Number(n) || 0) * 1000) / 1000; }
+  function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+  function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+  function today() { return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+  function who() { try { return typeof activeServerName === 'function' ? activeServerName() : ''; } catch (e) { return ''; } }
+  function uid() { try { return genSaleId(); } catch (e) { return 'sl-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8); } }
+  function canWrite() { try { return !(typeof custReadOnlyView === 'function' && custReadOnlyView()); } catch (e) { return true; } }
+  function isMgr() { try { return typeof custIsManager === 'function' ? !!custIsManager() : true; } catch (e) { return true; } }
+  function ready() { try { return typeof tradeCredits !== 'undefined' && Array.isArray(tradeCredits) && typeof inventory !== 'undefined' && Array.isArray(inventory); } catch (e) { return false; } }
+  function loans() { return ready() ? tradeCredits.filter(function (t) { return t && t.kind === 'goods' && !t._deleted; }) : []; }
+  function openLoans() { return loans().filter(function (t) { return t.status !== 'settled'; }); }
+  function byId(id) { return loans().filter(function (t) { return t.id === id; })[0] || null; }
+  function saveCredits() { try { safeSetItem('pos_trade_credits', JSON.stringify(tradeCredits)); } catch (e) { /* kept in memory */ } try { queuePush(); } catch (e2) { /* sent with the next change */ } }
+  function saveStock() { try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* kept in memory */ } try { queuePush(); } catch (e2) { /* next change sends it */ } }
+
+  /* ---------------------------------------------------------- stock helpers ---------------------------------------------------------- */
+  function hasVariants(p) { try { return typeof restockParentHasVariants === 'function' ? !!restockParentHasVariants(p) : (Array.isArray(p.variants) && p.variants.length > 0); } catch (e) { return false; } }
+  function findItem(text) {
+    var t = String(text || '').trim().toLowerCase(); if (!t) return null;
+    var list = inventory.filter(function (p) { return p && !p._deleted && p.type !== 'service'; });
+    return list.filter(function (p) { return String(p.code || '').toLowerCase() === t; })[0] || list.filter(function (p) { return String(p.name || '').trim().toLowerCase() === t; })[0] || null;
+  }
+  function itemByCode(code) { return inventory.filter(function (p) { return p && !p._deleted && String(p.code) === String(code); })[0] || null; }
+  function defaultValue(p) { return p ? (Number(p.wholesalePrice) > 0 ? Number(p.wholesalePrice) : Number(p.price) || 0) : 0; }
+  function stockOf(code) { var p = itemByCode(code); return p ? Number(p.qty) || 0 : 0; }
+  /* move stock for one tracked item and write it to the stock log (batch items follow through stockAlignBatches) */
+  function moveStock(code, delta, reason) {
+    var p = itemByCode(code); if (!p || !delta) return false;
+    p.qty = r3((Number(p.qty) || 0) + delta);
+    try { if (Array.isArray(p.batches) && typeof stockAlignBatches === 'function') stockAlignBatches(p); } catch (e) { /* qty is still right */ }
+    try { if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, delta, reason); } catch (e2) { /* the stock itself changed */ }
+    return true;
+  }
+  /* "out" moves need enough stock: sum the need per item first so the same item on two lines is counted once */
+  function checkStock(moves) {
+    var need = {};
+    moves.forEach(function (m) { if (m.delta < 0) need[m.code] = r3((need[m.code] || 0) - m.delta); });
+    for (var c in need) { if (need[c] > stockOf(c) + 0.0005) { var p = itemByCode(c); return 'Only ' + stockOf(c) + ' of "' + (p ? p.name : c) + '" in stock (you need ' + need[c] + ').'; } }
+    return '';
+  }
+  function applyMoves(moves, reason) { moves.forEach(function (m) { moveStock(m.code, m.delta, reason); }); if (moves.length) saveStock(); }
+
+  /* ---------------------------------------------------------- model helpers ---------------------------------------------------------- */
+  function itemsText(t) {
+    return (t.lines || []).map(function (l) { return r3(l.qty) + (l.unit && l.unit !== 'pcs' ? ' ' + l.unit : '') + '× ' + l.name; }).join(', ');
+  }
+  function describe(t) {
+    var base = (t.lines || []).length ? (t.direction === 'i_owe' ? 'Borrowed' : 'Lent') + ': ' + itemsText(t) : (t.direction === 'i_owe' ? 'You owe them' : 'They owe you') + ' (' + (t.note || 'balance') + ')';
+    return t.status === 'settled' ? (t.cancelled ? 'Cancelled - ' : '') + base : base + ' - ' + kes(t.amount) + ' still open';
+  }
+  function stamp(t) { t.updatedAt = Date.now(); t.description = describe(t); }
+  function finishIfPaid(t) { if (t.amount <= 0.005) { t.amount = 0; t.status = 'settled'; t.settledAt = new Date().toISOString(); } }
+  function addEvent(t, ev) { ev.id = uid(); ev.at = new Date().toISOString(); ev.by = who(); (t.events = t.events || []).push(ev); }
+  function overdue(t) { return t.status !== 'settled' && t.dueDate && String(t.dueDate) < today(); }
+  function parties() {
+    var map = {}; loans().forEach(function (t) { var k = String(t.partyName || '').trim().toLowerCase(); if (!k) return; (map[k] = map[k] || { name: t.partyName, phone: '', open: [], done: 0 }); if (t.partyPhone) map[k].phone = t.partyPhone; if (t.status === 'settled') map[k].done++; else map[k].open.push(t); });
+    return Object.keys(map).map(function (k) { return map[k]; }).filter(function (p) { return p.open.length; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+  function net(p) { return p.open.reduce(function (n, t) { return n + (t.direction === 'they_owe' ? 1 : -1) * (Number(t.amount) || 0); }, 0); }
+  function knownParties() {
+    var seen = {}, out = []; loans().concat(ready() ? tradeCredits.filter(function (t) { return t && t.partyName && t.kind !== 'goods'; }) : []).forEach(function (t) { var k = String(t.partyName).trim().toLowerCase(); if (k && !seen[k]) { seen[k] = 1; out.push(t); } });
+    return out;
+  }
+  function phoneOf(name) { var k = String(name || '').trim().toLowerCase(); var hit = loans().filter(function (t) { return String(t.partyName || '').trim().toLowerCase() === k && t.partyPhone; })[0]; return hit ? hit.partyPhone : ''; }
+
+  /* ---------------------------------------------------------- statement / WhatsApp ---------------------------------------------------------- */
+  function statement(p) {
+    var biz = ''; try { biz = (localStorage.getItem('pos_biz_name') || '').trim(); } catch (e) { biz = ''; }
+    var lines = ['Hello ' + p.name + ',', 'Items between ' + (biz || 'our shop') + ' and you (' + new Date().toLocaleDateString('en-GB') + '):'];
+    p.open.forEach(function (t) { lines.push((t.direction === 'i_owe' ? '- We owe you: ' : '- You owe us: ') + itemsText(t) + ' = ' + kes(t.amount) + (t.dueDate ? ' (due ' + t.dueDate + ')' : '')); });
+    var n = net(p); lines.push(n > 0.005 ? 'Net: you owe us ' + kes(n) : n < -0.005 ? 'Net: we owe you ' + kes(-n) : 'Net: even');
+    lines.push('Thank you.'); return lines.join('\n');
+  }
+  function shareStatement(name) {
+    var p = parties().filter(function (x) { return x.name === name; })[0]; if (!p) return;
+    var text = statement(p), ph = String(p.phone || '').replace(/[^\d]/g, ''); if (/^0\d{9}$/.test(ph)) ph = '254' + ph.slice(1);
+    try { window.open('https://wa.me/' + ph + '?text=' + encodeURIComponent(text), '_blank'); } catch (e) { /* copy below */ }
+    try { if (navigator.clipboard) navigator.clipboard.writeText(text); } catch (e2) { /* optional */ }
+    toast('Statement ready - sent to WhatsApp (also copied).');
+  }
+
+  /* ---------------------------------------------------------- screens ---------------------------------------------------------- */
+  function render() {
+    var host = $(TAB); if (!host) return;
+    var h = '<div class="sl-wrap sl-pop">';
+    if (!ready()) h += '<div class="sl-card"><p class="sl-empty">Borrow & Lend is not available on this screen.</p></div>';
+    else if (S.view === 'new') h += viewNew();
+    else if (S.view === 'loan') h += viewLoan();
+    else h += viewMain();
+    host.innerHTML = h + '</div>';
+    var dl = $('sl-names'); if (dl) dl.innerHTML = inventory.filter(function (p) { return p && !p._deleted && p.type !== 'service'; }).map(function (p) { return '<option value="' + esc(p.name) + '">'; }).join('');
+  }
+  function viewMain() {
+    var ps = parties(), owe = 0, owed = 0, late = 0;
+    openLoans().forEach(function (t) { if (t.direction === 'i_owe') owe += Number(t.amount) || 0; else owed += Number(t.amount) || 0; if (overdue(t)) late++; });
+    var h = '<div class="sl-card"><h3>🔄 Borrow &amp; Lend</h3><p class="sl-sub">Items you borrow from, or lend to, other shops. Give them back, swap for other items, pay money, or part of each.</p>' +
+      '<div class="sl-sum"><div class="sl-red"><b>' + kes(owe) + '</b><span>you owe other shops</span></div><div class="sl-green"><b>' + kes(owed) + '</b><span>other shops owe you</span></div>' + (late ? '<div class="sl-red"><b>' + late + '</b><span>overdue</span></div>' : '') + '</div>' +
+      '<div class="sl-two"><button type="button" class="sl-big sl-in" data-sl="new" data-v="i_owe">📥 I borrowed items</button><button type="button" class="sl-big sl-out" data-sl="new" data-v="they_owe">📤 I lent items</button></div>' +
+      '<datalist id="sl-names"></datalist></div>';
+    if (!ps.length) return h + '<div class="sl-card"><p class="sl-empty">Nothing open. When you borrow from or lend to another shop, it shows here.</p></div>' + doneList();
+    ps.forEach(function (p) {
+      var n = net(p);
+      h += '<div class="sl-card"><div class="sl-party"><b>' + esc(p.name) + '</b><span class="sl-owe ' + (n > 0.005 ? 'sl-g' : n < -0.005 ? 'sl-r' : '') + '">' + (n > 0.005 ? 'owes you ' + kes(n) : n < -0.005 ? 'you owe ' + kes(-n) : 'even') + '</span></div>';
+      p.open.slice().sort(function (a, b) { return new Date(a.timestamp) - new Date(b.timestamp); }).forEach(function (t) {
+        h += '<div class="sl-loan"><span class="sl-tag">' + (t.direction === 'i_owe' ? '📥 I borrowed' : '📤 I lent') + '</span>' + (overdue(t) ? '<span class="sl-tag sl-late">overdue ' + esc(t.dueDate) + '</span>' : t.dueDate ? '<span class="sl-tag">due ' + esc(t.dueDate) + '</span>' : '') +
+          '<small>' + new Date(t.timestamp).toLocaleDateString('en-GB') + '</small><ul class="sl-items">' + (t.lines || []).map(function (l) { return '<li>' + r3(l.qty) + (l.unit && l.unit !== 'pcs' ? ' ' + esc(l.unit) : '') + '× ' + esc(l.name) + (l.out < l.qty ? ' <small>(' + r3(l.out) + ' still to return)</small>' : '') + '</li>'; }).join('') + '</ul>' +
+          '<b>' + kes(t.amount) + '</b> still to settle <button type="button" class="sl-btn sl-main" data-sl="open" data-id="' + esc(t.id) + '">Settle</button></div>';
+      });
+      var both = p.open.some(function (t) { return t.direction === 'i_owe'; }) && p.open.some(function (t) { return t.direction === 'they_owe'; });
+      h += '<div class="sl-btns">' + (both ? '<button type="button" class="sl-btn" data-sl="offset" data-v="' + esc(p.name) + '">⚖️ Cancel out what we owe each other</button>' : '') + '<button type="button" class="sl-link" data-sl="share" data-v="' + esc(p.name) + '">📲 Send statement on WhatsApp</button></div></div>';
+    });
+    return h + doneList();
+  }
+  function doneList() {
+    var done = loans().filter(function (t) { return t.status === 'settled'; }).sort(function (a, b) { return new Date(b.settledAt || b.timestamp) - new Date(a.settledAt || a.timestamp); }).slice(0, 12);
+    if (!done.length) return '';
+    return '<details class="sl-card"><summary><b>Finished (' + done.length + (loans().filter(function (t) { return t.status === 'settled'; }).length > done.length ? '+' : '') + ')</b></summary>' + done.map(function (t) {
+      return '<div class="sl-loan"><span class="sl-tag">' + (t.cancelled ? '✖ cancelled' : '✅ settled') + '</span><b>' + esc(t.partyName) + '</b> - ' + esc(t.description || '') + '<div class="sl-hist">' + histHtml(t) + '</div></div>'; }).join('') + '</details>';
+  }
+  function histHtml(t) {
+    return (t.events || []).map(function (e) { return '<div>' + new Date(e.at).toLocaleDateString('en-GB') + ' · ' + esc(e.label || e.type) + (e.amount ? ' · ' + kes(e.amount) : '') + (e.by ? ' · ' + esc(e.by) : '') + (e.note ? ' · ' + esc(e.note) : '') + '</div>'; }).join('');
+  }
+
+  /* ---------- new loan ---------- */
+  function newForm(dir) { return { dir: dir, party: '', phone: '', due: '', note: '', addNew: true, lines: [{ name: '', qty: '', value: '' }] }; }
+  function viewNew() {
+    var f = S.form, bor = f.dir === 'i_owe';
+    var h = '<button type="button" class="sl-link sl-back" data-sl="back">← Back</button><div class="sl-card"><h3>' + (bor ? '📥 I borrowed items' : '📤 I lent items') + '</h3><p class="sl-sub">' +
+      (bor ? 'Your stock goes UP now. You owe the other shop the value.' : 'Your stock goes DOWN now. The other shop owes you the value.') + '</p>' +
+      '<label class="sl-lab">Which shop?</label><input id="sl-party" list="sl-parties" autocomplete="off" placeholder="Shop name" value="' + esc(f.party) + '" data-sl-f="party"><datalist id="sl-parties">' + knownParties().map(function (t) { return '<option value="' + esc(t.partyName) + '">'; }).join('') + '</datalist>' +
+      '<label class="sl-lab">Their phone (optional, for the WhatsApp statement)</label><input id="sl-phone" type="tel" inputmode="tel" placeholder="07..." value="' + esc(f.phone) + '" data-sl-f="phone">' +
+      '<label class="sl-lab">Items</label><datalist id="sl-names"></datalist>' +
+      f.lines.map(function (l, i) { return '<div class="sl-line"><input id="sl-n' + i + '" list="sl-names" autocomplete="off" placeholder="Item" value="' + esc(l.name) + '" data-sl-l="name" data-i="' + i + '"><input id="sl-q' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="How many" value="' + esc(l.qty) + '" data-sl-l="qty" data-i="' + i + '"><input id="sl-v' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="Value each" value="' + esc(l.value) + '" data-sl-l="value" data-i="' + i + '"><button type="button" class="sl-x" data-sl="rm" data-i="' + i + '" aria-label="Remove">×</button></div>'; }).join('') +
+      '<button type="button" class="sl-link" data-sl="add">+ Add another item</button>' +
+      '<div class="sl-note">Value each = what one is worth between you two (it is filled in from your price list when you pick an item - change it if you agreed another). <b id="sl-total">' + kes(formTotal()) + '</b> in total.</div>' +
+      (bor ? '<label style="display:block; font-size:13px; margin:8px 0;"><input type="checkbox" id="sl-addnew" style="width:auto; min-height:0;" ' + (f.addNew ? 'checked' : '') + ' data-sl-f="addNew"> If an item is not in my stock list, add it (so I can sell it)</label>' : '') +
+      '<label class="sl-lab">Give back by (optional)</label><input id="sl-due" type="date" value="' + esc(f.due) + '" data-sl-f="due">' +
+      '<label class="sl-lab">Note (optional)</label><input id="sl-note" placeholder="e.g. their delivery was late, we covered" value="' + esc(f.note) + '" data-sl-f="note">' +
+      '<button type="button" class="sl-save" data-sl="save-new">✅ Save</button></div>';
+    return h;
+  }
+  function formTotal() { return S.form ? S.form.lines.reduce(function (t, l) { return t + (parseFloat(l.qty) || 0) * (parseFloat(l.value) || 0); }, 0) : 0; }
+  function saveNew() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    var f = S.form, bor = f.dir === 'i_owe', party = f.party.trim();
+    if (!party) { toast('Type which shop it is.', true); return; }
+    var used = f.lines.filter(function (l) { return (l.name || '').trim() || (parseFloat(l.qty) || 0) > 0; });
+    if (!used.length) { toast('Add at least one item.', true); return; }
+    var lines = [], moves = [], created = [];
+    for (var i = 0; i < used.length; i++) {
+      var l = used[i], nm = l.name.trim(), q = r3(parseFloat(l.qty)), p = findItem(nm);
+      if (!nm) { toast('Every line needs an item name.', true); return; }
+      if (!(q > 0)) { toast('"' + nm + '": type how many.', true); return; }
+      var v = parseFloat(l.value); if (isNaN(v)) v = defaultValue(p);
+      if (!(v >= 0)) { toast('"' + nm + '": type what one is worth.', true); return; }
+      var tracked = false, code = '', unit = p && p.unit ? p.unit : 'pcs', name = p ? p.name : nm;
+      if (p && !hasVariants(p)) { tracked = true; code = p.code; }
+      else if (!p && bor && f.addNew) { tracked = true; created.push({ name: nm, qty: q, value: v, unit: unit }); }
+      if (tracked && !p) code = '(new)';
+      lines.push({ lid: uid(), code: code, name: name, unit: unit, qty: q, out: q, value: r2(v), tracked: tracked });
+      if (tracked && p) moves.push({ code: p.code, delta: bor ? q : -q });
+    }
+    if (!bor) { var err = checkStock(moves); if (err) { toast(err, true); return; } }
+    created.forEach(function (c) {
+      var code = typeof generateItemCode === 'function' ? generateItemCode() : 'L' + Date.now();
+      inventory.push({ type: 'item', code: code, name: c.name, price: c.value, wholesaleSellingPrice: 0, wholesalePrice: c.value, qty: 0, unit: c.unit, location: '', vatCategory: 'A', expiryDate: null, image: null });
+      lines.forEach(function (ln) { if (ln.code === '(new)' && ln.name === c.name) ln.code = code; });
+      moves.push({ code: code, delta: c.qty });
+    });
+    var total = r2(lines.reduce(function (t, l) { return t + l.qty * l.value; }, 0));
+    var t = { id: uid(), timestamp: new Date().toISOString(), kind: 'goods', partyName: party, partyPhone: f.phone.trim(), direction: f.dir, description: '', amount: total, total: total, status: 'open', settledAt: null, linkedSaleId: null, dueDate: f.due || '', note: f.note.trim(), lines: lines, events: [], by: who() };
+    addEvent(t, { type: 'create', label: bor ? 'Borrowed ' + itemsText(t) : 'Lent ' + itemsText(t), amount: total, moves: moves });
+    applyMoves(moves, (bor ? 'Borrowed from ' : 'Lent to ') + party);
+    stamp(t); tradeCredits.push(t); saveCredits();
+    S.view = 'main'; S.form = null; render(); toast(bor ? 'Saved. Your stock went up.' : 'Saved. Your stock went down.');
+  }
+
+  /* ---------- one loan: settle it ---------- */
+  function viewLoan() {
+    var t = byId(S.id); if (!t) { S.view = 'main'; return viewMain(); }
+    var bor = t.direction === 'i_owe', m = S.mode, f = S.form || {};
+    var h = '<button type="button" class="sl-link sl-back" data-sl="back">← Back</button><div class="sl-card"><div class="sl-party"><b>' + esc(t.partyName) + '</b><span class="sl-owe ' + (bor ? 'sl-r' : 'sl-g') + '">' + (bor ? 'you owe ' : 'they owe you ') + kes(t.amount) + '</span></div>' +
+      '<p class="sl-sub">' + (bor ? '📥 You borrowed' : '📤 You lent') + ' on ' + new Date(t.timestamp).toLocaleDateString('en-GB') + (t.dueDate ? ' · give back by ' + esc(t.dueDate) : '') + (t.note ? ' · ' + esc(t.note) : '') + '</p><ul class="sl-items">' +
+      (t.lines || []).map(function (l) { return '<li>' + r3(l.qty) + '× ' + esc(l.name) + ' @ ' + kes(l.value) + (l.out < l.qty ? ' <small>(' + r3(l.out) + ' still to ' + (bor ? 'return' : 'come back') + ')</small>' : '') + (l.tracked ? '' : ' <small>(not in your stock list - tracked only)</small>') + '</li>'; }).join('') + '</ul>';
+    if (t.status === 'settled') return h + '<div class="sl-note">' + (t.cancelled ? 'This entry was cancelled.' : '✅ Fully settled.') + '</div><div class="sl-hist">' + histHtml(t) + '</div></div>';
+    h += '<div class="sl-btns"><button type="button" class="sl-btn' + (m === 'return' ? ' sl-main' : '') + '" data-sl="mode" data-v="return">↩️ ' + (bor ? 'I give the items back' : 'They give the items back') + '</button>' +
+      '<button type="button" class="sl-btn' + (m === 'swap' ? ' sl-main' : '') + '" data-sl="mode" data-v="swap">🔁 ' + (bor ? 'I pay with other items' : 'They pay with other items') + '</button>' +
+      '<button type="button" class="sl-btn' + (m === 'money' ? ' sl-main' : '') + '" data-sl="mode" data-v="money">💵 ' + (bor ? 'I pay money' : 'They pay money') + '</button>' +
+      (isMgr() ? '<button type="button" class="sl-btn" data-sl="mode" data-v="off">✍️ Write off</button>' : '') + '</div>';
+    if (m === 'return') h += formReturn(t, f);
+    else if (m === 'swap') h += formSwap(t, f);
+    else if (m === 'money') h += '<label class="sl-lab">How much? (still ' + kes(t.amount) + ')</label><input id="sl-amt" type="number" inputmode="decimal" min="0" step="any" value="' + esc(f.amount == null ? '' : f.amount) + '" data-sl-f="amount"><label class="sl-lab">How was it paid? (optional)</label><input id="sl-how" placeholder="Cash, M-Pesa..." value="' + esc(f.note || '') + '" data-sl-f="note"><button type="button" class="sl-save" data-sl="do-money">✅ Save payment</button>';
+    else if (m === 'off') h += '<div class="sl-note">Use this when the rest is forgiven, a gift, or the items were lost or damaged. Stock does not change. ' + kes(t.amount) + ' will be cleared.</div><label class="sl-lab">Why? (required)</label><input id="sl-why" placeholder="e.g. damaged in their shop" value="' + esc(f.note || '') + '" data-sl-f="note"><button type="button" class="sl-save" data-sl="do-off">✍️ Write off ' + kes(t.amount) + '</button>';
+    h += '<details style="margin-top:12px;"><summary><b>History</b></summary><div class="sl-hist">' + histHtml(t) + '</div></details>';
+    if (isMgr()) h += '<div class="sl-btns"><button type="button" class="sl-btn sl-danger" data-sl="cancel">✖ Cancel this entry (entered by mistake)</button></div>';
+    return h + '</div>';
+  }
+  function formReturn(t, f) {
+    var bor = t.direction === 'i_owe', rows = (t.lines || []).filter(function (l) { return l.out > 0; });
+    if (!rows.length) return '<div class="sl-note">Every item has already come back. If something is still owed, pay it with money or other items.</div>';
+    return '<p class="sl-sub">' + (bor ? 'Type how many you are giving back now. Your stock goes down.' : 'Type how many came back now. Your stock goes up.') + '</p>' + rows.map(function (l) {
+      return '<div class="sl-line" style="grid-template-columns:1fr 110px;"><label for="sl-r' + esc(l.lid) + '">' + esc(l.name) + ' <small>(' + r3(l.out) + ' to ' + (bor ? 'return' : 'come back') + ')</small></label><input id="sl-r' + esc(l.lid) + '" type="number" inputmode="decimal" min="0" step="any" max="' + r3(l.out) + '" placeholder="0" value="' + esc((f.ret || {})[l.lid] || '') + '" data-sl-r="' + esc(l.lid) + '"></div>'; }).join('') +
+      '<button type="button" class="sl-link" data-sl="all">Everything is back</button><button type="button" class="sl-save" data-sl="do-return">✅ Save</button>';
+  }
+  function formSwap(t, f) {
+    var bor = t.direction === 'i_owe', sw = f.swap || (f.swap = [{ name: '', qty: '', value: '' }]);
+    return '<p class="sl-sub">' + (bor ? 'Items YOU give them instead (your stock goes down).' : 'Items THEY give you instead (your stock goes up).') + ' Each one is counted at the value you type.</p><datalist id="sl-names"></datalist>' +
+      sw.map(function (l, i) { return '<div class="sl-line"><input id="sl-sn' + i + '" list="sl-names" autocomplete="off" placeholder="Item" value="' + esc(l.name) + '" data-sl-s="name" data-i="' + i + '"><input id="sl-sq' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="How many" value="' + esc(l.qty) + '" data-sl-s="qty" data-i="' + i + '"><input id="sl-sv' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="Value each" value="' + esc(l.value) + '" data-sl-s="value" data-i="' + i + '"><button type="button" class="sl-x" data-sl="rm-s" data-i="' + i + '" aria-label="Remove">×</button></div>'; }).join('') +
+      '<button type="button" class="sl-link" data-sl="add-s">+ Add another item</button><div class="sl-note">Worth <b id="sl-swtot">' + kes(swapTotal(f)) + '</b> of the ' + kes(t.amount) + ' still open. If it is more, the extra becomes a new amount the other way round.</div>' +
+      (bor ? '' : '<label style="display:block; font-size:13px; margin:8px 0;"><input type="checkbox" id="sl-addnew2" style="width:auto; min-height:0;" ' + (f.addNew === false ? '' : 'checked') + ' data-sl-f="addNew"> If an item is not in my stock list, add it</label>') +
+      '<button type="button" class="sl-save" data-sl="do-swap">✅ Save</button>';
+  }
+  function swapTotal(f) { return (f.swap || []).reduce(function (t, l) { return t + (parseFloat(l.qty) || 0) * (parseFloat(l.value) || 0); }, 0); }
+
+  function doReturn() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    var t = byId(S.id); if (!t || t.status === 'settled') return; var bor = t.direction === 'i_owe', f = S.form || {}, ret = f.ret || {}, moves = [], val = 0, picks = [];
+    for (var i = 0; i < (t.lines || []).length; i++) {
+      var l = t.lines[i], q = r3(parseFloat(ret[l.lid])); if (!(q > 0)) continue;
+      if (q > l.out + 0.0005) { toast('"' + l.name + '": only ' + r3(l.out) + ' left to ' + (bor ? 'return' : 'come back') + '.', true); return; }
+      picks.push({ lid: l.lid, name: l.name, qty: q }); val += q * l.value;
+      if (l.tracked && itemByCode(l.code)) moves.push({ code: l.code, delta: bor ? -q : q });
+    }
+    if (!picks.length) { toast('Type how many came back.', true); return; }
+    val = r2(val); if (val > t.amount + 0.005) { toast('Those items are worth ' + kes(val) + ' but only ' + kes(t.amount) + ' is still open. Use a smaller number.', true); return; }
+    if (bor) { var err = checkStock(moves); if (err) { toast(err, true); return; } }
+    picks.forEach(function (p) { t.lines.forEach(function (l) { if (l.lid === p.lid) l.out = r3(l.out - p.qty); }); });
+    t.amount = r2(t.amount - val);
+    addEvent(t, { type: 'return', label: (bor ? 'Gave back ' : 'Got back ') + picks.map(function (p) { return p.qty + '× ' + p.name; }).join(', '), amount: val, moves: moves });
+    applyMoves(moves, (bor ? 'Returned to ' : 'Returned by ') + t.partyName);
+    finishIfPaid(t); stamp(t); saveCredits(); S.form = null; S.mode = null; done(t, 'Saved.');
+  }
+  function doSwap() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    var t = byId(S.id); if (!t || t.status === 'settled') return; var bor = t.direction === 'i_owe', f = S.form || {};
+    var used = (f.swap || []).filter(function (l) { return (l.name || '').trim() || (parseFloat(l.qty) || 0) > 0; });
+    if (!used.length) { toast('Add at least one item.', true); return; }
+    var moves = [], val = 0, labels = [], created = [];
+    for (var i = 0; i < used.length; i++) {
+      var l = used[i], nm = l.name.trim(), q = r3(parseFloat(l.qty)), p = findItem(nm);
+      if (!nm) { toast('Every line needs an item name.', true); return; }
+      if (!(q > 0)) { toast('"' + nm + '": type how many.', true); return; }
+      var v = parseFloat(l.value); if (isNaN(v)) v = defaultValue(p); if (!(v >= 0)) { toast('"' + nm + '": type what one is worth.', true); return; }
+      val += q * v; labels.push(q + '× ' + (p ? p.name : nm));
+      if (p && !hasVariants(p)) moves.push({ code: p.code, delta: bor ? -q : q });
+      else if (!p && bor) { toast('"' + nm + '" is not in your stock, so you cannot give it. Pick an item from your list.', true); return; }
+      else if (!p && !bor && f.addNew !== false) created.push({ name: nm, qty: q, value: v });
+    }
+    val = r2(val); if (!(val > 0)) { toast('The items need a value, so we know how much they cover.', true); return; }
+    if (bor) { var err = checkStock(moves); if (err) { toast(err, true); return; } }
+    created.forEach(function (c) {
+      var code = typeof generateItemCode === 'function' ? generateItemCode() : 'L' + Date.now();
+      inventory.push({ type: 'item', code: code, name: c.name, price: c.value, wholesaleSellingPrice: 0, wholesalePrice: c.value, qty: 0, unit: 'pcs', location: '', vatCategory: 'A', expiryDate: null, image: null });
+      moves.push({ code: code, delta: c.qty });
+    });
+    var cover = Math.min(val, t.amount), extra = r2(val - cover);
+    t.amount = r2(t.amount - cover);
+    addEvent(t, { type: 'swap', label: (bor ? 'Paid with ' : 'Paid with their ') + labels.join(', '), amount: cover, moves: moves, note: extra > 0.005 ? 'worth ' + kes(val) + ', ' + kes(extra) + ' extra' : '' });
+    applyMoves(moves, (bor ? 'Gave to ' : 'Received from ') + t.partyName + ' in place of a loan');
+    finishIfPaid(t); stamp(t);
+    if (extra > 0.005) {      // worth more than was owed: the extra is now owed the other way round
+      var x = { id: uid(), timestamp: new Date().toISOString(), kind: 'goods', partyName: t.partyName, partyPhone: t.partyPhone || '', direction: bor ? 'they_owe' : 'i_owe', description: '', amount: extra, total: extra, status: 'open', settledAt: null, linkedSaleId: null, dueDate: '', note: 'Extra value from the swap on ' + new Date().toLocaleDateString('en-GB'), lines: [], events: [], by: who() };
+      addEvent(x, { type: 'create', label: 'Extra from swap', amount: extra, moves: [] }); x.description = (bor ? 'They owe you' : 'You owe them') + ' ' + kes(extra) + ' - extra from a swap'; x.updatedAt = Date.now(); tradeCredits.push(x);
+    }
+    saveCredits(); S.form = null; S.mode = null; done(t, extra > 0.005 ? 'Saved. The extra ' + kes(extra) + ' is now owed the other way.' : 'Saved.');
+  }
+  function doMoney() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    var t = byId(S.id); if (!t || t.status === 'settled') return; var f = S.form || {}, a = r2(parseFloat(f.amount));
+    if (!(a > 0)) { toast('Type how much.', true); return; }
+    if (a > t.amount + 0.005) { toast('Only ' + kes(t.amount) + ' is still open.', true); return; }
+    t.amount = r2(t.amount - a); addEvent(t, { type: 'money', label: t.direction === 'i_owe' ? 'You paid' : 'They paid', amount: a, note: (f.note || '').trim() });
+    finishIfPaid(t); stamp(t); saveCredits(); S.form = null; S.mode = null; done(t, 'Payment saved.');
+  }
+  function doOff() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    if (!isMgr()) { toast('Only the Admin or a manager can write off.', true); return; }
+    var t = byId(S.id); if (!t || t.status === 'settled') return; var why = ((S.form || {}).note || '').trim();
+    if (!why) { toast('Type why it is written off.', true); return; }
+    if (!confirm('Write off ' + kes(t.amount) + ' with ' + t.partyName + '?\n\nThe stock does not change.')) return;
+    addEvent(t, { type: 'writeoff', label: 'Written off', amount: t.amount, note: why }); t.amount = 0; finishIfPaid(t); stamp(t); saveCredits(); S.form = null; S.mode = null; done(t, 'Written off.');
+  }
+  function doCancel() {
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    if (!isMgr()) { toast('Only the Admin or a manager can cancel an entry.', true); return; }
+    var t = byId(S.id); if (!t || t.status === 'settled') return;
+    var back = []; (t.events || []).forEach(function (e) { (e.moves || []).forEach(function (m) { back.push({ code: m.code, delta: -m.delta }); }); });
+    var err = checkStock(back); if (err) { toast('Cannot undo: ' + err + ' Do a stock take instead.', true); return; }
+    if (!confirm('Cancel this entry with ' + t.partyName + '?\n\nEvery stock change made through it is put back. Use this only for an entry made by mistake.')) return;
+    applyMoves(back, 'Cancelled loan with ' + t.partyName);
+    addEvent(t, { type: 'cancel', label: 'Cancelled', moves: [] }); t.cancelled = true; t.amount = 0; t.status = 'settled'; t.settledAt = new Date().toISOString(); stamp(t); saveCredits();
+    S.view = 'main'; S.id = null; S.form = null; S.mode = null; render(); toast('Cancelled. Stock put back.');
+  }
+  function doOffset(name) {      // I owe them X and they owe me Y: the smaller one cancels out against the bigger one, no stock moves, no money
+    if (!canWrite()) { toast('You are viewing another branch - it is read-only.', true); return; }
+    var p = parties().filter(function (x) { return x.name === name; })[0]; if (!p) return;
+    var mine = p.open.filter(function (t) { return t.direction === 'i_owe'; }), theirs = p.open.filter(function (t) { return t.direction === 'they_owe'; });
+    var a = mine.reduce(function (n, t) { return n + t.amount; }, 0), b = theirs.reduce(function (n, t) { return n + t.amount; }, 0), amt = r2(Math.min(a, b));
+    if (!(amt > 0)) { toast('Nothing to cancel out.', true); return; }
+    if (!confirm('Cancel out ' + kes(amt) + ' with ' + name + '?\n\nYou owe them ' + kes(a) + ' and they owe you ' + kes(b) + '. After this: ' + (a > b ? 'you owe ' + kes(a - b) : b > a ? 'they owe you ' + kes(b - a) : 'you are even') + '. Stock does not change.')) return;
+    [mine, theirs].forEach(function (group) {
+      var left = amt; group.slice().sort(function (x, y) { return new Date(x.timestamp) - new Date(y.timestamp); }).forEach(function (t) {
+        if (left <= 0.005) return; var take = r2(Math.min(left, t.amount)); left = r2(left - take); t.amount = r2(t.amount - take);
+        addEvent(t, { type: 'offset', label: 'Cancelled out against what ' + (t.direction === 'i_owe' ? 'they' : 'you') + ' owe', amount: take }); finishIfPaid(t); stamp(t);
+      });
+    });
+    saveCredits(); render(); toast('Cancelled out ' + kes(amt) + '.');
+  }
+  function done(t, msg) { toast(msg); if (t.status === 'settled') { S.view = 'main'; S.id = null; } render(); }
+
+  /* ---------------------------------------------------------- events ---------------------------------------------------------- */
+  function onClick(ev) {
+    var el = ev.target.closest ? ev.target.closest('[data-sl]') : null; if (!el) return; var a = el.getAttribute('data-sl'), v = el.getAttribute('data-v'), i = parseInt(el.getAttribute('data-i'), 10);
+    if (a === 'new') { S.view = 'new'; S.form = newForm(v); render(); }
+    else if (a === 'back') { S.view = 'main'; S.id = null; S.mode = null; S.form = null; render(); }
+    else if (a === 'add') { S.form.lines.push({ name: '', qty: '', value: '' }); render(); var n = $('sl-n' + (S.form.lines.length - 1)); if (n) n.focus(); }
+    else if (a === 'rm') { S.form.lines.splice(i, 1); if (!S.form.lines.length) S.form.lines = [{ name: '', qty: '', value: '' }]; render(); }
+    else if (a === 'save-new') saveNew();
+    else if (a === 'open') { S.view = 'loan'; S.id = el.getAttribute('data-id'); S.mode = null; S.form = {}; render(); }
+    else if (a === 'mode') { S.mode = v; S.form = v === 'money' ? { amount: (byId(S.id) || {}).amount } : {}; render(); }
+    else if (a === 'all') { var t = byId(S.id); S.form = S.form || {}; S.form.ret = {}; (t.lines || []).forEach(function (l) { if (l.out > 0) S.form.ret[l.lid] = r3(l.out); }); render(); }
+    else if (a === 'add-s') { S.form.swap = S.form.swap || []; S.form.swap.push({ name: '', qty: '', value: '' }); render(); }
+    else if (a === 'rm-s') { S.form.swap.splice(i, 1); if (!S.form.swap.length) S.form.swap = [{ name: '', qty: '', value: '' }]; render(); }
+    else if (a === 'do-return') doReturn(); else if (a === 'do-swap') doSwap(); else if (a === 'do-money') doMoney(); else if (a === 'do-off') doOff(); else if (a === 'cancel') doCancel();
+    else if (a === 'share') shareStatement(v);
+    else if (a === 'offset') doOffset(v);
+  }
+  function onInput(ev) {
+    var t = ev.target; if (!t || !t.getAttribute) return;
+    var f = S.form; if (!f) return;
+    var k = t.getAttribute('data-sl-f'), l = t.getAttribute('data-sl-l'), s = t.getAttribute('data-sl-s'), r = t.getAttribute('data-sl-r'), i = parseInt(t.getAttribute('data-i'), 10);
+    if (k) { f[k] = t.type === 'checkbox' ? t.checked : t.value; if (k === 'party' && S.view === 'new' && !f.phone) { var ph = phoneOf(t.value); if (ph) { f.phone = ph; var pe = $('sl-phone'); if (pe) pe.value = ph; } } }
+    else if (l && f.lines && f.lines[i]) {
+      f.lines[i][l] = t.value;
+      if (l === 'name' && !f.lines[i].value) { var p = findItem(t.value); if (p) { f.lines[i].value = String(defaultValue(p) || ''); var ve = $('sl-v' + i); if (ve) ve.value = f.lines[i].value; } }
+      var tt = $('sl-total'); if (tt) tt.textContent = kes(formTotal());
+    } else if (s && f.swap && f.swap[i]) {
+      f.swap[i][s] = t.value;
+      if (s === 'name' && !f.swap[i].value) { var p2 = findItem(t.value); if (p2) { f.swap[i].value = String(defaultValue(p2) || ''); var se = $('sl-sv' + i); if (se) se.value = f.swap[i].value; } }
+      var st = $('sl-swtot'); if (st) st.textContent = kes(swapTotal(f));
+    } else if (r) { (f.ret = f.ret || {})[r] = t.value; }
+  }
+
+  /* ---------------------------------------------------------- tab + roles + old Trade Credits buttons ---------------------------------------------------------- */
+  function place() {
+    var host = $(TAB);
+    if (!host) { var anchor = $('sales-tab'); if (!anchor) return false; host = document.createElement('div'); host.id = TAB; host.className = 'tab-content'; anchor.parentNode.insertBefore(host, anchor.nextSibling); host.addEventListener('click', onClick); host.addEventListener('input', onInput); host.addEventListener('change', onInput); }
+    if (!$(BTN)) {
+      var ref = document.querySelector('.tab-link[data-tab="trade-credits-tab"]'); if (!ref) return false;
+      var nb = document.createElement('button'); nb.id = BTN; nb.className = 'tab-link'; nb.setAttribute('data-tab', TAB); nb.setAttribute('onclick', "guardedSwitchTab(event, '" + TAB + "')"); nb.textContent = '🔄 Borrow & Lend';
+      ref.parentNode.insertBefore(nb, ref);
+      nb.addEventListener('click', function () { setTimeout(function () { S.view = 'main'; S.id = null; S.mode = null; S.form = null; render(); }, 0); });
+    }
+    return true;
+  }
+  function addRole() {
+    try {
+      var item = { id: TAB, label: '🔄 Borrow & Lend' };
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === TAB; })) { var i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'trade-credits-tab'; }); LOCKABLE_TABS.splice(i >= 0 ? i + 1 : LOCKABLE_TABS.length, 0, item); }
+      if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === TAB; })) ROLE_TABS.push(item);
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  function migrate() {      // staff who already had Trade Credits keep that, through the new tab
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return; var changed = false;
+      staff.forEach(function (m) { if (!m || m.slMigrated) return; m.slMigrated = true; changed = true; if (Array.isArray(m.roles) && m.roles.indexOf('trade-credits-tab') >= 0 && m.roles.indexOf(TAB) < 0) { m.roles.push(TAB); m.updatedAt = Date.now(); } });
+      if (changed) { safeSetItem('pos_staff', JSON.stringify(staff)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  function goLoans() { var b = $(BTN); if (b) b.click(); }
+  function guardOld() {      // the old Settle / delete buttons would close a goods entry without the items: send the person here instead
+    try {
+      if (window.__slGuard) return; if (typeof window.settleTradeCredit !== 'function' || typeof window.deleteTradeCredit !== 'function') return;
+      var s0 = window.settleTradeCredit, d0 = window.deleteTradeCredit;
+      var isGoods = function (id) { return ready() && tradeCredits.some(function (t) { return t && t.id === id && t.kind === 'goods'; }); };
+      window.settleTradeCredit = function (id) { if (isGoods(id)) { toast('This one is items - settle it in Borrow & Lend.'); goLoans(); setTimeout(function () { S.view = 'loan'; S.id = id; S.mode = null; S.form = {}; render(); }, 30); return; } return s0.apply(this, arguments); };
+      window.deleteTradeCredit = function (id) { if (isGoods(id)) { toast('This one is items - cancel it in Borrow & Lend so the stock is put back.'); goLoans(); setTimeout(function () { S.view = 'loan'; S.id = id; S.mode = null; S.form = {}; render(); }, 30); return; } return d0.apply(this, arguments); };
+      window.__slGuard = true;
+    } catch (e) { /* the old buttons keep working for money entries */ }
+  }
+  var DONE = false;
+  function ensure() {
+    if (!DONE && ready() && place()) { addRole(); guardOld(); DONE = true; }
+    return DONE;
+  }
+  function boot() {
+    var n = 0;
+    (function tick() { try { if (ensure() && n === 3) migrate(); } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 300 : 1500); })();
+  }
+  setInterval(function () {      // another phone may have recorded a return: refresh the list screen while it is showing (never while someone is typing)
+    try { var h = $(TAB); if (h && h.classList.contains('active') && S.view === 'main' && !(document.activeElement && /^sl-/.test(document.activeElement.id || ''))) render(); } catch (e) { /* next tick */ }
+  }, 8000);
+  window.SL = { __v: 369, render: render, state: S, loans: loans, openLoans: openLoans, statement: statement, parties: parties };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

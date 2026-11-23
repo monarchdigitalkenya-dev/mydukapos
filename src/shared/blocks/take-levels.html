@@ -1,0 +1,103 @@
+<!-- STOCK TAKE BY LEVEL (zip 346) -------------------------------------------------------------------------------------------------
+     An item with package levels (Box > Packet > Piece, set in Inventory > 📦 Package sizes or by "Import boxes & packets") is counted the way it
+     sits on the shelf: one box for each level.  "2 full boxes, 3 loose packets, 7 loose pieces" -> the three numbers are added up in the
+     smallest unit (2 x 200 + 3 x 20 + 7 = 467), shown under the boxes, and that total is the count the Stock Take already applies and records.
+       - Nothing else changes: the same "System says / You counted / Difference" table, the same reasons, manager limit and history.
+       - "Count matches" fills the three boxes from the system figure.
+       - An item without levels, a variant, or a "box & piece" item keeps its normal boxes.
+     Ids / classes: tkl-*. Pure maths is window.__tkl (testable without a screen). -->
+<style id="tkl-css">
+#stock-take-tab .tkl-lv { display: inline-flex; flex-direction: column; gap: 2px; margin: 0 6px 6px 0; vertical-align: top; }
+#stock-take-tab .tkl-lv span { font-size: 11px; font-weight: 800; color: var(--text-muted, #6b7780); }
+#stock-take-tab .tkl-lv input { width: 84px; }
+#stock-take-tab .tkl-sum { display: block; font-size: 12px; color: var(--text-muted, #6b7780); margin-top: 2px; white-space: normal; }
+#stock-take-tab .tkl-sum b { color: var(--text-main, #2c3e50); }
+</style>
+<script id="tkl-js">
+(function () {
+    'use strict';
+    if (window.__tkl) return;
+    var W = window;
+    function r3(n) { return Math.round((Number(n) || 0) * 1000) / 1000; }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function SE() { return W.SE || null; }
+    function levelsOf(p) { var s = SE(); return s && p && !p.dualUnit && !p.hasVariants && p.type !== 'service' ? s.levels(p).filter(function (l) { return l && Number(l.per) > 0; }) : []; }
+    // typed counts { levelId: '3', base: '7' } -> { total, any, bad }
+    function total(p, lv) {
+        var levels = levelsOf(p), t = 0, any = false, bad = false;
+        function add(raw, per) {
+            if (raw === '' || raw == null) return;
+            var n = typeof parseQtyInput === 'function' ? parseQtyInput(String(raw)) : parseFloat(raw);
+            any = true; if (!Number.isFinite(n) || n < 0) { bad = true; return; }
+            t += n * per;
+        }
+        levels.forEach(function (l) { add((lv || {})[l.id], Number(l.per)); });
+        add((lv || {}).base, 1);
+        return { total: r3(t), any: any, bad: bad };
+    }
+    // a base figure -> typed counts (largest level first, the rest as loose pieces)
+    function fromBase(p, base) {
+        var s = SE(), out = {}; if (!s) return out;
+        s.split(p, Number(base) || 0).forEach(function (x) { out[x.id === 'base' ? 'base' : x.id] = String(x.n); });
+        return out;
+    }
+    function state() { try { return stockTakeState(); } catch (e) { return null; } }
+    function itemFor(code) { try { return stockTakeFindByCode(code).item; } catch (e) { return null; } }
+
+    function inputsHtml(p, c, lv) {
+        var levels = levelsOf(p), unit = p.unit || 'pcs';
+        var h = levels.map(function (l) {
+            return '<label class="tkl-lv"><span>' + esc(l.name) + 's <small>(' + esc(l.per) + ')</small></span><input type="text" inputmode="decimal" class="st-input" data-tkl="' + esc(l.id) + '" placeholder="0" value="' + esc(lv[l.id] || '') + '"></label>';
+        }).join('');
+        h += '<label class="tkl-lv"><span>Loose ' + esc(unit) + '</span><input type="text" inputmode="decimal" class="st-input" data-tkl="base" placeholder="0" value="' + esc(lv.base || '') + '"></label>';
+        return h + '<span class="tkl-sum" data-tkl-sum></span>';
+    }
+    function sumText(p, lv) {
+        var t = total(p, lv), unit = p.unit || 'pcs';
+        if (!t.any) return 'Count each one you have: full ' + levelsOf(p).map(function (l) { return l.name.toLowerCase() + 's'; }).join(', ') + ' and loose ' + esc(unit) + '.';
+        if (t.bad) return '<span class="st-bad">Not a number</span>';
+        var parts = levelsOf(p).filter(function (l) { return Number((lv || {})[l.id]) > 0; }).map(function (l) { return (lv[l.id]) + ' × ' + l.per; });
+        if (Number((lv || {}).base) > 0) parts.push(lv.base);
+        return parts.join(' + ') + ' = <b>' + t.total + ' ' + esc(unit) + '</b>';
+    }
+    function decorate() {
+        var tbody = document.querySelector('#stock-take-table tbody'), st = state(); if (!tbody || !st) return;
+        Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-code]'), function (tr) {
+            var code = tr.dataset.code, p = itemFor(code); if (!p || !levelsOf(p).length) return;
+            var c = st.counts[code] = st.counts[code] || {};
+            // the typed levels are remembered; when only a total exists (Count matches, or a re-draw) they are worked out from it
+            var lv = c.lv;
+            if (!lv || (c.qty !== undefined && c.qty !== '' && total(p, lv).total !== r3(c.qty) && !total(p, lv).bad)) lv = (c.qty !== undefined && c.qty !== '' && Number.isFinite(Number(c.qty))) ? fromBase(p, Number(c.qty)) : {};
+            c.lv = lv;
+            var td = tr.querySelector('.st-inputs'); if (!td) return;
+            td.innerHTML = inputsHtml(p, c, lv); td.style.whiteSpace = 'normal'; td.setAttribute('data-tkl-row', '1');
+            var sum = td.querySelector('[data-tkl-sum]'); if (sum) sum.innerHTML = sumText(p, lv);
+            var sys = tr.children[1]; if (sys) { var s = SE(), lab = s ? s.label(p, p.qty) : null; sys.innerHTML = '<b>' + esc(lab || (r3(p.qty) + ' ' + (p.unit || 'pcs'))) + '</b>' + (lab ? '<div class="st-muted">' + r3(p.qty) + ' ' + esc(p.unit || 'pcs') + ' in all</div>' : ''); }
+        });
+        try { var tb = document.querySelector('#stock-take-tab .st-tools'); if (tb && !document.getElementById('tkl-hint')) { var d = document.createElement('div'); d.id = 'tkl-hint'; d.className = 'st-muted'; d.style.cssText = 'flex-basis:100%'; d.textContent = 'Items with boxes and packets: type how many full boxes, loose packets and loose pieces you counted - they are added up for you.'; tb.appendChild(d); } } catch (e) { /* cosmetic */ }
+    }
+    function onInput(e) {
+        var t = e.target; if (!t || !t.getAttribute || t.getAttribute('data-tkl') === null) return;
+        var tr = t.closest ? t.closest('tr[data-code]') : null; if (!tr) return;
+        var code = tr.dataset.code, p = itemFor(code), st = state(); if (!p || !st) return;
+        var c = st.counts[code] = st.counts[code] || {}, lv = c.lv = c.lv || {};
+        lv[t.getAttribute('data-tkl')] = String(t.value).trim();
+        var tt = total(p, lv);
+        // the total is the count the Stock Take applies; "x" is the app's own "Not a number" signal
+        if (!tt.any) { delete c.qty; if (c.reason) delete c.reason; } else c.qty = tt.bad ? 'x' : String(tt.total);
+        var sum = tr.querySelector('[data-tkl-sum]'); if (sum) sum.innerHTML = sumText(p, lv);
+        try { stockTakeFillDiffCell(tr, p); } catch (x) { /* cosmetic */ }
+        try { stockTakeRenderSummary(); } catch (x2) { /* cosmetic */ }
+    }
+    function install() {
+        var tab = document.getElementById('stock-take-tab'); if (!tab) return;
+        if (!tab.__tkl) { tab.__tkl = true; tab.addEventListener('input', onInput, true); }
+        try {
+            var r = W.renderStockTake;
+            if (typeof r === 'function' && !r.__tkl) { var w = function () { var out = r.apply(this, arguments); try { decorate(); } catch (e) { /* the normal boxes stay */ } return out; }; w.__tkl = true; W.renderStockTake = w; }
+        } catch (e) { /* the normal boxes stay */ }
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
+    W.__tkl = { total: total, fromBase: fromBase, levelsOf: levelsOf, decorate: decorate, install: install, sumText: sumText };
+})();
+</script>

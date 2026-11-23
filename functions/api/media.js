@@ -9,6 +9,7 @@
 // which cannot send the device headers: they are readable with the shop link and the file's unguessable id — the same people who
 // can already see the menu. Clinical and reference images are private (paired device only).
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { corsHeadersFor } from './_cors.js';
 import { deviceGuard } from './_device-auth.js';
 import { MEDIA_KINDS, MEDIA_ID_RE, mediaKey, mediaPut, mediaGet, mediaOpen, mediaDelete, mediaExists, mediaBackend, decodeImageDataUrl } from './_media.js';
@@ -63,6 +64,8 @@ export async function onRequestPost(context) {
   if (!license.valid) return json({ error: 'This link is not active.' }, 403, cors);
   const denied = await deviceGuard(request, env, license.clientId, cors);
   if (denied) return denied;
+  const rlu = await checkRateLimit(env, 'upload', license.clientId);   // zip 273: uploads cost storage, per shop
+  if (!rlu.ok) return rateLimitResponse('picture uploads', rlu, cors);
   let body;
   try { body = await request.json(); } catch (e) { return json({ error: 'Invalid JSON body' }, 400, cors); }
   const k = String(body.k || 'p'), id = String(body.id || '');

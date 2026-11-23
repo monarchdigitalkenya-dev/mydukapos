@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-268';
+const SW_VERSION = 'zip-365';
 
 // zip 247 - "UPDATE AVAILABLE" WHEN NOTHING WAS PUBLISHED. The notice used to be decided by the page's ETag, and (1) a changed ETag with identical bytes
 // (Cloudflare re-labels a compressed copy as weak, another edge answers with another tag) announced an update that did not exist, (2) ANY page opened
@@ -69,6 +69,13 @@ async function sha256Hex(buffers) {
     .slice(0, 16);
 }
 
+// zip 269: a response that came through a redirect (Cloudflare Pages answers /index.html with a 308 to /) is refused by some browsers when it is given to a page
+// navigation, so an app stored from such a response would not open offline. Anything stored or served here is first re-wrapped as a plain response.
+async function plainResponse(res) {
+  if (!res || !res.redirected) return res;
+  return new Response(await res.clone().blob(), { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
 // Fetches every shell asset fresh from the network (cache: 'reload' bypasses
 // the HTTP cache so we're guaranteed the real current files, not a stale
 // disk-cached copy of them), caches whichever succeed under a cache name
@@ -83,8 +90,9 @@ async function refreshShell() {
   const fetched = await Promise.all(
     SHELL_ASSETS.map(async (path) => {
       try {
-        const res = await fetch(new Request(path, { cache: 'reload' }));
-        if (!res || !res.ok) return { path, ok: false };
+        const raw = await fetch(new Request(path, { cache: 'reload' }));
+        if (!raw || !raw.ok) return { path, ok: false };
+        const res = await plainResponse(raw);
         const buf = await res.clone().arrayBuffer();
         return { path, ok: true, res, buf };
       } catch (e) {
@@ -102,6 +110,9 @@ async function refreshShell() {
   // and pointer already exist from the last successful install untouched,
   // rather than wiping a working offline copy for nothing.
   if (!succeeded.length) return;
+  // zip 269: the page itself is the one file the app cannot open without. A bad connection that delivered the icons but not the page must not replace a working
+  // offline copy (and delete the old one) with a cache that has no page in it.
+  if (!succeeded.some((f) => f.path === './index.html' || f.path === './')) return;
 
   const hash = await sha256Hex(succeeded.map((f) => f.buf));
   const cacheName = `${APP_ID}-shell-${hash}`;
@@ -151,7 +162,7 @@ async function savePageCopy(copyPromise, ctx) {
   const got = await copyPromise;
   if (!got) return;
   try {
-    const copy = got.copy;
+    const copy = await plainResponse(got.copy);
     const hash = await pageHash(await copy.clone().arrayBuffer());
     const pointer = await caches.open(POINTER_CACHE);
     const prev = await pointer.match('https://sw-internal/page-hash-2');
@@ -187,6 +198,11 @@ function offlinePage() {
     + '<script>setTimeout(function(){location.reload()},6000)<\/script></body>';
   return new Response(html, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
+
+// zip 269: the app's "re-download for offline" button asks the worker to rebuild the stored copy (refreshShell keeps the old copy until the new one is in)
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'refresh-shell') event.waitUntil(refreshShell().catch(() => {}));
+});
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
@@ -272,9 +288,9 @@ self.addEventListener('fetch', (event) => {
       // otherwise opening ?staff=abc offline would miss the cached page entirely
       // and show the browser's offline error page.
       const cachedPage = async () =>
-        (await cache.match('./index.html')) ||
+        plainResponse((await cache.match('./index.html')) ||
         (await cache.match('./')) ||
-        (await cache.match(req, { ignoreSearch: true }));
+        (await cache.match(req, { ignoreSearch: true })));
 
       if (isNavigation) {
         // NETWORK-FIRST for the page itself.
@@ -301,7 +317,7 @@ self.addEventListener('fetch', (event) => {
         const timedOut = new Promise((r) => setTimeout(() => r('timeout'), NAVIGATION_NETWORK_TIMEOUT_MS));
         let res = null, failed = false;
         try { res = await Promise.race([network, timedOut]); } catch (e) { failed = true; }
-        if (res && res !== 'timeout' && res.ok) return res;
+        if (res && res !== 'timeout' && res.ok) return plainResponse(res);
         // zip 147 — Cloudflare's security check answered instead of the app. It must be SHOWN so the browser can complete it (it sets the
         // clearance cookie and returns to the app); serving the cached app instead meant an installed app could never pass it, and every
         // request to the POS server stayed blocked ("offline" / "server refused") with working internet.

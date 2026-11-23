@@ -1,0 +1,247 @@
+<!-- EDIT MORE (zip 300) -------------------------------------------------------------------------------------------------------------
+     "Item setup" panel inside the Edit Item popup - EVERYTHING is done right there, nothing has to be deleted and re-added or found somewhere else:
+       - Category (apps that have no category list of their own in that popup): change it, e.g. Breakfast -> Lunch.
+       - Sold by box and piece: turn it on later (pieces per box + piece price) or off again (only when no loose pieces are left).
+       - Serial / IMEI numbers: turn tracking on or off (existing stock stays counted until each unit is registered).
+       - Variants: a table of ALL the item's variants (name, code, price, stock - edit in place, remove), add new ones, or turn a plain item into one
+         with variants (the stock moves to the first variant). Each variant can also be sold by box and piece or carry serial numbers.
+       - Serial / IMEI: tick it, then paste or scan the numbers into the box under it ("Register") - the units go straight into stock.
+     Renaming a whole item that has variants is in the Edit popup itself (Item name, all variants). Ids: em-*. -->
+<style id="em-css">
+#em-panel { margin: 10px 0 12px; padding: 12px; border: 1px solid #cfe3f7; border-radius: 12px; background: linear-gradient(180deg, rgba(41,128,185,.07), rgba(41,128,185,.02)); }
+#em-panel h4 { margin: 0 0 8px; font-size: 14px; }
+#em-panel .em-row { margin: 0 0 10px; padding: 0 0 10px; border-bottom: 1px dashed rgba(127,140,141,.35); }
+#em-panel .em-row:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+#em-panel label.em-chk { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; font-size: 13px; cursor: pointer; }
+#em-panel label.em-chk input { width: 20px; height: 20px; flex: 0 0 auto; }
+#em-panel .em-sub { display: none; margin-top: 8px; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+#em-panel .em-sub.on { display: grid; }
+#em-panel .em-sub label { font-size: 12px; display: block; margin: 0 0 3px; }
+#em-panel input[type=text], #em-panel input[type=number], #em-panel select { width: 100%; box-sizing: border-box; }
+#em-panel .em-hint { margin: 4px 0 0; font-size: 12px; color: #7f8c8d; }
+#em-panel .em-btn { margin-top: 8px; }
+#em-panel table.em-vt { width: 100%; border-collapse: collapse; font-size: 13px; }
+#em-panel table.em-vt th { text-align: left; font-size: 11px; color: #7f8c8d; padding: 2px 4px; }
+#em-panel table.em-vt td { padding: 3px 3px; }
+#em-panel table.em-vt input { padding: 6px 7px; font-size: 13px; }
+#em-panel table.em-vt tr.cur { background: rgba(41,128,185,.10); }
+#em-panel .em-vscroll { overflow-x: auto; }
+#em-panel textarea { width: 100%; box-sizing: border-box; min-height: 74px; font-family: monospace; font-size: 13px; padding: 7px; }
+#em-panel .em-ok { color: #1e8449; font-size: 12px; margin: 6px 0 0; }
+#em-panel .em-err { color: #c0392b; font-size: 12px; min-height: 0; margin: 6px 0 0; }
+</style>
+<script id="em-js">
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function prod() { try { return inventory.find(function (p) { return p.code === inventoryEditModalCode; }) || null; } catch (e) { return null; } }
+  function vid() { try { return (typeof inventoryEditModalVariantId !== 'undefined' && inventoryEditModalVariantId) || null; } catch (e) { return null; } }
+  function varOf(p) { var id = vid(); return id && p && Array.isArray(p.variants) ? (p.variants.find(function (v) { return v.id === id; }) || null) : null; }
+  function hasVars(p) { return !!(p && p.hasVariants && Array.isArray(p.variants) && p.variants.length); }
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function recompute(p) {
+    if (!hasVars(p)) return;
+    p.qty = r3(p.variants.reduce(function (a, v) { return a + (Number(v.qty) || 0); }, 0));
+    p.price = Math.min.apply(null, p.variants.map(function (v) { return Number(v.price) || 0; }));
+  }
+  function persist(p) {
+    if (p) { recompute(p); p.updatedAt = Date.now(); }
+    try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* next save writes it */ }
+    try { queuePush(); } catch (e) { /* next change sends it */ }
+    try { renderInventoryTable(); } catch (e) { /* not on screen */ }
+    try { renderInventoryEditModalFields(); } catch (e) { /* closed */ }
+  }
+  function gid() { try { if (typeof genSaleId === 'function') return String(genSaleId()); } catch (e) { /* fallback */ } return 'v-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function taken(c) {
+    c = String(c).toLowerCase();
+    return inventory.some(function (p) { return p && (String(p.code || '').toLowerCase() === c || (p.pieceCode && String(p.pieceCode).toLowerCase() === c) || (Array.isArray(p.variants) && p.variants.some(function (v) { return v && (String(v.code || '').toLowerCase() === c || (v.pieceCode && String(v.pieceCode).toLowerCase() === c)); }))); });
+  }
+  function uniq(base) { var c = base, n = 1; while (taken(c)) c = base + '-' + (++n); return c; }
+  function slug(code, name) { return String(code + '-' + name).toUpperCase().replace(/[^A-Z0-9-]+/g, '') || gid(); }
+  function ownCategories() { return !!$('inv-edit-category-group'); }
+  function canVariants() { return typeof updateVariantField === 'function'; }
+  function canSerial() { return typeof serialIsTracked === 'function' && typeof serialValidateBatch === 'function' && typeof serialMakeUnits === 'function'; }
+  function units() { try { return Array.isArray(serialUnits) ? serialUnits : []; } catch (e) { return []; } }
+  function newVariant(p, name, src, qty) {
+    return { id: gid(), name: name, code: uniq(slug(p.code, name)), price: Number(src.price) || 0, image: null, wholesaleSellingPrice: Number(src.wholesaleSellingPrice) || 0, wholesalePrice: Number(src.wholesalePrice) || 0, minimumPrice: Number(src.minimumPrice) || 0, qty: qty || 0, dualUnit: false, unitsPerBox: null, pieceCode: null, piecePrice: 0, pieceWholesalePrice: 0, pieceQty: 0 };
+  }
+
+  function mount() {
+    var m = $('inventory-edit-modal'); if (!m) return null;
+    var el = $('em-panel');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'em-panel';
+      var anchor = $('inv-edit-parentname-group') || $('inv-edit-name-group');
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(el, anchor.nextSibling); else return null;
+    }
+    return el;
+  }
+
+  function render() {
+    var el = mount(); if (!el) return;
+    var p = prod(), v = varOf(p);
+    if (!p || p.type === 'service' && !canVariants()) { el.style.display = 'none'; return; }
+    if (p && p.type === 'service') { el.style.display = ''; }
+    el.style.display = '';
+    var t = v || p;                                   // what the box / serial settings apply to
+    var keep = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : '';
+    var isSvc = p.type === 'service';
+    var h = '<h4>🛠️ Item setup <span style="font-weight:400;color:#7f8c8d;font-size:12px;">- change anything here, nothing is deleted</span></h4>';
+    if (!ownCategories()) {
+      var cats = {}; inventory.forEach(function (x) { if (x && x.category) cats[x.category] = 1; }); try { (window.__ctlExtraCats ? window.__ctlExtraCats() : []).forEach(function (c) { cats[c] = 1; }); } catch (e) { /* none */ }
+      h += '<div class="em-row"><label for="em-cat" style="font-weight:600;font-size:13px;">Category</label>' +
+        '<input type="text" id="em-cat" list="em-cat-list" maxlength="60" placeholder="e.g. Breakfast" value="' + esc(p.category || '') + '">' +
+        '<datalist id="em-cat-list">' + Object.keys(cats).sort().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist>' +
+        '<p class="em-hint">Type a new category or pick an existing one; leave it empty for none.</p></div>';
+    }
+    if (!isSvc) {
+      // ---- box & piece: for the item, or for the variant being edited ----
+      var dual = !!t.dualUnit;
+      h += '<div class="em-row"><label class="em-chk"><input type="checkbox" id="em-dual"' + (dual ? ' checked' : '') + '> 📦 Sold by box and by piece' + (v ? ' <span style="font-weight:400;color:#7f8c8d">(' + esc(v.name) + ')</span>' : '') + '</label>' +
+        '<div class="em-sub" id="em-dual-sub">' +
+        '<div><label for="em-upb">Pieces in one box</label><input type="number" id="em-upb" min="2" step="1" value="' + (t.unitsPerBox || '') + '"></div>' +
+        '<div><label for="em-pp">Price per piece (KES)</label><input type="number" id="em-pp" min="0" step="0.01" value="' + (t.piecePrice != null && dual ? Number(t.piecePrice).toFixed(2) : '') + '"></div>' +
+        '</div><p class="em-hint">' + (dual ? 'Untick to sell only by the box (only possible when no loose pieces are left).' : 'Tick, fill the two boxes and tap Apply: it can then be sold as a whole box or as single pieces.') + '</p>' +
+        '<button type="button" class="settings-small-btn em-btn" id="em-dual-go">' + (dual ? 'Save pieces per box / price' : 'Apply') + '</button></div>';
+    }
+    if (canSerial() && !isSvc && !t.dualUnit) {
+      var tr = !!serialIsTracked(p, v);
+      var mine = units().filter(function (u) { return u && u.code === p.code && (v ? u.variantId === v.id : !u.variantId) && u.status === 'in_stock'; }).length;
+      var unreg = Number((v || p).serialUnregistered) || 0;
+      h += '<div class="em-row"><label class="em-chk"><input type="checkbox" id="em-ser"' + (tr ? ' checked' : '') + '> 🔢 Every unit has its own serial / IMEI number' + (v ? ' <span style="font-weight:400;color:#7f8c8d">(' + esc(v.name) + ')</span>' : '') + '</label>' +
+        '<p class="em-hint">' + (tr ? mine + ' registered in stock' + (unreg ? ' · ' + unreg + ' counted but not yet given a number' : '') + '. Add more below.' : 'Tick it, then paste or scan the numbers below. Existing stock stays counted until each unit is registered.') + '</p>' +
+        '<div class="em-sub on" style="grid-template-columns:1fr;"><div><label for="em-sl">Serial / IMEI numbers - one unit per line (two numbers on one line: put | between them)</label><textarea id="em-sl" placeholder="356938035643809&#10;356938035643810 | 356938035643811"></textarea></div>' +
+        '<div><label for="em-st">Number type</label><select id="em-st"><option value="imei">IMEI</option><option value="serial">Serial number</option><option value="mac">MAC address</option><option value="other">Other</option></select></div></div>' +
+        '<button type="button" class="settings-small-btn em-btn" id="em-sgo">Register these numbers</button></div>';
+    }
+    if (canVariants() && !isSvc) {
+      if (hasVars(p)) {
+        h += '<div class="em-row"><div style="font-weight:600;font-size:13px;margin-bottom:6px;">🧩 All variants of "' + esc(p.name) + '"</div><div class="em-vscroll"><table class="em-vt"><thead><tr><th>Name</th><th>Code</th><th>Price</th><th>Stock</th><th></th></tr></thead><tbody>' +
+          p.variants.map(function (x) {
+            return '<tr class="' + (v && x.id === v.id ? 'cur' : '') + '"><td><input type="text" data-ev="name" data-vid="' + esc(x.id) + '" value="' + esc(x.name) + '" maxlength="60" aria-label="Variant name"></td>' +
+              '<td><input type="text" data-ev="code" data-vid="' + esc(x.id) + '" value="' + esc(x.code) + '" maxlength="40" aria-label="Variant code"></td>' +
+              '<td><input type="number" data-ev="price" data-vid="' + esc(x.id) + '" value="' + (Number(x.price) || 0).toFixed(2) + '" min="0" step="0.01" style="width:84px" aria-label="Variant price"></td>' +
+              '<td><input type="number" data-ev="qty" data-vid="' + esc(x.id) + '" value="' + (Number(x.qty) || 0) + '" min="0" step="1" style="width:70px" aria-label="Variant stock"></td>' +
+              '<td style="white-space:nowrap">' + (v && x.id === v.id ? '' : '<button type="button" class="settings-small-btn" data-eo="' + esc(x.id) + '" title="Edit this variant\'s other details">Open</button> ') + '<button type="button" class="delete-btn" data-ex="' + esc(x.id) + '" title="Remove this variant">✕</button></td></tr>';
+          }).join('') + '</tbody></table></div></div>';
+      }
+      h += '<div class="em-row"><label for="em-vn" style="font-weight:600;font-size:13px;">🧩 ' + (hasVars(p) ? 'Add more variants' : 'Add variants (sizes, colours, flavours)') + '</label>' +
+        '<input type="text" id="em-vn" maxlength="200" placeholder="e.g. Small, Medium, Large">' +
+        (hasVars(p) ? '' : '<div style="margin-top:6px;"><label for="em-first" style="font-size:12px;display:block;margin:0 0 3px;">What is the existing item called as a variant?</label><input type="text" id="em-first" maxlength="60" value="Original"></div>') +
+        '<p class="em-hint">' + (hasVars(p) ? 'New variants start with 0 stock and the price of the first variant.' : 'The current stock and price move to the variant named above; the new ones start at 0 stock.') + '</p>' +
+        '<button type="button" class="settings-small-btn em-btn" id="em-vgo">Add</button></div>';
+    }
+    h += '<p class="em-err" id="em-err" role="alert"></p><p class="em-ok" id="em-ok" role="status"></p>';
+    el.innerHTML = h;
+    var sub = $('em-dual-sub'); if (sub) { sub.classList.toggle('on', !!(t.dualUnit || ($('em-dual') && $('em-dual').checked))); }
+    if (keep && $(keep)) { try { $(keep).focus(); } catch (e) { /* ok */ } }
+  }
+  function err(t) { var e = $('em-err'); if (e) e.textContent = t || ''; var o = $('em-ok'); if (o && t) o.textContent = ''; }
+  function ok(t) { var o = $('em-ok'); if (o) o.textContent = t || ''; }
+
+  document.addEventListener('change', function (ev) {
+    var t = ev.target; if (!t || !t.closest || !t.closest('#em-panel')) return;
+    var p = prod(); if (!p) return; var v = varOf(p), tg = v || p;
+    if (t.dataset && t.dataset.ev) {
+      var x = p.variants.find(function (q) { return q.id === t.dataset.vid; }); if (!x) return;
+      updateVariantField(p.code, x.id, t.dataset.ev, t.value);
+      try { renderInventoryEditModalFields(); } catch (e) { /* closed */ }
+      return;
+    }
+    if (t.id === 'em-cat') { p.category = t.value.trim(); if (!p.category) delete p.category; persist(p); toast('Category for "' + p.name + '" is now ' + (p.category ? '"' + p.category + '"' : 'empty') + '.'); }
+    else if (t.id === 'em-dual') {
+      var sub = $('em-dual-sub');
+      if (tg.dualUnit && !t.checked) {
+        if ((Number(tg.pieceQty) || 0) > 0) { t.checked = true; err('There are still ' + tg.pieceQty + ' loose pieces. Sell them or open them into a box count first.'); return; }
+        tg.dualUnit = false; persist(p); toast('"' + (v ? p.name + ' (' + v.name + ')' : p.name) + '" is now sold by the box only.');
+      } else if (sub) { sub.classList.toggle('on', t.checked); var u = $('em-upb'); if (t.checked && u) u.focus(); }
+    }
+    else if (t.id === 'em-ser') {
+      if (t.checked) {
+        if (Number(tg.qty) > 0 && !(Number(tg.serialUnregistered) > 0) && !confirm('"' + p.name + '" has ' + tg.qty + ' in stock. Turn on serial / IMEI tracking? These units stay counted but cannot be sold until each number is registered.')) { t.checked = false; return; }
+        setTracked(p, v, true); persist(p); toast('Serial numbers are now tracked for "' + p.name + '".');
+      } else {
+        if (!confirm('Stop tracking serial numbers for "' + p.name + '"? Registered units and history are kept.')) { t.checked = true; return; }
+        tg.serialized = false; persist(p); toast('Serial tracking is off for "' + p.name + '".');
+      }
+    }
+  });
+  function setTracked(p, v, on) {
+    var tg = v || p;
+    tg.serialized = !!on;
+    if (on && !(Number(tg.serialUnregistered) > 0) && Number(tg.qty) > 0 && !units().some(function (u) { return u && u.code === p.code && (v ? u.variantId === v.id : true); })) tg.serialUnregistered = Number(tg.qty);
+  }
+  function registerSerials(p, v) {
+    var text = ($('em-sl') || {}).value || '', type = ($('em-st') || {}).value || 'imei';
+    // zip 304: only the apps that keep serial units (the Shop) have these; elsewhere say so instead of failing with a ReferenceError
+    if (typeof serialParseList !== 'function' || typeof serialUnits === 'undefined' || !Array.isArray(serialUnits)) { err('Serial / IMEI numbers are registered in the Shop app. They are not kept in this app.'); return; }
+    var rows = serialParseList(text);
+    if (!rows.length) { err('Type or paste at least one number.'); return; }
+    var res = serialValidateBatch(units(), rows, { type: type });
+    if (!res.count) { err(res.errors.slice(0, 3).map(function (e) { return 'Line ' + e.row + ': ' + e.msg; }).join(' ')); return; }
+    if (!serialIsTracked(p, v)) setTracked(p, v, true);
+    var tg = v || p, now = Date.now(), dev = ''; try { dev = (localStorage.getItem('pos_device_id') || 'dev').slice(-6); } catch (e) { dev = 'dev'; }
+    var batch = 'edt-' + dev + '-' + now.toString(36);
+    var made = serialMakeUnits(res.units.map(function (u) { return { row: u.row, ids: u.ids.map(function (i) { return { type: type, value: i.value, norm: i.norm }; }) }; }), { batchId: batch, code: p.code, variantId: v ? v.id : null, name: v ? p.name + ' ' + v.name : p.name, cost: Number(tg.wholesalePrice) || 0, supplier: '', ref: batch, by: (function () { try { return activeServerName() || ''; } catch (e) { return ''; } })(), now: now, reason: 'Registered from Edit' });
+    var n = 0; made.forEach(function (u) { if (!serialUnits.some(function (x) { return x.id === u.id; })) { serialUnits.push(u); n++; } });
+    var unreg = Number(tg.serialUnregistered) || 0, conv = Math.min(unreg, n);
+    if (conv) tg.serialUnregistered = unreg - conv;
+    var add = n - conv; if (add) tg.qty = r3((Number(tg.qty) || 0) + add);
+    try { safeSetItem('pos_serial_units', JSON.stringify(serialUnits)); } catch (e) { /* retried on the next save */ }
+    if (add) { try { logStockMovement(v ? (v.code || p.code) : p.code, v ? p.name + ' ' + v.name : p.name, add, 'Registered ' + n + ' serialized unit(s) from Edit', 'qty'); } catch (e) { /* the units keep their own history */ } }
+    var bad = {}; res.errors.forEach(function (e2) { bad[e2.row] = 1; });
+    var left = rows.filter(function (r, i) { return bad[i + 1]; }).map(function (r) { return r.join(' | '); }).join('\n');
+    persist(p);
+    if ($('em-sl')) $('em-sl').value = left;
+    if (res.errors.length) err(n + ' registered. Not registered: ' + res.errors.slice(0, 3).map(function (e3) { return 'line ' + e3.row + ' - ' + e3.msg; }).join(' ')); else ok(n + ' unit' + (n === 1 ? '' : 's') + ' registered.');
+    toast(n + ' unit(s) registered.');
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('#em-panel button') : null; if (!b) return;
+    var p = prod(); if (!p) return; var v = varOf(p), tg = v || p; err('');
+    if (b.dataset.eo) { var code0 = p.code, id0 = b.dataset.eo; try { openInventoryEditModal(code0, id0); } catch (e) { /* ok */ } return; }
+    if (b.dataset.ex) { try { removeSavedVariant(p.code, b.dataset.ex); } catch (e) { /* ok */ } try { if (!prod() || !hasVars(prod())) { var m = prod(); if (m && vid()) { inventoryEditModalVariantId = null; } } renderInventoryEditModalFields(); } catch (e2) { /* closed */ } return; }
+    if (b.id === 'em-dual-go') {
+      var box = $('em-dual'); if (!box || !box.checked) { err('Tick "Sold by box and by piece" first.'); return; }
+      var upb = parseInt($('em-upb').value, 10); if (!upb || upb < 2) { err('Enter how many pieces are in one box (2 or more).'); return; }
+      var pp = $('em-pp').value.trim() === '' ? Math.round(((Number(tg.price) || 0) / upb) * 100) / 100 : parseFloat($('em-pp').value);
+      if (isNaN(pp) || pp < 0) { err('Enter a valid price per piece.'); return; }
+      var was = !!tg.dualUnit;
+      tg.dualUnit = true; tg.unitsPerBox = upb; tg.piecePrice = pp;
+      if (!was) { tg.pieceWholesalePrice = Math.round(((Number(tg.wholesalePrice) || 0) / upb) * 100) / 100; tg.pieceQty = Number(tg.pieceQty) || 0; if (v) { if (!tg.pieceCode) tg.pieceCode = uniq(String(tg.code || p.code) + '-PC'); } else if (!tg.looseUnit) tg.looseUnit = 'pcs'; if (tg.serialized) tg.serialized = false; }
+      persist(p); toast(was ? 'Pieces per box / piece price saved.' : '"' + (v ? p.name + ' (' + v.name + ')' : p.name) + '" can now be sold by the box or by the piece.');
+    } else if (b.id === 'em-sgo') {
+      registerSerials(p, v);
+    } else if (b.id === 'em-vgo') {
+      var names = String($('em-vn').value || '').split(/[,\n;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!names.length) { err('Type at least one variant name, separated by commas.'); return; }
+      var low = {}; for (var i = 0; i < names.length; i++) { var k = names[i].toLowerCase(); if (low[k]) { err('"' + names[i] + '" is typed twice.'); return; } low[k] = 1; }
+      if (!hasVars(p)) {
+        if (p.dualUnit || p.pieceCode) { err('This item is sold by box and piece, so it cannot be turned into variants here. Untick box and piece first, or add the variants as separate items.'); return; }
+        var first = ($('em-first') ? $('em-first').value : 'Original').trim() || 'Original';
+        if (low[first.toLowerCase()]) { err('The existing item and the new variants need different names.'); return; }
+        var fv = newVariant(p, first, p, Number(p.qty) || 0); fv.price = Number(p.price) || 0; fv.image = p.image || null;
+        if (p.serialized) { fv.serialized = true; fv.serialUnregistered = Number(p.serialUnregistered) || 0; }
+        p.variants = [fv]; p.hasVariants = true;
+      } else {
+        for (var j = 0; j < p.variants.length; j++) if (low[String(p.variants[j].name || '').toLowerCase()]) { err('"' + p.variants[j].name + '" already exists as a variant.'); return; }
+      }
+      var src = p.variants[0];
+      names.forEach(function (n) { p.variants.push(newVariant(p, n, src, 0)); });
+      persist(p); toast(names.length + ' variant' + (names.length === 1 ? '' : 's') + ' added to "' + p.name + '".');
+    }
+  });
+
+  function boot() {
+    if (typeof renderInventoryEditModalFields === 'function' && !renderInventoryEditModalFields.__em) {
+      var orig = renderInventoryEditModalFields;
+      var w = function () { var r = orig.apply(this, arguments); try { render(); } catch (e) { /* cosmetic */ } return r; };
+      w.__em = true; window.renderInventoryEditModalFields = w;
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+  window.__emRender = render;
+})();
+</script>

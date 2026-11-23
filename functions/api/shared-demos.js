@@ -12,6 +12,9 @@ import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { requireOwnerAuth } from './_owner-auth.js';
 import { corsHeadersFor } from './_cors.js';
 
+// zip 288: demos that have a real photo (public-site/img/demo-<key>.webp, built by tools/make-demo-photos.py). hardware and liquor are drawn scenes (tools/make-demo-scenes.py), not photos: replace the files with photos any time.
+const DEMO_PHOTOS = ['retail', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water', 'hardware', 'liquor', 'carwash'];
+
 function json(body, status, cors, extra) { return new Response(JSON.stringify(body), { status: status || 200, headers: { 'Content-Type': 'application/json', ...(extra || {}), ...cors } }); }
 
 export async function onRequestOptions(context) { return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env) }); }
@@ -22,7 +25,7 @@ export async function onRequestGet(context) {
   const url = new URL(request.url);
   const open = url.searchParams.get('open');
   if (!open) {
-    const demos = SHARED_DEMOS.map((d) => ({ key: d.key, title: d.title, tag: d.tag, blurb: d.blurb, features: d.features, password: d.password, image: '/img/demo-' + d.key + '.svg', openUrl: '/api/shared-demos?open=' + d.key, link: demoLink(env, d, url.origin) }));
+    const demos = SHARED_DEMOS.map((d) => ({ key: d.key, title: d.title, tag: d.tag, blurb: d.blurb, features: d.features, password: d.password, image: '/img/demo-' + d.key + (DEMO_PHOTOS.includes(d.key) ? '.webp' : '.svg'), fallback: '/img/demo-' + d.key + '.svg', openUrl: '/api/shared-demos?open=' + d.key, link: demoLink(env, d, url.origin) }));
     return json({ ok: true, demos, login: 'Choose Admin and enter the password 0000. Nothing you do is saved online and payments are simulated.' }, 200, cors, { 'Cache-Control': 'public, max-age=300' });
   }
   const spec = findSharedDemo(open);

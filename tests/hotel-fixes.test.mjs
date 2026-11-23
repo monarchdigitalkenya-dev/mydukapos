@@ -17,7 +17,7 @@ for (const app of SHOP_APPS) {
     const { w, d, errors, close } = await boot(app, { storage: { pos_inventory: INV }, wait: 1500 });
     w.eval("showToast = function () {}; window.confirm = () => true");
     w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-    const nameEl = d.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+    const nameEl = d.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; const phEl = d.getElementById('sms-checkout-phone-input'); if (phEl) phEl.value = '0712345678';
     await w.eval('checkoutCart()');
     assert.equal(w.eval('bills.length'), 1);
     const id = w.eval('bills[0].id');

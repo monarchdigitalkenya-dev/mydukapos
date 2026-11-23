@@ -496,6 +496,48 @@ export async function onRequestPut(context) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
   }
 
+  // Mode 4 (zip 364) — business insights. The hospital system sends ONLY aggregate figures for a period (totals, shares, counts: never a patient
+  // name, phone number, record or any free text a patient wrote). The model answers with a few short, plain-language observations the
+  // manager can act on. Nothing is stored here.
+  if (body.insights && typeof body.insights === 'object') {
+    const period = String(body.insights.period || '').replace(/[^\w\s,.:;()\/&%+-]/g, '').slice(0, 90);
+    let facts = '';
+    try { facts = JSON.stringify(body.insights.facts || {}); } catch (e) { facts = ''; }
+    if (!facts || facts === '{}') return jsonResponse({ error: 'There are no figures to look at for this period yet.' }, 400);
+    if (facts.length > 7000) return jsonResponse({ error: 'Too much data was sent.' }, 413);
+    const SYSTEM_PROMPT = `You are a careful operations analyst for a small Kenyan hospital or clinic. You are given a JSON object of AGGREGATE figures for one period (money is in Kenya shillings, KES). Write between 4 and 6 short, specific observations that would help the manager run the facility better.
+
+Rules:
+- Use ONLY the numbers in the JSON. Never invent a figure, a cause or a patient detail. If something is missing or zero, say that more records are needed instead of guessing.
+- Each observation is one or two plain sentences (under 45 words) in simple English, ending with a concrete next step where one is sensible (for example: staff the busiest hour better, restock a named item, follow up unpaid bills, review a slow service).
+- Give a mix: what is going well, what needs watching, and one practical idea.
+- Do not give medical advice, diagnoses or treatment suggestions. Do not mention being an AI.
+- kind must be one of: good, watch, idea.
+Respond with a JSON object matching the schema exactly — no commentary.`;
+    const RESPONSE_SCHEMA = {
+      type: 'OBJECT',
+      properties: { insights: { type: 'ARRAY', items: { type: 'OBJECT', properties: { kind: { type: 'STRING' }, title: { type: 'STRING' }, text: { type: 'STRING' } }, required: ['kind', 'title', 'text'] } } },
+      required: ['insights'],
+    };
+    const result = await callGeminiForJson({
+      keys,
+      systemPrompt: SYSTEM_PROMPT,
+      userParts: [{ text: `Period: ${period || 'selected period'}\nFigures (JSON): ${facts}` }],
+      responseSchema: RESPONSE_SCHEMA,
+      maxOutputTokens: 2048,
+      contextLabel: 'insights',
+    });
+    if (!result.ok) return result.response;
+    const raw = (result.data && Array.isArray(result.data.insights)) ? result.data.insights : [];
+    const clean = raw.map((x) => ({
+      kind: ['good', 'watch', 'idea'].includes(x && x.kind) ? x.kind : 'idea',
+      title: String((x && x.title) || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      text: String((x && x.text) || '').replace(/\s+/g, ' ').trim().slice(0, 420),
+    })).filter((x) => x.title && x.text).slice(0, 6);
+    if (!clean.length) return jsonResponse({ error: 'The AI did not return any usable insights. Please try again.' }, 502);
+    return jsonResponse({ insights: clean });
+  }
+
   // Mode 3 — AI-powered inventory column detection. Handled and returned
   // here, entirely separately from the image/textDocument modes below
   // (different prompt, different schema, much smaller payload).

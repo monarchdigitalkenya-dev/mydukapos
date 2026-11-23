@@ -10,7 +10,7 @@ export const RELEASES_KEY = 'app-releases:v1';
 export const R2_PREFIX = 'app-releases/';
 
 // app key (native/apps.json) -> licence product
-export const APP_PRODUCTS = { shop: 'shop', hotel: 'hotel', hmis: 'hospital', production: 'production', pharmacy: 'pharmacy', services: 'services', aquapos: 'water' };
+export const APP_PRODUCTS = { shop: 'shop', hotel: 'hotel', hmis: 'hospital', production: 'production', pharmacy: 'pharmacy', services: 'services', aquapos: 'water', carwash: 'carwash' };
 export const APP_NAMES = { shop: 'MyDukaPOS', hotel: 'MyDukaPOS Hotel', hmis: 'MyDukaPOS HMIS', production: 'MyDukaPOS Production', pharmacy: 'MyDukaPOS Pharmacy', services: 'MyDukaPOS Services', aquapos: 'MyDukaPOS AquaPOS' };
 export const PLATFORMS = { android: ['apk'], windows: ['exe', 'msi'] };
 export const CONTENT_TYPES = { apk: 'application/vnd.android.package-archive', exe: 'application/vnd.microsoft.portable-executable', msi: 'application/x-msi' };

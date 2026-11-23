@@ -26,6 +26,7 @@ public class NativeBridge {
     private static final UUID SPP = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");   // Bluetooth serial (ESC/POS printers)
     private final MainActivity act;
     private String pendingBtCallback;
+    private BuiltinPrinter builtin;
 
     NativeBridge(MainActivity act) { this.act = act; }
 
@@ -56,6 +57,7 @@ public class NativeBridge {
             o.put("device", Build.MANUFACTURER + " " + Build.MODEL);
             o.put("android", Build.VERSION.RELEASE);
             o.put("bluetooth", adapter() != null);
+            o.put("builtinPrinter", builtin().installed());   // the terminal's own printer service is present (not yet proof that it answers)
             return o.toString();
         } catch (Exception e) { return "{}"; }
     }
@@ -138,7 +140,8 @@ public class NativeBridge {
                 if (!a.isEnabled()) throw new Exception("Bluetooth is off.");
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
                 BluetoothDevice dev = a.getRemoteDevice(address);
-                a.cancelDiscovery();
+                // zip 340: NO cancelDiscovery() here. On Android 12+ it needs the BLUETOOTH_SCAN permission, which this app never asks for (it only
+                // connects to PAIRED printers and never scans), so on a terminal with the "InnerPrinter" device it failed with "Need android.permission.BLUETOOTH_SCAN".
                 sock = dev.createRfcommSocketToServiceRecord(SPP);
                 sock.connect();                                        // throws if the printer is off / out of range / busy
                 OutputStream out = sock.getOutputStream();
@@ -153,6 +156,30 @@ public class NativeBridge {
             } finally {
                 try { if (sock != null) sock.close(); } catch (Exception ignored) { }
             }
+            callback(cbId, r);
+        }).start();
+    }
+
+    private synchronized BuiltinPrinter builtin() { if (builtin == null) builtin = new BuiltinPrinter(act); return builtin; }
+
+    /** The terminal's built-in printer: device evidence, whether the vendor printer service is there and answering. Never prints. */
+    @JavascriptInterface
+    public void builtinStatus(String cbId) {
+        if (!allowed()) return;
+        new Thread(() -> callback(cbId, builtin().status())).start();
+    }
+
+    /**
+     * ESC/POS bytes (base64) to the built-in printer. jobId makes a retry safe: the same id never prints twice. The answer is ok only
+     * when the printer service accepted the job; it cannot tell paper-out / cover-open, so the answer never claims paper came out.
+     */
+    @JavascriptInterface
+    public void builtinPrint(String base64, String jobId, String cbId) {
+        if (!allowed()) return;
+        new Thread(() -> {
+            JSONObject r;
+            try { r = builtin().print(Base64.decode(base64, Base64.DEFAULT), jobId); }
+            catch (Exception e) { r = new JSONObject(); try { r.put("ok", false); r.put("stage", "input"); r.put("error", String.valueOf(e.getMessage())); } catch (Exception ignored) { } }
             callback(cbId, r);
         }).start();
     }

@@ -28,6 +28,7 @@ import { eatDate } from './_billing-core.js';
 import { buildLicencePdf } from './_licence-pdf.js';
 import { normalizePhone, ownerGateway, sendOwnerStk, readOwnerTx } from './_pay-owner.js';
 import { proofMatches } from './_device-auth.js';
+import { countEvent } from './hit.js';
 import { readState, shopMode, shopCall } from './_state-store.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { corsHeadersFor } from './_cors.js';
@@ -97,7 +98,7 @@ async function fulfill(env, rec, origin, receipt) {
     // if another request recorded a shop for this purchase while this one was making its own, that one stands and this one is put in the Trash (never two live shops for one payment)
     const latest = await load(env, rec.id);
     if (latest && latest.clientId && latest.clientId !== c.id) { await deleteClient(env, c.id); c = await getLicense(env, latest.clientId); }
-    else { rec.clientId = c.id; await save(env, rec); }
+    else { rec.clientId = c.id; await save(env, rec); try { await countEvent(env, 'link_created'); } catch (e) { /* counting never blocks a purchase */ } }
   }
   // the owner's own bookkeeping for the link: what was agreed and paid (the Permanent clients list shows it). Income is still recorded with the 💰 toggle there.
   const done = await getLicense(env, c.id);
@@ -213,16 +214,21 @@ export async function onRequestPost(context) {
     // nothing to pay (a 100% offer) is still confirmed by the owner: a public code must never mint free links on its own
     const gw = amount > 0 ? await ownerGateway(env) : null;
     const rec = { id: randomToken(12), token: randomToken(24), status: 'pending', kind: asBranch ? 'branch' : 'new', parentId: asBranch ? parentShop.id : undefined, slugWanted: asBranch ? undefined : (wantedSlug || undefined), product: shop.product, name, phone, email, method: gw ? 'stk' : 'claim', amount, quote, referral: referral || undefined, offerCode: quote.snapshot.offerCode || undefined, createdAt: Date.now() };
+    countEvent(env, 'link_start').catch(() => {});        // zip 307: "registration started" for the owner's journey counts (a number per day)
     if (gw) {
       const rp = await checkRateLimit(env, 'stkPhone', gw.clientId + ':' + phone, 1);        // one phone cannot be pestered with prompts
       if (!rp.ok) return rateLimitResponse('payment prompts to this phone number', rp, cors);
       try {
         const r = await sendOwnerStk(env, request, gw, { phone, amount, accountRef: 'MyDukaPOS', description: 'POS link' });
         rec.checkoutId = r.checkoutId; rec.provider = r.provider; rec.paymentUrl = r.paymentUrl;
-      } catch (e) { return reply({ error: (e && e.message) || 'The payment prompt could not be sent.' }, 502); }
+      } catch (e) {
+        // outcome unknown: a prompt may be on the phone, so say so and never start a second one; any other failure falls back to the manual "I've paid" route so a bad gateway setup never blocks a sale
+        if (e && e.code === 'stk_unknown') return reply({ error: e.message, code: 'stk_unknown' }, 502);
+        rec.method = 'claim'; rec.stkError = String((e && e.message) || 'The payment prompt could not be sent.').slice(0, 160);
+      }
     }
     await save(env, rec); await indexAdd(env, rec.id);
-    return reply({ id: rec.id, token: rec.token, method: rec.method, amount, quote: publicQuote(quote), kind: rec.kind, paymentUrl: rec.paymentUrl });
+    return reply({ id: rec.id, token: rec.token, method: rec.method, amount, quote: publicQuote(quote), kind: rec.kind, paymentUrl: rec.paymentUrl, stkError: rec.stkError });
   }
 
   // ---- buyer: follow-up calls, proved by the request's own secret ----
@@ -232,6 +238,23 @@ export async function onRequestPost(context) {
     if (rec.method !== 'claim') return reply({ error: 'This request is paid by the payment prompt.' }, 400);
     if (rec.status === 'pending') { rec.status = 'claimed'; rec.claimedAt = Date.now(); await save(env, rec); }
     return reply(pub(rec));
+  }
+  if (action === 'retry') {
+    // zip 300: a request that fell back to "send the money yourself" can ask for the payment prompt again once the gateway answers
+    if (rec.method !== 'claim' || rec.status !== 'pending') return reply({ error: 'This request cannot send a new prompt.' }, 400);
+    const gw = rec.amount > 0 ? await ownerGateway(env) : null;
+    if (!gw) return reply({ error: 'The payment prompt is not available right now. Send the money and tap "I\u2019ve made this payment".', code: 'no_gateway' }, 409);
+    const rp = await checkRateLimit(env, 'stkPhone', gw.clientId + ':' + rec.phone, 3);
+    if (!rp.ok) return rateLimitResponse('payment prompts to this phone number', rp, cors);
+    try {
+      const r = await sendOwnerStk(env, request, gw, { phone: rec.phone, amount: rec.amount, accountRef: 'MyDukaPOS', description: 'POS link' });
+      rec.checkoutId = r.checkoutId; rec.provider = r.provider; rec.paymentUrl = r.paymentUrl; rec.method = 'stk'; delete rec.stkError;
+    } catch (e) {
+      if (e && e.code === 'stk_unknown') return reply({ error: e.message, code: 'stk_unknown' }, 502);
+      rec.stkError = String((e && e.message) || 'The payment prompt could not be sent.').slice(0, 160); await save(env, rec);
+      return reply({ error: rec.stkError, code: 'stk_failed' }, 502);
+    }
+    await save(env, rec); return reply({ ...pub(rec), method: rec.method });
   }
   if (action === 'licence') return rec.status === 'paid' ? await licenceResponse(env, rec, cors) : reply({ error: 'The licence is issued once the payment is complete.' }, 400);
   if (action === 'status') {

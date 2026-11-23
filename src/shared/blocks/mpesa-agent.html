@@ -1,0 +1,518 @@
+<!-- M-PESA AGENT (zip 340) --------------------------------------------------------------------------------------------------------------
+     A cash-and-float ledger for shops that are also M-PESA agents: Deposits, Withdrawals, Float Management, History, Reconciliation & Closing,
+     Staff & Permissions and Settings, in one new tab ("📲 M-PESA Agent") under Money.
+
+     WHAT THIS IS: the agent's OWN books. Two balances (cash in the till, e-float in the agent account) kept in whole shillings. Every entry is
+     append-only: a mistake is undone by a REVERSAL entry (never by editing), and a count that does not match is fixed by a controlled ADJUSTMENT.
+     WHAT THIS IS NOT: it does not talk to Safaricom, it does not check a transaction with M-PESA, and nothing here is a Safaricom receipt or
+     confirmation. The slip it prints says so.
+
+     DATA: three synced lists (mpesaAgentTx, mpesaAgentCfg, mpesaAgentClosings), merged per record by id like the cash drawer, so it works offline
+     and entries made on two devices both survive. An entry's id comes from its operation id, so a double tap or a retry can never post twice.
+     SERVER: functions/api/_perm-guard.js drops any entry that does not balance and holds reversals / adjustments / overrides / settings that a
+     staff member has not been allowed to make. Ids and classes: mpa-*. -->
+<style id="mpa-css">
+#mpesa-agent-tab { --mpa-ink: #1d2b36; --mpa-mute: #6b7a86; --mpa-line: #e3e9ee; --mpa-acc: #0b7a43; --mpa-acc2: #e8f6ee; --mpa-warn: #b9770e; --mpa-bad: #b03a2e; }
+#mpesa-agent-tab .mpa-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 10px; }
+#mpesa-agent-tab .mpa-head h3 { margin: 0; }
+#mpesa-agent-tab .mpa-note { font-size: 12.5px; color: var(--mpa-mute); margin: 0 0 12px; }
+#mpesa-agent-tab .mpa-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+#mpesa-agent-tab .mpa-chip { border: 1px solid var(--mpa-line); background: transparent; color: inherit; border-radius: 999px; padding: 8px 15px; font-weight: 700; font-size: 13px; cursor: pointer; min-height: 40px; }
+#mpesa-agent-tab .mpa-chip.on { background: var(--mpa-acc); border-color: var(--mpa-acc); color: #fff; }
+#mpesa-agent-tab .mpa-bal { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 14px; }
+#mpesa-agent-tab .mpa-card { border: 1px solid var(--mpa-line); border-radius: 14px; padding: 14px 16px; background: var(--card, #fff); }
+#mpesa-agent-tab .mpa-card small { display: block; color: var(--mpa-mute); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+#mpesa-agent-tab .mpa-big { font-size: 28px; font-weight: 800; line-height: 1.2; margin-top: 2px; overflow-wrap: anywhere; }
+#mpesa-agent-tab .mpa-card.cash { border-left: 5px solid #27ae60; } #mpesa-agent-tab .mpa-card.float { border-left: 5px solid #2980b9; }
+#mpesa-agent-tab .mpa-card.low { background: #fef5e7; border-color: #f5d79e; } #mpesa-agent-tab .mpa-card.neg { background: #fdecea; border-color: #f1b0a8; }
+#mpesa-agent-tab .mpa-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+#mpesa-agent-tab .mpa-tile { border-radius: 12px; padding: 10px 12px; background: var(--mpa-acc2); border: 1px solid #cfe9da; }
+#mpesa-agent-tab .mpa-tile b { display: block; font-size: 18px; } #mpesa-agent-tab .mpa-tile span { font-size: 12px; color: var(--mpa-mute); }
+#mpesa-agent-tab .mpa-alert { border-radius: 10px; padding: 9px 12px; margin: 0 0 8px; font-size: 13px; background: #fef5e7; border: 1px solid #f5d79e; color: #7d5008; }
+#mpesa-agent-tab .mpa-alert.bad { background: #fdecea; border-color: #f1b0a8; color: #8e2c21; } #mpesa-agent-tab .mpa-alert.ok { background: #eafaf1; border-color: #b6e3c9; color: #1e6b41; }
+#mpesa-agent-tab .mpa-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; align-items: end; max-width: 980px; }
+#mpesa-agent-tab .mpa-form label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+#mpesa-agent-tab .mpa-form input, #mpesa-agent-tab .mpa-form select, #mpesa-agent-tab .mpa-form textarea { width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px; border: 1px solid #b8c4cc; border-radius: 10px; background: transparent; color: inherit; }
+#mpesa-agent-tab .mpa-amt { font-size: 22px !important; font-weight: 800; }
+#mpesa-agent-tab .mpa-go { background: var(--mpa-acc); color: #fff; border: 0; border-radius: 10px; padding: 12px 20px; font-weight: 800; font-size: 15px; cursor: pointer; min-height: 46px; }
+#mpesa-agent-tab .mpa-go[disabled] { opacity: .55; cursor: wait; }
+#mpesa-agent-tab .mpa-sec { background: var(--mpa-line); color: var(--mpa-ink); border: 0; border-radius: 8px; padding: 6px 11px; font-weight: 700; font-size: 12px; cursor: pointer; min-height: 32px; }
+#mpesa-agent-tab .mpa-sec.bad { background: #fdecea; color: var(--mpa-bad); }
+#mpesa-agent-tab .mpa-err { color: var(--mpa-bad); font-size: 13px; min-height: 18px; margin: 6px 0; }
+#mpesa-agent-tab table.mpa-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+#mpesa-agent-tab table.mpa-t th { text-align: left; font-size: 11.5px; color: var(--mpa-mute); padding: 7px 6px; border-bottom: 2px solid var(--mpa-line); white-space: nowrap; }
+#mpesa-agent-tab table.mpa-t td { padding: 7px 6px; border-bottom: 1px solid var(--mpa-line); vertical-align: top; }
+#mpesa-agent-tab td.n, #mpesa-agent-tab th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#mpesa-agent-tab tr.rev td { opacity: .55; text-decoration: line-through; } #mpesa-agent-tab tr.rev td:last-child, #mpesa-agent-tab tr.rev td.keep { text-decoration: none; }
+#mpesa-agent-tab .mpa-pill { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; background: var(--mpa-line); color: var(--mpa-ink); margin-right: 4px; }
+#mpesa-agent-tab .mpa-pill.pend { background: #fef5e7; color: #8a5a07; } #mpesa-agent-tab .mpa-pill.bad { background: #fdecea; color: var(--mpa-bad); } #mpesa-agent-tab .mpa-pill.ok { background: #eafaf1; color: #1e6b41; }
+#mpesa-agent-tab .mpa-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+#mpesa-agent-tab .mpa-bar input, #mpesa-agent-tab .mpa-bar select { padding: 8px 10px; border: 1px solid #b8c4cc; border-radius: 8px; background: transparent; color: inherit; }
+#mpesa-agent-tab h4 { margin: 18px 0 8px; font-size: 14px; }
+#mpesa-agent-tab .mpa-scroll { overflow-x: auto; }
+#mpesa-agent-tab .mpa-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+@media (max-width: 640px) { #mpesa-agent-tab .mpa-big { font-size: 24px; } }
+#mpa-ov { position: fixed; inset: 0; z-index: 100003; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,.5); }
+#mpa-ov.on { display: flex; }
+#mpa-card { width: min(460px, 100%); background: var(--card, #fff); color: var(--text, #1d2b36); border-radius: 14px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.35); max-height: 90vh; overflow-y: auto; }
+#mpa-card h3 { margin: 0 0 8px; } #mpa-card label { display: block; font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
+#mpa-card input, #mpa-card textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 15px; border: 1px solid #b8c4cc; border-radius: 8px; background: transparent; color: inherit; }
+#mpa-card .mpa-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+</style>
+<script id="mpa-js">
+(function () {
+  'use strict';
+  var ID = 'mpesa-agent-tab', BTN = 'mpesa-agent-tab-btn';
+  var TYPES = {
+    deposit: { label: 'Deposit', icon: '⬇️' }, withdrawal: { label: 'Withdrawal', icon: '⬆️' }, buy_float: { label: 'Buy float', icon: '🛒' }, sell_float: { label: 'Sell float', icon: '💱' },
+    cash_in: { label: 'Cash in (replenish till)', icon: '💵' }, cash_out: { label: 'Cash out (bank / owner)', icon: '🏦' }, adjustment: { label: 'Adjustment', icon: '🛠️' }, reversal: { label: 'Reversal', icon: '↩️' }
+  };
+  var MAX_DEFAULT = 250000, S = { tab: 'dash', opId: '', busy: false, msg: '', f: { from: '', to: '', type: '', by: '', q: '', summary: false } };
+  function $(id) { return document.getElementById(id); }
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { n = Number(n) || 0; return (n < 0 ? '-' : '') + 'KES ' + Math.abs(Math.round(n)).toLocaleString('en-KE'); }
+  function signed(n) { n = Number(n) || 0; return (n > 0 ? '+' : n < 0 ? '-' : '') + Math.abs(Math.round(n)).toLocaleString('en-KE'); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* no toast */ } }
+  function newOp() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+  function dayKey(ts) { var d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function lists() { return { tx: (typeof mpesaAgentTx !== 'undefined' && Array.isArray(mpesaAgentTx)) ? mpesaAgentTx : null }; }
+
+  /* ---------------- who is allowed what ---------------- */
+  function isMgr() {
+    try {
+      if (typeof isAdminServing === 'function' && isAdminServing()) return true;
+      var me = typeof currentServer !== 'undefined' && currentServer && staff.find(function (s) { return s.id === currentServer.id; });
+      return !!(me && me.isManager);
+    } catch (e) { return false; }
+  }
+  function meId() { try { return (typeof currentServer !== 'undefined' && currentServer && currentServer.id) || ''; } catch (e) { return ''; } }
+  function meName() { try { return (typeof activeServerName === 'function' && activeServerName()) || 'Admin'; } catch (e) { return 'Admin'; } }
+  function can(a) { if (isMgr()) return true; var g = (cfg().grants || {})[meId()] || []; return g.indexOf(a) >= 0; }
+
+  /* ---------------- settings record ---------------- */
+  var DEF = { id: 'cfg', openCash: 0, openFloat: 0, openAt: 0, lowCash: 5000, lowFloat: 20000, maxTx: MAX_DEFAULT, tariff: { deposit: [], withdrawal: [] }, grants: {}, setup: false };
+  function cfg() {
+    var arr = (typeof mpesaAgentCfg !== 'undefined' && Array.isArray(mpesaAgentCfg)) ? mpesaAgentCfg : [];
+    var c = arr.find(function (x) { return x && x.id === 'cfg'; });
+    return Object.assign({}, DEF, c || {}, { tariff: Object.assign({ deposit: [], withdrawal: [] }, (c && c.tariff) || {}), grants: (c && c.grants) || {} });
+  }
+  function saveCfg(next) {
+    next = Object.assign({}, next, { id: 'cfg', updatedAt: Date.now() });
+    var i = mpesaAgentCfg.findIndex(function (x) { return x && x.id === 'cfg'; });
+    if (i >= 0) mpesaAgentCfg[i] = next; else mpesaAgentCfg.push(next);
+    safeSetItem('pos_mpesa_agent_cfg', JSON.stringify(mpesaAgentCfg)); try { queuePush(); } catch (e) { /* the next change sends it */ }
+  }
+  function audit(what, detail) { try { logAudit(what, 'M-PESA Agent', detail); } catch (e) { /* optional */ } }
+
+  /* ---------------- the ledger (pure maths) ---------------- */
+  function balances(list, c) {
+    var b = { cash: c.openCash || 0, float: c.openFloat || 0 };
+    (list || []).forEach(function (e) { if (e && !e._deleted && !e.removed) { b.cash += e.cash || 0; b.float += e.float || 0; } });
+    return b;
+  }
+  function parseAmount(raw, max) {
+    var s = String(raw == null ? '' : raw).trim().replace(/,/g, '');
+    if (!s) return { err: 'Enter the amount.' };
+    if (!/^\d+$/.test(s)) return { err: 'Use whole shillings only: no decimals, signs or letters.' };
+    var n = parseInt(s, 10);
+    if (n <= 0) return { err: 'The amount must be more than zero.' };
+    if (n > max) return { err: 'That is above the limit of ' + kes(max) + ' per transaction (Settings).' };
+    return { n: n };
+  }
+  function deltas(type, amount, src) {
+    if (type === 'deposit') return { cash: amount, float: -amount };
+    if (type === 'withdrawal') return { cash: -amount, float: amount };
+    if (type === 'buy_float') return { cash: src === 'cash' ? -amount : 0, float: amount };
+    if (type === 'sell_float') return { cash: src === 'cash' ? amount : 0, float: -amount };
+    if (type === 'cash_in') return { cash: amount, float: 0 };
+    if (type === 'cash_out') return { cash: -amount, float: 0 };
+    return null;
+  }
+  function feeFor(type, amount, c) {
+    var rows = ((c.tariff || {})[type] || []).slice().sort(function (a, b) { return (a.upTo == null ? 1e15 : a.upTo) - (b.upTo == null ? 1e15 : b.upTo); });
+    for (var i = 0; i < rows.length; i++) if (rows[i].upTo == null || amount <= rows[i].upTo) return Math.max(0, parseInt(rows[i].fee, 10) || 0);
+    return 0;
+  }
+  // The one place an entry is posted. spec = { type, amount(raw), src, ref, cust, note, fee(raw), opId, override(bool), overrideReason }
+  function post(spec) {
+    var L = lists().tx; if (!L) return { err: 'The M-PESA ledger is not available in this app.' };
+    var c = cfg();
+    if (!spec.opId) return { err: 'Missing operation id.' };
+    var id = 'mpa-' + spec.opId, dup = L.find(function (e) { return e && e.id === id; });
+    if (dup) return { ok: true, duplicate: true, entry: dup };
+    var a = parseAmount(spec.amount, c.maxTx || MAX_DEFAULT); if (a.err) return { err: a.err };
+    var d = deltas(spec.type, a.n, spec.src); if (!d) return { err: 'Unknown operation.' };
+    var feeRaw = spec.fee == null || spec.fee === '' ? feeFor(spec.type, a.n, c) : spec.fee, fee = parseInt(String(feeRaw).replace(/,/g, ''), 10);
+    if (!(fee >= 0) || String(feeRaw).replace(/,/g, '').match(/[^\d]/)) return { err: 'The commission must be whole shillings (0 or more).' };
+    var b = balances(L, c), nc = b.cash + d.cash, nf = b.float + d.float, short = [];
+    if (nc < 0) short.push('cash (you have ' + kes(b.cash) + ')'); if (nf < 0) short.push('M-PESA float (you have ' + kes(b.float) + ')');
+    var ov = null;
+    if (short.length) {
+      if (!spec.override) return { err: 'Not enough ' + short.join(' and ') + '. Top up first, or ask a manager to override.', needOverride: true };
+      if (!can('override')) return { err: 'You are not allowed to post below zero. Ask a manager.' };
+      if (!String(spec.overrideReason || '').trim()) return { err: 'Type the reason for posting below zero.' };
+      ov = { by: meName(), reason: String(spec.overrideReason).trim().slice(0, 200), at: Date.now() };
+    }
+    var e = { id: id, opId: spec.opId, ts: Date.now(), type: spec.type, amount: a.n, cash: d.cash, float: d.float, fee: fee, src: spec.src || '', ref: String(spec.ref || '').trim().slice(0, 40), cust: String(spec.cust || '').trim().slice(0, 40), note: String(spec.note || '').trim().slice(0, 200), by: meName(), byId: meId(), status: 'posted', updatedAt: Date.now() };
+    if (ov) e.override = ov;
+    L.push(e); markPending(e.id); saveTx();
+    audit('M-PESA ' + TYPES[e.type].label, kes(e.amount) + (ov ? ' (override: ' + ov.reason + ')' : ''));
+    return { ok: true, entry: e };
+  }
+  function reverse(origId, reason, override, overrideReason) {
+    var L = lists().tx, o = L.find(function (e) { return e && e.id === origId; }), c = cfg();
+    if (!can('reverse')) return { err: 'Only a manager, or someone given the Reverse permission, can reverse an entry.' };
+    if (!o) return { err: 'That entry was not found.' };
+    if (o.type === 'reversal') return { err: 'A reversal cannot be reversed. Post the operation again instead.' };
+    if (o.status === 'reversed') return { err: 'That entry is already reversed.' };
+    if (!String(reason || '').trim()) return { err: 'Type the reason for the reversal.' };
+    var id = 'mpa-rev-' + o.id;
+    if (L.some(function (e) { return e && e.id === id; })) return { err: 'That entry is already reversed.' };
+    var b = balances(L, c), nc = b.cash - o.cash, nf = b.float - o.float, ov = null;
+    if (nc < 0 || nf < 0) {
+      if (!override) return { err: 'Reversing this would take ' + (nc < 0 ? 'cash' : 'float') + ' below zero (' + kes(nc < 0 ? nc : nf) + ').', needOverride: true };
+      if (!can('override')) return { err: 'You are not allowed to post below zero. Ask a manager.' };
+      if (!String(overrideReason || '').trim()) return { err: 'Type the reason for posting below zero.' };
+      ov = { by: meName(), reason: String(overrideReason).trim().slice(0, 200), at: Date.now() };
+    }
+    var r = { id: id, opId: id, ts: Date.now(), type: 'reversal', amount: o.amount, cash: -o.cash, float: -o.float, fee: 0, reversalOf: o.id, reason: String(reason).trim().slice(0, 200), by: meName(), byId: meId(), status: 'posted', updatedAt: Date.now() };
+    if (ov) r.override = ov;
+    o.status = 'reversed'; o.reversedBy = r.id; o.updatedAt = Date.now();
+    L.push(r); markPending(r.id); markPending(o.id); saveTx();
+    audit('M-PESA reversal', TYPES[o.type].label + ' ' + kes(o.amount) + ' (' + r.reason + ')');
+    return { ok: true, entry: r };
+  }
+  function adjust(spec) {
+    if (!can('adjust')) return { err: 'Only a manager, or someone given the Adjust permission, can post an adjustment.' };
+    var L = lists().tx, cash = parseInt(String(spec.cash || '0').replace(/,/g, ''), 10), fl = parseInt(String(spec.float || '0').replace(/,/g, ''), 10);
+    if (!/^-?\d+$/.test(String(spec.cash || '0').replace(/,/g, '')) || !/^-?\d+$/.test(String(spec.float || '0').replace(/,/g, ''))) return { err: 'Adjustments are whole shillings (use - for a decrease).' };
+    if (!cash && !fl) return { err: 'Enter a cash and/or float change.' };
+    if (!String(spec.reason || '').trim()) return { err: 'Type the reason for the adjustment.' };
+    var id = 'mpa-' + spec.opId; if (L.some(function (e) { return e && e.id === id; })) return { ok: true, duplicate: true };
+    var c = cfg(), b = balances(L, c), nc = b.cash + cash, nf = b.float + fl;
+    var ov = null;
+    if ((nc < 0 || nf < 0)) { if (!spec.override || !can('override')) return { err: 'This adjustment would take a balance below zero. A manager must tick the override and give a reason.', needOverride: true }; ov = { by: meName(), reason: String(spec.reason).trim().slice(0, 200), at: Date.now() }; }
+    var e = { id: id, opId: spec.opId, ts: Date.now(), type: 'adjustment', amount: Math.abs(cash) + Math.abs(fl), cash: cash, float: fl, fee: 0, reason: String(spec.reason).trim().slice(0, 200), by: meName(), byId: meId(), status: 'posted', updatedAt: Date.now() };
+    if (ov) e.override = ov;
+    L.push(e); markPending(e.id); saveTx();
+    audit('M-PESA adjustment', 'cash ' + signed(cash) + ', float ' + signed(fl) + ' (' + e.reason + ')');
+    return { ok: true, entry: e };
+  }
+  function saveTx() { safeSetItem('pos_mpesa_agent_tx', JSON.stringify(mpesaAgentTx)); try { queuePush(); } catch (e) { /* the next change sends it */ } }
+  function saveClosings() { safeSetItem('pos_mpesa_agent_closings', JSON.stringify(mpesaAgentClosings)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+
+  /* ---------------- pending-sync + review flags ---------------- */
+  function pendingSet() { try { return JSON.parse(localStorage.getItem('pos_mpesa_pending') || '[]'); } catch (e) { return []; } }
+  function markPending(id) { var p = pendingSet(); if (p.indexOf(id) < 0) { p.push(id); try { localStorage.setItem('pos_mpesa_pending', JSON.stringify(p.slice(-500))); } catch (e) { /* cosmetic */ } } }
+  function isPending(e) {
+    try { if (window.__extraSnapTaken && typeof extraSyncSnapshot !== 'undefined') return !extraSyncSnapshot['mpesaAgentTx:' + e.id]; } catch (x) { /* fall through */ }
+    return pendingSet().indexOf(e.id) >= 0;
+  }
+  // entries whose running balance went below zero without an override (two offline tills can do this together), and reversals with no original
+  function reviewFlags(list, c) {
+    var flags = {}, run = { cash: c.openCash || 0, float: c.openFloat || 0 }, ids = {};
+    list.forEach(function (e) { ids[e.id] = 1; });
+    list.slice().sort(function (a, b) { return a.ts - b.ts; }).forEach(function (e) {
+      run.cash += e.cash || 0; run.float += e.float || 0;
+      if ((run.cash < 0 || run.float < 0) && !e.override) flags[e.id] = 'Balance went below zero here (two devices posting at once?). Count the till and post an adjustment if needed.';
+      if (e.type === 'reversal' && !ids[e.reversalOf]) flags[e.id] = 'The entry this reverses is missing on this device.';
+    });
+    return flags;
+  }
+  function dayList(day) { return (lists().tx || []).filter(function (e) { return e && dayKey(e.ts) === day; }); }
+
+  /* ---------------- rendering ---------------- */
+  var TABS = [['dash', '📊 Dashboard'], ['deposit', '⬇️ Deposits'], ['withdrawal', '⬆️ Withdrawals'], ['float', '💱 Float Management'], ['history', '🧾 Transaction History'], ['recon', '✅ Reconciliation & Closing'], ['staff', '👥 Staff & Permissions'], ['settings', '⚙️ Settings']];
+  function pill(e, flags) {
+    var h = '';
+    if (e.status === 'reversed') h += '<span class="mpa-pill bad">Reversed</span>';
+    if (e.type === 'reversal') h += '<span class="mpa-pill">Reversal</span>';
+    if (e.override) h += '<span class="mpa-pill bad" title="' + esc(e.override.reason) + '">Override</span>';
+    h += isPending(e) ? '<span class="mpa-pill pend">Pending sync</span>' : '<span class="mpa-pill ok">Synced</span>';
+    if (flags && flags[e.id]) h += '<span class="mpa-pill bad" title="' + esc(flags[e.id]) + '">⚠ Review</span>';
+    return h;
+  }
+  function entryRow(e, flags, acts) {
+    var t = TYPES[e.type] || { label: e.type, icon: '' };
+    return '<tr class="' + (e.status === 'reversed' ? 'rev' : '') + '"><td>' + new Date(e.ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</td><td>' + t.icon + ' ' + esc(t.label) + (e.src ? ' <small>(' + esc(e.src) + ')</small>' : '') + '</td><td class="n">' + kes(e.amount) + '</td><td class="n">' + signed(e.cash) + '</td><td class="n">' + signed(e.float) + '</td><td class="n">' + (e.fee ? kes(e.fee) : '') + '</td><td>' + esc(e.ref || e.reason || '') + (e.cust ? '<br><small>' + esc(e.cust) + '</small>' : '') + (e.note ? '<br><small>' + esc(e.note) + '</small>' : '') + '</td><td>' + esc(e.by || '') + '</td><td class="keep">' + pill(e, flags) + '</td><td class="keep">' + (acts ? acts(e) : '') + '</td></tr>';
+  }
+  var HEAD = '<tr><th>Time</th><th>Operation</th><th class="n">Amount</th><th class="n">Cash ±</th><th class="n">Float ±</th><th class="n">Commission</th><th>Reference / note</th><th>By</th><th>Status</th><th></th></tr>';
+  function acts(e) {
+    var h = '';
+    if (e.type === 'deposit' || e.type === 'withdrawal') h += '<button type="button" class="mpa-sec" data-mpa="slip" data-id="' + esc(e.id) + '">🖨️ Slip</button> ';
+    if (e.status === 'posted' && e.type !== 'reversal' && can('reverse')) h += '<button type="button" class="mpa-sec bad" data-mpa="rev" data-id="' + esc(e.id) + '">↩️ Reverse</button>';
+    return h;
+  }
+  function balanceCards(b, c) {
+    var lowC = b.cash < (c.lowCash || 0), lowF = b.float < (c.lowFloat || 0);
+    return '<div class="mpa-bal"><div class="mpa-card cash' + (b.cash < 0 ? ' neg' : lowC ? ' low' : '') + '"><small>💵 Cash in till</small><div class="mpa-big">' + kes(b.cash) + '</div>' + (b.cash < 0 ? '<small style="color:#b03a2e">Below zero: review</small>' : lowC ? '<small style="color:#b9770e">Low: below ' + kes(c.lowCash) + '</small>' : '') + '</div>'
+      + '<div class="mpa-card float' + (b.float < 0 ? ' neg' : lowF ? ' low' : '') + '"><small>📱 M-PESA e-float</small><div class="mpa-big">' + kes(b.float) + '</div>' + (b.float < 0 ? '<small style="color:#b03a2e">Below zero: review</small>' : lowF ? '<small style="color:#b9770e">Low: below ' + kes(c.lowFloat) + '</small>' : '') + '</div></div>';
+  }
+  function view() {
+    var c = cfg(), L = (lists().tx || []).filter(function (e) { return e && !e._deleted && !e.removed; }), b = balances(L, c), flags = reviewFlags(L, c), today = dayKey(Date.now());
+    var disclaim = '<p class="mpa-note">These are your own shop records. Nothing here is checked with, or confirmed by, Safaricom / M-PESA.</p>';
+    if (!c.setup && S.tab !== 'settings') return '<div class="mpa-alert">First set your <b>opening cash</b> and <b>opening float</b> so the balances start right. <button type="button" class="mpa-sec" data-mpa="goto" data-t="settings">Open Settings</button></div>' + (S.tab === 'dash' ? '' : '') + body(c, L, b, flags, today, disclaim);
+    return body(c, L, b, flags, today, disclaim);
+  }
+  function body(c, L, b, flags, today, disclaim) {
+    var t = S.tab, h = '';
+    if (t === 'dash') {
+      var td = dayList(today).filter(function (e) { return e.status !== 'reversed' && e.type !== 'reversal'; }), sum = function (ty) { return td.filter(function (e) { return e.type === ty; }); };
+      var dep = sum('deposit'), wd = sum('withdrawal'), com = td.reduce(function (a, e) { return a + (e.fee || 0); }, 0), pend = L.filter(isPending).length, nflag = Object.keys(flags).length;
+      h += balanceCards(b, c);
+      if (nflag) h += '<div class="mpa-alert bad">⚠ ' + nflag + ' entr' + (nflag === 1 ? 'y needs' : 'ies need') + ' review. <button type="button" class="mpa-sec" data-mpa="goto" data-t="recon">Open Reconciliation</button></div>';
+      if (pend) h += '<div class="mpa-alert">🕒 ' + pend + ' entr' + (pend === 1 ? 'y is' : 'ies are') + ' saved on this device and waiting to sync. They are safe and will go when you are online.</div>';
+      h += '<div class="mpa-tiles"><div class="mpa-tile"><b>' + dep.length + ' · ' + kes(dep.reduce(function (a, e) { return a + e.amount; }, 0)) + '</b><span>Deposits today</span></div><div class="mpa-tile"><b>' + wd.length + ' · ' + kes(wd.reduce(function (a, e) { return a + e.amount; }, 0)) + '</b><span>Withdrawals today</span></div><div class="mpa-tile"><b>' + kes(com) + '</b><span>Commission recorded today</span></div></div>'
+        + '<div class="mpa-bar"><button type="button" class="mpa-go" data-mpa="goto" data-t="deposit">⬇️ New deposit</button><button type="button" class="mpa-go" style="background:#2980b9" data-mpa="goto" data-t="withdrawal">⬆️ New withdrawal</button><button type="button" class="mpa-sec" data-mpa="goto" data-t="float">💱 Float &amp; cash top-up</button></div>'
+        + '<h4>Latest entries</h4><div class="mpa-scroll"><table class="mpa-t">' + HEAD + (L.slice().sort(function (a, z) { return z.ts - a.ts; }).slice(0, 8).map(function (e) { return entryRow(e, flags, acts); }).join('') || '<tr><td colspan="10" style="color:#6b7a86">Nothing recorded yet.</td></tr>') + '</table></div>' + disclaim;
+    } else if (t === 'deposit' || t === 'withdrawal') {
+      var isD = t === 'deposit';
+      h += balanceCards(b, c) + '<div class="mpa-form"><div><label for="mpa-amt">Amount (KES)</label><input id="mpa-amt" class="mpa-amt" inputmode="numeric" autocomplete="off" placeholder="0"></div>'
+        + '<div><label for="mpa-cust">Customer name or phone <small>(optional)</small></label><input id="mpa-cust" maxlength="40" autocomplete="off"></div>'
+        + '<div><label for="mpa-ref">M-PESA message code <small>(optional, as you typed it)</small></label><input id="mpa-ref" maxlength="40" autocomplete="off" style="text-transform:uppercase"></div>'
+        + '<div><label for="mpa-fee">Commission you earn (KES)</label><input id="mpa-fee" inputmode="numeric" placeholder="auto from Settings"></div>'
+        + '<div style="grid-column:1/-1"><label for="mpa-note">Note <small>(optional)</small></label><input id="mpa-note" maxlength="200"></div></div>'
+        + '<p class="mpa-note" style="margin-top:8px">' + (isD ? 'Deposit: the customer hands you cash, you send e-float to their number. Your cash goes up, your float goes down.' : 'Withdrawal: the customer sends you e-float, you hand over cash. Your float goes up, your cash goes down.') + '</p>'
+        + '<p class="mpa-err" id="mpa-err" role="alert"></p><button type="button" class="mpa-go" id="mpa-post" data-mpa="post" data-type="' + t + '">' + (isD ? 'Record deposit' : 'Record withdrawal') + '</button>'
+        + '<h4>Today\'s ' + (isD ? 'deposits' : 'withdrawals') + '</h4><div class="mpa-scroll"><table class="mpa-t">' + HEAD + (dayList(today).filter(function (e) { return e.type === t; }).sort(function (a, z) { return z.ts - a.ts; }).map(function (e) { return entryRow(e, flags, acts); }).join('') || '<tr><td colspan="10" style="color:#6b7a86">None yet today.</td></tr>') + '</table></div>';
+    } else if (t === 'float') {
+      var low = [];
+      if (b.cash < (c.lowCash || 0)) low.push('Cash is low (' + kes(b.cash) + '). Use <b>Cash in</b> when you bring cash from the bank or owner.');
+      if (b.float < (c.lowFloat || 0)) low.push('E-float is low (' + kes(b.float) + '). Use <b>Buy float</b> to top it up.');
+      h += balanceCards(b, c) + low.map(function (x) { return '<div class="mpa-alert">' + x + '</div>'; }).join('')
+        + '<div class="mpa-form"><div><label for="mpa-op">Operation</label><select id="mpa-op"><option value="buy_float">🛒 Buy float (you receive e-float)</option><option value="sell_float">💱 Sell float (you give e-float)</option><option value="cash_in">💵 Cash in: replenish the till</option><option value="cash_out">🏦 Cash out: bank or owner takes cash</option></select></div>'
+        + '<div id="mpa-srcwrap"><label for="mpa-src">Paid / received by</label><select id="mpa-src"><option value="cash">Cash from the till</option><option value="bank">Bank or other account (no till cash moves)</option></select></div>'
+        + '<div><label for="mpa-amt">Amount (KES)</label><input id="mpa-amt" class="mpa-amt" inputmode="numeric" autocomplete="off" placeholder="0"></div>'
+        + '<div><label for="mpa-ref">Reference <small>(optional)</small></label><input id="mpa-ref" maxlength="40" autocomplete="off"></div>'
+        + '<div style="grid-column:1/-1"><label for="mpa-note">Note <small>(optional)</small></label><input id="mpa-note" maxlength="200"></div></div>'
+        + '<p class="mpa-err" id="mpa-err" role="alert"></p><button type="button" class="mpa-go" id="mpa-post" data-mpa="post" data-type="float">Record</button>'
+        + '<h4>Recent float and cash top-ups</h4><div class="mpa-scroll"><table class="mpa-t">' + HEAD + (L.filter(function (e) { return ['buy_float', 'sell_float', 'cash_in', 'cash_out'].indexOf(e.type) >= 0; }).sort(function (a, z) { return z.ts - a.ts; }).slice(0, 15).map(function (e) { return entryRow(e, flags, acts); }).join('') || '<tr><td colspan="10" style="color:#6b7a86">None yet.</td></tr>') + '</table></div>';
+    } else if (t === 'history') {
+      var f = S.f, rows = L.filter(function (e) {
+        if (f.from && dayKey(e.ts) < f.from) return false; if (f.to && dayKey(e.ts) > f.to) return false;
+        if (f.type && e.type !== f.type) return false; if (f.by && e.by !== f.by) return false;
+        if (f.q) { var q = f.q.toLowerCase(); if (!((e.ref || '') + ' ' + (e.cust || '') + ' ' + (e.note || '') + ' ' + (e.reason || '')).toLowerCase().includes(q)) return false; }
+        return true;
+      }).sort(function (a, z) { return z.ts - a.ts; });
+      var names = {}; L.forEach(function (e) { if (e.by) names[e.by] = 1; });
+      h += '<div class="mpa-bar"><label>From <input type="date" id="mpa-f-from" value="' + esc(f.from) + '"></label><label>To <input type="date" id="mpa-f-to" value="' + esc(f.to) + '"></label>'
+        + '<select id="mpa-f-type"><option value="">All operations</option>' + Object.keys(TYPES).map(function (k) { return '<option value="' + k + '"' + (f.type === k ? ' selected' : '') + '>' + TYPES[k].label + '</option>'; }).join('') + '</select>'
+        + '<select id="mpa-f-by"><option value="">All staff</option>' + Object.keys(names).map(function (n) { return '<option' + (f.by === n ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select>'
+        + '<input id="mpa-f-q" placeholder="Search reference, name, note" value="' + esc(f.q) + '">'
+        + '<button type="button" class="mpa-sec" data-mpa="summary">' + (f.summary ? 'Show entries' : 'Daily summary') + '</button><button type="button" class="mpa-sec" data-mpa="csv">⬇ CSV</button></div>';
+      if (f.summary) {
+        var by = {}; rows.forEach(function (e) { if (e.status === 'reversed' || e.type === 'reversal') return; var k = dayKey(e.ts), d = by[k] = by[k] || { dep: 0, depN: 0, wd: 0, wdN: 0, fee: 0, cash: 0, float: 0 }; if (e.type === 'deposit') { d.dep += e.amount; d.depN++; } if (e.type === 'withdrawal') { d.wd += e.amount; d.wdN++; } d.fee += e.fee || 0; d.cash += e.cash; d.float += e.float; });
+        h += '<div class="mpa-scroll"><table class="mpa-t"><tr><th>Date</th><th class="n">Deposits</th><th class="n">Withdrawals</th><th class="n">Commission</th><th class="n">Cash ±</th><th class="n">Float ±</th></tr>' + Object.keys(by).sort().reverse().map(function (k) { var d = by[k]; return '<tr><td>' + k + '</td><td class="n">' + d.depN + ' · ' + kes(d.dep) + '</td><td class="n">' + d.wdN + ' · ' + kes(d.wd) + '</td><td class="n">' + kes(d.fee) + '</td><td class="n">' + signed(d.cash) + '</td><td class="n">' + signed(d.float) + '</td></tr>'; }).join('') + '</table></div><p class="mpa-note">Reversed entries and the reversals themselves are left out so the totals show what really happened.</p>';
+      } else h += '<p class="mpa-note">' + rows.length + ' entr' + (rows.length === 1 ? 'y' : 'ies') + '</p><div class="mpa-scroll"><table class="mpa-t">' + HEAD + (rows.slice(0, 300).map(function (e) { return entryRow(e, flags, acts); }).join('') || '<tr><td colspan="10" style="color:#6b7a86">No entries match.</td></tr>') + '</table></div>' + (rows.length > 300 ? '<p class="mpa-note">Showing the newest 300. Narrow the dates or export a CSV for the rest.</p>' : '');
+    } else if (t === 'recon') {
+      var cl = (typeof mpesaAgentClosings !== 'undefined' ? mpesaAgentClosings : []).filter(function (x) { return x && !x._deleted; }).sort(function (a, z) { return z.at - a.at; });
+      h += balanceCards(b, c) + '<h4>Close the day</h4><p class="mpa-note">Count the cash in the till and read the e-float balance from your agent account. Type both. Expected figures come from the ledger.</p>'
+        + '<div class="mpa-form"><div><label for="mpa-cc">Cash counted (KES)</label><input id="mpa-cc" class="mpa-amt" inputmode="numeric" autocomplete="off"></div><div><label for="mpa-cf">E-float on the agent account (KES)</label><input id="mpa-cf" class="mpa-amt" inputmode="numeric" autocomplete="off"></div>'
+        + '<div style="grid-column:1/-1"><label for="mpa-cn">Note <small>(optional)</small></label><input id="mpa-cn" maxlength="200"></div></div><p class="mpa-err" id="mpa-err" role="alert"></p><div id="mpa-var" class="mpa-note"></div><button type="button" class="mpa-go" id="mpa-close" data-mpa="close">Close the day</button>';
+      var fl = Object.keys(flags);
+      h += '<h4>Needs review (' + fl.length + ')</h4>' + (fl.length ? fl.map(function (id) { var e = L.find(function (x) { return x.id === id; }); return '<div class="mpa-alert bad">' + esc((e ? TYPES[e.type].label + ' ' + kes(e.amount) + ' · ' : '') + flags[id]) + '</div>'; }).join('') : '<div class="mpa-alert ok">Nothing to review.</div>');
+      if (can('adjust')) h += '<h4>Adjustment (manager)</h4><p class="mpa-note">Use this only to correct a count that does not match. It stays in the history with your name and reason.</p><div class="mpa-form"><div><label for="mpa-ac">Cash change (use - to reduce)</label><input id="mpa-ac" inputmode="numeric" placeholder="0"></div><div><label for="mpa-af">Float change</label><input id="mpa-af" inputmode="numeric" placeholder="0"></div><div style="grid-column:1/-1"><label for="mpa-ar">Reason (required)</label><input id="mpa-ar" maxlength="200"></div></div><p class="mpa-err" id="mpa-aerr" role="alert"></p><button type="button" class="mpa-go" style="background:#7d3c98" data-mpa="adjust">Post adjustment</button>';
+      h += '<h4>Closings</h4><div class="mpa-scroll"><table class="mpa-t"><tr><th>Day</th><th class="n">Cash: expected / counted</th><th class="n">Float: expected / counted</th><th>Closed by</th><th>Approval</th><th></th></tr>' + (cl.map(function (x) {
+        var v = (x.varCash || 0) !== 0 || (x.varFloat || 0) !== 0, st = (x.approval && x.approval.status) || 'approved';
+        return '<tr><td>' + esc(x.date) + '</td><td class="n">' + kes(x.expectedCash) + ' / ' + kes(x.countedCash) + (x.varCash ? ' <b style="color:#b03a2e">(' + signed(x.varCash) + ')</b>' : '') + '</td><td class="n">' + kes(x.expectedFloat) + ' / ' + kes(x.countedFloat) + (x.varFloat ? ' <b style="color:#b03a2e">(' + signed(x.varFloat) + ')</b>' : '') + '</td><td>' + esc(x.by || '') + (x.note ? '<br><small>' + esc(x.note) + '</small>' : '') + '</td><td><span class="mpa-pill ' + (st === 'approved' ? 'ok' : st === 'rejected' ? 'bad' : 'pend') + '">' + (st === 'pending' ? 'Waiting for a manager' : st === 'approved' ? (v ? 'Difference approved' : 'Balanced') : 'Rejected') + '</span></td><td>' + (st === 'pending' && can('close') ? '<button type="button" class="mpa-sec" data-mpa="appr" data-id="' + esc(x.id) + '" data-s="approved">Approve</button> <button type="button" class="mpa-sec bad" data-mpa="appr" data-id="' + esc(x.id) + '" data-s="rejected">Reject</button>' : '') + '</td></tr>';
+      }).join('') || '<tr><td colspan="6" style="color:#6b7a86">No closings yet.</td></tr>') + '</table></div>';
+    } else if (t === 'staff') {
+      var G = [['reverse', 'Reverse entries'], ['adjust', 'Post adjustments'], ['override', 'Post below zero'], ['close', 'Approve closings']], st = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (s) { return s && !s.removed && !s._deleted; }) : [], mgr = isMgr();
+      h += '<p class="mpa-note">Everyone who has the <b>📲 M-PESA Agent</b> tab ticked in their roles (Settings ▸ Staff) can record deposits, withdrawals and float top-ups and see the history. Managers and the Admin can do everything. Tick below to give one person more. Only a manager can change these ticks, and the server checks them too.</p>'
+        + '<div class="mpa-scroll"><table class="mpa-t"><tr><th>Staff</th><th>Tab access</th>' + G.map(function (g) { return '<th>' + g[1] + '</th>'; }).join('') + '<th class="n">Entries today</th></tr>' + (st.map(function (s) {
+          var has = s.isManager || (Array.isArray(s.roles) && s.roles.indexOf(ID) >= 0), g = (cfg().grants || {})[s.id] || [], n = dayList(today).filter(function (e) { return e.byId === s.id; }).length;
+          return '<tr><td>' + esc(s.name) + (s.isManager ? ' <span class="mpa-pill ok">Manager</span>' : '') + '</td><td>' + (has ? '✅' : '—') + '</td>' + G.map(function (x) { return '<td>' + (s.isManager ? '✅' : '<input type="checkbox" data-mpa="grant" data-s="' + esc(s.id) + '" data-g="' + x[0] + '"' + (g.indexOf(x[0]) >= 0 ? ' checked' : '') + (mgr ? '' : ' disabled') + ' aria-label="' + esc(x[1] + ' for ' + s.name) + '">') + '</td>'; }).join('') + '<td class="n">' + n + '</td></tr>';
+        }).join('') || '<tr><td colspan="7" style="color:#6b7a86">No staff added yet. The Admin can do everything.</td></tr>') + '</table></div>';
+    } else if (t === 'settings') {
+      var m = isMgr();
+      h += '<p class="mpa-note">' + (m ? 'Only a manager or the Admin can change these.' : 'You can look, but only a manager or the Admin can change settings.') + '</p><div class="mpa-form">'
+        + '<div><label for="mpa-s-oc">Opening cash (KES)</label><input id="mpa-s-oc" inputmode="numeric" value="' + (c.openCash || 0) + '"' + (m ? '' : ' disabled') + '></div><div><label for="mpa-s-of">Opening e-float (KES)</label><input id="mpa-s-of" inputmode="numeric" value="' + (c.openFloat || 0) + '"' + (m ? '' : ' disabled') + '></div>'
+        + '<div><label for="mpa-s-lc">Warn when cash is below</label><input id="mpa-s-lc" inputmode="numeric" value="' + c.lowCash + '"' + (m ? '' : ' disabled') + '></div><div><label for="mpa-s-lf">Warn when float is below</label><input id="mpa-s-lf" inputmode="numeric" value="' + c.lowFloat + '"' + (m ? '' : ' disabled') + '></div>'
+        + '<div><label for="mpa-s-mx">Largest single transaction</label><input id="mpa-s-mx" inputmode="numeric" value="' + (c.maxTx || MAX_DEFAULT) + '"' + (m ? '' : ' disabled') + '></div></div>'
+        + ['deposit', 'withdrawal'].map(function (ty) { var rows = (c.tariff[ty] || []); return '<h4>Your commission table: ' + TYPES[ty].label + 's</h4><p class="mpa-note">Type the commission you earn for each size of transaction, from your own agent agreement. Leave "up to" empty for the last row. The app fills this in for you on each entry; you can still change it there.</p><div id="mpa-tar-' + ty + '">' + rows.map(function (r, i) { return tariffRow(ty, r, i, m); }).join('') + '</div>' + (m ? '<button type="button" class="mpa-sec" data-mpa="addtar" data-ty="' + ty + '">+ Add a row</button>' : ''); }).join('')
+        + '<p class="mpa-err" id="mpa-err" role="alert"></p>' + (m ? '<button type="button" class="mpa-go" data-mpa="savecfg">Save settings</button>' : '') + disclaim;
+    }
+    return h;
+  }
+  function tariffRow(ty, r, i, m) { return '<div class="mpa-bar" data-row="' + ty + '"><label>Up to KES <input data-k="up" inputmode="numeric" style="width:110px" value="' + (r.upTo == null ? '' : r.upTo) + '"' + (m ? '' : ' disabled') + '></label><label>You earn KES <input data-k="fee" inputmode="numeric" style="width:90px" value="' + (r.fee || 0) + '"' + (m ? '' : ' disabled') + '></label>' + (m ? '<button type="button" class="mpa-sec bad" data-mpa="rmtar">✕</button>' : '') + '</div>'; }
+
+  /* ---------------- popups ---------------- */
+  function pop(title, html, on) {
+    var ov = $('mpa-ov');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'mpa-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.innerHTML = '<div id="mpa-card"></div>'; document.body.appendChild(ov); ov.addEventListener('mousedown', function (e) { if (e.target === ov) closePop(); }); document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closePop(); }, true); }
+    $('mpa-card').innerHTML = '<h3>' + esc(title) + '</h3>' + html; ov.classList.add('on'); ov._on = on || {};
+    var first = $('mpa-card').querySelector('input,textarea'); if (first) setTimeout(function () { first.focus(); }, 30);
+  }
+  function closePop() { var ov = $('mpa-ov'); if (ov) ov.classList.remove('on'); }
+  function reversePopup(id) {
+    var e = (lists().tx || []).find(function (x) { return x.id === id; }); if (!e) return;
+    pop('Reverse this entry?', '<p style="margin:0;font-size:14px">' + esc(TYPES[e.type].label) + ' · <b>' + kes(e.amount) + '</b> · ' + new Date(e.ts).toLocaleString('en-GB') + '<br>This adds an opposite entry (cash ' + signed(-e.cash) + ', float ' + signed(-e.float) + '). The original stays in the history, marked Reversed.</p><label for="mpa-rr">Reason (required)</label><input id="mpa-rr" maxlength="200" placeholder="e.g. wrong number, customer cancelled"><div id="mpa-rov" style="display:none"><label><input type="checkbox" id="mpa-rovc" style="width:auto"> I am allowed to post below zero</label><label for="mpa-rovr">Reason for going below zero</label><input id="mpa-rovr" maxlength="200"></div><p class="mpa-err" id="mpa-rerr" role="alert"></p><div class="mpa-row"><button type="button" class="mpa-sec" data-mpa="popno">Cancel</button><button type="button" class="mpa-go" data-mpa="dorev" data-id="' + esc(id) + '">Reverse</button></div>');
+  }
+  function doReverse(id) {
+    var r = reverse(id, ($('mpa-rr') || {}).value, $('mpa-rovc') && $('mpa-rovc').checked, ($('mpa-rovr') || {}).value), er = $('mpa-rerr');
+    if (r.err) { if (er) er.textContent = r.err; if (r.needOverride && $('mpa-rov')) $('mpa-rov').style.display = ''; return; }
+    closePop(); toast('Reversed. The original entry is kept in the history.'); render();
+  }
+  function slip(id) {
+    var e = (lists().tx || []).find(function (x) { return x.id === id; }); if (!e) return;
+    try {
+      var cols = typeof getPaperCols === 'function' ? getPaperCols() : 32, line = '-'.repeat(cols), st = typeof bizReceiptStamp === 'function' ? bizReceiptStamp(new Date(e.ts)) : { date: new Date(e.ts).toLocaleDateString('en-GB'), time: new Date(e.ts).toLocaleTimeString('en-GB') };
+      var row = function (a, b) { return typeof buildAlignedRow === 'function' ? buildAlignedRow(a, b) : a + ' ' + b; };
+      var head = [(typeof businessName !== 'undefined' && businessName ? businessName : 'Agent').toUpperCase(), 'M-PESA AGENT SLIP', 'Shop record. Not an M-PESA / Safaricom receipt.', line, 'Date: ' + st.date + '   Time: ' + st.time, 'Served by: ' + (e.by || '')];
+      var lines = [line, row(TYPES[e.type].label.toUpperCase(), 'KES ' + e.amount.toLocaleString('en-KE'))];
+      if (e.cust) lines.push('Customer: ' + e.cust); if (e.ref) lines.push('M-PESA message code: ' + e.ref); lines.push('Slip no: ' + e.id.replace('mpa-', '').slice(-8).toUpperCase());
+      var foot = [line, 'Keep your M-PESA message as proof.'];
+      var el = $('receipt-body'); if (!el || typeof receiptGridHtml !== 'function') throw new Error('no receipt component');
+      el.innerHTML = receiptGridHtml([{ lines: head, align: 'center', bold: function (l, i) { return i === 0; } }, { lines: lines, align: 'left', bold: function (l) { return /^\s*(DEPOSIT|WITHDRAWAL)/i.test(l); } }, { lines: foot, align: 'center' }]);
+      lastReceiptText = head.concat(lines, foot).join('\n'); lastReceiptHeader = head.join('\n'); lastReceiptItemSection = lines.join('\n'); lastReceiptFooter = foot.join('\n'); currentReceiptSale = { id: e.id };
+      $('receipt-modal').style.display = 'flex'; if (typeof triggerAutoPrintReceipt === 'function') triggerAutoPrintReceipt();
+    } catch (x) { toast('Could not open the receipt here.', true); }
+  }
+  function csv() {
+    var c = cfg(), rows = (lists().tx || []).filter(function (e) { return e && !e.removed; }).sort(function (a, z) { return a.ts - z.ts; });
+    var q = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var out = [['Time', 'Operation', 'Amount', 'Cash change', 'Float change', 'Commission', 'Reference', 'Customer', 'Note/Reason', 'By', 'Status'].join(',')].concat(rows.map(function (e) { return [new Date(e.ts).toISOString(), TYPES[e.type] ? TYPES[e.type].label : e.type, e.amount, e.cash, e.float, e.fee || 0, e.ref, e.cust, e.note || e.reason, e.by, e.status].map(q).join(','); }));
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out.join('\n')], { type: 'text/csv' })); a.download = 'mpesa-agent-ledger-' + dayKey(Date.now()) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------------- actions ---------------- */
+  function val(id) { var e = $(id); return e ? e.value : ''; }
+  function err(m) { var e = $('mpa-err'); if (e) e.textContent = m || ''; }
+  function doPost(btn) {
+    if (S.busy) return; S.busy = true; if (btn) btn.disabled = true;
+    try {
+      var kind = btn.getAttribute('data-type'), spec;
+      if (kind === 'float') spec = { type: val('mpa-op'), src: val('mpa-op') === 'cash_in' || val('mpa-op') === 'cash_out' ? '' : val('mpa-src'), amount: val('mpa-amt'), ref: val('mpa-ref'), note: val('mpa-note') };
+      else spec = { type: kind, amount: val('mpa-amt'), ref: val('mpa-ref').toUpperCase(), cust: val('mpa-cust'), note: val('mpa-note'), fee: val('mpa-fee') };
+      spec.opId = S.opId || (S.opId = newOp());
+      var r = post(spec);
+      if (r.err && r.needOverride) {
+        if (!can('override')) { err(r.err); return; }
+        var why = prompt(r.err + '\n\nAs a manager you may post anyway. Type the reason (it is recorded):', '');
+        if (why === null) return; spec.override = true; spec.overrideReason = why; r = post(spec);
+      }
+      if (r.err) { err(r.err); return; }
+      S.opId = ''; toast(r.duplicate ? 'Already recorded.' : TYPES[r.entry.type].label + ' recorded: ' + kes(r.entry.amount) + '.'); render();
+      if (!r.duplicate && (r.entry.type === 'deposit' || r.entry.type === 'withdrawal') && confirm('Print a slip for the customer?')) slip(r.entry.id);
+    } finally { S.busy = false; if (btn) btn.disabled = false; }
+  }
+  function doClose(btn) {
+    var c = cfg(), L = lists().tx || [], b = balances(L, c), cc = parseAmount(val('mpa-cc') || '', 1e12), cf = parseAmount(val('mpa-cf') || '', 1e12);
+    var z = function (v) { return String(v).trim() === '0'; };
+    if (cc.err && !z(val('mpa-cc'))) { err('Cash counted: ' + cc.err); return; } if (cf.err && !z(val('mpa-cf'))) { err('Float: ' + cf.err); return; }
+    var counted = { cash: z(val('mpa-cc')) ? 0 : cc.n, float: z(val('mpa-cf')) ? 0 : cf.n }, vc = counted.cash - b.cash, vf = counted.float - b.float, today = dayKey(Date.now());
+    var opId = S.closeOp || (S.closeOp = newOp()), id = 'mpa-cl-' + opId;
+    if (mpesaAgentClosings.some(function (x) { return x && x.id === id; })) return;
+    var rec = { id: id, date: today, at: Date.now(), by: meName(), byId: meId(), expectedCash: b.cash, expectedFloat: b.float, countedCash: counted.cash, countedFloat: counted.float, varCash: vc, varFloat: vf, note: val('mpa-cn').trim().slice(0, 200), approval: { status: (vc || vf) ? 'pending' : 'approved', by: (vc || vf) ? '' : meName(), at: Date.now() }, updatedAt: Date.now() };
+    if ((vc || vf) && can('close')) { if (!confirm('There is a difference (cash ' + signed(vc) + ', float ' + signed(vf) + '). Close anyway and approve it?\nPress Cancel to leave it waiting for another manager.')) { /* stays pending */ } else rec.approval = { status: 'approved', by: meName(), at: Date.now(), note: 'Approved at closing' }; }
+    mpesaAgentClosings.push(rec); saveClosings(); S.closeOp = ''; audit('M-PESA day closing', today + ' cash ' + signed(vc) + ', float ' + signed(vf));
+    toast(vc || vf ? 'Day closed with a difference' + (rec.approval.status === 'pending' ? ': waiting for a manager.' : '.') : 'Day closed: balanced.'); render();
+  }
+  function readCfg() {
+    var c = cfg(), n = function (id, d) { var s = val(id).trim().replace(/,/g, ''); if (s === '') return d; if (!/^\d+$/.test(s)) return NaN; return parseInt(s, 10); };
+    var out = Object.assign({}, c, { openCash: n('mpa-s-oc', 0), openFloat: n('mpa-s-of', 0), lowCash: n('mpa-s-lc', 0), lowFloat: n('mpa-s-lf', 0), maxTx: n('mpa-s-mx', MAX_DEFAULT) });
+    var bad = ['openCash', 'openFloat', 'lowCash', 'lowFloat', 'maxTx'].find(function (k) { return isNaN(out[k]); });
+    if (bad) return { err: 'Use whole shillings (digits only) in every box.' };
+    if (!(out.maxTx > 0)) return { err: 'The largest transaction must be more than zero.' };
+    out.tariff = { deposit: [], withdrawal: [] };
+    ['deposit', 'withdrawal'].forEach(function (ty) { document.querySelectorAll('[data-row="' + ty + '"]').forEach(function (row) { var up = row.querySelector('[data-k="up"]').value.trim().replace(/,/g, ''), fe = row.querySelector('[data-k="fee"]').value.trim().replace(/,/g, '') || '0'; if (up !== '' && !/^\d+$/.test(up)) { out.__bad = 1; return; } if (!/^\d+$/.test(fe)) { out.__bad = 1; return; } out.tariff[ty].push({ upTo: up === '' ? null : parseInt(up, 10), fee: parseInt(fe, 10) }); }); });
+    if (out.__bad) return { err: 'The commission table needs whole shillings.' };
+    return { cfg: out };
+  }
+  function doSaveCfg() {
+    if (!isMgr()) { err('Only a manager or the Admin can change settings.'); return; }
+    var r = readCfg(), c = cfg(); if (r.err) { err(r.err); return; }
+    var opening = r.cfg.openCash !== c.openCash || r.cfg.openFloat !== c.openFloat, hasTx = (lists().tx || []).length > 0;
+    if (c.setup && opening && hasTx && !confirm('Changing the opening balances changes every balance from the first day. Do this only to fix a wrong starting figure.\nContinue?')) return;
+    r.cfg.setup = true; if (!r.cfg.openAt) r.cfg.openAt = Date.now();
+    saveCfg(r.cfg); audit('M-PESA settings saved', 'opening cash ' + r.cfg.openCash + ', float ' + r.cfg.openFloat); toast('Settings saved.'); render();
+  }
+
+  var root = null;
+  function render() {
+    root = $('mpa-root'); if (!root) return;
+    var active = document.activeElement && document.activeElement.id, keep = {};
+    ['mpa-amt', 'mpa-cust', 'mpa-ref', 'mpa-fee', 'mpa-note', 'mpa-cc', 'mpa-cf', 'mpa-cn'].forEach(function (id) { if ($(id)) keep[id] = $(id).value; });
+    root.innerHTML = '<div class="mpa-tabs" role="tablist">' + TABS.map(function (x) { return '<button type="button" role="tab" aria-selected="' + (S.tab === x[0]) + '" class="mpa-chip' + (S.tab === x[0] ? ' on' : '') + '" data-mpa="goto" data-t="' + x[0] + '">' + x[1] + '</button>'; }).join('') + '</div>' + view();
+    if (S.keepForm) { Object.keys(keep).forEach(function (id) { if ($(id)) $(id).value = keep[id]; }); }
+    S.keepForm = false; if (active && $(active) && /^mpa-f-/.test(active)) { var el = $(active); el.focus(); try { var l = el.value.length; el.setSelectionRange(l, l); } catch (e) { /* date input */ } }
+    updateOpUi(); updateVar();
+  }
+  function updateOpUi() { var op = $('mpa-op'), w = $('mpa-srcwrap'); if (op && w) w.style.display = (op.value === 'buy_float' || op.value === 'sell_float') ? '' : 'none'; }
+  function updateVar() {
+    var cc = $('mpa-cc'), cf = $('mpa-cf'), v = $('mpa-var'); if (!cc || !v) return;
+    var b = balances(lists().tx || [], cfg()), n = function (e) { var s = e.value.trim().replace(/,/g, ''); return /^\d+$/.test(s) ? parseInt(s, 10) : null; }, a = n(cc), f = n(cf);
+    v.innerHTML = 'Expected: cash <b>' + kes(b.cash) + '</b>, float <b>' + kes(b.float) + '</b>' + (a != null ? ' · cash difference <b style="color:' + (a - b.cash ? '#b03a2e' : '#1e6b41') + '">' + signed(a - b.cash) + '</b>' : '') + (f != null ? ' · float difference <b style="color:' + (f - b.float ? '#b03a2e' : '#1e6b41') + '">' + signed(f - b.float) + '</b>' : '');
+  }
+  function onClick(ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-mpa]') : null; if (!b) return;
+    var a = b.getAttribute('data-mpa');
+    if (a === 'goto') { S.tab = b.getAttribute('data-t'); S.opId = ''; render(); }
+    else if (a === 'post') doPost(b);
+    else if (a === 'rev') reversePopup(b.getAttribute('data-id'));
+    else if (a === 'dorev') doReverse(b.getAttribute('data-id'));
+    else if (a === 'popno') closePop();
+    else if (a === 'slip') slip(b.getAttribute('data-id'));
+    else if (a === 'csv') csv();
+    else if (a === 'summary') { S.f.summary = !S.f.summary; render(); }
+    else if (a === 'close') doClose(b);
+    else if (a === 'adjust') { var r = adjust({ cash: val('mpa-ac'), float: val('mpa-af'), reason: val('mpa-ar'), opId: S.adjOp || (S.adjOp = newOp()) }); if (r.err && r.needOverride && can('override')) { if (confirm(r.err + '\nPost it anyway?')) r = adjust({ cash: val('mpa-ac'), float: val('mpa-af'), reason: val('mpa-ar'), opId: S.adjOp, override: true }); } var e2 = $('mpa-aerr'); if (r.err) { if (e2) e2.textContent = r.err; } else { S.adjOp = ''; toast('Adjustment posted.'); render(); } }
+    else if (a === 'appr') { var id = b.getAttribute('data-id'), s = b.getAttribute('data-s'), x = mpesaAgentClosings.find(function (q) { return q.id === id; }); if (!x || !can('close')) return; x.approval = { status: s, by: meName(), at: Date.now() }; x.updatedAt = Date.now(); saveClosings(); audit('M-PESA closing ' + s, x.date); render(); }
+    else if (a === 'grant') { /* handled on change */ }
+    else if (a === 'savecfg') doSaveCfg();
+    else if (a === 'addtar') { var cont = $('mpa-tar-' + b.getAttribute('data-ty')); if (cont) cont.insertAdjacentHTML('beforeend', tariffRow(b.getAttribute('data-ty'), { upTo: null, fee: 0 }, 0, true)); }
+    else if (a === 'rmtar') { var row = b.closest('[data-row]'); if (row) row.remove(); }
+  }
+  function onChange(ev) {
+    var t = ev.target; if (!t || !t.getAttribute) return;
+    if (t.getAttribute('data-mpa') === 'grant') {
+      if (!isMgr()) { t.checked = !t.checked; return; }
+      var c = cfg(), sid = t.getAttribute('data-s'), g = (c.grants[sid] || []).slice(), k = t.getAttribute('data-g'), i = g.indexOf(k);
+      if (t.checked && i < 0) g.push(k); if (!t.checked && i >= 0) g.splice(i, 1);
+      c.grants = Object.assign({}, c.grants); c.grants[sid] = g; saveCfg(c); audit('M-PESA permission', (t.checked ? 'given ' : 'removed ') + k + ' for ' + sid); return;
+    }
+    if (t.id === 'mpa-op') updateOpUi();
+    var m = /^mpa-f-(from|to|type|by)$/.exec(t.id); if (m) { S.f[m[1]] = t.value; render(); }
+  }
+  function onInput(ev) {
+    var t = ev.target; if (!t || !t.id) return;
+    if (t.id === 'mpa-amt' || t.id === 'mpa-fee' || t.id === 'mpa-cc' || t.id === 'mpa-cf') { var c = t.value.replace(/[^0-9]/g, '').slice(0, 10); if (t.value !== c) t.value = c; updateVar(); }
+    if (t.id === 'mpa-f-q') { S.f.q = t.value; render(); }
+    if (t.id === 'mpa-amt' && (S.tab === 'deposit' || S.tab === 'withdrawal')) { var fe = $('mpa-fee'); if (fe && !fe.dataset.touched) fe.placeholder = t.value ? 'auto: ' + feeFor(S.tab, parseInt(t.value, 10) || 0, cfg()) : 'auto from Settings'; }
+    if (t.id === 'mpa-fee') t.dataset.touched = '1';
+  }
+  function ensure() {
+    if (!$('store-tab') && !$('dashboard-tab') && !$('sales-tab')) return false;
+    if (!$(ID)) {
+      var anchor = $('sales-tab') || $('dashboard-tab'), d = document.createElement('div'); d.id = ID; d.className = 'tab-content';
+      d.innerHTML = '<div class="panel"><div class="mpa-head"><h3>📲 M-PESA Agent</h3></div><p class="mpa-note">Your cash and e-float books for agent work: deposits, withdrawals and float top-ups, kept safe offline and synced across your tills.</p><div id="mpa-root"></div></div>';
+      anchor.parentNode.insertBefore(d, anchor.nextSibling);
+      d.addEventListener('click', onClick); d.addEventListener('change', onChange); d.addEventListener('input', onInput);
+    }
+    if (!$(BTN)) {
+      var after = document.querySelector('.tab-link[data-tab="daily-sales-tab"]') || document.querySelector('.tab-link[data-tab="store-tab"]') || document.querySelector('.tab-link[data-tab]');
+      if (after) { var nb = document.createElement('button'); nb.id = BTN; nb.className = 'tab-link'; nb.setAttribute('data-tab', ID); nb.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')"); nb.textContent = '📲 M-PESA Agent'; after.parentNode.insertBefore(nb, after.nextSibling); nb.addEventListener('click', function () { setTimeout(render, 0); }); }
+    }
+    return !!$(BTN);
+  }
+  function register() {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === ID; })) {
+        var item = { id: ID, label: '📲 M-PESA Agent' }, i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'daily-sales-tab'; });
+        LOCKABLE_TABS.splice(i >= 0 ? i + 1 : LOCKABLE_TABS.length, 0, item);
+        if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === ID; })) ROLE_TABS.push(item);
+      }
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  window.MPA = {
+    __v: 340, post: post, reverse: reverse, adjust: adjust, balances: function () { return balances(lists().tx || [], cfg()); }, cfg: cfg, feeFor: function (t, a) { return feeFor(t, a, cfg()); },
+    parseAmount: parseAmount, review: function () { return reviewFlags(lists().tx || [], cfg()); }, render: render, onSynced: function () { try { if ($(ID) && $(ID).classList.contains('active')) { S.keepForm = true; render(); } } catch (e) { /* cosmetic */ } }, state: S
+  };
+  function boot() {
+    var n = 0;
+    (function tick() { try { if (ensure()) register(); } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 250 : 1000); })();
+    setInterval(function () { try { ensure(); var tab = $(ID); if (tab && tab.classList.contains('active') && !tab.__drawn) { tab.__drawn = true; render(); } if (tab && !tab.classList.contains('active')) tab.__drawn = false; } catch (e) { /* cosmetic */ } }, 800);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

@@ -87,6 +87,11 @@ test('connectivity in a real browser: fresh (Guest) and installed profiles, bloc
     await g.evaluate(() => window.PosNet.check('test: challenge'));
     await waitNet(g, ['security_check']);
     assert.match((await net(g)).title, /security check/i);
+    // zip 316: the app's own sync requests get the same challenge page meanwhile - that must never turn into "the shop's link is not active"
+    await g.evaluate(async () => { try { await pullState(); } catch (e) { /* answered with the challenge */ } try { window.__pushBackoffUntil = 0; await pushNow({ force: true }); } catch (e) { /* same */ } });
+    await g.waitForTimeout(800);
+    assert.equal((await net(g)).state, 'security_check', 'a sync request answered by the challenge page is not a refused licence');
+    assert.doesNotMatch((await net(g)).title, /not active/i);
     ctl.health = 'ok';
     await guest.close();
 

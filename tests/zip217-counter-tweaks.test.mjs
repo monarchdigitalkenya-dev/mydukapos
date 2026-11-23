@@ -64,10 +64,11 @@ test('the Sales panel heading says Today\'s Sales (hotel and the shared block)',
 
 test('hide switches and hidden tabs are shop-wide: they travel with the shop settings to every device', async () => {
   const a = await boot('hotel/index.html', { wait: 1300 });
-  assert.equal(a.w.eval('extraSettingsCollect().switches'), undefined, 'a fresh device sends nothing, so it never overwrites the shop');
+  // (the test harness itself stores pos_round_up = 0 on every boot, so Round-up is the only switch this device "has a choice" about)
+  assert.deepEqual(JSON.parse(a.w.eval("JSON.stringify(Object.keys(extraSettingsCollect().switches || {}).filter((k) => k !== 'roundUp'))")), [], 'a fresh device sends no hide switches, so it never overwrites the shop');
   a.w.eval("setHideAdhoc(true); setHideCounterBtn('sales', true); setHideCounterBtn('bills', true)");
   const sent = JSON.parse(a.w.eval('JSON.stringify(extraSettingsCollect().switches)'));
-  assert.deepEqual(sent, { hideAdhoc: true, hideCtrBills: true, hideCtrSales: true });
+  assert.deepEqual(sent, { hideAdhoc: true, hideCtrBills: true, hideCtrSales: true, roundUp: false });
   a.w.eval("localStorage.setItem('pos_ptl_tabs_off', JSON.stringify(['contracts-tab'])); localStorage.setItem('pos_ptl_search', 'icon')");
   const pt = JSON.parse(a.w.eval('JSON.stringify(extraSettingsCollect().phoneTill)'));
   assert.deepEqual(pt.tabsOff, ['contracts-tab']); assert.equal(pt.search, 'icon');

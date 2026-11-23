@@ -1,0 +1,72 @@
+<!-- STAFF RENAME (zip 300) -----------------------------------------------------------------------------------------------------------
+     Settings -> Staff: every staff member gets a "✏️ Rename" button. Changing a name keeps the same login link, PIN, roles and history (their id
+     does not change); the new name is used from then on and is sent to the other devices. Ids: sr-*. -->
+<style id="sr-css">
+#sr-modal { position: fixed; inset: 0; z-index: 100002; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,.45); }
+#sr-modal.open { display: flex; }
+#sr-modal .sr-card { width: min(380px, 100%); background: var(--card, #fff); color: var(--text, #2c3e50); border-radius: 14px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+#sr-modal h3 { margin: 0 0 10px; }
+#sr-modal input { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 15px; border: 1px solid #b2bec3; border-radius: 8px; }
+#sr-modal .sr-err { color: #c0392b; font-size: 12px; min-height: 16px; margin: 6px 0; }
+#sr-modal .sr-row { display: flex; gap: 8px; justify-content: flex-end; }
+#sr-modal .sr-row button { padding: 9px 16px; border-radius: 8px; border: 0; font-weight: 700; cursor: pointer; }
+#sr-modal .sr-go { background: #27ae60; color: #fff; } #sr-modal .sr-no { background: #ecf0f1; color: #2c3e50; }
+.staff-list-item .sr-btn { background: #2980b9 !important; }
+</style>
+<script id="sr-js">
+(function () {
+  'use strict';
+  var editId = null, KEY = /\/water\//.test(location.pathname) ? 'aqua_staff' : 'pos_staff';   // Water keeps its staff under its own key
+  function $(id) { return document.getElementById(id); }
+  function build() {
+    if ($('sr-modal')) return;
+    var m = document.createElement('div'); m.id = 'sr-modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-labelledby', 'sr-h');
+    m.innerHTML = '<div class="sr-card"><h3 id="sr-h">Rename staff member</h3><label for="sr-name" style="font-size:13px;font-weight:600;">Name</label><input id="sr-name" maxlength="60" autocomplete="off">' +
+      '<p class="sr-err" id="sr-err" role="alert"></p><div class="sr-row"><button type="button" class="sr-no" id="sr-no">Cancel</button><button type="button" class="sr-go" id="sr-go">Save name</button></div></div>';
+    document.body.appendChild(m);
+    $('sr-no').onclick = close; m.addEventListener('mousedown', function (e) { if (e.target === m) close(); });
+    $('sr-go').onclick = save;
+    $('sr-name').addEventListener('keydown', function (e) { if (e.key === 'Enter') save(); else if (e.key === 'Escape') close(); });
+  }
+  function open(id) {
+    var s = staff.find(function (x) { return x.id === id; }); if (!s) return;
+    build(); editId = id; $('sr-name').value = s.name || ''; $('sr-err').textContent = '';
+    $('sr-modal').classList.add('open'); setTimeout(function () { var i = $('sr-name'); i.focus(); i.select(); }, 30);
+  }
+  function close() { var m = $('sr-modal'); if (m) m.classList.remove('open'); editId = null; }
+  function save() {
+    var s = staff.find(function (x) { return x.id === editId; }); if (!s) { close(); return; }
+    var name = $('sr-name').value.trim().replace(/\s+/g, ' ');
+    if (!name) { $('sr-err').textContent = 'The name cannot be empty.'; return; }
+    if (staff.some(function (x) { return x.id !== s.id && !x.removed && String(x.name || '').toLowerCase() === name.toLowerCase(); })) { $('sr-err').textContent = 'Another staff member already has this name.'; return; }
+    s.name = name; s.updatedAt = Date.now();
+    try { safeSetItem(KEY, JSON.stringify(staff)); } catch (e) { /* kept in memory */ }
+    try { if (typeof currentServer !== 'undefined' && currentServer && currentServer.id === s.id) { currentServer.name = name; sessionStorage.setItem('pos_current_server', JSON.stringify(currentServer)); } } catch (e) { /* ok */ }
+    try { queuePush(); } catch (e) { /* the next change sends it */ }
+    close(); try { renderStaffList(); } catch (e) { /* not on screen */ }
+    try { showToast('Renamed to ' + name + '.'); } catch (e) { /* none */ }
+  }
+  function decorate() {
+    var box = $('staff-list'); if (!box || typeof staff === 'undefined') return;
+    var active = staff.filter(function (s) { return !s.removed; });
+    var rows = box.querySelectorAll('.staff-list-item');
+    rows.forEach(function (row, i) {
+      var s = active[i]; if (!s || row.querySelector('.sr-btn')) return;
+      var holder = row.querySelector('span:last-child'); if (!holder) return;
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'staff-link-btn sr-btn'; b.textContent = '✏️ Rename'; b.setAttribute('data-sr', s.id);
+      b.onclick = function () { open(s.id); };
+      holder.insertBefore(b, holder.firstChild);
+    });
+  }
+  function boot() {
+    if (typeof renderStaffList === 'function' && !renderStaffList.__sr) {
+      var orig = renderStaffList;
+      var w = function () { var r = orig.apply(this, arguments); try { decorate(); } catch (e) { /* cosmetic */ } return r; };
+      w.__sr = true; window.renderStaffList = w;
+    }
+    try { decorate(); } catch (e) { /* not on screen */ }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+  window.__srOpen = open;
+})();
+</script>

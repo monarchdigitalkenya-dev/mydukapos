@@ -21,14 +21,15 @@ import { PAYROLL_SCHEMA, PAYROLL_SCHEMA_VERSION } from './_payroll-schema.js';
 import { ensureLedgerSchema } from './_ledger.js';
 import { mediaKey, mediaPut, mediaGet, mediaDelete } from './_media.js';
 import { staffRecord } from './_staff-auth.js';
+import { ensureHrSchema, registerHr, hrClean, employmentFlags, lineApplies, lineMetaMap, getSettings as hrSettings, localDay, LEAVER_STATUSES } from './_hr.js';
 
 export const PERMS = ['view', 'staff', 'run', 'approve', 'settings'];
 export const FREQUENCIES = ['monthly', 'biweekly', 'weekly', 'daily'];
-export const EMP_STATUSES = ['active', 'on_leave', 'suspended', 'former'];
-export const DOC_CATEGORIES = ['national_id', 'passport', 'certificate', 'academic', 'professional', 'contract', 'appointment', 'other'];
+export const EMP_STATUSES = ['active', 'on_leave', 'suspended', 'inactive', 'terminated', 'former'];
+export const DOC_CATEGORIES = ['national_id', 'passport', 'certificate', 'academic', 'professional', 'contract', 'appointment', 'cv', 'licence', 'other'];
 const PAY_METHODS = ['cash', 'mpesa', 'bank', 'cheque', 'other'];
 const CALCS = ['fixed', 'percent_basic', 'percent_gross', 'bands'];
-export const DOC_MAX_BYTES = 2.5 * 1024 * 1024;
+export const DOC_MAX_BYTES = 1.5 * 1024 * 1024;          // zip 334: 1.5 MB. The staff screen shrinks bigger files before sending (photos become PDFs).
 const MAX_MONEY = 1e9;
 
 export const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -51,6 +52,7 @@ export async function ensurePayrollSchema(db) {
     await db.batch(PAYROLL_SCHEMA.map((s) => db.prepare(s)));
     await db.prepare(`INSERT INTO pr_meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(PAYROLL_SCHEMA_VERSION)).run();
   }
+  await ensureHrSchema(db);
   ready.set(db, true);
   return true;
 }
@@ -179,40 +181,158 @@ A['employee.get'] = async ({ db, c, who, body }) => {
   const e = await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, String(body.empId || ''));
   if (!e) throw bad('not_found', 'That employee was not found.', 404);
   const out = { employee: shapeEmployee(e, who) };
+  if (can(who, 'staff')) out.numbers = await numbersOf(db, c, e.emp_id);
   out.payLines = await all(db, `SELECT line_id, kind, type_id, label, calc, rate, amount, cfg, balance, active FROM pr_pay_lines WHERE client_id = ? AND emp_id = ? ORDER BY kind, label`, c, e.emp_id);
   out.history = await all(db, `SELECT i.run_id, r.ref, r.label, r.kind, r.status, r.period_start, r.period_end, r.pay_date, i.payslip_no, i.basic, i.additions, i.deductions, i.net FROM pr_items i JOIN pr_runs r ON r.client_id = i.client_id AND r.run_id = i.run_id WHERE i.client_id = ? AND i.emp_id = ? ORDER BY r.period_start DESC, r.created_at DESC`, c, e.emp_id);
   return out;
 };
 
+// ---- registration numbers (zip 334): as many labelled numbers per person as they like, all optional ----
+export const NUMBER_KINDS = { national_id: 'National ID', passport: 'Passport', driving_licence: 'Driving licence', employment_id: 'Employment ID', staff_id: 'Staff / payroll ID', kra_pin: 'KRA PIN', nssf: 'NSSF', sha: 'SHA / SHIF', nhif: 'NHIF', work_permit: 'Work permit', professional_licence: 'Professional licence', phone: 'Phone number', other: 'Other' };
+const MAX_NUMBERS = 40;
+const numbersOf = (db, c, empId) => all(db, `SELECT num_id, kind, label, value FROM pr_emp_numbers WHERE client_id = ? AND emp_id = ? ORDER BY sort, num_id`, c, empId);
+A['numbers.save'] = async ({ db, c, who, body }) => {
+  need(who, 'staff');
+  const e = await one(db, `SELECT emp_id, name FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, String(body.empId || ''));
+  if (!e) throw bad('not_found', 'That employee was not found.', 404);
+  const list = Array.isArray(body.numbers) ? body.numbers : null;
+  if (!list) throw bad('bad_numbers', 'Send the list of numbers.');
+  const rows = [], seen = new Set();
+  for (const n of list) {
+    const value = str(n && n.value, 60); if (!value) continue;                         // a blank row is simply not saved: every number is optional
+    const kind = Object.prototype.hasOwnProperty.call(NUMBER_KINDS, n.kind) ? n.kind : 'other';
+    const label = str(n.label, 40) || null;
+    const key = kind + '|' + (label || '').toLowerCase() + '|' + value.toLowerCase();
+    if (seen.has(key)) continue; seen.add(key);
+    rows.push({ id: String(n.num_id || '').slice(0, 40) || rid('N'), kind, label: kind === 'other' || label ? label : null, value });
+  }
+  if (rows.length > MAX_NUMBERS) throw bad('too_many', 'That is more than ' + MAX_NUMBERS + ' numbers for one person.');
+  const t = nowMs(), ids = new Set();
+  const stmts = [db.prepare(`DELETE FROM pr_emp_numbers WHERE client_id = ? AND emp_id = ?`).bind(c, e.emp_id)];
+  rows.forEach((r, i) => { let id = r.id; while (ids.has(id)) id = rid('N'); ids.add(id); stmts.push(db.prepare(`INSERT INTO pr_emp_numbers (client_id, emp_id, num_id, kind, label, value, sort, updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind(c, e.emp_id, id, r.kind, r.label, r.value, i, t)); });
+  stmts.push(auditStmt(db, c, who, 'numbers_saved', 'employee', e.emp_id, { employee: e.name, count: rows.length }));      // the numbers themselves stay out of the audit log
+  await db.batch(stmts);
+  return { numbers: await numbersOf(db, c, e.emp_id) };
+};
+// every person's numbers at once, for the staff download (CSV) - same permission as the personal details
+A['numbers.all'] = async ({ db, c, who }) => {
+  need(who, 'staff');
+  return { numbers: await all(db, `SELECT emp_id, kind, label, value FROM pr_emp_numbers WHERE client_id = ? ORDER BY emp_id, sort, num_id`, c), kinds: NUMBER_KINDS };
+};
+
+const HIST_EMP = ['job_title', 'department', 'branch_name', 'start_date', 'status', 'pay_frequency'];
+// ---- zip 366: staff photo + the five-way employment type (permanent / full time / part time / contract / internship) ----
+// Kept in a one-to-one side table created on first use (CREATE IF NOT EXISTS, so there is nothing to migrate and no existing table or row changes). The stored
+// basis/schedule columns that payroll logic reads are still set by the form; this only remembers which of the five words the person picked.
+export const EMP_KINDS = ['permanent', 'full_time', 'part_time', 'contract', 'internship'];
+const PHOTO_MAX = 60 * 1024;                                   // the screen shrinks a photo to ~160 px (a few KB); this is only the safety ceiling
+const extraReady = new WeakMap();
+async function ensureExtra(db) {
+  if (extraReady.get(db)) return;
+  await db.prepare(`CREATE TABLE IF NOT EXISTS pr_emp_extra (client_id TEXT NOT NULL, emp_id TEXT NOT NULL, emp_kind TEXT, photo TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (client_id, emp_id)) WITHOUT ROWID`).run();
+  extraReady.set(db, true);
+}
+A['extra.save'] = async ({ db, c, who, body }) => {
+  need(who, 'staff');
+  await ensureExtra(db);
+  const e = await one(db, `SELECT emp_id, name FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, String(body.empId || ''));
+  if (!e) throw bad('not_found', 'That employee was not found.', 404);
+  const x = body.extra && typeof body.extra === 'object' ? body.extra : {};
+  const cur = await one(db, `SELECT emp_kind, photo FROM pr_emp_extra WHERE client_id = ? AND emp_id = ?`, c, e.emp_id);
+  let kind = cur ? cur.emp_kind : null, photo = cur ? cur.photo : null;
+  if (Object.prototype.hasOwnProperty.call(x, 'emp_kind')) { if (x.emp_kind && !EMP_KINDS.includes(x.emp_kind)) throw bad('bad_kind', 'Pick one of the listed employment types.'); kind = x.emp_kind || null; }
+  if (Object.prototype.hasOwnProperty.call(x, 'photo')) {
+    if (!x.photo) photo = null;
+    else { const ph = String(x.photo); if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(ph)) throw bad('bad_photo', 'That photo could not be used. Pick a JPG or PNG.'); if (ph.length > PHOTO_MAX) throw bad('photo_big', 'That photo is too large. Pick a smaller one.'); photo = ph; }
+  }
+  await db.batch([
+    db.prepare(`INSERT INTO pr_emp_extra (client_id, emp_id, emp_kind, photo, updated_at) VALUES (?,?,?,?,?) ON CONFLICT(client_id, emp_id) DO UPDATE SET emp_kind=excluded.emp_kind, photo=excluded.photo, updated_at=excluded.updated_at`).bind(c, e.emp_id, kind, photo, nowMs()),
+    auditStmt(db, c, who, 'extra_saved', 'employee', e.emp_id, { employee: e.name, kind: kind || '', photo: photo ? 'yes' : 'no' }),
+  ]);
+  return { ok: true, emp_kind: kind, photo: !!photo };
+};
+// everyone's photo + employment type at once (the staff list and the staff screen draw from this)
+A['extra.all'] = async ({ db, c, who }) => {
+  need(who, ...PERMS);
+  await ensureExtra(db);
+  const rows = await all(db, `SELECT emp_id, emp_kind, photo FROM pr_emp_extra WHERE client_id = ?`, c);
+  const out = {}; rows.forEach((r) => { out[r.emp_id] = { emp_kind: r.emp_kind || null, photo: r.photo || null }; });
+  return { extra: out };
+};
+
+const HIST_HR = ['cadre', 'designation', 'supervisor_name', 'employment_basis', 'work_schedule', 'end_date', 'internship_months', 'salary_state'];
+const hv = (v) => (v == null || v === '' ? null : String(v));
 A['employee.save'] = async ({ db, c, who, body }) => {
   need(who, 'staff');
   const f = body.employee && typeof body.employee === 'object' ? body.employee : {};
   const name = str(f.name, 80);
   if (!name) throw bad('name_required', 'Enter the employee\'s full name.');
-  const basic = round2(num(f.basic_pay));
-  if (basic < 0 || basic > MAX_MONEY) throw bad('bad_amount', 'Enter a valid salary / pay rate.');
-  const freq = str(f.pay_frequency, 20) || 'monthly';
-  const unit = ['period', 'day', 'hour'].includes(f.rate_unit) ? f.rate_unit : (freq === 'daily' ? 'day' : 'period');
-  const status = EMP_STATUSES.includes(f.status) ? f.status : 'active';
+  const old = f.emp_id ? await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, String(f.emp_id)) : null;
+  if (f.emp_id && !old) throw bad('not_found', 'That employee was not found.', 404);
+  const oldHr = old ? await one(db, `SELECT * FROM pr_emp_hr WHERE client_id = ? AND emp_id = ?`, c, old.emp_id) : null;
+  // SALARY: a blank means "not entered yet" (never 0), 0 is a real salary (volunteers, interns, commission-only), omitted on an edit keeps what is stored.
+  const hasPay = Object.prototype.hasOwnProperty.call(f, 'basic_pay');
+  let basic, salaryState;
+  if (hasPay && f.basic_pay !== '' && f.basic_pay != null) {
+    const n = typeof f.basic_pay === 'number' ? f.basic_pay : (/^\s*-?\d+(\.\d+)?\s*$/.test(String(f.basic_pay)) ? Number(f.basic_pay) : NaN);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_MONEY) throw bad('bad_amount', 'Enter a valid salary / pay rate (0 or more).');
+    basic = round2(n); salaryState = 'set';
+  } else if (old && !hasPay) { basic = round2(old.basic_pay); salaryState = oldHr ? oldHr.salary_state : 'set'; }
+  else { basic = 0; salaryState = 'unset'; }
+  const freq = str(f.pay_frequency, 20) || (old ? old.pay_frequency : 'monthly');
+  const unit = ['period', 'day', 'hour'].includes(f.rate_unit) ? f.rate_unit : (old && !f.pay_frequency ? old.rate_unit : (freq === 'daily' ? 'day' : 'period'));
+  const status = EMP_STATUSES.includes(f.status) ? f.status : (old && !f.status ? old.status : 'active');
   const dob = f.dob ? (validDay(f.dob) ? f.dob : null) : null, start = f.start_date ? (validDay(f.start_date) ? f.start_date : null) : null;
   if (f.dob && !dob) throw bad('bad_date', 'Date of birth must be a valid date.');
   if (f.start_date && !start) throw bad('bad_date', 'Start date must be a valid date.');
   const posId = str(f.pos_staff_id, 80);
   if (posId) { const dup = await one(db, `SELECT emp_id FROM pr_employees WHERE client_id = ? AND pos_staff_id = ? AND emp_id <> ?`, c, posId, String(f.emp_id || '')); if (dup) throw bad('already_linked', 'That POS sign-in is already linked to another employee.'); }
+  // EMPLOYMENT (cadre, supervisor, basis, schedule, end date): checked BEFORE anything is written, so a refused save changes nothing.
+  const typeChanged = old && f.employment_type && String(f.employment_type) !== String(old.employment_type);
+  const wantHr = !!(f.hr && typeof f.hr === 'object') || !old || typeChanged;
+  const rawHr = f.hr && typeof f.hr === 'object' ? f.hr : (!old || typeChanged ? { employment_basis: undefined } : {});
+  if (!old && !f.hr && f.employment_type) rawHr.employment_basis = /intern/i.test(f.employment_type) ? 'intern' : /contract/i.test(f.employment_type) ? 'contract' : 'permanent';
+  const startEff = start || (old ? old.start_date : null);
+  let hr = null;
+  if (wantHr) hr = hrClean(rawHr, { start: startEff, oldHr, oldEmp: old, isNew: !old, bad, str });
+  const leaving = LEAVER_STATUSES.has(status) && (!old || !LEAVER_STATUSES.has(old.status));
+  const returning = old && LEAVER_STATUSES.has(old.status) && !LEAVER_STATUSES.has(status);
+  if (old && (leaving || returning || (hr && oldHr && hr.end_date !== oldHr.end_date) || (oldHr && hr && hr.employment_basis !== oldHr.employment_basis)) && !can(who, 'settings')) throw bad('payroll_forbidden', 'ACCESS DENIED — changing a person\'s status, employment basis or end date needs the payroll "settings" right.', 403);
+  const effDate = f.effective_date && validDay(f.effective_date) ? f.effective_date : null;
+  if (f.effective_date && !effDate) throw bad('bad_date', 'Check the effective date.');
   const t = nowMs();
   const fields = { phone: str(f.phone, 30), email: str(f.email, 120), id_number: str(f.id_number, 40), dob, address: str(f.address, 200), emergency_name: str(f.emergency_name, 80), emergency_phone: str(f.emergency_phone, 30),
-    job_title: str(f.job_title, 60), department: str(f.department, 60), branch_name: str(f.branch_name, 80), start_date: start, employment_type: str(f.employment_type, 30) || 'permanent',
+    job_title: str(f.job_title, 60), department: str(f.department, 60), branch_name: str(f.branch_name, 80), start_date: start, employment_type: (f.hr && f.hr.employment_basis && hr ? hr.employment_basis : null) || str(f.employment_type, 30) || (old ? old.employment_type : 'permanent'),
     pay_frequency: freq, rate_unit: unit, basic_pay: basic, pay_method: str(f.pay_method, 20), pay_account: str(f.pay_account, 60), status, pos_staff_id: posId };
-  if (f.emp_id) {
-    const old = await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, String(f.emp_id));
-    if (!old) throw bad('not_found', 'That employee was not found.', 404);
+  // a partial save (only some fields sent) keeps everything it did not mention — it never blanks a field by omission
+  if (old) for (const k of ['phone', 'email', 'id_number', 'dob', 'address', 'emergency_name', 'emergency_phone', 'job_title', 'department', 'branch_name', 'pay_method', 'pay_account', 'pos_staff_id']) { if (!Object.prototype.hasOwnProperty.call(f, k)) fields[k] = old[k]; }
+  const hrStmts = (empId, oldRow, who2) => {
+    if (!hr && !leaving && !returning && oldRow && !(oldHr && oldHr.salary_state !== salaryState)) return [];
+    const base = hr || (oldHr ? { cadre: oldHr.cadre, designation: oldHr.designation, supervisor_name: oldHr.supervisor_name, supervisor_emp_id: oldHr.supervisor_emp_id, employment_basis: oldHr.employment_basis, work_schedule: oldHr.work_schedule, end_date: oldHr.end_date, internship_months: oldHr.internship_months, branch_ids: oldHr.branch_ids, end_note: oldHr.end_note }
+      : { cadre: null, designation: null, supervisor_name: null, supervisor_emp_id: null, employment_basis: /intern/i.test(oldRow ? oldRow.employment_type : '') ? 'intern' : /contract/i.test(oldRow ? oldRow.employment_type : '') ? 'contract' : 'permanent', work_schedule: 'full_time', end_date: null, internship_months: null, branch_ids: '[]', end_note: null });
+    const deactAt = leaving ? t : (returning ? null : (oldHr ? oldHr.deactivated_at : null)), deactBy = leaving ? String(who2.sid) : (returning ? null : (oldHr ? oldHr.deactivated_by : null));
+    return [db.prepare(`INSERT INTO pr_emp_hr (client_id, emp_id, cadre, designation, supervisor_emp_id, supervisor_name, employment_basis, work_schedule, end_date, internship_months, salary_state, salary_effective, branch_ids, end_note, deactivated_at, deactivated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, emp_id) DO UPDATE SET cadre=excluded.cadre, designation=excluded.designation, supervisor_emp_id=excluded.supervisor_emp_id, supervisor_name=excluded.supervisor_name, employment_basis=excluded.employment_basis, work_schedule=excluded.work_schedule, end_date=excluded.end_date, internship_months=excluded.internship_months, salary_state=excluded.salary_state, salary_effective=COALESCE(excluded.salary_effective, pr_emp_hr.salary_effective), branch_ids=excluded.branch_ids, end_note=excluded.end_note, deactivated_at=excluded.deactivated_at, deactivated_by=excluded.deactivated_by, updated_at=excluded.updated_at`)
+      .bind(c, empId, base.cadre || null, base.designation || null, base.supervisor_emp_id || null, base.supervisor_name || null, base.employment_basis, base.work_schedule, base.end_date || null, base.internship_months == null ? null : base.internship_months, salaryState, f.salary_effective && validDay(f.salary_effective) ? f.salary_effective : null, base.branch_ids || '[]', base.end_note || null, deactAt, deactBy, t)];
+  };
+  const histStmts = (empId, oldRow, newRow, newHr) => {
+    const out = [], when = effDate || localDay(t, 'Africa/Nairobi');
+    const push = (field, o, n) => { if (hv(o) !== hv(n)) out.push(db.prepare(`INSERT INTO pr_emp_history (client_id, emp_id, at, effective_date, actor_id, actor_name, field, old_value, new_value) VALUES (?,?,?,?,?,?,?,?,?)`).bind(c, empId, t, when, String(who.sid), String(who.name || '').slice(0, 60), field, hv(o), hv(n))); };
+    HIST_EMP.forEach((k) => push(k, oldRow ? oldRow[k] : null, newRow[k]));
+    push('salary', oldRow ? (oldHr && oldHr.salary_state === 'unset' ? null : oldRow.basic_pay) : null, salaryState === 'unset' ? null : basic);
+    if (newHr) HIST_HR.forEach((k) => push(k, oldHr ? oldHr[k] : (oldRow && k === 'employment_basis' ? (/intern/i.test(oldRow.employment_type) ? 'intern' : /contract/i.test(oldRow.employment_type) ? 'contract' : 'permanent') : null), k === 'salary_state' ? salaryState : newHr[k]));
+    return out;
+  };
+  if (old) {
     const stmts = [db.prepare(`UPDATE pr_employees SET name=?, phone=?, email=?, id_number=?, dob=?, address=?, emergency_name=?, emergency_phone=?, job_title=?, department=?, branch_name=?, start_date=?, employment_type=?, pay_frequency=?, rate_unit=?, basic_pay=?, pay_method=?, pay_account=?, status=?, pos_staff_id=?, updated_at=? WHERE client_id=? AND emp_id=?`)
-      .bind(name, fields.phone, fields.email, fields.id_number, fields.dob, fields.address, fields.emergency_name, fields.emergency_phone, fields.job_title, fields.department, fields.branch_name, fields.start_date, fields.employment_type, fields.pay_frequency, fields.rate_unit, fields.basic_pay, fields.pay_method, fields.pay_account, fields.status, fields.pos_staff_id, t, c, old.emp_id)];
+      .bind(name, fields.phone, fields.email, fields.id_number, fields.dob, fields.address, fields.emergency_name, fields.emergency_phone, fields.job_title, fields.department, fields.branch_name, fields.start_date == null && !f.start_date ? old.start_date : fields.start_date, fields.employment_type, fields.pay_frequency, fields.rate_unit, fields.basic_pay, fields.pay_method, fields.pay_account, fields.status, fields.pos_staff_id, t, c, old.emp_id)];
     if (round2(old.basic_pay) !== basic || old.pay_frequency !== freq || old.rate_unit !== unit) stmts.push(auditStmt(db, c, who, 'salary_changed', 'employee', old.emp_id, { name, from: { basic_pay: old.basic_pay, pay_frequency: old.pay_frequency, rate_unit: old.rate_unit }, to: { basic_pay: basic, pay_frequency: freq, rate_unit: unit } }));
     if (old.status !== status) stmts.push(auditStmt(db, c, who, 'employee_status_changed', 'employee', old.emp_id, { name, from: old.status, to: status }));
     stmts.push(auditStmt(db, c, who, 'employee_edited', 'employee', old.emp_id, { name }));
+    stmts.push(...hrStmts(old.emp_id, old, who));
+    stmts.push(...histStmts(old.emp_id, old, { ...old, ...fields, start_date: fields.start_date == null && !f.start_date ? old.start_date : fields.start_date }, hr));
     await db.batch(stmts);
-    return { employee: shapeEmployee(await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, old.emp_id), who) };
+    return { employee: await withHr(db, c, who, old.emp_id) };
   }
   const n = await nextSeq(db, c, 'emp');
   const empNo = str(f.emp_no, 20) || 'EMP-' + String(n).padStart(3, '0');
@@ -222,10 +342,22 @@ A['employee.save'] = async ({ db, c, who, body }) => {
   await db.batch([
     db.prepare(`INSERT INTO pr_employees (client_id, emp_id, emp_no, name, phone, email, id_number, dob, address, emergency_name, emergency_phone, job_title, department, branch_id, branch_name, start_date, employment_type, pay_frequency, rate_unit, basic_pay, pay_method, pay_account, status, pos_staff_id, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(c, id, empNo, name, fields.phone, fields.email, fields.id_number, fields.dob, fields.address, fields.emergency_name, fields.emergency_phone, fields.job_title, fields.department, c, fields.branch_name, fields.start_date, fields.employment_type, fields.pay_frequency, fields.rate_unit, fields.basic_pay, fields.pay_method, fields.pay_account, fields.status, fields.pos_staff_id, String(who.sid), t, t),
-    auditStmt(db, c, who, 'employee_created', 'employee', id, { name, emp_no: empNo, basic_pay: basic }),
+    auditStmt(db, c, who, 'employee_created', 'employee', id, { name, emp_no: empNo, basic_pay: salaryState === 'unset' ? null : basic }),
+    ...hrStmts(id, null, who),
+    ...histStmts(id, null, { ...fields }, hr),
   ]);
-  return { employee: shapeEmployee(await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, id), who) };
+  return { employee: await withHr(db, c, who, id) };
 };
+async function withHr(db, c, who, empId) {
+  const e = await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND emp_id = ?`, c, empId);
+  const o = shapeEmployee(e, who);
+  const hr = await one(db, `SELECT * FROM pr_emp_hr WHERE client_id = ? AND emp_id = ?`, c, empId);
+  const s = await hrSettings(db, c);
+  o.hr = hr; o.salary_state = hr ? hr.salary_state : 'set';
+  if (o.salary_state === 'unset' && o.basic_pay !== undefined) o.basic_pay = null;
+  o.flags = employmentFlags(e, hr, localDay(Date.now(), s.tz), s.warn_days);
+  return o;
+}
 
 // ---- recurring pay lines of an employee ----
 A['payline.save'] = async ({ db, c, who, body }) => {
@@ -319,19 +451,25 @@ A['access.save'] = async ({ db, c, who, body }) => {
 };
 
 // ---- documents ----
-const DOC_TYPES = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx' };
-function decodeDoc(dataUrl) {
+const DOC_TYPES = { 'application/pdf': 'pdf' };
+// Staff documents are PDF only (zip 328). The type is decided by the CONTENT, never by the file name or the declared type: the bytes must start with %PDF-,
+// end like a PDF, and contain none of the active-content markers (JavaScript, auto-launch, embedded files) that make a PDF more than a document.
+const PDF_ACTIVE = [/\/JavaScript\b/, /\/JS\s*[(<\/]/, /\/Launch\b/, /\/EmbeddedFile\b/, /\/OpenAction\b/, /\/AA\s*<</, /\/RichMedia\b/, /\/XFA\b/];
+function decodeDoc(dataUrl, maxBytes = DOC_MAX_BYTES) {
+  const mb = Math.round(maxBytes / 1024 / 1024 * 10) / 10;
   const m = /^data:([a-z0-9.+\/-]+);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
-  if (!m || !DOC_TYPES[m[1]]) throw bad('bad_file', 'Upload a PDF, a photo (JPG / PNG / WebP) or a Word (.docx) file.');
-  if (m[2].length > DOC_MAX_BYTES * 1.4) throw bad('file_too_big', 'That file is too large — the limit is 2.5 MB. Take a smaller photo or compress the PDF.', 413);
+  if (!m) throw bad('bad_file', 'Upload a PDF file. Photos and Word files are not accepted — save or scan the document as a PDF.');
+  if (m[1] !== 'application/pdf') throw bad('bad_file', 'Only PDF files are accepted. Save or scan the document as a PDF and upload that.');
+  if (m[2].length > maxBytes * 1.4) throw bad('file_too_big', 'That file is too large — the limit is ' + mb + ' MB. Compress the PDF.', 413);
   let bin; try { bin = atob(m[2]); } catch (e) { throw bad('bad_file', 'That file could not be read.'); }
-  if (bin.length > DOC_MAX_BYTES) throw bad('file_too_big', 'That file is too large — the limit is 2.5 MB. Take a smaller photo or compress the PDF.', 413);
+  if (bin.length > maxBytes) throw bad('file_too_big', 'That file is too large — the limit is ' + mb + ' MB. Compress the PDF.', 413);
+  if (bin.length < 20) throw bad('bad_file', 'That PDF is empty.');
+  if (!bin.startsWith('%PDF-')) throw bad('bad_file', 'That file does not look like a real PDF.');
+  if (!/%%EOF\s*$/.test(bin.slice(-1024))) throw bad('bad_file', 'That PDF is incomplete or damaged (no end marker).');
+  if (PDF_ACTIVE.some((re) => re.test(bin))) throw bad('unsafe_pdf', 'That PDF contains scripts or embedded files, so it was not accepted. Re-save it as a plain PDF (print to PDF) and upload that.');
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const sig = (arr) => arr.every((b, k) => bytes[k] === b);
-  const okSig = m[1] === 'application/pdf' ? sig([0x25, 0x50, 0x44, 0x46]) : m[1] === 'image/jpeg' ? sig([0xff, 0xd8, 0xff]) : m[1] === 'image/png' ? sig([0x89, 0x50, 0x4e, 0x47]) : m[1] === 'image/webp' ? (sig([0x52, 0x49, 0x46, 0x46]) && bytes[8] === 0x57 && bytes[9] === 0x45) : sig([0x50, 0x4b]);
-  if (!okSig) throw bad('bad_file', 'That file does not look like a real ' + DOC_TYPES[m[1]].toUpperCase() + ' file.');
-  return { bytes, type: m[1] };
+  return { bytes, type: 'application/pdf' };
 }
 A['doc.list'] = async ({ db, c, who, body }) => {
   need(who, 'staff');
@@ -346,7 +484,7 @@ A['doc.upload'] = async ({ db, c, env, who, body }) => {
   const category = DOC_CATEGORIES.includes(body.category) ? body.category : 'other';
   const doc = body.docDate ? (validDay(body.docDate) ? body.docDate : null) : null, exp = body.expiryDate ? (validDay(body.expiryDate) ? body.expiryDate : null) : null;
   if ((body.docDate && !doc) || (body.expiryDate && !exp)) throw bad('bad_date', 'Check the document / expiry date.');
-  const f = decodeDoc(body.dataUrl);
+  const f = decodeDoc(body.dataUrl, (await hrSettings(db, c)).doc_max_mb * 1024 * 1024);
   const id = rid('D'), key = mediaKey(c, 'staffdoc', id), t = nowMs();
   await mediaPut(env, key, f.bytes, f.type, { emp: e.emp_id });
   try {
@@ -359,12 +497,28 @@ A['doc.replace'] = async ({ db, c, env, who, body }) => {
   need(who, 'staff');
   const d = await one(db, `SELECT * FROM pr_documents WHERE client_id = ? AND doc_id = ?`, c, String(body.docId || ''));
   if (!d) throw bad('not_found', 'That document was not found.', 404);
-  const f = decodeDoc(body.dataUrl);
+  const f = decodeDoc(body.dataUrl, (await hrSettings(db, c)).doc_max_mb * 1024 * 1024);
   const key = mediaKey(c, 'staffdoc', rid('D')), t = nowMs();
   await mediaPut(env, key, f.bytes, f.type, { emp: d.emp_id });
   await db.batch([db.prepare(`UPDATE pr_documents SET storage_key=?, mime=?, size=?, file_name=?, title=COALESCE(?, title), doc_date=COALESCE(?, doc_date), expiry_date=?, status='active', updated_at=? WHERE client_id=? AND doc_id=?`)
     .bind(key, f.type, f.bytes.length, str(body.fileName, 120), str(body.title, 80), validDay(body.docDate) ? body.docDate : null, validDay(body.expiryDate) ? body.expiryDate : d.expiry_date, t, c, d.doc_id), auditStmt(db, c, who, 'document_replaced', 'document', d.doc_id, { title: d.title })]);
   if (d.storage_key) await mediaDelete(env, d.storage_key).catch(() => {});
+  return {};
+};
+A['doc.update'] = async ({ db, c, who, body }) => {      // zip 330: edit a document's details (name, kind, dates) without re-uploading the file
+  need(who, 'staff');
+  const d = await one(db, `SELECT * FROM pr_documents WHERE client_id = ? AND doc_id = ?`, c, String(body.docId || ''));
+  if (!d) throw bad('not_found', 'That document was not found.', 404);
+  const title = body.title === undefined ? d.title : str(body.title, 80);
+  if (!title) throw bad('title_required', 'Name the document (for example "National ID copy").');
+  const category = body.category === undefined ? d.category : (DOC_CATEGORIES.includes(body.category) ? body.category : 'other');
+  const day = (v, old) => (v === undefined ? old : (v === '' || v == null ? null : (validDay(v) ? v : false)));
+  const doc = day(body.docDate, d.doc_date), exp = day(body.expiryDate, d.expiry_date);
+  if (doc === false || exp === false) throw bad('bad_date', 'Check the document / expiry date.');
+  await db.batch([
+    db.prepare(`UPDATE pr_documents SET title = ?, category = ?, doc_date = ?, expiry_date = ?, updated_at = ? WHERE client_id = ? AND doc_id = ?`).bind(title, category, doc, exp, nowMs(), c, d.doc_id),
+    auditStmt(db, c, who, 'document_edited', 'document', d.doc_id, { employee: d.emp_id, title, category, doc_date: doc, expiry_date: exp }),
+  ]);
   return {};
 };
 A['doc.archive'] = async ({ db, c, who, body }) => {
@@ -416,8 +570,10 @@ const totalsStmt = (db, c, runId, t) => db.prepare(`UPDATE pr_runs SET
 async function buildItem(db, c, run, e, slipNo, types, t) {
   const adj = run.kind === 'adjustment';
   const own = adj ? [] : await all(db, `SELECT * FROM pr_pay_lines WHERE client_id = ? AND emp_id = ? AND active = 1 ORDER BY kind, label`, c, e.emp_id);
+  const meta = adj ? new Map() : await lineMetaMap(db, c, e.emp_id);
   const lines = [];
   for (const l of own) {
+    if (!lineApplies(meta.get(l.line_id), run.period_start, run.period_end).ok) continue;     // not approved / not yet effective / already ended / another period
     let amt = num(l.amount);
     if (l.balance != null && l.calc === 'fixed') amt = Math.min(amt, num(l.balance));      // a loan never takes more than what is still owed
     lines.push({ kind: l.kind, type_id: l.type_id, pay_line_id: l.line_id, label: l.label, calc: l.calc, rate: l.rate, cfg: l.cfg, amount: amt, manual: 0 });
@@ -453,21 +609,33 @@ A['run.create'] = async ({ db, c, who, body }) => {
   need(who, 'run');
   const frequency = str(body.frequency, 20) || 'monthly';
   if (!validDay(body.periodStart) || !validDay(body.periodEnd) || body.periodEnd < body.periodStart) throw bad('bad_period', 'Choose the pay period (start and end dates).');
-  const dup = await one(db, `SELECT ref FROM pr_runs WHERE client_id = ? AND kind = 'regular' AND frequency = ? AND period_start = ? AND period_end = ?`, c, frequency, body.periodStart, body.periodEnd);
-  if (dup) throw bad('period_exists', `A ${frequency} payroll for this period already exists (${dup.ref}). Open it instead of starting another.`, 409);
+  const picked = Array.isArray(body.empIds) && body.empIds.length ? [...new Set(body.empIds.map(String))].slice(0, 500) : null;
+  if (!picked) {
+    const dup = await one(db, `SELECT ref FROM pr_runs WHERE client_id = ? AND kind = 'regular' AND frequency = ? AND period_start = ? AND period_end = ?`, c, frequency, body.periodStart, body.periodEnd);
+    if (dup) throw bad('period_exists', `A ${frequency} payroll for this period already exists (${dup.ref}). Open it instead of starting another.`, 409);
+  } else {
+    // zip 332 (bulk payroll): ticked people may be paid in a second batch for the same period - but nobody twice
+    const twice = await all(db, `SELECT DISTINCT i.emp_name, r.ref FROM pr_items i JOIN pr_runs r ON r.client_id = i.client_id AND r.run_id = i.run_id WHERE i.client_id = ? AND r.kind = 'regular' AND r.frequency = ? AND r.period_start = ? AND r.period_end = ? AND i.emp_id IN (${picked.map(() => '?').join(',')})`, c, frequency, body.periodStart, body.periodEnd, ...picked);
+    if (twice.length) throw bad('already_in_period', `Already in a payroll for this period: ${twice.slice(0, 5).map((x) => `${x.emp_name} (${x.ref})`).join(', ')}${twice.length > 5 ? '…' : ''}. Untick them or open that payroll.`, 409);
+  }
   let emps = await all(db, `SELECT * FROM pr_employees WHERE client_id = ? AND status = 'active' AND pay_frequency = ? ORDER BY name COLLATE NOCASE`, c, frequency);
-  if (Array.isArray(body.empIds) && body.empIds.length) { const set = new Set(body.empIds.map(String)); emps = emps.filter((e) => set.has(e.emp_id)); }
-  if (!emps.length) throw bad('no_employees', `There are no active ${frequency} employees to pay. Add staff (with this pay frequency) first.`);
+  if (picked) { const set = new Set(picked); emps = emps.filter((e) => set.has(e.emp_id)); }
+  // a person whose salary has not been entered is left out (never paid 0 by accident); the screen is told who and why
+  const hrRows = await all(db, `SELECT emp_id, salary_state, end_date, employment_basis FROM pr_emp_hr WHERE client_id = ?`, c);
+  const hrBy = new Map(hrRows.map((r) => [r.emp_id, r]));
+  const warnings = [];
+  emps = emps.filter((e) => { const h = hrBy.get(e.emp_id); if (h && h.salary_state === 'unset') { warnings.push(`${e.name}: salary not entered — left out`); return false; } if (h && h.end_date && h.end_date < body.periodStart && h.employment_basis !== 'permanent') warnings.push(`${e.name}: ${h.employment_basis} ended ${h.end_date} — still active, check before paying`); return true; });
+  if (!emps.length) throw bad('no_employees', `There are no active ${frequency} employees to pay (with a salary entered). Add staff (with this pay frequency) first.`);
   const n = await nextSeq(db, c, 'run'), ym = body.periodStart.slice(0, 7).replace('-', '');
   const ref = `PR-${ym}-${String(n).padStart(3, '0')}`, id = rid('R'), t = nowMs();
   const label = str(body.label, 60) || new Date(body.periodStart + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }) + ' payroll';
-  const run = { run_id: id, kind: 'regular' };
+  const run = { run_id: id, kind: 'regular', period_start: body.periodStart, period_end: body.periodEnd };
   const types = await typesOf(db, c);
   const stmts = [db.prepare(`INSERT INTO pr_runs (client_id, run_id, ref, kind, label, frequency, period_start, period_end, branch_id, status, created_by, created_at, updated_at) VALUES (?,?,?, 'regular', ?,?,?,?,?, 'draft', ?,?,?)`).bind(c, id, ref, label, frequency, body.periodStart, body.periodEnd, c, String(who.sid), t, t)];
   for (let i = 0; i < emps.length; i++) stmts.push(...await buildItem(db, c, run, emps[i], `${ref}-${String(i + 1).padStart(3, '0')}`, types, t));
   stmts.push(totalsStmt(db, c, id, t), auditStmt(db, c, who, 'payroll_run_created', 'run', id, { ref, label, employees: emps.length }));
   await db.batch(stmts);
-  return { runId: id, ref };
+  return { runId: id, ref, warnings };
 };
 
 A['run.addEmployee'] = async ({ db, c, who, body }) => {
@@ -738,6 +906,7 @@ A['audit.list'] = async ({ db, c, who, body }) => {
   return { audit: await all(db, `SELECT id, ts, actor_id, actor_name, action, entity, entity_id, detail FROM pr_audit WHERE client_id = ? ORDER BY id DESC LIMIT ?`, c, Math.min(500, Math.max(1, num(body.limit, 100)))) };
 };
 
+registerHr(A, { need, can, bad, one, all, auditStmt, str, num, rid, nowMs, PERMS });
 export const ACTIONS = A;
 // Actions any signed-in staff member may call (their own data); every other action checks permissions inside.
 export const SELF_ACTIONS = new Set(['me', 'whoami', 'payslip.get', 'payslip.save', 'payslip.saved']);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boot } from './helpers.mjs';
 
-// Zip 153 — hotel: half shot, facility ticket day pricing, a failing printer never loses the order, no card option.
+// Zip 153 — hotel: half shot, facility ticket day pricing, a failing printer never loses the order (card was hidden here in zip 153 and is available again from zip 269).
 const J = (w, js) => JSON.parse(w.eval(`JSON.stringify(${js})`));
 const app = async () => {
   const b = await boot('hotel/index.html', { storage: { pos_inventory: JSON.stringify([]) }, wait: 1500 });
@@ -43,11 +43,12 @@ test('a printer that fails is reported and remembered; the order is not lost', a
   b.close();
 });
 
-test('there is no card payment option anywhere in the hotel till', async () => {
+test('card is a payment option again in the hotel till (and nothing hides it)', async () => {
   const b = await app(); const { w } = b;
-  w.eval('hospHideCardControls()');
-  assert.equal(w.document.querySelectorAll('option[value="card"]').length, 0);
-  const vis = [...w.document.querySelectorAll('button[onclick*="\'card\'"]')].filter((x) => x.style.display !== 'none');
-  assert.equal(vis.length, 0);
+  await new Promise((r) => setTimeout(r, 1800));                       // the old hider ran at 1.5 s
+  assert.ok(w.document.querySelectorAll('option[value="card"]').length >= 1);
+  const btns = [...w.document.querySelectorAll('button[onclick*="\'card\'"]')];
+  assert.ok(btns.length >= 3, 'Settle Tab, Settle Bill and the others have a Card button');
+  assert.equal(btns.filter((x) => x.style.display === 'none').length, 0);
   b.close();
 });

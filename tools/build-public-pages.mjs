@@ -6,17 +6,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TERMS_VERSION, PRIVACY_VERSION } from '../functions/api/_legal.js';
-import { SUPPORT_WHATSAPP } from '../functions/_site.js';
+import { SUPPORT_WHATSAPP, DEFAULT_SITE_ORIGIN } from '../functions/_site.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WA = `https://wa.me/${SUPPORT_WHATSAPP}`;
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const NAV = [['/', 'Home'], ['/shop', 'Hardware'], ['/offers', 'Offers'], ['/faq', 'FAQ'], ['/contact', 'Contact'], ['/dashboard.html', 'Sign in']];
+const NAV = [['/', 'Home'], ['/shop', 'Hardware'], ['/offers', 'Offers'], ['/websites', 'Website Development'], ['/portfolio', 'Portfolio'], ['/faq', 'FAQ'], ['/contact', 'Contact'], ['/dashboard.html', 'Sign in']];
 const FOOT = [['/terms', 'Terms of Service'], ['/privacy', 'Privacy Policy'], ['/cookies', 'Cookies'], ['/acceptable-use', 'Acceptable Use']];
 
 function shell({ file, title, description, body, extraHead = '', script = '' }) {
   const canon = file === 'index' ? '/' : '/' + file;
+  const abs = DEFAULT_SITE_ORIGIN + canon;        // zip 273: canonical, og:url and og:image are ABSOLUTE in the HTML itself (crawlers and social scrapers do not run script)
   const nav = NAV.map(([h, t]) => `<a href="${h}"${h === canon ? ' aria-current="page"' : ''}>${t}</a>`).join('');
   const foot = FOOT.map(([h, t]) => `<a href="${h}">${t}</a>`).join('<br>');
   return `<!DOCTYPE html>
@@ -24,12 +25,12 @@ function shell({ file, title, description, body, extraHead = '', script = '' }) 
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — mydukapos</title>
+<title>${esc(title)} — MyDukaPOS</title>
 <meta name="description" content="${esc(description)}">
-<link rel="canonical" href="${canon}" data-canonical>
-<meta property="og:type" content="website"><meta property="og:site_name" content="mydukapos"><meta property="og:title" content="${esc(title)} — mydukapos"><meta property="og:description" content="${esc(description)}"><meta property="og:image" content="/img/og-default.png" data-abs><meta property="og:url" content="${canon}" data-abs><meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#1B2E28">
-<link rel="icon" href="/icons/icon-192.png" type="image/png"><link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="canonical" href="${abs}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="MyDukaPOS"><meta property="og:title" content="${esc(title)} — MyDukaPOS"><meta property="og:description" content="${esc(description)}"><meta property="og:image" content="${DEFAULT_SITE_ORIGIN}/img/og-default.png"><meta property="og:url" content="${abs}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)} — MyDukaPOS"><meta name="twitter:description" content="${esc(description)}">
+<meta name="theme-color" content="#0B1F4D">
+<link rel="icon" href="/favicon.ico?v=283" sizes="any"><link rel="shortcut icon" href="/favicon.ico?v=283"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Cstyle%3E%40media (prefers-color-scheme:dark)%7B.cart%7Bfill:#E8F1FF;stroke:#E8F1FF%7D%7D%3C/style%3E%3Cdefs%3E%3ClinearGradient id=%22m%22 gradientUnits=%22userSpaceOnUse%22 x1=%225%22 y1=%228%22 x2=%2238%22 y2=%2254%22%3E%3Cstop offset=%220%22 stop-color=%22#00D2FF%22/%3E%3Cstop offset=%22.55%22 stop-color=%22#1D7BFF%22/%3E%3Cstop offset=%221%22 stop-color=%22#1747E0%22/%3E%3C/linearGradient%3E%3ClinearGradient id=%22d%22 gradientUnits=%22userSpaceOnUse%22 x1=%2230%22 y1=%2256%22 x2=%2258%22 y2=%228%22%3E%3Cstop offset=%220%22 stop-color=%22#FF4D12%22/%3E%3Cstop offset=%22.55%22 stop-color=%22#FF8A0D%22/%3E%3Cstop offset=%221%22 stop-color=%22#FFC01F%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d=%22M34 13.5H37.5A18.5 18.5 0 0 1 37.5 50.5H34%22 fill=%22none%22 stroke=%22url(#d)%22 stroke-width=%229.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M9.5 50V14.5L21.75 33L34 14.5V50%22 fill=%22none%22 stroke=%22url(#m)%22 stroke-width=%229.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M34 13.5H37.5%22 fill=%22none%22 stroke=%22url(#d)%22 stroke-width=%229.5%22 stroke-linecap=%22round%22/%3E%3Cg class=%22cart%22 fill=%22none%22 stroke=%22#0B1F4D%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath class=%22cart%22 d=%22M40.2 25.2H49.4L47.6 31.6H42Z%22 fill=%22#0B1F4D%22/%3E%3Cpath d=%22M49.4 25.2L50.9 22.2%22/%3E%3C/g%3E%3Ccircle cx=%2242.9%22 cy=%2235.6%22 r=%221.55%22 fill=%22#0B1F4D%22 class=%22cart%22/%3E%3Ccircle cx=%2246.9%22 cy=%2235.6%22 r=%221.55%22 fill=%22#0B1F4D%22 class=%22cart%22/%3E%3C/svg%3E" type="image/svg+xml"><link rel="icon" href="/favicon-32x32.png?v=283" type="image/png" sizes="32x32"><link rel="icon" href="/favicon-16x16.png?v=283" type="image/png" sizes="16x16"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=283" sizes="180x180">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/site.css">
@@ -43,9 +44,9 @@ ${body}
 <footer class="foot"><div class="wrap"><div class="cols">
 <div><h4>mydukapos</h4>Point of sale software for Kenyan businesses.<br><a href="${WA}" rel="noopener">WhatsApp us</a></div>
 <div><h4>Legal</h4>${foot}</div>
-<div><h4>Help</h4><a href="/faq">FAQ</a><br><a href="/contact">Contact</a><br><a href="/shop">Hardware</a><br><a href="/offers">Offers</a></div>
+<div><h4>Help</h4><a href="/faq">FAQ</a><br><a href="/contact">Contact</a><br><a href="/shop">Hardware</a><br><a href="/offers">Offers</a><br><a href="/websites">Website Development</a><br><a href="/portfolio">Portfolio</a></div>
 </div><p class="small">© <span id="yr">2026</span> mydukapos. All rights reserved.</p></div></footer>
-<script>document.getElementById('yr').textContent=new Date().getFullYear();try{if(navigator.doNotTrack!=='1'&&navigator.sendBeacon)navigator.sendBeacon('/api/hit',new Blob([JSON.stringify({path:location.pathname})],{type:'application/json'}))}catch(e){}(function(){var c=document.querySelector('link[data-canonical]');if(c)c.href=location.origin+c.getAttribute('href');document.querySelectorAll('[data-abs]').forEach(function(m){m.content=location.origin+m.getAttribute('content')})})();</script>
+<script>document.getElementById('yr').textContent=new Date().getFullYear();try{if(navigator.doNotTrack!=='1'&&navigator.sendBeacon)navigator.sendBeacon('/api/hit',new Blob([JSON.stringify({path:location.pathname})],{type:'application/json'}))}catch(e){}</script>
 ${script}</body>
 </html>
 `;
@@ -94,12 +95,16 @@ const FAQ = [
   ['What does it cost?', 'The current price and any running offer are shown on the <a href="/">home page</a> and the <a href="/offers">offers page</a>. We do not hide prices in this FAQ so they cannot go out of date.'],
   ['Which devices can I use?', 'Any modern browser, a Windows app and an Android app.'],
   ['How do I sign in?', 'Use the <a href="/dashboard.html">dashboard</a> with your email and password. The same password signs in your till. If you forget it, use "Forgot password" on the dashboard.'],
-  ['Is my data safe?', 'Passwords are stored as salted hashes, traffic is encrypted, and logins are rate-limited. See the <a href="/privacy">Privacy Policy</a>. You should still keep your own exports of important records.'],
+  ['Is my data safe?', 'Your data travels over a secure (HTTPS) connection, is stored encrypted and is backed up regularly. Passwords are stored as salted hashes and sign-in attempts are rate-limited. See the <a href="/privacy">Privacy Policy</a>. You should still keep your own exports of important records.'],
   ['I have just signed up and have no products yet. Where do I start?', 'Open Inventory or the Sales Counter: both show an <b>Add your first item</b> button. An item name and selling price are enough to start; cost, stock quantity, code and category can be added later. If you already keep a list, use the Excel/CSV import on the Inventory tab. Once an item is saved it can be sold straight away.'],
   ['Can I keep customer records and loyalty tokens?', 'Yes. Type a name or phone number in the Customer box when you make a sale to find an existing customer or add a new one. The customer is saved when the sale goes through. My Customers lists each customer\u2019s purchases, bills still owed, returns and loyalty tokens. Tokens are earned on payment according to the tiers you set in Settings.'],
   ['Can I receive payments made straight to my M-PESA Till?', 'Yes. Once your till is registered with Safaricom, payments customers make to it appear in Sales Counter, Till Payments, newest first, with the name Safaricom supplied, the amount, the M-PESA code and the time. A cashier links each one to the right sale or bill in one tap; the balance updates and the same payment can never be applied twice. Nothing is applied until you confirm.'],
   ['What can the Hospital app do?', 'Patient records and history, consultations and billing in one flow, a prescription that lists every medicine on one page and marks anything you cannot supply as NA, a ready-made and editable laboratory test list with structured result forms such as urinalysis, and inpatient care: beds and transfers, meals, medication charts, and one admission account that combines bed, lab, pharmacy and meals before discharge.'],
   ['Can I change the lab tests, prices and meals in the Hospital app?', 'Yes. The starter laboratory list can be switched on or off and edited (name, specimen, result fields, units, reference ranges, price). Meal menus, charge types and bed rates are set by you too. Patient results are never pre-filled.'],
+  // zip 307: honest answers on the three things the site used to overclaim (eTIMS, M-Pesa STK Push, what the price includes)
+  ['Does MyDuka submit sales to KRA eTIMS?', 'MyDuka helps you review and organise your sales and tax records for manual reporting: the Tax &amp; Returns tab works out VAT per item and exports summaries. These are not official KRA returns or eTIMS invoices. Submitting sales to KRA eTIMS needs your business\'s own KRA approval (OSCU) and setup first; ask us whether it is available for your business before relying on it.'],
+  ['Can customers pay by M-Pesa?', 'Yes, in two ways. Any cashier can record an M-Pesa payment against a sale. Sending an automatic payment prompt to the customer\'s phone (STK Push) works once your own M-Pesa or payment-gateway account has been set up in Settings. A sale is marked paid only when the provider confirms the payment, never just because a prompt was sent.'],
+  ['What does the price include?', 'The one-time price gets your own private link for one business and all the features of the edition you choose, with staff logins and no per-sale fee. Hardware, M-Pesa, bank and SMS charges, KRA eTIMS approval and on-site installation are not included. Any subscription or branch and staff limits that apply are shown beside the price on the home page.'],
   ['How do I get help?', `Use the <a href="/contact">contact form</a> or <a href="${WA}" rel="noopener">WhatsApp</a>.`],
 ];
 const faqJson = JSON.stringify({ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: FAQ.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a.replace(/<[^>]+>/g, '') } })) });
@@ -114,8 +119,9 @@ const contact = `<p class="eyebrow">Contact</p><h1>Talk to us</h1><p class="lead
 <p style="margin-top:14px"><button class="btn" type="submit" id="cf-btn">Send message</button></p>
 <p class="msg" id="cf-out" role="status" aria-live="polite"></p>
 </form>`;
-const contactScript = `<script>(function(){var f=document.getElementById('cf'),o=document.getElementById('cf-out'),b=document.getElementById('cf-btn');f.addEventListener('submit',function(e){e.preventDefault();o.className='msg';o.textContent='';
-var d={name:f.name.value.trim(),contact:f.contact.value.trim(),message:f.message.value.trim(),website:f.website.value,t:Date.now()};
+// zip 303: t is when the page was OPENED; the server silently drops anything sent within 1.5 s of t (a bot), so sending the submit time threw every real message away
+const contactScript = `<script>(function(){var T0=Date.now(),f=document.getElementById('cf'),o=document.getElementById('cf-out'),b=document.getElementById('cf-btn');f.addEventListener('submit',function(e){e.preventDefault();o.className='msg';o.textContent='';
+var d={name:f.name.value.trim(),contact:f.contact.value.trim(),message:f.message.value.trim(),website:f.website.value,t:T0};
 if(!d.name||!d.contact||d.message.length<5){o.className='msg err';o.textContent='Please fill in your name, how to reach you, and a message.';return}
 b.disabled=true;b.textContent='Sending…';
 fetch('/api/contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j}})}).then(function(x){if(!x.ok)throw new Error(x.j.error||'Could not send.');o.className='msg ok';o.textContent='Thank you — we have your message.';f.reset()}).catch(function(err){o.className='msg err';o.textContent=(err instanceof TypeError||!navigator.onLine)?'You appear to be offline. Please reconnect and try again, or WhatsApp us.':err.message}).then(function(){b.disabled=false;b.textContent='Send message'})})})();</script>`;

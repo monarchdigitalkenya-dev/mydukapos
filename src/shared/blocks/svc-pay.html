@@ -689,6 +689,24 @@ function svcPayReceipt(jobId) {
   var hooks = svcPayReceiptHooks(job, t);
   return { ok: true, sale: sale, totals: t, hooks: hooks, lines: svcPayReceiptLines(job, t, {}), header: svcPayReceiptHeader(job) };
 }
+/* zip 356: the job as a full-page invoice (same look as every module): work and parts, payments, balance due */
+function svcPayInvoice(jobId) {
+  var r = svcPayReceipt(jobId); if (!r.ok) return r;
+  if (typeof posInvoiceShow !== 'function') return { ok: false, code: 'noprinter', why: 'Invoices are not available on this screen.' };
+  var s = r.sale, t = r.totals, tol = svcPayTol(), job = svcPayJob(jobId) || {};
+  var f2 = function (n) { return (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var d2 = function (ms) { var d = new Date(Number(ms) || ms); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
+  var pays = (s.payments || []).filter(function (p) { return Number(p.amount) > 0; });
+  var ok = posInvoiceShow({
+    title: 'INVOICE', number: s.refNumber || s.svcJobNo || job.no || '', date: d2(Date.now()), status: t.balance <= tol ? 'paid' : (t.paid > tol ? 'partial' : 'unpaid'),
+    billTo: { name: s.customerName || 'Customer', lines: [s.customerPhone || '', s.asset || ''] },
+    meta: [['Job no.', s.svcJobNo || ''], ['Served by', s.servedBy || '']],
+    rows: (s.items || []).map(function (l) { return [{ t: l.name, sub: l.unit === 'service' ? 'Service' : 'Part' }, String(l.qty), f2(l.price), f2(l.price * l.qty)]; }),
+    totals: [['Total', t.total, true]].concat(t.paid > tol ? [['Paid to date', -t.paid]] : []), due: t.balance,
+    notes: pays.length ? ['Payments: ' + pays.map(function (p) { var k = p.kind === 'refund' ? 'Refund' : (p.kind === 'deposit' ? 'Deposit' : 'Payment'); return k + ' ' + d2(p.at) + ' KES ' + f2(p.amount) + ' (' + svcPayMethodLabel(p.method) + (p.ref ? ' ' + p.ref : '') + ')'; }).join(' · ')] : []
+  });
+  return ok ? { ok: true } : { ok: false, code: 'print', why: 'Could not open the invoice.' };
+}
 /* opens the shop's normal receipt preview (print / share / download): the whole job, or one payment when payId is given */
 function svcPayPrintReceipt(jobId, payId) {
   var r = svcPayReceipt(jobId); if (!r.ok) return r;
@@ -788,7 +806,7 @@ function svcPayRenderTab(job, el) {
     });
     html += '</ul>';
   }
-  html += '<div class="svp-acts"><button type="button" class="svp-btn" data-svp-act="receipt">🧾 Print job receipt</button></div>';
+  html += '<div class="svp-acts"><button type="button" class="svp-btn" data-svp-act="receipt">🧾 Print job receipt</button>' + (typeof posInvoiceShow === 'function' ? ' <button type="button" class="svp-btn" data-svp-act="invoice">📄 Invoice</button>' : '') + '</div>';
   if (sum.billId) html += '<div class="svp-info" style="opacity:.75">Bill ' + svcPayEsc(sum.billId) + (sum.billStatus ? ' · ' + svcPayEsc(String(sum.billStatus).replace(/_/g, ' ')) : '') + '</div>';
   html += '</div>';
   el.innerHTML = html;
@@ -877,6 +895,7 @@ function svcPayAct(el, act, btn) {
     else if (q === 'refundall') { var o = null; sum.payments.forEach(function (p) { if (p.id === st.refId) o = p; }); if (o) f2.value = String(o.refundable); }
     svcPaySheetInfo(el); return;
   }
+  if (act === 'invoice') { var ri = svcPayInvoice(jobId); if (!ri.ok) svcPayToast(svcPayWhy(ri), true); return; }
   if (act === 'receipt') {
     var r = svcPayPrintReceipt(jobId, btn.getAttribute('data-pay') || null);
     if (!r.ok) svcPayToast(svcPayWhy(r), true);

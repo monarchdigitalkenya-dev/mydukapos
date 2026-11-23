@@ -27,6 +27,11 @@ export function makeServer(opts = {}) {
       const r = new Request('https://x.pages.dev/api/device-pair?c=C1', { method: (opts.method || 'GET').toUpperCase(), body: opts.body, headers: fwd });
       return ((opts.method || 'GET').toUpperCase() === 'POST' ? dp.onRequestPost : dp.onRequestGet)({ request: r, env });
     }
+    if (u.pathname.endsWith('/api/sync-diag')) {
+      const sd = await import(pathToFileURL(path.join(ROOT, 'functions/api/sync-diag.js')).href);
+      const meth = (opts.method || 'GET').toUpperCase();
+      return (meth === 'POST' ? sd.onRequestPost : sd.onRequestGet)({ request: new Request('https://x.pages.dev/api/sync-diag?c=C1', { method: meth, body: opts.body, headers: fwd }), env });
+    }
     if (u.pathname.endsWith('/api/day-summary')) {
       const ds = await import(pathToFileURL(path.join(ROOT, 'functions/api/day-summary.js')).href);
       return ds.onRequestGet({ request: new Request('https://x.pages.dev/api/day-summary?c=C1&' + u.search.slice(1), { headers: fwd }), env });
@@ -46,7 +51,9 @@ export function makeServer(opts = {}) {
     if (method === 'POST' && state.status) return new Response(JSON.stringify({ error: 'forced' }), { status: state.status, headers: { 'content-type': 'application/json' } });
     const request = new Request('https://x.pages.dev/api/pos-sync?c=C1' + (u.search ? '&' + u.search.slice(1).replace(/^c=[^&]*&?/, '') : ''), { method, body: opts.body, headers: fwd });
     const fn = method === 'POST' ? m.onRequestPost : m.onRequestGet;
-    return fn({ request, env, waitUntil() {} });
+    const out = await fn({ request, env, waitUntil() {} });
+    if (method === 'POST' && state.loseResponse > 0) { state.loseResponse--; throw new Error('response lost'); }      // the server COMMITTED, the answer never arrived
+    return out;
   };
   return { kv, env, state, fetch: handler, serverState: () => JSON.parse(kv.data.get('pos-data:state:C1')?.value || '{}') };
 }

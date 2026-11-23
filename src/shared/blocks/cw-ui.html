@@ -1,0 +1,941 @@
+<!-- CW UI --------------------------------------------------------------------------------------------
+     Car Wash & Cleaning app, block "cw-ui": the standalone application shell (sidebar, top bar, universal search, bottom bar on phones),
+     the Dashboard, the Jobs board, Car Check-in, the Cleaning job form and the Job drawer. The other screens are in cw-ui2.
+     Written ONLY into carwash/index.html; never hand-edit it there. Plain global functions, ES2018 max, every global name starts with cw / Cw / CW_.
+     The shell sits over the page once someone has signed in (the sign-in screens of the system stay in front of it): there is no
+     sales counter, cart or retail checkout in this app. After editing run `npm run sync`. -->
+<style>
+#cw-app{--cw-bg:#f3f6f9;--cw-card:#fff;--cw-ink:#0f172a;--cw-mut:#64748b;--cw-line:#e2e8f0;--cw-pri:#0e7490;--cw-pri2:#0891b2;--cw-acc:#f59e0b;--cw-ok:#16a34a;--cw-bad:#dc2626;--cw-warn:#d97706;--cw-side:#0b1d2e;--cw-r:14px;
+  position:fixed;inset:0;z-index:4000;display:none;grid-template-columns:252px 1fr;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,sans-serif;color:var(--cw-ink);
+  background-color:var(--cw-bg);background-image:radial-gradient(rgba(14,116,144,.07) 1px,transparent 1.2px),linear-gradient(180deg,#f8fafc 0,#eef3f7 100%);background-size:18px 18px,100% 100%}
+body.cw-on #cw-app{display:grid}
+body.cw-on.cw-sys #cw-app{display:none}
+#cw-app *,#cw-modal *{box-sizing:border-box}
+#cw-modal{--cw-bg:#f3f6f9;--cw-card:#fff;--cw-ink:#0f172a;--cw-mut:#64748b;--cw-line:#e2e8f0;--cw-pri:#0e7490;--cw-pri2:#0891b2;--cw-acc:#f59e0b;--cw-ok:#16a34a;--cw-bad:#dc2626;--cw-warn:#d97706;--cw-r:14px;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,sans-serif;color:var(--cw-ink)}
+#cw-modal button{font:inherit;cursor:pointer}
+#cw-app button{font:inherit;cursor:pointer}
+html body:not(#cwz) #cw-app :is(input,select,textarea),html body:not(#cwz) #cw-modal :is(input,select,textarea){font:inherit;color:var(--cw-ink);background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:9px 11px;width:100%;min-height:40px;margin:0;box-shadow:none}
+html body:not(#cwz) :is(#cw-app,#cw-modal) textarea{min-height:70px;resize:vertical}
+html body:not(#cwz) :is(#cw-app,#cw-modal) :is(input,select,textarea):focus{outline:none;border-color:var(--cw-pri2);box-shadow:0 0 0 3px rgba(8,145,178,.18)}
+html body:not(#cwz) :is(#cw-app,#cw-modal) :is(input[type=checkbox],input[type=radio]){width:auto;min-height:0;accent-color:var(--cw-pri)}
+.cw-side{background:var(--cw-side);color:#cbd5e1;display:flex;flex-direction:column;min-height:0;overflow:auto;
+  background-image:linear-gradient(160deg,rgba(14,116,144,.35) 0%,rgba(11,29,46,0) 45%),repeating-linear-gradient(135deg,rgba(255,255,255,.025) 0 2px,transparent 2px 9px)}
+.cw-brand{display:flex;align-items:center;gap:11px;padding:18px 16px 14px;border-bottom:1px solid rgba(255,255,255,.07)}
+.cw-logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#22d3ee,#0e7490);display:grid;place-items:center;color:#fff;font-weight:800;font-size:17px;box-shadow:0 6px 16px rgba(8,145,178,.4);overflow:hidden;flex:none}
+.cw-logo img{width:100%;height:100%;object-fit:cover}
+.cw-brand b{display:block;color:#fff;font-size:14.5px;line-height:1.2;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-brand small{color:#7dd3fc;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.cw-nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px;flex:1}
+.cw-nav h6{margin:12px 10px 4px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:#64748b;font-weight:700}
+.cw-nav button{display:flex;align-items:center;gap:11px;width:100%;border:0;background:transparent;color:#cbd5e1;padding:9px 11px;border-radius:10px;text-align:left;font-weight:550;transition:background .15s,color .15s}
+.cw-nav button:hover{background:rgba(255,255,255,.06);color:#fff}
+.cw-nav button.on{background:linear-gradient(90deg,rgba(34,211,238,.22),rgba(34,211,238,.06));color:#fff;box-shadow:inset 3px 0 0 #22d3ee}
+.cw-nav button .cw-cnt{margin-left:auto;background:#f59e0b;color:#1f1300;font-size:11px;font-weight:800;border-radius:999px;padding:1px 7px}
+.cw-ico{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.cw-me{padding:12px 14px;border-top:1px solid rgba(255,255,255,.07);display:flex;align-items:center;gap:10px}
+.cw-av{width:34px;height:34px;border-radius:50%;background:#1e3a52;color:#7dd3fc;display:grid;place-items:center;font-weight:800;flex:none}
+.cw-me b{color:#fff;font-size:13px;display:block;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-me small{color:#94a3b8;font-size:11.5px}
+.cw-me button{margin-left:auto;border:1px solid rgba(255,255,255,.15);background:transparent;color:#e2e8f0;border-radius:9px;padding:6px 9px;font-size:12px}
+.cw-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.cw-top{display:flex;align-items:center;gap:12px;padding:12px 22px;color:var(--cw-ink);background:rgba(255,255,255,.86);backdrop-filter:blur(8px);border-bottom:1px solid var(--cw-line);position:relative;z-index:3}
+.cw-who{display:flex;align-items:center;gap:8px;border:1px solid var(--cw-line);background:#fff;border-radius:999px;padding:4px 12px 4px 4px;cursor:pointer;max-width:200px;flex-shrink:0}
+.cw-who .cw-av{width:30px;height:30px;font-size:13px;flex-shrink:0}
+.cw-who span{display:flex;flex-direction:column;align-items:flex-start;line-height:1.15;min-width:0}
+.cw-who b{font-size:13px;color:var(--cw-ink);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-who small{font-size:10.5px;color:var(--cw-mut)}
+.cw-top h1{color:var(--cw-ink);font-size:19px;margin:0;font-weight:750;letter-spacing:-.01em;white-space:nowrap}
+.cw-burger{display:none;border:0;background:#e0f2fe;color:#0e7490;border-radius:10px;width:40px;height:40px}
+.cw-search{position:relative;flex:1;max-width:520px;margin-left:auto}
+html body:not(#cwz) .cw-search input{padding-left:36px!important;background:#f1f5f9!important;border-color:transparent!important}
+.cw-search svg{position:absolute;left:11px;top:11px;width:17px;height:17px;stroke:#64748b}
+.cw-sres{position:absolute;top:46px;left:0;right:0;background:#fff;border:1px solid var(--cw-line);border-radius:12px;box-shadow:0 18px 40px rgba(15,23,42,.16);max-height:380px;overflow:auto;display:none}
+.cw-sres.on{display:block}
+.cw-spk .cw-sres{top:100%;margin-top:4px;z-index:30;max-height:300px}
+.cw-spk{display:contents}
+.cw-spk-f{position:relative}
+.cw-ej-row{flex-wrap:nowrap;margin-bottom:6px}.cw-ej-row .cw-ej-price{max-width:110px}.cw-ej-row .cw-ej-qty{max-width:70px}
+.cw-sres button{display:flex;gap:10px;align-items:center;width:100%;text-align:left;border:0;background:#fff;padding:10px 12px;border-bottom:1px solid #f1f5f9}
+.cw-sres button:hover,.cw-sres button.sel{background:#ecfeff}
+.cw-sres small{color:var(--cw-mut);display:block}
+.cw-sync{width:10px;height:10px;border-radius:50%;background:#94a3b8;flex:none;box-shadow:0 0 0 3px rgba(148,163,184,.25)}
+.cw-sync.ok{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.2)}.cw-sync.busy{background:#f59e0b}.cw-sync.off{background:#dc2626}
+.cw-body{flex:1;overflow:auto;padding:22px;scroll-behavior:smooth}
+.cw-wrap{max-width:1320px;margin:0 auto}
+.cw-btn{border:0;border-radius:10px;padding:9px 15px;font-weight:650;background:var(--cw-pri);color:#fff;display:inline-flex;align-items:center;gap:7px;min-height:40px;transition:transform .08s,filter .15s;white-space:nowrap}
+.cw-btn:hover{filter:brightness(1.07)}.cw-btn:active{transform:scale(.98)}
+.cw-btn.sec{background:#e2e8f0;color:#0f172a}.cw-btn.ghost{background:transparent;color:var(--cw-pri);border:1px solid #bae6fd}
+.cw-btn.ok{background:var(--cw-ok)}.cw-btn.bad{background:var(--cw-bad)}.cw-btn.warn{background:var(--cw-acc);color:#1f1300}
+.cw-btn.sm{padding:6px 11px;min-height:32px;font-size:12.5px;border-radius:9px}
+.cw-btn[disabled]{opacity:.5;cursor:not-allowed}
+.cw-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.cw-sp{flex:1}
+.cw-grid{display:grid;gap:14px}
+.cw-g2{grid-template-columns:repeat(2,minmax(0,1fr))}.cw-g3{grid-template-columns:repeat(3,minmax(0,1fr))}.cw-g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.cw-card{background:var(--cw-card);border:1px solid var(--cw-line);border-radius:var(--cw-r);padding:16px 18px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 6px 18px rgba(15,23,42,.04)}
+.cw-card h3{margin:0 0 12px;font-size:15px;font-weight:750;display:flex;align-items:center;gap:8px}
+.cw-card h3 small{font-weight:500;color:var(--cw-mut);font-size:12.5px}
+.cw-kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;margin-bottom:16px}
+.cw-kpi{background:#fff;border:1px solid var(--cw-line);border-radius:14px;padding:13px 15px;position:relative;overflow:hidden;animation:cwUp .35s ease both}
+.cw-kpi::after{content:"";position:absolute;right:-18px;top:-18px;width:70px;height:70px;border-radius:50%;background:var(--k,#0891b2);opacity:.09}
+.cw-kpi span{color:var(--cw-mut);font-size:12px;font-weight:600}
+.cw-kpi b{display:block;font-size:22px;letter-spacing:-.02em;margin-top:3px;color:var(--k2,#0f172a)}
+.cw-kpi i{font-style:normal;font-size:11.5px;color:var(--cw-mut)}
+.cw-sec{margin:22px 0 10px;font-size:13px;font-weight:750;letter-spacing:.06em;text-transform:uppercase;color:#475569;display:flex;align-items:center;gap:8px}
+.cw-sec::after{content:"";flex:1;height:1px;background:var(--cw-line)}
+.cw-badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;background:color-mix(in srgb,var(--b,#64748b) 13%,#fff);color:var(--b,#334155);border:1px solid color-mix(in srgb,var(--b,#64748b) 30%,#fff);white-space:nowrap}
+.cw-free{background:linear-gradient(90deg,#fef3c7,#fde68a);color:#92400e;border:1px solid #f59e0b;border-radius:999px;padding:3px 10px;font-weight:800;font-size:12px}
+.cw-tbl{width:100%;border-collapse:separate;border-spacing:0}
+.cw-tbl th{text-align:left;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:#64748b;font-weight:700;padding:9px 10px;border-bottom:1px solid var(--cw-line);background:#f8fafc;position:sticky;top:0}
+.cw-tbl td{padding:10px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+.cw-tbl tr.cw-click{cursor:pointer}.cw-tbl tr.cw-click:hover td{background:#f0fdff}
+.cw-tblw{overflow:auto;border:1px solid var(--cw-line);border-radius:12px;background:#fff}
+.cw-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cw-mut{color:var(--cw-mut)}.cw-small{font-size:12.5px}
+.cw-empty{text-align:center;color:var(--cw-mut);padding:34px 10px}
+.cw-empty b{display:block;font-size:30px;margin-bottom:6px}
+.cw-chips{display:flex;gap:7px;flex-wrap:wrap}
+.cw-chip{border:1px solid #cbd5e1;background:#fff;border-radius:999px;padding:6px 13px;font-weight:600;font-size:13px;color:#334155}
+.cw-chip.on{background:var(--cw-pri);border-color:var(--cw-pri);color:#fff}
+.cw-chip small{opacity:.75;margin-left:3px}
+.cw-board{display:grid;grid-template-columns:repeat(4,minmax(240px,1fr));gap:14px;align-items:start}
+.cw-col{background:rgba(255,255,255,.55);border:1px dashed #cbd5e1;border-radius:14px;padding:10px;min-height:120px}
+.cw-col>h4{margin:2px 4px 10px;font-size:13px;display:flex;align-items:center;gap:8px}
+.cw-col>h4 span{margin-left:auto;background:#e2e8f0;border-radius:999px;padding:1px 8px;font-size:12px}
+.cw-job{background:#fff;border:1px solid var(--cw-line);border-left:4px solid var(--b,#64748b);border-radius:12px;padding:11px 12px;margin-bottom:9px;cursor:pointer;transition:transform .12s,box-shadow .12s;animation:cwUp .3s ease both}
+.cw-job:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(15,23,42,.08)}
+.cw-job .t{display:flex;justify-content:space-between;gap:8px;align-items:center;font-weight:750}
+.cw-job .p{font-size:17px;letter-spacing:.03em}
+.cw-job .m{font-size:12.5px;color:var(--cw-mut);margin-top:3px}
+.cw-job.late{box-shadow:0 0 0 2px rgba(220,38,38,.35)}
+.cw-plate{display:inline-block;background:#fde047;color:#111;border:2px solid #111;border-radius:6px;padding:0 7px;font-weight:800;letter-spacing:.06em;font-size:13px;line-height:1.5}
+.cw-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+.cw-form .full{grid-column:1/-1}
+.cw-f label{display:block;font-size:12.5px;font-weight:650;color:#334155;margin-bottom:5px}
+.cw-f label i{font-style:normal;color:var(--cw-mut);font-weight:500}
+.cw-svcs{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:9px}
+.cw-svc{border:1.5px solid #cbd5e1;border-radius:12px;padding:10px 12px;background:#fff;text-align:left;position:relative;transition:border-color .12s,background .12s}
+.cw-svc b{display:block;font-size:13.5px}.cw-svc span{color:var(--cw-pri);font-weight:750;font-size:13px}
+.cw-svc.on{border-color:var(--cw-pri);background:#ecfeff;box-shadow:0 0 0 2px rgba(14,116,144,.15)}
+.cw-svc.on::after{content:"✓";position:absolute;right:9px;top:7px;color:#fff;background:var(--cw-pri);border-radius:50%;width:19px;height:19px;font-size:12px;display:grid;place-items:center}
+.cw-sum{background:linear-gradient(135deg,#0b1d2e,#0e4f63);color:#e2e8f0;border-radius:16px;padding:16px 18px;position:sticky;top:0}
+.cw-sum h3{color:#fff;margin:0 0 10px}
+.cw-sum .l{display:flex;justify-content:space-between;padding:4px 0;font-size:13.5px}
+.cw-sum .tot{border-top:1px solid rgba(255,255,255,.18);margin-top:8px;padding-top:9px;font-size:20px;font-weight:800;color:#fff}
+.cw-loy{border-radius:12px;padding:11px 13px;background:#f0f9ff;border:1px solid #bae6fd;color:#075985;font-size:13px}
+.cw-loy.win{background:linear-gradient(90deg,#fffbeb,#fef3c7);border-color:#f59e0b;color:#78350f;font-weight:700;animation:cwPulse 1.6s ease-in-out 3}
+.cw-prog{height:9px;background:#e0f2fe;border-radius:99px;overflow:hidden;margin-top:7px}
+.cw-prog i{display:block;height:100%;background:linear-gradient(90deg,#22d3ee,#0e7490);border-radius:99px;transition:width .4s}
+.cw-dots{display:flex;gap:4px;margin-top:7px;flex-wrap:wrap}.cw-dots i{width:15px;height:15px;border-radius:50%;background:#e2e8f0;display:block}.cw-dots i.f{background:#0891b2}.cw-dots i.g{background:#f59e0b}
+.cw-pick{display:flex;gap:8px;flex-wrap:wrap}
+.cw-pick button{border:1.5px solid #cbd5e1;background:#fff;border-radius:10px;padding:7px 12px;font-weight:650}
+.cw-pick button.on{border-color:var(--cw-pri);background:#ecfeff;color:var(--cw-pri)}
+.cw-modal{position:fixed;inset:0;z-index:4100;background:rgba(15,23,42,.45);display:none;justify-content:flex-end;animation:cwFade .15s ease}
+.cw-modal.on{display:flex}
+.cw-panel{background:#f8fafc;width:min(760px,100%);height:100%;overflow:auto;box-shadow:-20px 0 60px rgba(15,23,42,.25);animation:cwIn .22s ease;display:flex;flex-direction:column}
+.cw-panel.narrow{width:min(520px,100%)}
+.cw-ph{display:flex;align-items:center;gap:10px;padding:16px 20px;background:#fff;border-bottom:1px solid var(--cw-line);position:sticky;top:0;z-index:2}
+.cw-ph h2{margin:0;font-size:18px;flex:1;min-width:0}
+.cw-ph .x{border:0;background:#f1f5f9;border-radius:10px;width:38px;height:38px;font-size:18px}
+.cw-pb{padding:18px 20px;flex:1}
+.cw-steps{display:flex;gap:6px;flex-wrap:wrap}
+.cw-steps button{border:1px solid #cbd5e1;background:#fff;border-radius:10px;padding:8px 11px;font-weight:650;font-size:12.5px;display:flex;align-items:center;gap:6px}
+.cw-steps button:hover{border-color:var(--b);color:var(--b)}
+.cw-tl{position:relative;padding-left:18px}
+.cw-tl::before{content:"";position:absolute;left:5px;top:4px;bottom:4px;width:2px;background:#e2e8f0}
+.cw-tl div{position:relative;padding:3px 0 9px}
+.cw-tl div::before{content:"";position:absolute;left:-17px;top:7px;width:10px;height:10px;border-radius:50%;background:var(--b,#94a3b8);box-shadow:0 0 0 3px #fff}
+.cw-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.cw-photos figure{margin:0;border-radius:10px;overflow:hidden;background:#e2e8f0;aspect-ratio:1;position:relative}
+.cw-photos img{width:100%;height:100%;object-fit:cover;display:block}
+.cw-photos figcaption{position:absolute;left:0;right:0;bottom:0;background:rgba(15,23,42,.6);color:#fff;font-size:11px;padding:2px 6px}
+.cw-alert{border-radius:12px;padding:11px 14px;font-size:13.5px;border:1px solid #fecaca;background:#fef2f2;color:#991b1b}
+.cw-alert.info{border-color:#bae6fd;background:#f0f9ff;color:#075985}.cw-alert.ok{border-color:#bbf7d0;background:#f0fdf4;color:#166534}.cw-alert.warn{border-color:#fde68a;background:#fffbeb;color:#92400e}
+.cw-bars{display:flex;align-items:flex-end;gap:8px;height:150px;padding-top:6px}
+.cw-bars div{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end}
+.cw-bars i{display:block;width:100%;max-width:42px;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#22d3ee,#0e7490);min-height:3px;transition:height .5s}
+.cw-bars small{font-size:11px;color:var(--cw-mut)}
+.cw-hb{display:flex;align-items:center;gap:9px;margin:7px 0;font-size:13px}
+.cw-hb span{width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-hb div{flex:1;height:10px;background:#f1f5f9;border-radius:99px;overflow:hidden}.cw-hb div i{display:block;height:100%;background:#0891b2;border-radius:99px}
+.cw-feed div{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px}
+.cw-feed div:last-child{border:0}.cw-feed time{color:var(--cw-mut);white-space:nowrap;font-size:12px;min-width:44px}
+.cw-bottom{display:none}
+.cw-blocked{display:grid;place-items:center;height:100%;text-align:center;padding:30px}
+.cw-sysbar{position:fixed;right:18px;bottom:18px;z-index:4050;display:none;border:0;border-radius:999px;padding:12px 18px;background:linear-gradient(135deg,#0e7490,#22d3ee);color:#fff;font-weight:800;box-shadow:0 12px 30px rgba(8,145,178,.45);cursor:pointer}
+body.cw-on.cw-sys .cw-sysbar{display:block}
+body.cw-on.cw-sys .tab-link,body.cw-on.cw-sys #snav,body.cw-on.cw-sys #snav-fly{display:none!important}
+/* the till's own chrome (sidebar, on-screen keyboard button, stock-alert prompt) never shows over the Car Wash app */
+body.cw-on :is(#snav,#snav-fly,#snav-scrim,#floating-kb-toggle,#notif-prompt-banner,#barcode-scanner-video){display:none!important}
+body.cw-on:not(.cw-sys){overflow:hidden}
+body.cw-on #posnet-offline-pill{left:auto!important;right:12px!important;bottom:12px!important}
+@media (max-width:860px){body.cw-on #posnet-offline-pill{bottom:76px!important}}
+@keyframes cwUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes cwIn{from{transform:translateX(40px);opacity:.4}to{transform:none;opacity:1}}
+@keyframes cwFade{from{opacity:0}to{opacity:1}}
+@keyframes cwPulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.0)}50%{box-shadow:0 0 0 6px rgba(245,158,11,.25)}}
+@media (prefers-reduced-motion:reduce){#cw-app *{animation:none!important;transition:none!important}}
+@media (max-width:1100px){.cw-board{grid-template-columns:repeat(2,minmax(220px,1fr))}.cw-g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:860px){
+  #cw-app{grid-template-columns:1fr}
+  .cw-side{position:fixed;left:0;top:0;bottom:0;width:270px;z-index:20;transform:translateX(-105%);transition:transform .22s ease;box-shadow:20px 0 50px rgba(0,0,0,.35)}
+  #cw-app.nav-open .cw-side{transform:none}
+  #cw-app.nav-open::after{content:"";position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:19}
+  .cw-burger{display:grid;place-items:center}
+  .cw-top{padding:10px 12px;flex-wrap:wrap}
+  .cw-top h1{font-size:17px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .cw-who{padding:3px 10px 3px 3px;max-width:150px}.cw-who b{max-width:84px}
+  .cw-search{order:5;flex-basis:100%;max-width:none}
+  .cw-body{padding:14px 12px 86px}
+  .cw-g2,.cw-g3,.cw-g4,.cw-form{grid-template-columns:1fr}
+  .cw-board{grid-template-columns:1fr}
+  .cw-bottom{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:15;background:#fff;border-top:1px solid var(--cw-line);padding:6px 6px calc(6px + env(safe-area-inset-bottom));justify-content:space-around;box-shadow:0 -6px 20px rgba(15,23,42,.06)}
+  .cw-bottom button{border:0;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;font-weight:650;color:#64748b;padding:4px 8px;border-radius:10px;min-width:58px}
+  .cw-bottom button.on{color:var(--cw-pri);background:#ecfeff}
+  .cw-bottom .plus{background:linear-gradient(135deg,#0e7490,#22d3ee);color:#fff!important;border-radius:16px;margin-top:-18px;box-shadow:0 8px 20px rgba(8,145,178,.45);padding:9px 12px}
+  .cw-panel{width:100%}
+  .cw-tbl th,.cw-tbl td{padding:8px 7px}
+  .cw-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .cw-kpi b{font-size:19px}
+  /* zip 363 phone polish */
+  .cw-bottom .plus.on{background:linear-gradient(135deg,#0e7490,#22d3ee)}
+  .cw-ph{flex-wrap:wrap;padding:12px 14px;gap:8px}
+  .cw-ph h2{font-size:17px;flex:1 1 calc(100% - 56px);overflow-wrap:anywhere}
+  .cw-ph .x{order:2}
+  .cw-phx{order:3;flex-basis:100%;display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+  .cw-phx .cw-btn{flex-shrink:0}
+  .cw-ej-row{display:grid!important;grid-template-columns:1fr 1fr;gap:6px;padding:8px;border:1px solid var(--cw-line);border-radius:12px;background:#f8fafc}
+  .cw-ej-row .cw-ej-name{grid-column:1/-1}
+  .cw-ej-row .cw-ej-price,.cw-ej-row .cw-ej-qty{max-width:none}
+  table.cw-stack thead{display:none}
+  table.cw-stack,table.cw-stack tbody{display:block;width:100%}
+  table.cw-stack tr{display:block;background:#fff;border:1px solid var(--cw-line);border-radius:12px;margin:0 0 10px;padding:6px 12px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+  table.cw-stack td{display:flex;justify-content:space-between;align-items:center;gap:12px;border:0;border-bottom:1px dashed #eef2f7;padding:7px 0;text-align:right}
+  table.cw-stack td:last-child{border-bottom:0}
+  table.cw-stack td::before{content:attr(data-l);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;text-align:left;flex-shrink:0}
+  table.cw-stack td[data-l=""]::before{content:none}
+  table.cw-stack td[data-l=""]{justify-content:flex-end}
+  table.cw-stack td[colspan]{display:block;text-align:center}
+  table.cw-stack td[colspan]::before{content:none}
+  .cw-tblw{overflow:visible}
+  body.cw-on.cw-mopen #posnet-offline-pill{display:none!important}
+  body.cw-on #posnet-offline-pill{display:none!important}   /* the dot in the top bar shows sync on a phone: tap it for the words */
+  .cw-sync{width:14px;height:14px;cursor:pointer}
+  #cw-app .cw-f>select,#cw-app .cw-f>input,#cw-modal .cw-f>select,#cw-modal .cw-f>input{width:100%;max-width:none}
+}
+@media (min-width:861px){.cw-ej-row{display:grid;grid-template-columns:1fr 110px 70px;gap:6px}}
+@media print{#cw-app,.cw-modal,.cw-sysbar{display:none!important}}
+</style>
+<div id="cw-app" role="application" aria-label="Car Wash & Cleaning">
+  <div class="cw-side" id="cw-side" role="navigation"></div>
+  <div class="cw-main">
+    <div class="cw-top" role="banner">
+      <button type="button" class="cw-burger" data-cw="nav" aria-label="Menu"><svg class="cw-ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <h1 id="cw-title">Dashboard</h1>
+      <div class="cw-search"><svg class="cw-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="cw-q" type="search" autocomplete="off" placeholder="Search name, phone, plate or job number…" aria-label="Search"><div class="cw-sres" id="cw-sres"></div></div>
+      <span class="cw-sync" id="cw-sync" title="Sync" data-cw="syncinfo" role="button" tabindex="0" aria-label="Sync status"></span>
+      <button type="button" class="cw-who" id="cw-who" data-cw="who" aria-label="Who is signed in"></button>
+    </div>
+    <div class="cw-body" id="cw-body"><div class="cw-wrap" id="cw-main"></div></div>
+  </div>
+  <div class="cw-bottom" id="cw-bottom" role="navigation"></div>
+</div>
+<div class="cw-modal" id="cw-modal" role="dialog" aria-modal="true"><div class="cw-panel" id="cw-panel"></div></div>
+<button type="button" class="cw-sysbar" id="cw-sysbar">🚗 Back to Car Wash</button>
+<script>
+/* ===================================================================================================================
+   CAR WASH UI (shell + operations screens)
+   =================================================================================================================== */
+var CW_UI = { route: 'dashboard', role: '', meKey: '', on: false, booted: false, jobsTab: 'all', jobsStatus: '', jobsMine: false, jobsQ: '', ck: null, cl: null, sel: -1, results: [], pendingRender: false, pages: {}, drawer: null };
+var CW_ICONS = {
+  tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  dash: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  plus: '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  car: '<path d="M5 17h14v-5l-2-5H7l-2 5v5Z"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/><path d="M5 12h14"/>',
+  board: '<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="11" rx="1.5"/><rect x="17" y="4" width="4" height="7" rx="1.5"/>',
+  clean: '<path d="M14 4l6 6-9 9H5v-6l9-9Z"/><path d="M12 6l6 6"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20c-.4-2.4-1.7-4.1-3.6-5"/>',
+  pay: '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M7 15h3"/>',
+  gift: '<rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M12 8S10 3 7.5 4.5 9 8 12 8Zm0 0s2-5 4.5-3.5S15 8 12 8Z"/>',
+  sms: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12Z"/><path d="M8 11h8M8 14.5h5"/>',
+  staff: '<circle cx="12" cy="7.5" r="3.5"/><path d="M5 20.5c1-4 3.8-6 7-6s6 2 7 6"/><path d="M9 3.5 12 2l3 1.5"/>',
+  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1A2 2 0 1 1 4.3 17l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1A2 2 0 1 1 7 4.3l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1A2 2 0 1 1 19.7 7l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
+  log: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
+};
+function cwIco(k) { return '<svg class="cw-ico" viewBox="0 0 24 24" aria-hidden="true">' + (CW_ICONS[k] || '') + '</svg>'; }
+var CW_NAV = [
+  { g: 'Operations' },
+  { r: 'dashboard', l: 'Dashboard', i: 'dash', p: 'dash' },
+  { r: 'myjobs', l: 'My Jobs', i: 'board', p: 'jobs.mine', only: true },
+  { r: 'checkin', l: 'Car Check-in', i: 'plus', p: 'checkin' },
+  { r: 'jobs', l: 'Jobs Board', i: 'board', p: 'jobs.all', cnt: true },
+  { r: 'cleaning', l: 'Carpets & Cleaning', i: 'clean', p: 'jobs.all' },
+  { g: 'Customers' },
+  { r: 'customers', l: 'Customers & Vehicles', i: 'users', p: 'customers' },
+  { r: 'payments', l: 'Billing & Payments', i: 'pay', p: 'payments' },
+  { r: 'prices', l: 'Price List', i: 'tag', p: 'prices' },
+  { r: 'loyalty', l: 'Loyalty (9 + 1)', i: 'gift', p: 'loyalty.view' },
+  { r: 'sms', l: 'SMS Notifications', i: 'sms', p: 'sms.view' },
+  { g: 'Management' },
+  { r: 'staff', l: 'Staff & Teams', i: 'staff', p: 'staff.view' },
+  { r: 'reports', l: 'Reports', i: 'chart', p: 'reports.ops' },
+  { r: 'activity', l: 'Activity Log', i: 'log', p: 'audit' },
+  { r: 'settings', l: 'Settings', i: 'cog', p: 'settings' }
+];
+var CW_TITLES = { dashboard: 'Dashboard', myjobs: 'My Jobs', checkin: 'Car Check-in', jobs: 'Jobs Board', cleaning: 'Carpets & Cleaning', customers: 'Customers & Vehicles', payments: 'Billing & Payments', prices: 'Price List', loyalty: 'Loyalty Programme', sms: 'SMS Notifications', staff: 'Staff & Teams', reports: 'Reports', activity: 'Activity Log', settings: 'Settings' };
+function cwEl(id) { return document.getElementById(id); }
+function cwVal(id) { var e = cwEl(id); return e ? e.value : ''; }
+function cwChecked(id) { var e = cwEl(id); return !!(e && e.checked); }
+function cwToast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+function cwRouteAllowed(r, me) {
+  var n = CW_NAV.filter(function (x) { return x.r === r; })[0];
+  if (!n) return false;
+  var own = cwTabsOf(me); if (own) return own.indexOf(r) !== -1;   /* zip 362: the screens the owner ticked for this person */
+  if (n.only) return me.role === 'attendant' || me.role === 'cleaner';
+  if (n.r === 'dashboard' && (me.role === 'attendant' || me.role === 'cleaner')) return false;
+  return cwCan(n.p, me);
+}
+function cwDefaultRoute(me) {
+  var r = me.role === 'attendant' || me.role === 'cleaner' ? 'myjobs' : 'dashboard';
+  if (cwRouteAllowed(r, me)) return r;
+  var first = CW_NAV.filter(function (x) { return x.r && cwRouteAllowed(x.r, me); })[0];
+  return first ? first.r : r;
+}
+
+/* ---- visibility: the shell is on whenever someone is signed in; every sign-in / lock screen of the system stays in front ---- */
+var CW_AUTH_SCREENS = ['registration-screen', 'login-screen', 'invite-screen', 'staff-login-screen', 'account-reset-screen'];
+function cwSignedIn() {
+  var i; for (i = 0; i < CW_AUTH_SCREENS.length; i++) { var e = cwEl(CW_AUTH_SCREENS[i]); if (e && e.style.display && e.style.display !== 'none') return false; if (e && !e.style.display && getComputedStyle(e).display !== 'none') return false; }
+  return true;
+}
+function cwTick() {
+  var on = cwSignedIn();
+  if (on !== CW_UI.on) { CW_UI.on = on; document.body.classList.toggle('cw-on', on); if (!on) { document.body.classList.remove('cw-sys'); cwCloseModal(); } }
+  if (!on) return;
+  var me = cwMe(), key = me.id + '|' + me.role;
+  if (key !== CW_UI.meKey) { CW_UI.meKey = key; CW_UI.role = me.role; if (!cwRouteAllowed(CW_UI.route, me)) CW_UI.route = cwDefaultRoute(me); cwRenderShell(); cwRender(); }
+  var src = cwEl('sync-status'), dot = cwEl('cw-sync');
+  if (src && dot) { var c = src.className || '', t = src.getAttribute('title') || ''; var k = /sync-ok|synced/.test(c) ? 'ok' : /error|offline|fail/.test(c) ? 'off' : /syncing|pending/.test(c) ? 'busy' : ''; if (dot.className !== 'cw-sync ' + k) dot.className = 'cw-sync ' + k; if (dot.title !== t) dot.title = t; }
+}
+function cwRenderShell() {
+  var me = cwMe(), cfg = cwCfg(), side = cwEl('cw-side'); if (!side) return;
+  var logo = cfg.business.logo ? '<img src="' + cwEsc(cfg.business.logo) + '" alt="">' : cwEsc((cfg.business.name || 'CW').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).map(function (w) { return w.charAt(0); }).join('').slice(0, 2).toUpperCase() || 'CW');
+  var nav = '', open = cwJobs.filter(function (j) { return j && !j._deleted && !cwIsClosed(j) && cwPhase(j) < 2; }).length;
+  CW_NAV.forEach(function (n) {
+    if (n.g) { nav += '<h6>' + n.g + '</h6>'; return; }
+    if (!cwRouteAllowed(n.r, me)) return;
+    nav += '<button type="button" data-cw="go" data-r="' + n.r + '" class="' + (CW_UI.route === n.r ? 'on' : '') + '">' + cwIco(n.i) + '<span>' + n.l + '</span>' + (n.cnt && open ? '<em class="cw-cnt">' + open + '</em>' : '') + '</button>';
+  });
+  nav = nav.replace(/<h6>[^<]*<\/h6>(?=<h6>|$)/g, '');
+  var roleL = (CW_ROLES.filter(function (r) { return r.k === me.role; })[0] || { l: me.role }).l;
+  side.innerHTML = '<div class="cw-brand"><div class="cw-logo">' + logo + '</div><div><b>' + cwEsc(cfg.business.name || 'Car Wash') + '</b><small>Car Wash &amp; Cleaning</small></div></div>'
+    + '<div class="cw-nav">' + nav + '</div>'
+    + '<div class="cw-me"><div class="cw-av">' + cwEsc(cwStr(me.name).charAt(0).toUpperCase() || '?') + '</div><div><b>' + cwEsc(me.name) + '</b><small>' + cwEsc(roleL) + '</small></div><button type="button" data-cw="logout" title="Sign out">Sign out</button></div>';
+  var who = cwEl('cw-who'); if (who) who.innerHTML = '<div class="cw-av">' + cwEsc(cwStr(me.name).charAt(0).toUpperCase() || '?') + '</div><span><b>' + cwEsc(cwStr(me.name).split(' ')[0]) + '</b>' + (cwStr(roleL).toLowerCase() !== cwStr(me.name).toLowerCase() ? '<small>' + cwEsc(roleL) + '</small>' : '') + '</span>';
+  /* zip 363: the bottom bar shows only screens this person may open (role, or the tabs the owner ticked) */
+  var bb = cwEl('cw-bottom'), items = [];
+  [['myjobs', 'My Jobs', 'board'], ['dashboard', 'Home', 'dash'], ['jobs', 'Jobs', 'board'], ['checkin', 'Check-in', 'plus', 'plus'], ['customers', 'Customers', 'users'], ['cleaning', 'Cleaning', 'board'], ['payments', 'Billing', 'pay']].forEach(function (x) {
+    if (items.length >= 4 || !cwRouteAllowed(x[0], me)) return;
+    if (x[0] === 'myjobs' && me.role !== 'attendant' && me.role !== 'cleaner' && cwRouteAllowed('jobs', me)) return;
+    items.push(x);
+  });
+  items.push(['__more', 'More', 'more']);
+  if (bb) bb.innerHTML = items.map(function (x) { return '<button type="button" data-cw="' + (x[0] === '__more' ? 'nav' : 'go') + '" data-r="' + x[0] + '" class="' + (x[3] || '') + (CW_UI.route === x[0] ? ' on' : '') + '">' + cwIco(x[2]) + '<span>' + x[1] + '</span></button>'; }).join('');
+}
+function cwGo(r, params) {
+  var me = cwMe();
+  if (!cwRouteAllowed(r, me)) { cwToast('You do not have access to that screen.', true); return; }
+  CW_UI.route = r; CW_UI.params = params || {};
+  var app = cwEl('cw-app'); if (app) app.classList.remove('nav-open');
+  cwRenderShell(); cwRender();
+  var b = cwEl('cw-body'); if (b) b.scrollTop = 0;
+}
+function cwRender() {
+  var main = cwEl('cw-main'); if (!main || !CW_UI.on) return;
+  var me = cwMe();
+  if (me.role === 'none') { main.innerHTML = '<div class="cw-blocked"><div><b style="font-size:42px">🔒</b><h2>Your access to the Car Wash app is switched off</h2><p class="cw-mut">Ask the owner to activate your account.</p><button class="cw-btn" data-cw="logout">Sign out</button></div></div>'; cwEl('cw-title').textContent = 'Access'; return; }
+  if (!cwRouteAllowed(CW_UI.route, me)) CW_UI.route = cwDefaultRoute(me);
+  cwEl('cw-title').textContent = CW_TITLES[CW_UI.route] || 'Car Wash';
+  var fn = CW_UI.pages[CW_UI.route];
+  try { main.innerHTML = fn ? fn(me) : '<div class="cw-empty">Coming up…</div>'; } catch (e) { main.innerHTML = '<div class="cw-alert">This screen could not be drawn: ' + cwEsc(e && e.message) + '</div>'; try { console.error(e); } catch (x) { /* none */ } }
+  CW_UI.pendingRender = false;
+  try { if (typeof CW_UI.after === 'function') { var a = CW_UI.after; CW_UI.after = null; a(); } } catch (e2) { /* after-draw hooks are cosmetic */ }
+  try { cwStackTables(main); } catch (e3) { /* plain tables still work */ }
+}
+/* a sync or another device's change redraws the screen, but never while someone is typing in it */
+function cwRefresh() {
+  if (!CW_UI.on) return;
+  var ae = document.activeElement, main = cwEl('cw-main'), panel = cwEl('cw-panel');
+  cwRenderShell();
+  if (ae && main && main.contains(ae) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { CW_UI.pendingRender = true; }
+  else cwRender();
+  if (CW_UI.drawer && cwEl('cw-modal').classList.contains('on') && !(ae && panel && panel.contains(ae) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName))) { try { CW_UI.drawer(); } catch (e) { /* the drawer is redrawn on its next action */ } }
+}
+
+/* ---- modal panel ---- */
+function cwOpenModal(html, narrow, redraw) {
+  var m = cwEl('cw-modal'), p = cwEl('cw-panel'); if (!m || !p) return;
+  p.className = 'cw-panel' + (narrow ? ' narrow' : '');
+  p.innerHTML = html; m.classList.add('on'); CW_UI.drawer = redraw || null; document.body.classList.add('cw-mopen');
+  p.scrollTop = 0; cwStackTables(p);
+}
+function cwCloseModal() { var m = cwEl('cw-modal'); if (m) m.classList.remove('on'); CW_UI.drawer = null; document.body.classList.remove('cw-mopen'); }
+function cwPH(title, extra) { return '<div class="cw-ph"><h2>' + title + '</h2>' + (extra ? '<div class="cw-phx">' + extra + '</div>' : '') + '<button type="button" class="x" data-cw="close" aria-label="Close">✕</button></div>'; }
+/* zip 363: on a phone every data table reads as a stack of cards - each cell gets its column name (data-l) as a small label */
+function cwStackTables(root) {
+  if (!root || !root.querySelectorAll) return;
+  Array.prototype.forEach.call(root.querySelectorAll('table.cw-tbl:not(.cw-pl):not(.cw-nostack)'), function (tb) {
+    var heads = Array.prototype.map.call(tb.querySelectorAll('thead th'), function (th) { return cwStr(th.textContent).trim(); });
+    if (!heads.length) return;
+    tb.classList.add('cw-stack');
+    Array.prototype.forEach.call(tb.querySelectorAll('tbody tr'), function (tr) { var i = 0; Array.prototype.forEach.call(tr.children, function (td) { if (!td.hasAttribute('data-l')) td.setAttribute('data-l', heads[i] || ''); i += td.colSpan || 1; }); });
+  });
+}
+
+/* ---- shared bits ---- */
+function cwStatusBadge(job) { var d = cwStatusDef(job, job.status); return '<span class="cw-badge" style="--b:' + d.c + '">' + d.ic + ' ' + cwEsc(d.l) + '</span>'; }
+function cwPayBadge(t) { var c = { paid: '#16a34a', free: '#d97706', partial: '#d97706', unpaid: '#dc2626', refunded: '#64748b', refund_due: '#dc2626', cancelled: '#64748b' }[t.status] || '#64748b'; return '<span class="cw-badge" style="--b:' + c + '">' + cwEsc(cwPayLabel(t.status)) + '</span>'; }
+function cwJobTitle(job) {
+  if (job.kind === 'clean') { var ct = cwCleanType(job.cleaning && job.cleaning.type); return ct.ic + ' ' + cwEsc(ct.l) + (job.cleaning && job.cleaning.dims ? ' · ' + cwEsc(job.cleaning.dims) : ''); }
+  var v = cwJobVehicle(job); return v ? '<span class="cw-plate">' + cwEsc(cwFmtPlate(v.plate)) + '</span>' : '🚗';
+}
+function cwJobCard(job, now) {
+  var c = cwJobCustomer(job) || {}, d = cwStatusDef(job, job.status), t = cwTotals(job), late = cwIsDelayed(job, now, cwCfg());
+  var who = cwStaffOnJob(job).map(function (a) { return a.name; }).join(', ');
+  return '<div class="cw-job' + (late ? ' late' : '') + '" style="--b:' + d.c + '" data-cw="job" data-id="' + cwEsc(job.id) + '">'
+    + '<div class="t"><span class="p">' + cwJobTitle(job) + '</span>' + (job.free ? '<span class="cw-free">🎁 FREE</span>' : '') + '</div>'
+    + '<div class="m">' + cwEsc(job.no) + ' · ' + cwEsc(c.name || '') + '</div>'
+    + '<div class="m">' + cwEsc(cwArr(job.items).map(function (i) { return i.name; }).join(' + ')) + '</div>'
+    + '<div class="cw-row" style="margin-top:7px;gap:6px">' + cwStatusBadge(job) + (cwPhase(job) >= 2 && !job.free ? cwPayBadge(t) : '') + (late ? '<span class="cw-badge" style="--b:#dc2626">⏰ Delayed</span>' : '') + '</div>'
+    + '<div class="m" style="margin-top:6px">' + (who ? '👷 ' + cwEsc(who) : '<b style="color:#d97706">Not assigned</b>') + ' · ⏱ ' + cwFmtTime(job.receivedAt) + (job.dueAt ? ' → ' + cwFmtTime(job.dueAt) : '') + '</div></div>';
+}
+function cwKpi(label, value, sub, color) { return '<div class="cw-kpi" style="--k:' + (color || '#0891b2') + '"><span>' + label + '</span><b>' + value + '</b>' + (sub ? '<i>' + sub + '</i>' : '') + '</div>'; }
+
+/* ================================ DASHBOARD ================================ */
+CW_UI.pages.dashboard = function (me) {
+  var now = cwNow(), d = cwDashboard(cwState(), cwDayKey(now), now), money = cwCan('dash.money', me), h = '';
+  h += '<div class="cw-row" style="margin-bottom:14px"><div><div class="cw-mut cw-small">' + cwFmtDate(now, 'long') + '</div><b style="font-size:17px">Good ' + (new Date(now + 3 * 3600000).getUTCHours() < 12 ? 'morning' : new Date(now + 3 * 3600000).getUTCHours() < 17 ? 'afternoon' : 'evening') + ', ' + cwEsc(me.name) + '</b></div><span class="cw-sp"></span>'
+    + (cwCan('checkin', me) ? '<button class="cw-btn" data-cw="go" data-r="checkin">' + cwIco('plus') + ' Check in a car</button><button class="cw-btn ghost" data-cw="newclean">🧶 New cleaning job</button>' : '') + '</div>';
+  h += '<div class="cw-sec">Today</div><div class="cw-kpis">'
+    + cwKpi('Cars received', d.carsToday, '', '#0891b2') + cwKpi('Cleaning jobs', d.cleanToday, '', '#7c3aed') + cwKpi('In progress', d.inProgress, d.waiting + ' waiting', '#0284c7')
+    + cwKpi('Completed', d.completedToday, '', '#16a34a') + cwKpi('Awaiting collection', d.awaitingCollection, '', '#059669') + cwKpi('Awaiting payment', d.awaitingPayment, '', '#d97706')
+    + (money ? cwKpi('Total sales', cwMoney(d.salesToday), 'job charges today', '#0e7490') + cwKpi('Cash collected', cwMoney(d.cashToday), '', '#16a34a') + cwKpi('M-Pesa collected', cwMoney(d.mpesaToday), '', '#16a34a') + cwKpi('Outstanding balances', cwMoney(d.outstanding), 'all open jobs', '#dc2626') : '')
+    + '</div>';
+  h += '<div class="cw-grid cw-g3">';
+  h += '<div class="cw-card"><h3>👥 Customers</h3><div class="cw-kpis" style="grid-template-columns:1fr 1fr;margin:0">'
+    + cwKpi('Registered', d.customers) + cwKpi('Returning', d.returning) + cwKpi('New today', d.newToday) + cwKpi('Approaching free', d.approaching, '', '#f59e0b')
+    + '</div><div class="cw-loy ' + (d.qualified ? 'win' : '') + '" style="margin-top:10px">🎁 <b>' + d.qualified + '</b> customer' + (d.qualified === 1 ? '' : 's') + ' qualified for a free service' + (cwCan('loyalty.view', me) ? ' · <a href="#" data-cw="go" data-r="loyalty">see list</a>' : '') + '</div></div>';
+  var max = 1; d.perStaff.forEach(function (x) { if (x[1] > max) max = x[1]; });
+  h += '<div class="cw-card"><h3>👷 Operations</h3><div class="cw-kpis" style="grid-template-columns:1fr 1fr;margin:0">' + cwKpi('Pending jobs', d.pending) + cwKpi('Delayed jobs', d.delayed, '', '#dc2626') + cwKpi('Avg completion', cwDur(d.avgMin), 'last 30 days') + cwKpi('Staff busy', d.perStaff.length) + '</div>'
+    + '<div style="margin-top:10px">' + (d.perStaff.length ? d.perStaff.slice(0, 6).map(function (x) { return '<div class="cw-hb"><span>' + cwEsc(x[0]) + '</span><div><i style="width:' + Math.round(x[1] / max * 100) + '%"></i></div><b>' + x[1] + '</b></div>'; }).join('') : '<div class="cw-mut cw-small">No open assignments.</div>') + '</div></div>';
+  if (money) {
+    var wmax = 1; d.week.forEach(function (x) { if (x[1] > wmax) wmax = x[1]; });
+    h += '<div class="cw-card"><h3>💰 Collections <small>last 7 days</small></h3><div class="cw-bars">' + d.week.map(function (x) { return '<div title="' + cwEsc(x[0] + ': ' + cwMoney(x[1])) + '"><small>' + (x[1] ? cwAmt(x[1]) : '') + '</small><i style="height:' + Math.max(2, Math.round(Math.max(0, x[1]) / wmax * 110)) + 'px"></i><small>' + x[0].slice(8) + '</small></div>'; }).join('') + '</div></div>';
+  } else {
+    h += '<div class="cw-card"><h3>📋 Quick actions</h3><div class="cw-grid">' + (cwCan('checkin', me) ? '<button class="cw-btn" data-cw="go" data-r="checkin">Check in a car</button>' : '') + '<button class="cw-btn sec" data-cw="go" data-r="jobs">Open the jobs board</button></div></div>';
+  }
+  h += '</div>';
+  var active = cwJobs.filter(function (j) { return j && !j._deleted && !cwIsClosed(j); }).sort(function (a, b) { return cwNum(a.receivedAt) - cwNum(b.receivedAt); });
+  h += '<div class="cw-grid cw-g2" style="margin-top:14px"><div class="cw-card"><h3>🚦 Live jobs <small>' + active.length + ' open</small><span class="cw-sp"></span><button class="cw-btn sm ghost" data-cw="go" data-r="jobs">Board</button></h3>'
+    + (active.length ? '<div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Job</th><th>Customer</th><th>Status</th><th>Staff</th><th>Due</th></tr></thead><tbody>' + active.slice(0, 10).map(function (j) { var c = cwJobCustomer(j) || {}; return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(j.id) + '"><td>' + cwJobTitle(j) + '<div class="cw-small cw-mut">' + cwEsc(j.no) + '</div></td><td>' + cwEsc(c.name || '') + '</td><td>' + cwStatusBadge(j) + (j.free ? ' <span class="cw-free">FREE</span>' : '') + '</td><td class="cw-small">' + cwEsc(cwStaffOnJob(j).map(function (a) { return a.name; }).join(', ') || '—') + '</td><td class="cw-small' + (cwIsDelayed(j, now, cwCfg()) ? '" style="color:#dc2626;font-weight:700' : '') + '">' + (j.dueAt ? cwFmtTime(j.dueAt) : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div class="cw-empty"><b>🫧</b>No open jobs right now.</div>')
+    + '</div><div class="cw-card"><h3>🕑 Recent activity</h3><div class="cw-feed">' + cwAudit.slice().sort(function (a, b) { return cwNum(b.at) - cwNum(a.at); }).slice(0, 12).map(function (a) { return '<div><time>' + cwFmtTime(a.at) + '</time><span><b>' + cwEsc(a.by) + '</b> · ' + cwEsc(cwActLabel(a.act)) + ' <span class="cw-mut">' + cwEsc(a.ref) + '</span>' + (a.detail ? '<br><span class="cw-mut cw-small">' + cwEsc(a.detail) + '</span>' : '') + '</span></div>'; }).join('') + '</div>' + (cwAudit.length ? '' : '<div class="cw-empty">Nothing yet today.</div>') + '</div></div>';
+  return h;
+};
+function cwActLabel(a) {
+  return { 'job.create': 'checked in', 'job.status': 'updated status', 'job.assign': 'assigned', 'job.edit': 'edited job', 'job.photo': 'added a photo', 'payment.add': 'took a payment', 'payment.refund': 'refunded', 'payment.reverse': 'reversed a payment', 'customer.add': 'added customer', 'customer.edit': 'edited customer', 'vehicle.add': 'added vehicle', 'vehicle.edit': 'edited vehicle', 'sms.resend': 'resent SMS', settings: 'changed settings', 'staff.add': 'added staff', 'staff.edit': 'changed staff', 'staff.pin': 'reset a PIN', migration: 'imported data', 'complaint.complaint': 'recorded a complaint', 'complaint.rework': 'recorded rework', 'complaint.note': 'added a note', 'complaint.update': 'updated a complaint' }[a] || (cwStr(a).indexOf('loyalty.') === 0 ? 'loyalty ' + cwStr(a).slice(8) : a);
+}
+
+/* ================================ JOBS BOARD ================================ */
+function cwJobsVisible(me, kind) {
+  return cwJobs.filter(function (j) {
+    if (!j || j._deleted) return false;
+    if (kind && j.kind !== kind) return false;
+    if (cwCan('jobs.all', me)) return true;
+    return cwStaffOnJob(j).some(function (a) { return a.staffId === me.id; });
+  });
+}
+function cwBoard(me, kind, opts) {
+  opts = opts || {};
+  var now = cwNow(), today = cwDayStart(cwDayKey(now)), q = cwStr(CW_UI.jobsQ).trim().toLowerCase();
+  var list = cwJobsVisible(me, kind).filter(function (j) {
+    if (CW_UI.jobsMine && !cwStaffOnJob(j).some(function (a) { return a.staffId === me.id; })) return false;
+    if (cwIsClosed(j) && cwNum(j.closedAt) < today) return false;
+    if (CW_UI.jobsStatus && j.status !== CW_UI.jobsStatus) return false;
+    if (q) { var c = cwJobCustomer(j) || {}, v = cwJobVehicle(j); var hay = [j.no, c.name, c.phone, v && v.plate, v && cwFmtPlate(v.plate)].join(' ').toLowerCase(); if (hay.indexOf(q) === -1 && hay.indexOf(cwNormPlate(q).toLowerCase()) === -1) return false; }
+    return true;
+  });
+  var cols = [['Waiting', 0, '#d97706'], ['In progress', 1, '#0284c7'], ['Ready', 2, '#059669'], ['Done today', 3, '#334155']];
+  var h = '<div class="cw-board">';
+  cols.forEach(function (c) {
+    var js = list.filter(function (j) { var p = cwPhase(j); return c[1] === 3 ? p >= 3 : p === c[1]; }).sort(function (a, b) { return cwNum(a.receivedAt) - cwNum(b.receivedAt); });
+    h += '<div class="cw-col"><h4><i style="width:10px;height:10px;border-radius:50%;background:' + c[2] + ';display:inline-block"></i>' + c[0] + '<span>' + js.length + '</span></h4>' + (js.length ? js.map(function (j) { return cwJobCard(j, now); }).join('') : '<div class="cw-mut cw-small" style="padding:10px">Nothing here.</div>') + '</div>';
+  });
+  return h + '</div>';
+}
+function cwJobsToolbar(me, kind) {
+  var counts = {}, all = cwJobsVisible(me, kind).filter(function (j) { return !cwIsClosed(j); });
+  all.forEach(function (j) { counts[j.status] = (counts[j.status] || 0) + 1; });
+  var flows = kind === 'clean' ? CW_FLOWS.pickup.concat(CW_FLOWS.onsite.filter(function (s) { return !CW_FLOWS.pickup.some(function (p) { return p.k === s.k; }); })) : kind === 'car' ? CW_FLOWS.car : CW_FLOWS.car.concat(CW_FLOWS.pickup.filter(function (s) { return !CW_FLOWS.car.some(function (p) { return p.k === s.k; }); }));
+  var chips = '<button class="cw-chip ' + (!CW_UI.jobsStatus ? 'on' : '') + '" data-cw="jstatus" data-s="">All open<small>' + all.length + '</small></button>' + flows.filter(function (s) { return s.ph < 3 && counts[s.k]; }).map(function (s) { return '<button class="cw-chip ' + (CW_UI.jobsStatus === s.k ? 'on' : '') + '" data-cw="jstatus" data-s="' + s.k + '">' + s.ic + ' ' + s.l + '<small>' + counts[s.k] + '</small></button>'; }).join('');
+  return '<div class="cw-row" style="margin-bottom:12px"><input id="cw-jq" placeholder="Filter: plate, name, phone or job no." value="' + cwEsc(CW_UI.jobsQ) + '" style="max-width:320px">'
+    + (cwCan('jobs.all', me) && (cwCan('jobs.mine', me) || true) ? '<label class="cw-row cw-small" style="gap:6px"><input type="checkbox" id="cw-jmine" ' + (CW_UI.jobsMine ? 'checked' : '') + '> Only mine</label>' : '') + '<span class="cw-sp"></span>'
+    + (cwCan('checkin', me) ? (kind === 'clean' ? '<button class="cw-btn" data-cw="newclean">🧶 New cleaning job</button>' : '<button class="cw-btn" data-cw="go" data-r="checkin">' + cwIco('plus') + ' Check in a car</button>') : '') + '</div>'
+    + '<div class="cw-chips" style="margin-bottom:14px">' + chips + '</div>';
+}
+CW_UI.pages.jobs = function (me) {
+  var tabs = '<div class="cw-chips" style="margin-bottom:12px">' + [['all', 'All jobs'], ['car', '🚗 Cars'], ['clean', '🧶 Cleaning']].map(function (t) { return '<button class="cw-chip ' + (CW_UI.jobsTab === t[0] ? 'on' : '') + '" data-cw="jtab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+  var k = CW_UI.jobsTab === 'all' ? '' : CW_UI.jobsTab;
+  return tabs + cwJobsToolbar(me, k) + cwBoard(me, k);
+};
+CW_UI.pages.myjobs = function (me) {
+  var mine = cwJobsVisible(me, '').filter(function (j) { return !cwIsClosed(j); });
+  var now = cwNow();
+  return '<div class="cw-alert info" style="margin-bottom:14px">👋 ' + cwEsc(me.name) + ', these are the jobs assigned to you. Tap a job to update its status or add photos.</div>'
+    + (mine.length ? '<div class="cw-grid cw-g3">' + mine.sort(function (a, b) { return cwNum(a.receivedAt) - cwNum(b.receivedAt); }).map(function (j) { return cwJobCard(j, now); }).join('') + '</div>' : '<div class="cw-card cw-empty"><b>☕</b>No jobs assigned to you right now.</div>');
+};
+
+/* ================================ JOB DRAWER ================================ */
+function cwOpenJob(id) {
+  var draw = function () {
+    var job = cwGetJob(id); if (!job) { cwCloseModal(); return; }
+    cwOpenModal(cwJobHtml(job), false, draw);
+  };
+  draw();
+}
+function cwJobHtml(job) {
+  var me = cwMe(), c = cwJobCustomer(job) || {}, v = cwJobVehicle(job), t = cwTotals(job), cfg = cwCfg(), d = cwStatusDef(job, job.status), now = cwNow();
+  var can = cwMayTouch(job, me), closed = cwIsClosed(job), h = '';
+  h += cwPH(cwEsc(job.no) + ' ' + cwStatusBadge(job) + (job.free ? ' <span class="cw-free">🎁 FREE (loyalty)</span>' : ''), '<button class="cw-btn sm ghost" data-cw="jobcard" data-id="' + cwEsc(job.id) + '" title="The client intake form for this job, ready to sign">📝 Intake form</button>' + ((cwCan('payments', me) || me.owner) ? '<button class="cw-btn sm ghost" data-cw="receipt" data-id="' + cwEsc(job.id) + '" title="80 mm till receipt">🧾 Receipt</button><button class="cw-btn sm ghost" data-cw="invoice" data-id="' + cwEsc(job.id) + '">📄 Invoice (A4)</button>' : ''));
+  h += '<div class="cw-pb"><div class="cw-grid cw-g2">';
+  h += '<div class="cw-card"><h3>' + (job.kind === 'clean' ? '🧶 Cleaning job' : '🚗 Vehicle') + '</h3>' + (v ? '<div style="font-size:22px">' + cwJobTitle(job) + '</div><div class="cw-mut">' + cwEsc([v.make, v.model, v.year, v.colour].filter(Boolean).join(' · ')) + ' · ' + cwEsc(cwVehCatLabel(cwCfg(), v.category)) + '</div>' : '<div style="font-size:16px;font-weight:700">' + cwJobTitle(job) + '</div>')
+    + (job.kind === 'clean' && job.cleaning ? cwCleanInfo(job) : '')
+    + '<div style="margin-top:10px"><b>' + cwEsc(c.name || '') + '</b> · <a href="tel:' + cwEsc(c.phone || '') + '">' + cwEsc(cwFmtPhone(c.phone)) + '</a>' + (cwCan('customers', me) ? ' · <a href="#" data-cw="cust" data-id="' + cwEsc(c.id || '') + '">profile</a>' : '') + '</div>'
+    + (job.instructions ? '<div class="cw-alert warn" style="margin-top:10px">📝 ' + cwEsc(job.instructions) + '</div>' : '') + (job.condition ? '<div class="cw-small cw-mut" style="margin-top:8px">Condition when received: ' + cwEsc(job.condition) + '</div>' : '') + '</div>';
+  h += '<div class="cw-card"><h3>🧾 Charges</h3><table class="cw-tbl"><tbody>' + cwArr(job.items).map(function (it) { return '<tr><td>' + cwEsc(it.name) + (it.qty > 1 ? ' × ' + it.qty : '') + '</td><td class="cw-num">' + cwMoney(it.price * (it.qty || 1)) + '</td></tr>'; }).join('')
+    + (t.delivery ? '<tr><td>Delivery</td><td class="cw-num">' + cwMoney(t.delivery) + '</td></tr>' : '') + (t.discount ? '<tr><td>' + (job.free ? 'Loyalty reward' : 'Discount') + '</td><td class="cw-num">-' + cwMoney(t.discount) + '</td></tr>' : '')
+    + '<tr><td><b>Total</b></td><td class="cw-num"><b>' + cwMoney(t.total) + '</b></td></tr><tr><td>Paid</td><td class="cw-num">' + cwMoney(t.net) + '</td></tr><tr><td><b>Balance</b></td><td class="cw-num"><b style="color:' + (t.balance > 0 ? '#dc2626' : '#16a34a') + '">' + cwMoney(Math.max(0, t.balance)) + '</b></td></tr></tbody></table>'
+    + '<div class="cw-row" style="margin-top:10px">' + cwPayBadge(t) + '<span class="cw-sp"></span>' + (cwCan('payments', me) && !job.free && t.balance > 0.009 && !cwIsCancelled(job) ? '<button class="cw-btn ok sm" data-cw="pay" data-id="' + cwEsc(job.id) + '">💵 Record payment</button>' : '') + (me.owner && t.net > 0 ? '<button class="cw-btn sec sm" data-cw="refund" data-id="' + cwEsc(job.id) + '">↩ Refund</button>' : '') + (cwCan('jobs.edit', me) && !closed ? '<button class="cw-btn sec sm" data-cw="editjob" data-id="' + cwEsc(job.id) + '">✏️ Edit</button>' : '') + '</div></div>';
+  h += '</div>';
+  if (!closed && can && cwCan('status', me)) {
+    var next = cwNextStatuses(job).filter(function (s) { return s.ph > 0 && (s.ph < 3 || (s.k === 'completed' && cwFlowOf(job) === 'onsite')); });   /* received / awaiting / assigned follow assignment; collected, delivered and cancelled have their own buttons */
+    h += '<div class="cw-card" style="margin-top:14px"><h3>🔁 Update status <small>now: ' + cwEsc(d.l) + '</small></h3><div class="cw-steps">' + next.map(function (s) { return '<button style="--b:' + s.c + '" data-cw="status" data-id="' + cwEsc(job.id) + '" data-s="' + s.k + '">' + s.ic + ' ' + cwEsc(s.l) + '</button>'; }).join('') + '</div>'
+      + '<div class="cw-row" style="margin-top:12px">' + (job.kind === 'car' && (cwCan('collect', me) || cwCan('jobs.mine', me)) && cwPhase(job) >= 2 ? '<button class="cw-btn ok" data-cw="collect" data-id="' + cwEsc(job.id) + '">🔑 Release vehicle (Collected)</button>' : '')
+      + (cwFlowOf(job) === 'pickup' && cwPhase(job) >= 2 ? '<button class="cw-btn ok" data-cw="collect" data-id="' + cwEsc(job.id) + '">📦 Confirm delivery</button>' : '')
+      + (cwCan('jobs.edit', me) ? '<span class="cw-sp"></span><button class="cw-btn bad sm" data-cw="cancel" data-id="' + cwEsc(job.id) + '">✖ Cancel job</button>' : '') + '</div></div>';
+  }
+  if (job.collection) h += '<div class="cw-alert ok" style="margin-top:14px">' + (job.kind === 'car' ? '🔑 Released' : '📦 Delivered') + ' ' + cwFmtDT(job.collection.at) + ' by <b>' + cwEsc(job.collection.releasedBy) + '</b>' + (job.collection.confirmed ? ' · customer confirmed' : '') + (job.cleaning && job.cleaning.deliveryConfirmedBy ? ' · received by ' + cwEsc(job.cleaning.deliveryConfirmedBy) : '') + ' · payment: ' + cwEsc(cwPayLabel(job.collection.payStatus)) + (job.collection.balance > 0 ? ' (balance ' + cwMoney(job.collection.balance) + ')' : '') + (job.collection.note ? '<br>' + cwEsc(job.collection.note) : '') + '</div>';
+  /* staff */
+  var on = cwStaffOnJob(job);
+  h += '<div class="cw-grid cw-g2" style="margin-top:14px"><div class="cw-card"><h3>👷 Assigned staff</h3>' + (on.length ? on.map(function (a) { return '<div class="cw-row" style="padding:5px 0"><div class="cw-av" style="background:#e0f2fe;color:#0e7490">' + cwEsc(cwStr(a.name).charAt(0)) + '</div><div><b>' + cwEsc(a.name) + '</b><div class="cw-small cw-mut">since ' + cwFmtTime(a.at) + ' · by ' + cwEsc(a.by) + '</div></div></div>'; }).join('') : '<div class="cw-mut">Nobody yet.</div>')
+    + (cwCan('assign', me) && !closed ? '<button class="cw-btn sm ghost" style="margin-top:8px" data-cw="assign" data-id="' + cwEsc(job.id) + '">Change assignment</button>' : '')
+    + (cwArr(job.assignments).some(function (a) { return a.removedAt; }) ? '<div class="cw-small cw-mut" style="margin-top:8px">Earlier: ' + cwArr(job.assignments).filter(function (a) { return a.removedAt; }).map(function (a) { return cwEsc(a.name) + ' (' + cwFmtTime(a.at) + '–' + cwFmtTime(a.removedAt) + ')'; }).join(', ') + '</div>' : '') + '</div>';
+  h += '<div class="cw-card"><h3>🕑 History</h3><div class="cw-tl">' + cwArr(job.statusHistory).slice().sort(function (a, b) { return cwNum(a.at) - cwNum(b.at); }).map(function (e) { var sd = cwStatusDef(job, e.s); return '<div style="--b:' + sd.c + '"><b>' + sd.ic + ' ' + cwEsc(sd.l) + '</b> <span class="cw-small cw-mut">' + cwFmtDT(e.at) + ' · ' + cwEsc(e.by || '') + '</span>' + (e.note ? '<div class="cw-small">' + cwEsc(e.note) + '</div>' : '') + '</div>'; }).join('') + '</div>'
+    + '<div class="cw-small cw-mut">Received ' + cwFmtDT(job.receivedAt) + (job.dueAt ? ' · due ' + cwFmtDT(job.dueAt) : '') + (job.completedAt ? ' · done in ' + cwDur(cwTurnaround(job)) : '') + '</div></div></div>';
+  /* photos */
+  h += '<div class="cw-card" style="margin-top:14px"><h3>📷 Photos <small>before / after, for damage verification</small></h3><div class="cw-photos" id="cw-jphotos">' + cwArr(job.photos).map(function (p) { return '<figure data-ph="' + cwEsc(p.id) + '"><figcaption>' + cwEsc(p.kind) + ' · ' + cwFmtTime(p.at) + '</figcaption></figure>'; }).join('') + '</div>'
+    + (cwCan('photos', me) && can ? '<div class="cw-row" style="margin-top:10px"><select id="cw-phkind" style="max-width:180px"><option value="before">Before</option><option value="after">After</option><option value="condition">Condition / damage</option>' + (job.kind === 'clean' ? '<option value="delivery">Delivery</option>' : '') + '<option value="other">Other</option></select><label class="cw-btn sm ghost">📷 Add photo<input type="file" accept="image/*" capture="environment" data-cw-file="photo" data-id="' + cwEsc(job.id) + '" style="display:none"></label></div>' : '') + '</div>';
+  /* payments, sms, complaints */
+  var pays = cwJobPayments(job).sort(function (a, b) { return cwNum(a.at) - cwNum(b.at); });
+  if (cwCan('payments', me) || me.owner) h += '<div class="cw-card" style="margin-top:14px"><h3>💳 Payments</h3>' + (pays.length ? '<table class="cw-tbl"><tbody>' + pays.map(function (p) { return '<tr' + (p.reversedAt ? ' style="opacity:.5;text-decoration:line-through"' : '') + '><td>' + cwFmtDT(p.at) + '</td><td>' + cwEsc(p.type === 'refund' ? 'Refund' : p.type === 'deposit' ? 'Deposit' : 'Payment') + '</td><td>' + cwEsc(cwMethodLabel(p.method)) + (p.ref ? ' · ' + cwEsc(p.ref) : '') + '</td><td class="cw-small">' + cwEsc(p.byName || p.by || '') + '</td><td class="cw-num">' + cwMoney(p.amount) + '</td><td>' + (me.owner && !p.reversedAt ? '<button class="cw-btn sm sec" data-cw="reverse" data-id="' + cwEsc(p.id) + '">Reverse</button>' : '') + '</td></tr>'; }).join('') + '</tbody></table>' : '<div class="cw-mut">No payments yet.</div>') + '</div>';
+  var sms = cwSms.filter(function (s) { return s && s.jobId === job.id; });
+  if (sms.length && (cwCan('sms.view', me) || cwCan('sms.resend', me))) h += '<div class="cw-card" style="margin-top:14px"><h3>✉️ SMS</h3>' + sms.map(function (s) { return cwSmsRow(s, me); }).join('') + '</div>';
+  var ks = cwComplaints.filter(function (k) { return k && k.jobId === job.id; });
+  if (cwCan('complaints', me)) h += '<div class="cw-card" style="margin-top:14px"><h3>⚠️ Complaints, rework &amp; notes</h3>' + (ks.length ? ks.map(function (k) { return cwComplaintRow(k, me); }).join('') : '<div class="cw-mut">None recorded.</div>') + '<button class="cw-btn sm ghost" style="margin-top:10px" data-cw="complaint" data-id="' + cwEsc(job.id) + '">＋ Add complaint / rework / note</button></div>';
+  h += '</div>';
+  CW_UI.after = function () { cwLoadPhotos('cw-jphotos'); };
+  setTimeout(function () { cwLoadPhotos('cw-jphotos'); }, 0);
+  return h;
+}
+function cwCleanInfo(job) {
+  var cl = job.cleaning || {}, p = cl.pickup || {}, ct = cwCleanType(cl.type);
+  return '<div class="cw-small" style="margin-top:8px;line-height:1.7">' + (cl.qty > 1 ? 'Quantity: <b>' + cl.qty + '</b><br>' : '') + (ct.flow === 'onsite' ? '📍 Site: ' : '📍 Pickup: ') + cwEsc([p.location, p.estate, p.building, p.house ? 'House ' + p.house : '', p.floor ? 'Floor ' + p.floor : ''].filter(Boolean).join(', ') || '—') + (p.landmark ? '<br>🧭 Landmark: ' + cwEsc(p.landmark) : '')
+    + (cl.scheduledAt ? '<br>🗓 ' + (ct.flow === 'onsite' ? 'Scheduled' : 'Pickup') + ': ' + cwFmtDT(cl.scheduledAt) : '') + (cl.expectedAt ? '<br>⏳ Expected: ' + cwFmtDT(cl.expectedAt) : '') + '</div>';
+}
+function cwLoadPhotos(boxId) {
+  var box = cwEl(boxId); if (!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('figure[data-ph]'), function (f) {
+    if (f.querySelector('img')) return;
+    cwPhotoUrl(f.getAttribute('data-ph')).then(function (u) { if (u && !f.querySelector('img')) { var im = document.createElement('img'); im.src = u; im.alt = ''; im.loading = 'lazy'; f.insertBefore(im, f.firstChild); } });
+  });
+}
+function cwSmsRow(s, me) {
+  var col = { sent: '#16a34a', pending: '#d97706', failed: '#dc2626' }[s.status] || '#64748b';
+  return '<div style="padding:8px 0;border-bottom:1px solid #f1f5f9"><div class="cw-row"><span class="cw-badge" style="--b:' + col + '">' + cwEsc(s.status) + '</span><b class="cw-small">' + cwEsc((CW_SMS_EVENTS.filter(function (e) { return e.k === s.event; })[0] || { l: s.event }).l) + '</b><span class="cw-small cw-mut">' + cwFmtDT(s.at) + ' → ' + cwEsc(cwFmtPhone(s.to)) + '</span><span class="cw-sp"></span>' + (s.status !== 'sent' && cwCan('sms.resend', me) ? '<button class="cw-btn sm sec" data-cw="resend" data-id="' + cwEsc(s.id) + '">↻ Resend</button>' : '') + '</div><div class="cw-small" style="margin-top:4px">' + cwEsc(s.message) + '</div>' + (s.error ? '<div class="cw-small" style="color:#dc2626">' + cwEsc(s.error) + '</div>' : '') + '</div>';
+}
+function cwComplaintRow(k, me) {
+  var kc = { complaint: '#dc2626', rework: '#d97706', note: '#0284c7' }[k.kind];
+  var mgr = me.owner || me.role === 'manager';
+  return '<div style="padding:8px 0;border-bottom:1px solid #f1f5f9"><div class="cw-row"><span class="cw-badge" style="--b:' + kc + '">' + cwEsc(k.kind) + '</span><span class="cw-small cw-mut">' + cwFmtDT(k.at) + ' · ' + cwEsc(k.by) + '</span>' + (k.resolved ? '<span class="cw-badge" style="--b:#16a34a">resolved</span>' : '') + '</div><div style="margin-top:4px">' + cwEsc(k.text) + '</div>'
+    + (k.kind !== 'note' ? '<div class="cw-small cw-mut" style="margin-top:4px">Involved: ' + (cwArr(k.involved).map(function (id) { return cwEsc(cwStaffName(id) || id); }).join(', ') || '—') + ' · Responsible: <b>' + (cwArr(k.attributedTo).map(function (id) { return cwEsc(cwStaffName(id) || id); }).join(', ') || 'not decided') + '</b></div>' : '')
+    + (mgr && k.kind !== 'note' ? '<button class="cw-btn sm ghost" style="margin-top:6px" data-cw="kresolve" data-id="' + cwEsc(k.id) + '">Decide / resolve</button>' : '') + '</div>';
+}
+
+/* ================================ CAR CHECK-IN ================================ */
+/* zip 363: pick a service by TYPING (suggestions as you type, Enter takes the first) or from the DROP-DOWN (grouped by section).
+   k = which form: 'ck' car check-in, 'cl' cleaning job, 'ej' edit a job. cat = vehicle type for the price shown. */
+function cwSvcPriceShown(s, cat) { return s.kind === 'clean' ? cwNum(s.price) : cwPriceFor(s, cat || cwDefaultCat(cwCfg())); }
+function cwSvcPickerHtml(k, list, cat, opts) {
+  opts = opts || {};
+  var h = '<div class="cw-spk"><div class="cw-f cw-spk-f"><label>' + (opts.label || '🔎 Type a service') + '</label><input type="search" data-spq="' + k + '" placeholder="' + cwEsc(opts.ph || 'Type to search, e.g. wash, polish, rug…') + '" autocomplete="off" autocapitalize="off" enterkeyhint="done"><div class="cw-sres" id="cw-spres-' + k + '"></div></div>';
+  if (!opts.noSelect) h += '<div class="cw-f"><label>…or choose from the list</label><select data-sps="' + k + '"><option value="">— Select a service —</option>' + cwSvcGroups(list).map(function (g) { return '<optgroup label="' + cwEsc(g.name) + '">' + g.list.map(function (s) { return '<option value="' + cwEsc(s.id) + '">' + cwEsc(s.name) + ' · ' + cwMoney(cwSvcPriceShown(s, cat)) + '</option>'; }).join('') + '</optgroup>'; }).join('') + '</select></div>';
+  return h + '</div>';
+}
+function cwSvcPickList(k) {
+  var cfg = cwCfg();
+  if (k === 'cl') return cwServicesOf(cfg, 'clean');
+  if (k === 'ej') { var j = cwGetJob(CW_UI.ejJob); return cwServicesOf(cfg, j && j.kind === 'clean' ? 'clean' : 'car'); }
+  return cwServicesOf(cfg, 'car');
+}
+function cwSvcPickCat(k) { if (k === 'ck') return CW_UI.ck && CW_UI.ck.cat; if (k === 'ej') { var j = cwGetJob(CW_UI.ejJob), v = j && cwJobVehicle(j); return v ? v.category : ''; } return ''; }
+function cwSvcSearch(k, q) {
+  var words = cwStr(q).toLowerCase().split(/\s+/).filter(Boolean); if (!words.length) return [];
+  return cwSvcPickList(k).filter(function (s) { var t = (s.name + ' ' + (s.category || '') + ' ' + (s.unit || '')).toLowerCase(); return words.every(function (w) { return t.indexOf(w) !== -1; }); }).slice(0, 8);
+}
+function cwSvcSuggest(inp) {
+  var k = inp.getAttribute('data-spq'), box = cwEl('cw-spres-' + k); if (!box) return;
+  var r = cwSvcSearch(k, inp.value), cat = cwSvcPickCat(k);
+  box.innerHTML = r.length ? r.map(function (s, i) { return '<button type="button" class="' + (i ? '' : 'sel') + '" data-cw="svcpick" data-k="' + k + '" data-id="' + cwEsc(s.id) + '"><span style="flex:1"><b>' + cwEsc(s.name) + '</b><small>' + cwEsc(s.category || s.unit || '') + '</small></span><b>' + cwMoney(cwSvcPriceShown(s, cat)) + '</b></button>'; }).join('') : (inp.value.trim() ? '<div class="cw-small cw-mut" style="padding:12px">No service matches "' + cwEsc(inp.value.trim()) + '". Add it in Price List, or as an additional service.</div>' : '');
+  box.classList.toggle('on', !!inp.value.trim());
+}
+function cwSvcPicked(k, id) {
+  var s = cwFind(cwSvcPickList(k), id); if (!s) return;
+  var q = document.querySelector('[data-spq="' + k + '"]'); if (q) q.value = ''; var box = cwEl('cw-spres-' + k); if (box) box.classList.remove('on');
+  if (k === 'ck') {
+    cwCkKeep();
+    if (CW_UI.ck.items[id]) { cwToast(s.name + ' is already selected.'); return; }
+    CW_UI.ck.items[id] = true; CW_UI.ck.kept.eta = String(cwCkMinutes()); cwRender(); cwToast('✓ ' + s.name + ' added.');
+    var on = document.querySelector('.cw-svc.on[data-id="' + id + '"]'); if (on && on.scrollIntoView) { try { on.scrollIntoView({ block: 'nearest' }); } catch (x) { /* old browser */ } }
+    return;
+  }
+  if (k === 'cl') { var sel = cwEl('cw-cl-svc'); if (sel) { sel.value = id; sel.dispatchEvent(new Event('change', { bubbles: true })); } cwToast('✓ ' + s.name + ' · ' + cwMoney(s.price)); return; }
+  if (k === 'ej') {
+    var lines = cwEl('cw-ej-lines'); if (!lines) return;
+    var d = document.createElement('div'); d.className = 'cw-row cw-ej-row'; d.setAttribute('data-sid', s.id);
+    d.innerHTML = '<input class="cw-ej-name" placeholder="Service" value="' + cwEsc(s.name) + '"><input class="cw-ej-price" type="number" min="0" placeholder="Price" title="Price (KES)" value="' + cwSvcPriceShown(s, cwSvcPickCat('ej')) + '"><input class="cw-ej-qty" type="number" min="1" placeholder="Qty" title="Quantity" value="1">';
+    lines.appendChild(d); var eta = cwEl('cw-ej-eta'); if (eta) eta.value = cwNum(eta.value) + cwNum(s.minutes);
+    cwToast('✓ ' + s.name + ' added.');
+  }
+}
+/* services grouped by their price-list section, in the order of the price list (Exterior, Interior, Other services, then any new section) */
+function cwSvcGroups(list) {
+  var order = [], by = {};
+  list.forEach(function (s) { var k = cwStr(s.category).trim() || 'Other services'; if (!by[k]) { by[k] = []; order.push(k); } by[k].push(s); });
+  return order.map(function (k) { return { name: k, list: by[k] }; });
+}
+function cwCkReset() { CW_UI.ck = { custId: '', vehId: '', cat: cwDefaultCat(cwCfg()), items: {}, staff: {}, useFree: true, extra: [], newVeh: false }; }
+CW_UI.pages.checkin = function (me) {
+  if (!CW_UI.ck) cwCkReset();
+  var ck = CW_UI.ck, cfg = cwCfg(), c = ck.custId ? cwFind(cwCustomers, ck.custId) : null, vs = c ? cwVehiclesOf(c.id) : [], v = ck.vehId ? cwFind(cwVehicles, ck.vehId) : null;
+  if (v && !ck.catSet) { ck.cat = v.category || cwDefaultCat(cfg); }
+  var h = '<div class="cw-grid" style="grid-template-columns:minmax(0,1fr) 340px;align-items:start" id="cw-ckgrid">';
+  h += '<div class="cw-grid">';
+  h += '<div class="cw-card"><h3>1 · Customer &amp; vehicle</h3><div class="cw-f" style="position:relative"><label>Find by plate, phone or name <i>(or fill in below for a new customer)</i></label><input id="cw-ckq" placeholder="e.g. KDA 123X or 0712…" autocomplete="off"><div class="cw-sres" id="cw-ckres" style="top:68px"></div></div>'
+    + (c ? '<div class="cw-alert info" style="margin-top:10px">👤 <b>' + cwEsc(c.name) + '</b> · ' + cwEsc(cwFmtPhone(c.phone)) + ' · ' + cwJobsOf(c.id).length + ' visit(s) <a href="#" data-cw="ckclear" style="float:right">change</a></div>' : '')
+    + '<div class="cw-form" style="margin-top:12px">'
+    + '<div class="cw-f"><label>Customer name *</label><input id="cw-ck-name" value="' + cwEsc(c ? c.name : '') + '"></div>'
+    + '<div class="cw-f"><label>Phone number *</label><input id="cw-ck-phone" inputmode="tel" value="' + cwEsc(c ? cwFmtPhone(c.phone) : '') + '" placeholder="07XX XXX XXX"></div>'
+    + '<div class="cw-f"><label>Alternative phone <i>(optional)</i></label><input id="cw-ck-alt" inputmode="tel" value="' + cwEsc(c ? cwFmtPhone(c.altPhone) : '') + '"></div>'
+    + '<div class="cw-f"><label>Customer type</label><select id="cw-ck-type">' + CW_CUST_TYPES.map(function (t) { return '<option value="' + t.k + '"' + ((c ? c.type : 'car_owner') === t.k ? ' selected' : '') + '>' + t.l + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f"><label>Email <i>(optional)</i></label><input id="cw-ck-email" type="email" value="' + cwEsc(c ? c.email || '' : '') + '"></div>'
+    + cwSel('Gender', 'cw-ck-gender', CW_GENDERS, c ? c.gender : '', true) + cwSel('Preferred contact method', 'cw-ck-pref', CW_CONTACT_PREFS, c ? c.contactPref : '', true) + '</div>';
+  if (vs.length) h += '<div class="cw-f" style="margin-top:12px"><label>Vehicle</label><div class="cw-pick">' + vs.map(function (x) { return '<button type="button" data-cw="ckveh" data-id="' + cwEsc(x.id) + '" class="' + (ck.vehId === x.id ? 'on' : '') + '"><span class="cw-plate">' + cwEsc(cwFmtPlate(x.plate)) + '</span> ' + cwEsc([x.make, x.model].filter(Boolean).join(' ')) + '</button>'; }).join('') + '<button type="button" data-cw="ckveh" data-id="" class="' + (!ck.vehId ? 'on' : '') + '">＋ Another vehicle</button></div></div>';
+  h += '<div class="cw-form" style="margin-top:12px">'
+    + '<div class="cw-f"><label>Registration number *</label><input id="cw-ck-plate" style="text-transform:uppercase;font-weight:800;letter-spacing:.05em" value="' + cwEsc(v ? cwFmtPlate(v.plate) : '') + '" placeholder="KDA 123X"' + (v ? ' readonly' : '') + '></div>'
+    + '<div class="cw-f"><label>Vehicle type</label><select id="cw-ck-cat">' + cwCatOptions(cfg, ck.cat).map(function (x) { return '<option value="' + cwEsc(x.k) + '"' + (ck.cat === x.k ? ' selected' : '') + '>' + cwEsc(x.l) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f"><label>Make</label><input id="cw-ck-make" value="' + cwEsc(v ? v.make : '') + '" placeholder="Toyota"></div>'
+    + '<div class="cw-f"><label>Model</label><input id="cw-ck-model" value="' + cwEsc(v ? v.model : '') + '" placeholder="Axio"></div>'
+    + '<div class="cw-f"><label>Year</label><input id="cw-ck-year" inputmode="numeric" maxlength="4" value="' + cwEsc(v ? v.year || '' : '') + '" placeholder="2015"></div>'
+    + '<div class="cw-f"><label>Colour</label><input id="cw-ck-colour" value="' + cwEsc(v ? v.colour : '') + '"></div></div></div>';
+  var acc = cwCkLoyalty();
+  h += '<div class="cw-card"><h3>2 · Services <small>prices for ' + cwEsc(cwVehCatLabel(cfg, ck.cat)) + '</small></h3><div id="cw-ckloy">' + cwLoyaltyBox(acc, 'wash', ck.useFree) + '</div>'
+    + '<div class="cw-form" style="margin-top:12px">' + cwSvcPickerHtml('ck', cwServicesOf(cfg, 'car'), ck.cat) + '</div><div class="cw-small cw-mut" style="margin-top:8px">…or tap the services below (tap again to remove).</div>'
+    + cwSvcGroups(cwServicesOf(cfg, 'car')).map(function (g) { return '<div class="cw-sec" style="margin:14px 0 6px">' + cwEsc(g.name) + '</div><div class="cw-svcs">' + g.list.map(function (s) { return '<button type="button" class="cw-svc ' + (ck.items[s.id] ? 'on' : '') + '" data-cw="cksvc" data-id="' + cwEsc(s.id) + '"><b>' + cwEsc(s.name) + '</b><span>' + cwMoney(cwPriceFor(s, ck.cat)) + '</span><div class="cw-small cw-mut">' + cwDur(s.minutes) + '</div></button>'; }).join('') + '</div>'; }).join('')
+    + '<div class="cw-form" style="margin-top:12px"><div class="cw-f"><label>Additional service <i>(name)</i></label><input id="cw-ck-xname" placeholder="e.g. Tyre shine"></div><div class="cw-f"><label>Price</label><div class="cw-row" style="flex-wrap:nowrap"><input id="cw-ck-xprice" type="number" min="0" inputmode="decimal"><button class="cw-btn sec" type="button" data-cw="ckextra">Add</button></div></div></div>'
+    + (ck.extra.length ? '<div class="cw-chips" style="margin-top:8px">' + ck.extra.map(function (x, i) { return '<span class="cw-chip on">' + cwEsc(x.name) + ' · ' + cwMoney(x.price) + ' <a href="#" data-cw="ckxdel" data-i="' + i + '" style="color:#fff;margin-left:4px">✕</a></span>'; }).join('') + '</div>' : '') + '</div>';
+  var st = cwActiveStaff();
+  h += '<div class="cw-card"><h3>3 · Assign &amp; timing</h3><div class="cw-f"><label>Assigned staff</label><div class="cw-pick">' + (st.length ? st.map(function (m) { return '<button type="button" data-cw="ckstaff" data-id="' + cwEsc(m.id) + '" class="' + (ck.staff[m.id] ? 'on' : '') + '">' + cwEsc(m.name) + '</button>'; }).join('') : '<span class="cw-mut cw-small">No staff yet — add them under Staff &amp; Teams. The job will wait for assignment.</span>') + '</div></div>'
+    + '<div class="cw-form" style="margin-top:12px"><div class="cw-f"><label>Estimated completion <i>(minutes)</i></label><input id="cw-ck-eta" type="number" min="0" value="' + cwCkMinutes() + '"></div>'
+    + '<div class="cw-f"><label>Time received</label><input id="cw-ck-time" type="datetime-local" value="' + cwLocalInput(cwNow()) + '"></div>'
+    + '<div class="cw-f"><label>Discount (KES)</label><input id="cw-ck-disc" type="number" min="0" value="0"></div>'
+    + '<div class="cw-f full"><label>Special instructions</label><textarea id="cw-ck-notes" placeholder="e.g. Customer will wait. Do not vacuum the boot."></textarea></div>'
+    + '<div class="cw-f full"><label>Condition when received <i>(scratches, dents, items left in the car)</i></label><textarea id="cw-ck-cond"></textarea></div></div></div>';
+  h += '</div>';
+  h += '<div class="cw-sum" id="cw-cksum">' + cwCkSummary() + '</div></div>';
+  CW_UI.after = function () { cwBindCheckin(); cwCkRestore(); };
+  return h;
+};
+function cwLocalInput(ms) { var d = new Date(ms + 3 * 3600000); return d.getUTCFullYear() + '-' + cwPad(d.getUTCMonth() + 1, 2) + '-' + cwPad(d.getUTCDate(), 2) + 'T' + cwPad(d.getUTCHours(), 2) + ':' + cwPad(d.getUTCMinutes(), 2); }
+function cwFromLocalInput(v) { if (!v) return 0; var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v); if (!m) return 0; return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - 3 * 3600000; }
+function cwCkMinutes() { var cfg = cwCfg(), m = 0; Object.keys(CW_UI.ck.items).forEach(function (id) { var s = cwFind(cfg.services, id); if (s) m += cwNum(s.minutes); }); return m; }
+function cwCkLines() {
+  var ck = CW_UI.ck, cfg = cwCfg(), lines = [];
+  Object.keys(ck.items).forEach(function (id) { var s = cwFind(cfg.services, id); if (s) lines.push({ serviceId: s.id, name: s.name, price: cwPriceFor(s, ck.cat), qty: 1 }); });
+  ck.extra.forEach(function (x) { lines.push({ serviceId: '', name: x.name, price: x.price, qty: 1 }); });
+  return lines;
+}
+function cwCkLoyalty() {
+  var ck = CW_UI.ck, c = ck.custId ? cwFind(cwCustomers, ck.custId) : null, plate = ck.vehId ? (cwFind(cwVehicles, ck.vehId) || {}).plate : cwNormPlate(cwVal('cw-ck-plate'));
+  var phone = c ? c.phone : cwNormPhone(cwVal('cw-ck-phone'));
+  if (!phone || !plate) return null;
+  return cwLoyaltyFor('car', { id: c ? c.id : '', phone: phone }, { plate: plate });
+}
+function cwLoyaltyBox(acc, unit, useFree) {
+  var cfg = cwCfg(); if (cfg.loyalty.enabled === false || !acc) return '';
+  var dots = ''; var i; for (i = 0; i < acc.n; i++) dots += '<i class="' + (i < acc.current_cycle_count ? 'f' : '') + '"></i>'; dots += '<i class="g" title="Free"></i>';
+  if (acc.available > 0) return '<div class="cw-loy win">🎁 FREE ' + unit.toUpperCase() + ' AVAILABLE — this customer completed ' + acc.n + ' paid ' + cwPlural(unit) + '. ' + (useFree === false ? '<b>Not applied.</b> ' : 'This job will be marked FREE. ') + '<label class="cw-row" style="display:inline-flex;gap:6px;margin-left:6px"><input type="checkbox" data-cw-chk="usefree" ' + (useFree === false ? '' : 'checked') + '> apply now</label></div>';
+  return '<div class="cw-loy">⭐ Loyalty: <b>' + acc.current_cycle_count + ' of ' + acc.n + '</b> paid ' + cwPlural(unit) + ' — ' + (acc.n - acc.current_cycle_count) + ' more to a FREE ' + unit + '.<div class="cw-dots">' + dots + '</div></div>';
+}
+function cwCkSummary() {
+  var ck = CW_UI.ck, lines = cwCkLines(), sub = 0; lines.forEach(function (l) { sub += l.price; });
+  var disc = Math.min(sub, Math.max(0, cwNum(cwVal('cw-ck-disc')))), acc = cwCkLoyalty(), free = acc && acc.available > 0 && ck.useFree !== false && cwCfg().loyalty.enabled !== false;
+  var tot = free ? 0 : sub - disc;
+  return '<h3>🧾 Job summary</h3>' + (lines.length ? lines.map(function (l) { return '<div class="l"><span>' + cwEsc(l.name) + '</span><span>' + cwMoney(l.price) + '</span></div>'; }).join('') : '<div class="l" style="opacity:.7">Choose services…</div>')
+    + (disc && !free ? '<div class="l"><span>Discount</span><span>-' + cwMoney(disc) + '</span></div>' : '') + (free ? '<div class="l" style="color:#fde68a;font-weight:800"><span>🎁 Loyalty reward</span><span>-' + cwMoney(sub) + '</span></div>' : '')
+    + '<div class="l tot"><span>Total</span><span>' + cwMoney(tot) + '</span></div><div class="l" style="opacity:.8"><span>Est. time</span><span>' + cwDur(cwNum(cwVal('cw-ck-eta')) || cwCkMinutes()) + '</span></div>'
+    + '<button class="cw-btn warn" style="width:100%;justify-content:center;margin-top:14px;font-size:15px" data-cw="cksave"' + (lines.length ? '' : ' disabled') + '>✅ Check in' + (cwCfg().sms.enabled !== false ? ' &amp; send SMS' : '') + '</button>'
+    + '<button class="cw-btn" style="width:100%;justify-content:center;margin-top:8px;background:rgba(255,255,255,.12)" data-cw="ckreset">Clear form</button>';
+}
+function cwCkUpdateSummary() { var s = cwEl('cw-cksum'); if (s) s.innerHTML = cwCkSummary(); }
+function cwBindCheckin() {
+  var grid = cwEl('cw-ckgrid'); if (!grid) return;
+  if (window.innerWidth < 1000) grid.style.gridTemplateColumns = '1fr';
+  ['cw-ck-disc', 'cw-ck-eta', 'cw-ck-phone', 'cw-ck-plate'].forEach(function (id) { var e = cwEl(id); if (e) e.addEventListener('input', function () { cwCkUpdateSummary(); if (id === 'cw-ck-phone' || id === 'cw-ck-plate') cwCkLiveLoyalty(); }); });
+  var cat = cwEl('cw-ck-cat'); if (cat) cat.addEventListener('change', function () { CW_UI.ck.cat = cat.value; CW_UI.ck.catSet = true; cwCkKeep(); cwRender(); });
+  var q = cwEl('cw-ckq'); if (q) q.addEventListener('input', function () { cwCkSearch(q.value); });
+}
+var CW_CK_KEEP = ['name', 'phone', 'alt', 'type', 'email', 'gender', 'pref', 'plate', 'make', 'model', 'year', 'colour', 'eta', 'time', 'disc', 'notes', 'cond'];
+function cwCkKeep() { var k = {}; CW_CK_KEEP.forEach(function (f) { var e = cwEl('cw-ck-' + f); if (e) k[f] = e.value; }); CW_UI.ck.kept = k; }
+function cwCkRestore() { var k = CW_UI.ck && CW_UI.ck.kept; if (!k) return; Object.keys(k).forEach(function (f) { var e = cwEl('cw-ck-' + f); if (e && !e.readOnly && k[f] !== undefined) e.value = k[f]; }); CW_UI.ck.kept = null; cwCkUpdateSummary(); }
+function cwCkLiveLoyalty() { clearTimeout(CW_UI.lt); CW_UI.lt = setTimeout(function () { var box = cwEl('cw-ckloy'); if (CW_UI.route === 'checkin' && box) { box.innerHTML = cwLoyaltyBox(cwCkLoyalty(), 'wash', CW_UI.ck.useFree); cwCkUpdateSummary(); } }, 500); }
+function cwCkSearch(v) {
+  var box = cwEl('cw-ckres'); if (!box) return;
+  var r = cwSearch(cwState(), v, 8).filter(function (x) { return x.type !== 'job'; });
+  if (!r.length) { box.classList.remove('on'); box.innerHTML = ''; return; }
+  box.innerHTML = r.map(function (x) { return '<button type="button" data-cw="ckpick" data-t="' + x.type + '" data-id="' + cwEsc(x.id) + '">' + (x.type === 'vehicle' ? '🚗' : '👤') + '<span><b>' + cwEsc(x.title) + '</b><small>' + cwEsc(x.sub) + '</small></span></button>'; }).join('');
+  box.classList.add('on');
+}
+function cwCkSave() {
+  var ck = CW_UI.ck, lines = cwCkLines();
+  if (!lines.length) { cwToast('Choose at least one service.', true); return; }
+  var phone = cwVal('cw-ck-phone'), name = cwVal('cw-ck-name').trim(), plate = cwVal('cw-ck-plate');
+  if (!name) { cwToast('Enter the customer\'s name.', true); return; }
+  if (!cwNormPhone(phone)) { cwToast('Enter a valid phone number (07XX… or 01XX…).', true); return; }
+  if (!cwValidPlate(plate)) { cwToast('Enter the vehicle registration number.', true); return; }
+  if (cwVal('cw-ck-year') && !/^(19[5-9]\d|20\d\d)$/.test(cwVal('cw-ck-year').trim())) { cwToast('Enter the year of manufacture as 4 digits (e.g. 2014).', true); return; }
+  if (cwVal('cw-ck-email') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cwVal('cw-ck-email').trim())) { cwToast('That email address does not look right.', true); return; }
+  var ids = Object.keys(ck.staff).filter(function (k) { return ck.staff[k]; });
+  var input = { kind: 'car', customer: { id: ck.custId || undefined, name: name, phone: phone, altPhone: cwVal('cw-ck-alt'), type: cwVal('cw-ck-type'), email: cwVal('cw-ck-email') || undefined, gender: cwVal('cw-ck-gender') || undefined, contactPref: cwVal('cw-ck-pref') || undefined },
+    vehicle: { id: ck.vehId || undefined, plate: plate, make: cwVal('cw-ck-make'), model: cwVal('cw-ck-model'), year: cwVal('cw-ck-year'), colour: cwVal('cw-ck-colour'), category: cwVal('cw-ck-cat') },
+    items: lines, discount: cwVal('cw-ck-disc'), staffIds: ids, estMinutes: cwVal('cw-ck-eta'), receivedAt: cwFromLocalInput(cwVal('cw-ck-time')), instructions: cwVal('cw-ck-notes'), condition: cwVal('cw-ck-cond'), useFree: ck.useFree !== false };
+  var r = cwCreateJob(input);
+  if (!r.ok && r.code === 'owner') {
+    if (!confirm(r.error + '\n\nMove ' + cwFmtPlate(plate) + ' to this customer?')) return;
+    input.transfer = true; r = cwCreateJob(input);
+  }
+  if (!r.ok) { cwToast(r.error || 'Could not check in.', true); return; }
+  cwToast('✅ ' + r.job.no + ' checked in' + (r.job.free ? ' — FREE wash applied 🎁' : '') + '.');
+  cwCkReset(); CW_UI.route = 'jobs'; cwRenderShell(); cwRender(); cwOpenJob(r.job.id);
+}
+
+/* ================================ CLEANING ================================ */
+CW_UI.pages.cleaning = function (me) {
+  var k = 'clean';
+  var hist = cwJobs.filter(function (j) { return j && !j._deleted && j.kind === 'clean'; }).sort(function (a, b) { return cwNum(b.receivedAt) - cwNum(a.receivedAt); }).slice(0, 30);
+  return cwJobsToolbar(me, k) + cwBoard(me, k)
+    + '<div class="cw-sec">Recent cleaning jobs</div><div class="cw-tblw"><table class="cw-tbl"><thead><tr><th>Job</th><th>Customer</th><th>Service</th><th>Location</th><th>Status</th><th class="cw-num">Total</th></tr></thead><tbody>'
+    + (hist.length ? hist.map(function (j) { var c = cwJobCustomer(j) || {}, p = (j.cleaning && j.cleaning.pickup) || {}; return '<tr class="cw-click" data-cw="job" data-id="' + cwEsc(j.id) + '"><td>' + cwEsc(j.no) + '<div class="cw-small cw-mut">' + cwFmtDT(j.receivedAt) + '</div></td><td>' + cwEsc(c.name || '') + '</td><td>' + cwJobTitle(j) + '</td><td class="cw-small">' + cwEsc([p.location || p.estate, p.house].filter(Boolean).join(', ')) + '</td><td>' + cwStatusBadge(j) + '</td><td class="cw-num">' + cwMoney(cwTotals(j).total) + '</td></tr>'; }).join('') : '<tr><td colspan="6" class="cw-empty">No cleaning jobs yet.</td></tr>') + '</tbody></table></div>';
+};
+function cwOpenCleanForm(prefCustId) {
+  var cfg = cwCfg(), c = prefCustId ? cwFind(cwCustomers, prefCustId) : null, st = cwActiveStaff(), teams = cwArr(cfg.teams).filter(function (t) { return t.active !== false; });
+  var svcs = cwServicesOf(cfg, 'clean');
+  var h = cwPH('🧶 New cleaning job') + '<div class="cw-pb"><div class="cw-card"><h3>Customer</h3><div class="cw-f" style="position:relative"><label>Find an existing customer</label><input id="cw-clq" placeholder="Name or phone" autocomplete="off"><div class="cw-sres" id="cw-clres" style="top:68px"></div></div>'
+    + '<input type="hidden" id="cw-cl-cid" value="' + cwEsc(c ? c.id : '') + '"><div class="cw-form" style="margin-top:10px">'
+    + '<div class="cw-f"><label>Name *</label><input id="cw-cl-name" value="' + cwEsc(c ? c.name : '') + '"></div><div class="cw-f"><label>Phone *</label><input id="cw-cl-phone" inputmode="tel" value="' + cwEsc(c ? cwFmtPhone(c.phone) : '') + '"></div>'
+    + '<div class="cw-f"><label>Customer type</label><select id="cw-cl-type">' + CW_CUST_TYPES.map(function (t) { return '<option value="' + t.k + '"' + ((c ? c.type : 'home') === t.k ? ' selected' : '') + '>' + t.l + '</option>'; }).join('') + '</select></div><div class="cw-f"><label>Alternative phone</label><input id="cw-cl-alt" value="' + cwEsc(c ? cwFmtPhone(c.altPhone) : '') + '"></div></div></div>'
+    + '<div class="cw-card" style="margin-top:14px"><h3>Service</h3><div class="cw-form"><div class="cw-f"><label>Service type *</label><select id="cw-cl-type2">' + CW_CLEAN_TYPES.map(function (t) { return '<option value="' + t.k + '">' + t.ic + ' ' + t.l + '</option>'; }).join('') + '</select></div>'
+    + cwSvcPickerHtml('cl', svcs, '', { noSelect: true, label: '🔎 Type a service', ph: 'e.g. rug large, sofa…' }).replace('<div class="cw-spk">', '<div class="cw-spk" style="display:contents">') + '<div class="cw-f"><label>…or choose from the price list</label><select id="cw-cl-svc"><option value="">— type a price below —</option>' + svcs.map(function (s) { return '<option value="' + cwEsc(s.id) + '" data-type="' + cwEsc(s.cleanType) + '" data-price="' + cwNum(s.price) + '" data-min="' + cwNum(s.minutes) + '">' + cwEsc(s.name) + ' · ' + cwMoney(s.price) + ' ' + cwEsc(s.unit || '') + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f"><label>Dimensions <i>(e.g. 6x9)</i></label><input id="cw-cl-dims" placeholder="6x9"></div><div class="cw-f"><label>Quantity</label><input id="cw-cl-qty" type="number" min="1" value="1"></div>'
+    + '<div class="cw-f"><label>Cleaning charge per item (KES) *</label><input id="cw-cl-price" type="number" min="0"></div><div class="cw-f"><label>Delivery charge (KES)</label><input id="cw-cl-del" type="number" min="0" value="0"></div>'
+    + '<div class="cw-f"><label>Discount (KES)</label><input id="cw-cl-disc" type="number" min="0" value="0"></div><div class="cw-f"><label>Condition before cleaning</label><input id="cw-cl-cond" placeholder="stains, tears…"></div>'
+    + '<div class="cw-f full"><label>Special instructions</label><textarea id="cw-cl-notes"></textarea></div></div></div>'
+    + '<div class="cw-card" style="margin-top:14px"><h3>Pickup / site location</h3><div class="cw-form">'
+    + '<div class="cw-f"><label>Location / area</label><input id="cw-cl-loc" value="' + cwEsc(c ? c.location || '' : '') + '"></div><div class="cw-f"><label>Estate</label><input id="cw-cl-estate" value="' + cwEsc(c ? c.estate || '' : '') + '"></div>'
+    + '<div class="cw-f"><label>Building</label><input id="cw-cl-bld" value="' + cwEsc(c ? c.building || '' : '') + '"></div><div class="cw-f"><label>House number</label><input id="cw-cl-house" value="' + cwEsc(c ? c.house || '' : '') + '"></div>'
+    + '<div class="cw-f"><label>Floor</label><input id="cw-cl-floor" value="' + cwEsc(c ? c.floor || '' : '') + '"></div><div class="cw-f"><label>Landmark</label><input id="cw-cl-land"></div></div></div>'
+    + '<div class="cw-card" style="margin-top:14px"><h3>Team &amp; schedule</h3><div class="cw-form">'
+    + '<div class="cw-f"><label>Team</label><select id="cw-cl-team"><option value="">— individual staff —</option>' + teams.map(function (t) { return '<option value="' + cwEsc(t.id) + '">' + cwEsc(t.name) + ' (' + cwArr(t.memberIds).length + ')</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f"><label>Staff</label><select id="cw-cl-staff" multiple size="' + Math.min(5, Math.max(2, st.length)) + '" style="min-height:70px">' + st.map(function (m) { return '<option value="' + cwEsc(m.id) + '">' + cwEsc(m.name) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="cw-f"><label>Pickup / visit date &amp; time</label><input id="cw-cl-when" type="datetime-local" value="' + cwLocalInput(cwNow()) + '"></div><div class="cw-f"><label>Expected completion</label><input id="cw-cl-exp" type="datetime-local" value="' + cwLocalInput(cwNow() + CW_DAY) + '"></div></div>'
+    + '<div id="cw-cl-loy" style="margin-top:12px"></div>'
+    + '<div class="cw-row" style="margin-top:16px"><span class="cw-sp"></span><button class="cw-btn sec" data-cw="close">Cancel</button><button class="cw-btn warn" data-cw="clsave">✅ Create cleaning job</button></div></div></div>';
+  cwOpenModal(h);
+  var sel = cwEl('cw-cl-svc'), typ = cwEl('cw-cl-type2');
+  if (sel) sel.addEventListener('change', function () { var o = sel.options[sel.selectedIndex]; if (o && o.value) { cwEl('cw-cl-price').value = o.getAttribute('data-price'); if (typ) typ.value = o.getAttribute('data-type') || typ.value; cwClLoy(); } });
+  if (typ) typ.addEventListener('change', cwClLoy);
+  var q = cwEl('cw-clq'); if (q) q.addEventListener('input', function () { var box = cwEl('cw-clres'), r = cwSearch(cwState(), q.value, 8).filter(function (x) { return x.type === 'customer'; }); box.innerHTML = r.map(function (x) { return '<button type="button" data-cw="clpick" data-id="' + cwEsc(x.id) + '">👤<span><b>' + cwEsc(x.title) + '</b><small>' + cwEsc(x.sub) + '</small></span></button>'; }).join(''); box.classList.toggle('on', r.length > 0); });
+  var ph = cwEl('cw-cl-phone'); if (ph) ph.addEventListener('input', cwClLoy);
+  cwClLoy();
+}
+function cwClLoy() {
+  var box = cwEl('cw-cl-loy'); if (!box) return;
+  var phone = cwNormPhone(cwVal('cw-cl-phone')); if (!phone) { box.innerHTML = ''; return; }
+  var cid = cwVal('cw-cl-cid'), acc = cwLoyaltyFor('clean', { id: cid, phone: phone }, null, cwVal('cw-cl-type2'));
+  box.innerHTML = cwLoyaltyBox(acc, 'cleaning', CW_UI.clFree);
+}
+function cwClPick(id) {
+  var c = cwFind(cwCustomers, id); if (!c) return;
+  var set = function (k, v) { var e = cwEl(k); if (e) e.value = v || ''; };
+  set('cw-cl-cid', c.id); set('cw-cl-name', c.name); set('cw-cl-phone', cwFmtPhone(c.phone)); set('cw-cl-alt', cwFmtPhone(c.altPhone)); set('cw-cl-type', c.type || 'home');
+  set('cw-cl-loc', c.location); set('cw-cl-estate', c.estate); set('cw-cl-bld', c.building); set('cw-cl-house', c.house); set('cw-cl-floor', c.floor);
+  var box = cwEl('cw-clres'); if (box) box.classList.remove('on');
+  cwClLoy();
+}
+function cwClSave() {
+  var price = cwNum(cwVal('cw-cl-price')), qty = Math.max(1, cwNum(cwVal('cw-cl-qty')) || 1), type = cwVal('cw-cl-type2'), svcId = cwVal('cw-cl-svc'), cfg = cwCfg();
+  var svc = svcId ? cwFind(cfg.services, svcId) : null;
+  if (!(price >= 0) || cwVal('cw-cl-price') === '') { cwToast('Enter the cleaning charge.', true); return; }
+  var staffSel = cwEl('cw-cl-staff'), ids = staffSel ? Array.prototype.filter.call(staffSel.options, function (o) { return o.selected; }).map(function (o) { return o.value; }) : [];
+  var ct = cwCleanType(type);
+  var r = cwCreateJob({ kind: 'clean', customer: { id: cwVal('cw-cl-cid') || undefined, name: cwVal('cw-cl-name'), phone: cwVal('cw-cl-phone'), altPhone: cwVal('cw-cl-alt'), type: cwVal('cw-cl-type'), location: cwVal('cw-cl-loc'), estate: cwVal('cw-cl-estate'), building: cwVal('cw-cl-bld'), house: cwVal('cw-cl-house'), floor: cwVal('cw-cl-floor') },
+    items: [{ serviceId: svc ? svc.id : '', name: (svc ? svc.name : ct.l) + (cwVal('cw-cl-dims') ? ' (' + cwVal('cw-cl-dims').trim() + ')' : ''), price: price, qty: qty }],
+    discount: cwVal('cw-cl-disc'), staffIds: ids, teamId: cwVal('cw-cl-team'), estMinutes: svc ? svc.minutes : 0, instructions: cwVal('cw-cl-notes'), condition: cwVal('cw-cl-cond'), useFree: CW_UI.clFree !== false,
+    cleaning: { type: type, dims: cwVal('cw-cl-dims'), qty: qty, delivery: cwVal('cw-cl-del'), scheduledAt: cwFromLocalInput(cwVal('cw-cl-when')), expectedAt: cwFromLocalInput(cwVal('cw-cl-exp')), pickup: { location: cwVal('cw-cl-loc'), estate: cwVal('cw-cl-estate'), building: cwVal('cw-cl-bld'), house: cwVal('cw-cl-house'), floor: cwVal('cw-cl-floor'), landmark: cwVal('cw-cl-land') } } });
+  if (!r.ok) { cwToast(r.error || 'Could not create the job.', true); return; }
+  CW_UI.clFree = true;
+  cwToast('✅ ' + r.job.no + ' created' + (r.job.free ? ' — FREE cleaning applied 🎁' : '') + '.');
+  cwOpenJob(r.job.id); cwRefresh();
+}
+
+/* ================================ universal search ================================ */
+function cwTopSearch(v) {
+  var box = cwEl('cw-sres'); if (!box) return;
+  var me = cwMe(), r = cwSearch(cwState(), v, 12).filter(function (x) { return x.type === 'job' ? cwCan('jobs.view', me) : cwCan('customers', me); });
+  if (!r.length) { box.classList.remove('on'); box.innerHTML = ''; CW_UI.results = []; return; }
+  CW_UI.results = r; CW_UI.sel = -1;
+  box.innerHTML = r.map(function (x, i) { return '<button type="button" data-cw="sres" data-i="' + i + '">' + (x.type === 'vehicle' ? '🚗' : x.type === 'job' ? '🧾' : '👤') + '<span><b>' + cwEsc(x.title) + '</b><small>' + cwEsc(x.sub) + '</small></span></button>'; }).join('');
+  box.classList.add('on');
+}
+function cwOpenResult(x) {
+  var box = cwEl('cw-sres'); if (box) box.classList.remove('on');
+  var q = cwEl('cw-q'); if (q) q.value = '';
+  if (!x) return;
+  if (x.type === 'job') { cwOpenJob(x.id); return; }
+  if (x.type === 'vehicle') { var v = cwFind(cwVehicles, x.id); if (v && typeof cwOpenCustomer === 'function') cwOpenCustomer(v.customerId, v.id); return; }
+  if (typeof cwOpenCustomer === 'function') cwOpenCustomer(x.id);
+}
+
+/* ================================ events ================================ */
+function cwOnClick(e) {
+  var t = e.target.closest ? e.target.closest('[data-cw]') : null;
+  if (!t) { if (!e.target.closest || !e.target.closest('.cw-search')) { var b = cwEl('cw-sres'); if (b) b.classList.remove('on'); } return; }
+  var a = t.getAttribute('data-cw'), id = t.getAttribute('data-id');
+  if (t.tagName === 'A') e.preventDefault();
+  var me = cwMe(), r;
+  switch (a) {
+    case 'nav': { var app = cwEl('cw-app'); if (app) app.classList.toggle('nav-open'); return; }
+    case 'go': if (t.getAttribute('data-r') === 'checkin') cwCkReset(); cwCloseModal(); cwGo(t.getAttribute('data-r')); return;
+    case 'logout': cwCloseModal(); try { if (typeof currentServer !== 'undefined' && currentServer) logoutServer(); else logoutAdmin(); } catch (x) { try { decideAuthScreen(); } catch (x2) { location.reload(); } } return;
+    case 'close': cwCloseModal(); return;
+    case 'job': cwOpenJob(id); return;
+    case 'cust': cwCloseModal(); if (typeof cwOpenCustomer === 'function') cwOpenCustomer(id); return;
+    case 'sres': cwOpenResult(CW_UI.results[Number(t.getAttribute('data-i'))]); return;
+    case 'jtab': CW_UI.jobsTab = t.getAttribute('data-t'); CW_UI.jobsStatus = ''; cwRender(); return;
+    case 'jstatus': CW_UI.jobsStatus = t.getAttribute('data-s'); cwRender(); return;
+    case 'newclean': cwOpenCleanForm(); return;
+    case 'clpick': cwClPick(id); return;
+    case 'clsave': cwClSave(); return;
+    case 'svcpick': cwSvcPicked(t.getAttribute('data-k'), id); return;
+    case 'syncinfo': { var ss = cwEl('sync-status'), tx = ss ? (ss.getAttribute('title') || ss.textContent || '') : ''; var off = typeof navigator !== 'undefined' && navigator.onLine === false; cwToast((off ? '📴 Offline - everything is saved on this device and syncs when the internet is back.' : '') + (tx ? (off ? ' ' : '') + cwStr(tx).trim() : (off ? '' : '✅ Online - changes sync automatically.'))); return; }
+    case 'who': {
+      var m2 = cwMe(), rl = (CW_ROLES.filter(function (r) { return r.k === m2.role; })[0] || { l: m2.role }).l;
+      cwOpenModal(cwPH('👤 Signed in') + '<div class="cw-pb"><div class="cw-card" style="text-align:center"><div class="cw-av" style="width:64px;height:64px;font-size:28px;margin:0 auto 10px">' + cwEsc(cwStr(m2.name).charAt(0).toUpperCase() || '?') + '</div><div style="font-size:18px;font-weight:800;text-align:center">' + cwEsc(m2.name) + '</div><div class="cw-mut">' + cwEsc(rl) + ' · ' + cwEsc(cwCfg().business.name || '') + '</div>'
+        + '<div class="cw-row" style="margin-top:16px;justify-content:center;gap:10px;flex-wrap:wrap"><button class="cw-btn" data-cw="logout">🔄 Switch user</button><button class="cw-btn sec" data-cw="logout">Sign out</button></div>'
+        + '<p class="cw-small cw-mut" style="margin:12px 0 0">Switching goes back to <b>Who\'s logging in?</b>, like every other app. Each person signs in with their own PIN so their work is recorded under their name.</p></div></div>', true);
+      return;
+    }
+    case 'cksvc': cwCkKeep(); if (CW_UI.ck.items[id]) delete CW_UI.ck.items[id]; else CW_UI.ck.items[id] = true; CW_UI.ck.kept.eta = String(cwCkMinutes()); cwRender(); return;
+    case 'ckstaff': cwCkKeep(); CW_UI.ck.staff[id] = !CW_UI.ck.staff[id]; cwRender(); return;
+    case 'ckveh': cwCkKeep(); CW_UI.ck.vehId = id || ''; CW_UI.ck.catSet = false; ['plate', 'make', 'model', 'colour'].forEach(function (f) { delete CW_UI.ck.kept[f]; }); if (!id) CW_UI.ck.kept.plate = ''; cwRender(); return;
+    case 'ckpick': {
+      cwCkKeep();
+      if (t.getAttribute('data-t') === 'vehicle') { var v = cwFind(cwVehicles, id); if (v) { CW_UI.ck.custId = v.customerId; CW_UI.ck.vehId = v.id; } }
+      else { CW_UI.ck.custId = id; var vs = cwVehiclesOf(id); CW_UI.ck.vehId = vs.length === 1 ? vs[0].id : ''; }
+      CW_UI.ck.catSet = false;
+      ['name', 'phone', 'alt', 'type', 'plate', 'make', 'model', 'colour'].forEach(function (f) { delete CW_UI.ck.kept[f]; });
+      cwRender(); return;
+    }
+    case 'ckclear': cwCkKeep(); CW_UI.ck.custId = ''; CW_UI.ck.vehId = ''; ['name', 'phone', 'alt', 'type', 'plate', 'make', 'model', 'colour'].forEach(function (f) { CW_UI.ck.kept[f] = ''; }); cwRender(); return;
+    case 'ckextra': { var nm = cwVal('cw-ck-xname').trim(), pr = cwNum(cwVal('cw-ck-xprice')); if (!nm) { cwToast('Name the additional service.', true); return; } cwCkKeep(); CW_UI.ck.extra.push({ name: nm, price: Math.max(0, pr) }); cwRender(); return; }
+    case 'ckxdel': cwCkKeep(); CW_UI.ck.extra.splice(Number(t.getAttribute('data-i')), 1); cwRender(); return;
+    case 'cksave': cwCkSave(); return;
+    case 'ckreset': cwCkReset(); cwRender(); return;
+    case 'status': {
+      var s = t.getAttribute('data-s');
+      r = cwSetStatus(id, s, {});
+      if (!r.ok) cwToast(r.error, true); else { cwToast(cwStatusDef(r.job, r.job.status).ic + ' ' + r.job.no + ': ' + cwStatusDef(r.job, r.job.status).l); cwRefresh(); }
+      return;
+    }
+    default: if (typeof cwOnClick2 === 'function') cwOnClick2(e, t, a, id, me);
+  }
+}
+function cwOnChange(e) {
+  var t = e.target; if (!t) return;
+  if (t.getAttribute && t.getAttribute('data-cw-file') === 'photo') {
+    var f = t.files && t.files[0], id = t.getAttribute('data-id'); if (!f) return;
+    cwToast('Saving photo…');
+    cwAddPhoto(id, f, cwVal('cw-phkind')).then(function (r) { cwToast(r.ok ? '📷 Photo added.' : r.error, !r.ok); if (r.ok) cwOpenJob(id); });
+    return;
+  }
+  if (t.getAttribute && t.getAttribute('data-cw-chk') === 'usefree') {
+    if (CW_UI.route === 'checkin' && cwEl('cw-cksum')) { CW_UI.ck.useFree = !!t.checked; cwCkKeep(); cwRender(); return; }
+    CW_UI.clFree = !!t.checked; cwClLoy(); return;
+  }
+  if (t.id === 'cw-jmine') { CW_UI.jobsMine = !!t.checked; cwRender(); return; }
+  if (t.getAttribute && t.getAttribute('data-sps')) { var sv = t.value; t.value = ''; if (sv) cwSvcPicked(t.getAttribute('data-sps'), sv); return; }
+  if (typeof cwOnChange2 === 'function') cwOnChange2(e, t);
+}
+function cwOnInput(e) {
+  var t = e.target; if (!t) return;
+  if (t.id === 'cw-q') { cwTopSearch(t.value); return; }
+  if (t.getAttribute && t.getAttribute('data-spq')) { cwSvcSuggest(t); return; }
+  if (t.id === 'cw-jq') { CW_UI.jobsQ = t.value; clearTimeout(CW_UI.jqT); CW_UI.jqT = setTimeout(function () { var pos = t.selectionStart; cwRender(); var n = cwEl('cw-jq'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* not a text box */ } } }, 250); return; }
+  if (typeof cwOnInput2 === 'function') cwOnInput2(e, t);
+}
+function cwOnKey(e) {
+  var t = e.target;
+  if (t && t.getAttribute && t.getAttribute('data-spq')) {
+    var k = t.getAttribute('data-spq'), box = cwEl('cw-spres-' + k), btns = box ? box.querySelectorAll('button') : [], cur = -1;
+    Array.prototype.forEach.call(btns, function (b, i) { if (b.classList.contains('sel')) cur = i; });
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && btns.length) { e.preventDefault(); cur = (cur + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length; Array.prototype.forEach.call(btns, function (b, i) { b.classList.toggle('sel', i === cur); }); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (btns.length) cwSvcPicked(k, btns[cur >= 0 ? cur : 0].getAttribute('data-id')); }
+    else if (e.key === 'Escape' && box) box.classList.remove('on');
+    return;
+  }
+  if (t && t.id === 'cw-q') {
+    var n = CW_UI.results.length; if (!n) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); CW_UI.sel = (CW_UI.sel + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; Array.prototype.forEach.call(cwEl('cw-sres').children, function (b, i) { b.classList.toggle('sel', i === CW_UI.sel); }); }
+    else if (e.key === 'Enter') { e.preventDefault(); cwOpenResult(CW_UI.results[CW_UI.sel >= 0 ? CW_UI.sel : 0]); }
+    else if (e.key === 'Escape') { cwEl('cw-sres').classList.remove('on'); }
+    return;
+  }
+  if (e.key === 'Escape' && cwEl('cw-modal').classList.contains('on')) cwCloseModal();
+}
+function cwFocusOut() { if (CW_UI.pendingRender) setTimeout(function () { var ae = document.activeElement, main = cwEl('cw-main'); if (!(ae && main && main.contains(ae) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) && CW_UI.pendingRender) cwRender(); }, 150); }
+
+/* ---- boot ---- */
+function cwBoot() {
+  if (CW_UI.booted) return; CW_UI.booted = true;
+  try { document.title = 'Car Wash & Cleaning'; } catch (e) { /* none */ }
+  cwBootStore();
+  ['cw-app', 'cw-modal'].forEach(function (id) { var el = cwEl(id); if (!el) return; el.addEventListener('click', cwOnClick); el.addEventListener('change', cwOnChange); el.addEventListener('input', cwOnInput); el.addEventListener('keydown', cwOnKey); el.addEventListener('focusout', cwFocusOut); });
+  var m = cwEl('cw-modal'); if (m) m.addEventListener('mousedown', function (e) { if (e.target === m) cwCloseModal(); });
+  var sb = cwEl('cw-sysbar'); if (sb) sb.addEventListener('click', function () { document.body.classList.remove('cw-sys'); cwRefresh(); });
+  cwOn(function () { cwRefresh(); });
+  setInterval(cwTick, 600);
+  cwTick();
+  setTimeout(function () { cwSmsFlush(); cwPhotoFlush(); if (cwMe().owner) cwMigrateHistory(); }, 4000);
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', cwBoot); else cwBoot();
+</script>

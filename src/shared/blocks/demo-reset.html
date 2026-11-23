@@ -1,0 +1,154 @@
+<!-- DEMO HOURLY RESET (zip 320) --------------------------------------------------------------------------------------------------
+     The public sample shops (demo-<name>.<domain>, see functions/api/_shared-demos.js) go back to their original sample data every 60
+     minutes, online or offline. Nothing here can touch a normal shop:
+       * ELIGIBLE only when BOTH hold: (1) this page is on a demo sub-domain (first label starts with "demo-" - its own browser origin, so
+         its storage holds that demo and nothing else; new real shops cannot get such an address) AND (2) the server has confirmed this exact
+         address is a shared demo (sd_confirmed, written by the shared-demo block from /api/license-status; removed if the server ever says
+         otherwise). A ?c=demo_x link on a shared address, an offline first visit, missing metadata: no reset, nothing deleted.
+       * BASELINE: right after the first pull of the sample data on this device (the shared-demo block calls DemoReset.capture), every
+         storage key of this origin is copied into sd_baseline (compressed by the storage block). It is the original sample exactly as the
+         server sent it, and it is on the device, so a reset works offline.
+       * DEADLINE: sd_reset_meta = { host, deadline, startedAt, lastSeen }. The first hour starts when the sample is first loaded on this device;
+         every reset starts a new hour. Reloading, closing the browser or going offline does not move it. A clock set back by more than 5
+         minutes counts as expired.
+       * CHECKED here in <head> before the app reads any data (startup), every 15 s, when the page becomes visible / gets focus / comes back
+         online / is restored, and before any tap or key press once the hour is over.
+       * RESTORE: every key of this origin except the reset's own (baseline, deadline, confirmation) and the theme / "get my link" request is
+         removed, the baseline written back and read back to check it, this origin's IndexedDB (the sales safety copy) and session storage
+         are cleared, then the new deadline is written LAST - an interrupted reset simply runs again from the same baseline. A running page
+         is blocked while it restores and then reloads. No baseline (or a bad one): online, the device's copy is cleared and the sample is
+         pulled again from the server (which never stores demo changes); offline, the demo is blocked with a message - nothing is deleted.
+       * STALE EDITS cannot come back: the server refuses every write to a shared demo (demo_readonly in _license.js), the demo never sends
+         (shared-demo block), and the device's unsent queues are part of what the restore replaces.
+       * LIMITS: a browser page cannot stop someone who clears the site's storage, edits the code or keeps moving the clock forward and back;
+         the server-side read-only rule is what protects the shared demo data itself. -->
+<script>
+(function () {
+    'use strict';
+    var host = String(location.hostname || '').toLowerCase(), label = host.split('.')[0];
+    if (label.indexOf('demo-') !== 0 || label.length < 6) return;                 // not a demo sub-domain: this block does nothing at all
+    var LS; try { LS = window.localStorage; } catch (e) { return; }
+    var HOUR = window.__demoResetMs || 3600000, BACK = 5 * 60000;
+    var META = 'sd_reset_meta', BASE = 'sd_baseline', CONF = 'sd_confirmed';
+    var KEEP = { 'sd_reset_meta': 1, 'sd_baseline': 1, 'sd_confirmed': 1, 'mdp-theme': 1, 'sd_buy_ref': 1, 'sd_orig': 1 };
+    var SLICE = /~s\d+$/;
+    var now = function () { return Date.now(); };
+    function getJ(k) { try { return JSON.parse(LS.getItem(k) || 'null'); } catch (e) { return null; } }
+    function setJ(k, v) { LS.setItem(k, JSON.stringify(v)); }
+    // the server's "this is a shared demo" for THIS address, and the exact demo pairing: address demo-<key> <-> shop id demo_<key> (only the shared-demo
+    // records have such ids: a real shop's id is a random token with no "_"), so a stale or mismatched confirmation never counts
+    var DEMO_ID = 'demo_' + label.slice(5);
+    function confirmed() { var c = getJ(CONF); return !!(c && c.host === host && c.id === DEMO_ID); }
+    function keys() { var out = []; for (var i = 0; i < LS.length; i++) { var k = LS.key(i); if (k != null && !SLICE.test(k)) out.push(k); } return out; }
+    function snapshot() { var m = {}; keys().forEach(function (k) { if (!KEEP[k]) { var v = LS.getItem(k); if (v != null) m[k] = v; } }); return m; }
+    function goodBaseline(b) {
+        if (!b || b.v !== 1 || b.host !== host || !b.keys || typeof b.keys !== 'object') return false;
+        var ks = Object.keys(b.keys);
+        return ks.length > 0 && ks.some(function (k) { return /(^|_)(inventory|products)$/.test(k); });   // the sample's catalogue must be in it
+    }
+    var M = null;                                                                  // the deadline, kept in memory between checks
+    function meta() { if (!M) { M = getJ(META); if (M && M.host !== host) M = null; } return M; }
+    function writeMeta(m) { M = m; setJ(META, m); }
+    function startHour(extra) { var t = now(), o = { host: host, deadline: t + HOUR, startedAt: t, lastSeen: t }; if (extra) for (var k in extra) o[k] = extra[k]; writeMeta(o); return o; }
+    function expired(m) { var t = now(); return t >= m.deadline || t < (m.lastSeen || 0) - BACK; }
+
+    // clear this origin's copy (never the reset's own keys), synchronously; IndexedDB / session storage of THIS origin too
+    function wipeDevice() {
+        keys().forEach(function (k) { if (!KEEP[k]) { try { LS.removeItem(k); } catch (e) { /* next key */ } } });
+        try { sessionStorage.clear(); } catch (e) { /* none */ }
+        // the sales safety copy, the old-day archive and service photos: deleted NOW (queued before anything on this page can open them again)
+        ['pos_sales_journal', 'pos_local_archive', 'svc_photos'].forEach(function (n) { try { if (window.indexedDB) indexedDB.deleteDatabase(n); } catch (e) { /* none */ } });
+        try { if (window.indexedDB && indexedDB.databases) indexedDB.databases().then(function (l) { (l || []).forEach(function (d) { try { if (d && d.name) indexedDB.deleteDatabase(d.name); } catch (e) { /* ignore */ } }); }, function () { /* none */ }); } catch (e) { /* none */ }
+    }
+    // -> 'restored' | 'refetch' (no usable baseline, online: the server sends the sample again) | 'blocked' (no baseline, offline)
+    function restore() {
+        var b = getJ(BASE);
+        if (!goodBaseline(b)) {
+            if (navigator.onLine === false) return 'blocked';
+            wipeDevice(); try { LS.removeItem(BASE); } catch (e) { /* ok */ }
+            startHour({ refetched: now() });
+            return 'refetch';
+        }
+        wipeDevice();
+        var bad = null;
+        Object.keys(b.keys).forEach(function (k) { if (bad) return; try { LS.setItem(k, b.keys[k]); if (LS.getItem(k) !== b.keys[k]) bad = k; } catch (e) { bad = k; } });
+        if (bad) return 'blocked';                                                // could not write it back: stay blocked; the next check tries again
+        var m = meta() || {};
+        startHour({ resets: (m.resets || 0) + 1, lastReset: now() });
+        return 'restored';
+    }
+
+    var busy = false, blockedMsg = null;
+    function overlay(text, retry) {
+        var el = document.getElementById('dr-block');
+        if (!el) {
+            el = document.createElement('div'); el.id = 'dr-block'; el.setAttribute('role', 'alertdialog'); el.setAttribute('aria-modal', 'true');
+            el.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(8,24,26,.82);color:#fff;font:600 16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;text-align:center';
+            (document.body || document.documentElement).appendChild(el);
+        }
+        el.innerHTML = '<div style="max-width:440px"><div style="font-size:30px">⏳</div><p id="dr-text" style="margin:8px 0 14px"></p>' + (retry ? '<button type="button" id="dr-retry" style="min-height:44px;padding:0 18px;border:0;border-radius:12px;background:#0b7a5f;color:#fff;font:700 15px system-ui,sans-serif;cursor:pointer">Try again</button>' : '') + '</div>';
+        el.querySelector('#dr-text').textContent = text;
+        var r = el.querySelector('#dr-retry'); if (r) r.onclick = function () { busy = false; check('retry'); };
+    }
+    function block(text) { blockedMsg = text; if (document.body) overlay(text, true); else document.addEventListener('DOMContentLoaded', function () { if (blockedMsg) overlay(blockedMsg, true); }); }
+
+    // early = this runs in <head> before the app has read anything: restore in place and let the page load the restored data
+    function check(why, early) {
+        if (busy || !confirmed()) return false;
+        var m = meta();
+        if (!m) return false;                                                     // no sample captured on this device yet: nothing to time
+        if (!expired(m)) { if (now() - (m.lastSeen || 0) > 30000) { m.lastSeen = Math.max(now(), m.lastSeen || 0); try { setJ(META, m); } catch (e) { /* next check */ } } return false; }
+        busy = true;
+        if (!early) overlay('The sample shop’s hour is up. Restoring the original sample data…', false);
+        var r = 'blocked';
+        try { r = restore(); } catch (e) { r = 'blocked'; }
+        window.__demoResetLast = { why: why, result: r, at: now() };
+        if (r === 'blocked') { busy = false; block(navigator.onLine === false ? 'The sample shop’s hour is up. Connect to the internet once to restore the original sample data.' : 'The sample data could not be restored on this device. Try again.'); return true; }
+        if (early) { busy = false; return true; }                                 // in <head>: the app now loads the restored sample (or pulls it again)
+        try { if (window.__demoResetNoReload) { busy = false; return true; } location.reload(); } catch (e) { busy = false; }
+        return true;
+    }
+
+    window.DemoReset = {
+        host: host,
+        eligible: function () { return confirmed(); },
+        // the shared-demo block: the server has just confirmed this address is a shared demo (or said it is not)
+        confirm: function (id, isDemo) {
+            try {
+                if (isDemo && id === DEMO_ID) { var c = getJ(CONF); if (!c || c.host !== host || c.id !== id) setJ(CONF, { host: host, id: id, at: now() }); }
+                else { LS.removeItem(CONF); }
+            } catch (e) { /* not confirmed: no reset */ }
+        },
+        // the shared-demo block, once the sample has been pulled: keep it as this device's baseline and start the hour (once)
+        capture: function () {
+            if (!confirmed()) return false;
+            try {
+                if (!goodBaseline(getJ(BASE))) {
+                    var snap = snapshot();
+                    var b = { v: 1, host: host, at: now(), keys: snap };
+                    if (!goodBaseline(b)) return false;                          // the sample has not arrived yet: nothing to keep
+                    setJ(BASE, b);
+                    if (!goodBaseline(getJ(BASE))) { LS.removeItem(BASE); return false; }
+                }
+                if (!meta()) startHour();
+                return true;
+            } catch (e) { try { LS.removeItem(BASE); } catch (x) { /* ok */ } return false; }
+        },
+        remainingMs: function () { var m = meta(); return m ? Math.max(0, m.deadline - now()) : null; },
+        check: function (why) { return check(why || 'manual'); },
+        restoreNow: function () { var m = meta(); if (!m || !confirmed()) return false; m.deadline = 0; writeMeta(m); return check('manual'); },
+        // brings the deadline FORWARD only (tests; a visitor gains nothing from it - it can never add time)
+        _expireIn: function (ms) { var m = meta(); if (!m) return false; m.deadline = Math.min(m.deadline, now() + Math.max(0, Number(ms) || 0)); writeMeta(m); return true; }
+    };
+
+    check('start', true);
+    setInterval(function () { check('timer'); }, 15000);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') check('visible'); });
+    window.addEventListener('focus', function () { check('focus'); });
+    window.addEventListener('pageshow', function () { check('pageshow'); });
+    window.addEventListener('online', function () { check('online'); });
+    // after the hour, nothing more is done with the old data: the first tap or key press restores instead
+    var guard = function (e) { var m = M; if (!m || busy || !expired(m) || !confirmed()) return; e.stopPropagation(); e.preventDefault(); check('input'); };
+    ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'click'].forEach(function (t) { document.addEventListener(t, guard, true); });
+})();
+</script>

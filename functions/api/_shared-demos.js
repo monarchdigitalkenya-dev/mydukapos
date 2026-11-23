@@ -17,6 +17,7 @@ import { buildDemoSeed } from './_demo-seeds.js';
 import { DEMO_PASSWORD_HASH, SEED_VERSION } from './_demo-const.js';
 
 const REFRESH_MS = 14 * 24 * 3600 * 1000;
+const SVC_TYPE_OF = { services: 'salon', carwash: 'car_wash', phonerepair: 'phone_repair', garage: 'garage', barber: 'barber', laundry: 'laundry', cleaning: 'cleaning', electronics: 'electronics_repair', tailoring: 'tailoring' };
 export const SEED_MARK = 'shared-demo-seed:';
 
 // key -> shop record + the gallery text. `product` is the license product (the Shop app serves retail, hardware and liquor).
@@ -28,7 +29,15 @@ export const SHARED_DEMOS = [
   { key: 'liquor', product: 'shop', title: 'Liquor Store', tag: 'Retail', blurb: 'Brandy, whisky, vodka, gin, rum, tequila, wines, beer, cider, RTDs, soft drinks and mixers - grouped into sub-categories with stock movements.', features: ['Category › sub-category stock', 'Bottles, cans & crates', 'Fast counter filtering', 'Stock movements', 'Sales by category'] },
   { key: 'pharmacy', product: 'pharmacy', title: 'Pharmacy', tag: 'Health', blurb: 'Medicines by batch with expiry dates, an expired batch flagged, low-stock alerts, patients and a month of sales.', features: ['Batch & expiry tracking', 'Low-stock & expired alerts', 'Patient records & allergies', 'Cash / M-Pesa sales', 'Supplier orders'] },
   { key: 'production', product: 'production', title: 'Production & Bakery', tag: 'Manufacturing', blurb: 'Bread, cakes, dairy and packaged foods with raw materials, production batches and sales.', features: ['Production batches', 'Raw materials stock', 'Finished-goods sales', 'Cost per unit', 'Wholesale & retail pricing'] },
-  { key: 'services', product: 'services', title: 'Salon & Services', tag: 'Services', blurb: 'Salon services with bookings, service jobs in progress, customers and a month of takings.', features: ['Bookings calendar', 'Service jobs & quotes', 'Staff & customers', 'Cash / M-Pesa payments', 'Daily takings'] },
+  { key: 'services', product: 'services', title: 'Salon & Spa', tag: 'Services', blurb: 'A salon with bookings, walk-ins, hair, nails and beauty services, customers and a month of takings.', features: ['Bookings calendar', 'Walk-in queue', 'Staff & customers', 'Cash / M-Pesa payments', 'Daily takings'] },
+  { key: 'carwash', product: 'carwash', title: 'Car Wash & Cleaning', tag: 'Car Wash', blurb: 'The standalone Car Wash & Cleaning app: live jobs board, customers and vehicles, carpets and house cleaning, 9 + 1 loyalty, SMS log, staff and reports.', features: ['Car check-in & jobs board', 'Carpets, sofas & house cleaning', '9 + 1 free loyalty', 'Automatic SMS', 'Job billing, M-Pesa & reports'] },
+  { key: 'phonerepair', product: 'services', title: 'Phone Repair', tag: 'Services', blurb: 'A phone repair shop: devices with IMEI, diagnosis, quotes, parts and repairs in progress, ready for collection.', features: ['Device intake with IMEI', 'Diagnosis & quotes', 'Parts used', 'Ready-for-collection alerts', 'Daily takings'] },
+  { key: 'garage', product: 'services', title: 'Auto Garage', tag: 'Services', blurb: 'A garage with vehicles on the floor: inspections, service and brake jobs, parts, quotes and customers waiting for their cars.', features: ['Vehicle job cards', 'Inspection & diagnosis', 'Parts & labour quotes', 'Mechanic assignment', 'Daily takings'] },
+  { key: 'barber', product: 'services', title: 'Barbershop', tag: 'Services', blurb: 'A barbershop with a fast walk-in queue and bookings: cuts, beard trims, shaves and colour.', features: ['Walk-in queue', 'Bookings', 'Barber assignment', 'Cash / M-Pesa payments', 'Daily takings'] },
+  { key: 'laundry', product: 'services', title: 'Laundry & Dry Cleaning', tag: 'Services', blurb: 'A laundry with tagged orders moving from sorting to washing, drying, ironing and collection, including hotel and household work.', features: ['Tagged orders', 'Wash, dry, iron stages', 'Per-kg and per-item prices', 'Collection alerts', 'Daily takings'] },
+  { key: 'cleaning', product: 'services', title: 'Cleaning Company', tag: 'Services', blurb: 'A cleaning company with scheduled jobs at homes and offices, teams on the way, and quotes for deep cleans.', features: ['Scheduled site visits', 'Team assignment', 'Quotes for deep cleans', 'Customers & addresses', 'Daily takings'] },
+  { key: 'electronics', product: 'services', title: 'Electronics Repair', tag: 'Services', blurb: 'A workshop repairing TVs, fridges, microwaves, laptops and sound systems, with diagnosis, parts and collection.', features: ['Equipment intake', 'Diagnosis & quotes', 'Parts used', 'Ready-for-collection alerts', 'Daily takings'] },
+  { key: 'tailoring', product: 'services', title: 'Tailoring', tag: 'Services', blurb: 'A tailor with orders from measurement to cutting, stitching, fitting and collection, plus quick alterations.', features: ['Measurements & fittings', 'Order stages', 'Due-date tracking', 'Customers & uniforms', 'Daily takings'] },
   { key: 'water', product: 'water', title: 'Water Business', tag: 'Distribution', blurb: 'Bottled water and refills with a storage tank, tank refill log, customers on credit and daily sales.', features: ['Bottled & refill sales', 'Tank volume & refill log', 'Customers & credit', 'Cash / M-Pesa payments', 'Sales reports'] },
 ].map((d) => ({ ...d, id: 'demo_' + d.key, slug: 'demo-' + d.key, label: d.title + ' (sample)', password: '0000' }));
 
@@ -37,7 +46,7 @@ export function findSharedDemo(key) { return SHARED_DEMOS.find((d) => d.key === 
 // Make sure this demo's shop record exists and carries the current sample data. Safe to call on every visit: when nothing is due it costs one KV read for the
 // seed mark and one for the record. `force` (Owner Console only) re-seeds at once.
 export async function ensureSharedDemo(env, spec, opts = {}) {
-  const { record } = await ensureSharedDemoRecord(env, { id: spec.id, product: spec.product, slug: spec.slug, label: spec.label, svcType: spec.key === 'services' ? 'salon' : undefined });
+  const { record } = await ensureSharedDemoRecord(env, { id: spec.id, product: spec.product, slug: spec.slug, label: spec.label, svcType: SVC_TYPE_OF[spec.key] });
   if (!record || record.sharedDemo !== true) throw new Error('not a shared demo');            // hard guard: never seed a real shop
   const now = Date.now();
   let mark = null;

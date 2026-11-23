@@ -14,7 +14,8 @@
               unit cost, reference, supplier, who. The stock-movement entry of the restock carries the same facts.
            4. Measured selling (opt-in per item, ⚙️ Units): "measure by price" (KES 250 of KES 1000/kg = 0.25 kg) or "by amount" in any unit of the same
               kind (500 ml of a KES 200/l item = KES 100), quick shortcuts, the quantity always lands on the sale line in the STOCK unit.
-           5. 📊 Purchases report: purchases of a period with the purchase quantity, stock quantity, total and effective cost, plus what was sold.
+           5. 🧾 Purchases: every restock is ONE purchase record (supplier, reference, date, who, its lines and total) listed for any period, filterable by
+              supplier or text, downloadable as CSV, with what was sold in the same period (zip 269 grouped the lines of a restock into one purchase).
          MONEY: amounts are shown in whole KES on these screens (msKes); every stored number keeps full precision.
          ------------------------------------------------------------------------ -->
 <style>
@@ -207,7 +208,7 @@ function msPaintCards() {
         const table = tbody.closest('table'), host = table && (table.closest('.table-scroll') || table);
         host.insertAdjacentElement('afterend', panel);
         const bar = document.createElement('div'); bar.style.cssText = 'margin:6px 0;';
-        bar.innerHTML = '<button type="button" class="settings-small-btn" onclick="msOpenPurchasesReport()">📊 Purchases report</button>';
+        bar.innerHTML = '<button type="button" class="settings-small-btn" onclick="msOpenPurchasesReport()">🧾 Purchases</button>';
         panel.insertAdjacentElement('beforebegin', bar);
     }
     panel.innerHTML = restockDraft.filter((r) => (r.name || r.code)).map(msCardHtml).join('');
@@ -252,26 +253,27 @@ function msSchedulePaint() { clearTimeout(__msPaintT); __msPaintT = setTimeout(m
         const supplierObj = supSel && supSel.value && typeof suppliers !== 'undefined' ? suppliers.find((s) => s.id === supSel.value) : null;
         const ref = refEl ? refEl.value.trim() : '', supplier = supplierObj ? supplierObj.name : '';
         // stock-unit numbers first (the card is the source for packed / converted rows), then a snapshot to average against
-        const jobs = [];
+        const jobs = [], batchId = genSaleId();       // zip 269: every line of this restock shares one purchase id
         restockDraft.forEach((r) => {
             if (!(String(r.name || '').trim() || String(r.code || '').trim())) return;
             if (r.pu) msRowRecalc(r);
             const qty = typeof parseQtyInput === 'function' ? parseQtyInput(r.qty) : parseFloat(r.qty), cost = parseFloat(r.cost);
             if (!(qty > 0) || !(cost >= 0)) return;
             const it = msRowItem(r);
+            if (it && it.hasVariants && Array.isArray(it.variants) && it.variants.length) return;       // zip 269: the stock step refuses a parent with variants (it asks for each variant's own code): no purchase record, no expense for it
             jobs.push({ r, qty, cost, unit: it ? (it.unit || 'pcs') : (r.unit || 'pcs'), pu: r.pu ? { ...r.pu } : null, total: r.puTotal !== undefined ? r.puTotal : qty * cost, itCode: it ? it.code : null, oldQty: it ? Number(it.qty) || 0 : 0, oldCost: it ? Number(it.wholesalePrice) || 0 : 0, isNew: !it });
         });
         const res = origComplete.apply(this, arguments);
         if (window.__lastRestockAt === beforeAt || stockMovementLog.length <= logLen) return res;   // guarded / nothing valid: nothing was stocked
-        let exact = 0;
+        let exact = 0; const runCost = {};       // zip 269: the same item on two rows is averaged row after row, not twice against the same starting stock
         jobs.forEach((j) => {
             const p = j.itCode ? msItem(j.itCode) : msRowItem(j.r);
             exact += j.total;
             if (!p) return;
-            if (!j.isNew && p.costMethod !== 'last') p.wholesalePrice = msWac(j.oldQty, j.oldCost, j.qty, j.cost);
+            if (!j.isNew) { const st = runCost[p.code] || { q: j.oldQty, c: j.oldCost }; const w = msWac(st.q, st.c, j.qty, j.cost); if (p.costMethod !== 'last') p.wholesalePrice = w; runCost[p.code] = { q: st.q + j.qty, c: w }; }
             if (!j.isNew && p.dualUnit && p.unitsPerBox > 0 && p.pieceWholesalePrice !== undefined) p.pieceWholesalePrice = p.wholesalePrice / p.unitsPerBox;
             const pk = j.pu && j.pu.mode === 'pack';
-            const rec = { id: genSaleId(), at: new Date().toISOString(), ref, supplier, by: typeof activeServerName === 'function' ? activeServerName() : '', invUnit: j.unit,
+            const rec = { id: genSaleId(), batch: batchId, at: new Date().toISOString(), ref, supplier, by: typeof activeServerName === 'function' ? activeServerName() : '', invUnit: j.unit,
                 purchaseUnit: pk ? (j.pu.packName || 'Pack') : (j.pu && j.pu.mode !== 'inv' ? j.pu.mode : j.unit),
                 purchaseQty: pk ? (msNum(j.pu.packs) || 0) : (j.pu && j.pu.mode !== 'inv' ? msNum(j.pu.amt) : j.qty),
                 packSize: pk ? msNum(j.pu.packSize) || 0 : 0, loose: pk ? msNum(j.pu.loose) || 0 : 0, invQty: j.qty, totalCost: j.total, effUnitCost: j.cost };
@@ -388,29 +390,64 @@ function msSaleAdd() {
 })();
 
 /* ---------- 📊 Purchases report ---------- */
+// zip 269: PURCHASES - every restock is ONE purchase (supplier, reference, date, who, the lines and the total); this screen lists them for any period and
+// filters by supplier or text. The data is each item's own purchase history (item.purchases, 40 kept per item), so it syncs and follows the item.
+// Restocks made before this release carry no purchase id: they are grouped by the minute, reference and supplier they share.
+function msPurchaseDocs(days, supplier, q) {
+    const since = Date.now() - days * 86400000, docs = {}, needle = String(q || '').trim().toLowerCase();
+    inventory.forEach((p) => (Array.isArray(p.purchases) ? p.purchases : []).forEach((x) => {
+        if (!(Date.parse(x.at) >= since)) return;
+        const key = x.batch || (String(x.at || '').slice(0, 16) + '|' + (x.ref || '') + '|' + (x.supplier || ''));
+        const d = docs[key] || (docs[key] = { key, at: x.at, supplier: x.supplier || '', ref: x.ref || '', by: x.by || '', lines: [], total: 0 });
+        d.lines.push({ p, x }); d.total += Number(x.totalCost) || 0;
+        if (Date.parse(x.at) > Date.parse(d.at)) d.at = x.at;
+    }));
+    return Object.keys(docs).map((k) => docs[k]).filter((d) => (!supplier || d.supplier === supplier) && (!needle || [d.supplier, d.ref, d.by].concat(d.lines.map((l) => l.p.name + ' ' + (l.p.code || ''))).join(' ').toLowerCase().indexOf(needle) >= 0))
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+function msPurchasesCsv(docs) {
+    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const rows = [['Date', 'Supplier', 'Reference', 'By', 'Item', 'Code', 'Bought', 'Into stock', 'Paid', 'Per unit']];
+    docs.forEach((d) => d.lines.forEach(({ p, x }) => rows.push([String(d.at).slice(0, 16).replace('T', ' '), d.supplier, d.ref, d.by, p.name, p.code || '', msQtyStr(x.purchaseQty) + ' ' + (x.purchaseUnit || '') + (x.loose ? ' + ' + msQtyStr(x.loose) : ''), msQtyStr(x.invQty) + ' ' + (x.invUnit || ''), Math.round((Number(x.totalCost) || 0) * 100) / 100, Math.round((Number(x.effUnitCost) || 0) * 100) / 100])));
+    return rows.map((r) => r.map(q).join(',')).join('\r\n');
+}
+function msPurchasesDownload(days) {
+    const f = window.__msPurFilter || {}, docs = msPurchaseDocs(days || f.days || 30, f.supplier, f.q);
+    if (!docs.length) { try { showToast('Nothing to download for this period.', true); } catch (e) { /* no toast here */ } return; }
+    try {
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + msPurchasesCsv(docs)], { type: 'text/csv;charset=utf-8' }));
+        a.download = 'purchases-' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    } catch (e) { try { showToast('This browser could not save the file.', true); } catch (x) { /* ignore */ } }
+}
+function msPurchasesFilter(k, v) { window.__msPurFilter = Object.assign({}, window.__msPurFilter, { [k]: v }); msOpenPurchasesReport(); }
 function msOpenPurchasesReport(days) {
-    days = days || 30;
-    const since = Date.now() - days * 86400000, rows = [];
-    inventory.forEach((p) => (Array.isArray(p.purchases) ? p.purchases : []).forEach((x) => { if (Date.parse(x.at) >= since) rows.push({ p, x }); }));
-    rows.sort((a, b) => Date.parse(b.x.at) - Date.parse(a.x.at));
+    const f = window.__msPurFilter = Object.assign({ days: 30, supplier: '', q: '' }, window.__msPurFilter);
+    if (days) f.days = days; days = f.days;
+    const since = Date.now() - days * 86400000;
+    const allDocs = msPurchaseDocs(days, '', ''), docs = msPurchaseDocs(days, f.supplier, f.q);
+    const suppliers2 = Array.from(new Set(allDocs.map((d) => d.supplier).filter(Boolean))).sort();
     // what was sold in the same period (selling quantity, revenue, profit with the cost recorded on the sale line)
     const sold = {};
     try {
         (typeof salesLog !== 'undefined' ? salesLog : []).forEach((s) => {
             if (!s || s.voided || Date.parse(s.timestamp || s.date || 0) < since) return;
-            (s.items || s.lines || []).forEach((l) => { const k = String(l.code); const o = sold[k] || (sold[k] = { qty: 0, rev: 0, cost: 0 }); const q = Number(l.qty) || 0; o.qty += q; o.rev += q * (Number(l.price) || 0); o.cost += q * (Number(l.wholesalePrice) || 0); });
+            (s.items || s.lines || []).forEach((l) => { const k = String(l.code); const o = sold[k] || (sold[k] = { qty: 0, rev: 0, cost: 0 }); const q = Number(l.qty) || 0; o.qty += q; o.rev += q * (Number(l.price) || 0); o.cost += (typeof moneyLineCost === "function" ? moneyLineCost(l, s) : q * (Number(l.wholesalePrice) || 0)); });
         });
     } catch (e) { /* no sales log in this app */ }
-    const tot = rows.reduce((a, r) => a + (Number(r.x.totalCost) || 0), 0);
-    const per = {};
-    rows.forEach((r) => { per[r.p.code] = r.p; });
-    msModal(`<h3>📊 Purchases — last ${days} days</h3>
+    const tot = docs.reduce((a, d) => a + d.total, 0), per = {};
+    docs.forEach((d) => d.lines.forEach(({ p }) => { per[p.code] = p; }));
+    const when = (iso) => { const t = new Date(iso); return isFinite(t) ? t.toISOString().slice(0, 10) + ' ' + t.toTimeString().slice(0, 5) : ''; };
+    msModal(`<h3>🧾 Purchases</h3>
+        <div class="ms-btns" style="margin:6px 0 0;"><button class="ms-btn-main" onclick="msClose(); var b = document.querySelector('.tab-link[data-tab=&quot;restock-tab&quot;]'); if (b) b.click();">＋ Record a purchase</button><button class="ms-btn-alt" onclick="msPurchasesDownload()">⬇ Download CSV</button></div>
         <div class="ms-chips">${[7, 30, 90, 365].map((d) => `<button class="ms-chip${d === days ? ' on' : ''}" onclick="msOpenPurchasesReport(${d})">${d === 365 ? '1 year' : d + ' days'}</button>`).join('')}</div>
-        <div class="ms-result" style="margin-bottom:10px;">${rows.length} purchase${rows.length === 1 ? '' : 's'} · ${msEsc(msKes(tot))}</div>
-        <div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Date</th><th>Item</th><th>Bought</th><th>Into stock</th><th>Paid</th><th>Per unit</th></tr></thead><tbody>
-        ${rows.map(({ p, x }) => `<tr><td>${msEsc(String(x.at).slice(0, 10))}</td><td>${msEsc(p.name)}${x.ref ? `<div style="font-size:11px;color:#889;">${msEsc(x.ref)}${x.by ? ' · ' + msEsc(x.by) : ''}</div>` : ''}</td><td>${msEsc(msQtyStr(x.purchaseQty))} ${msEsc(x.purchaseUnit)}${x.loose ? ` + ${msEsc(msQtyStr(x.loose))}` : ''}</td><td>${msEsc(msQtyStr(x.invQty))} ${msEsc(x.invUnit)}</td><td>${msEsc(msKes(x.totalCost))}</td><td>${msEsc(msKes(x.effUnitCost))}</td></tr>`).join('') || '<tr><td colspan="6">No purchases recorded in this period.</td></tr>'}
-        </tbody></table></div>
-        ${Object.keys(per).length ? `<h4 style="margin:14px 0 4px;">Sold in the same period</h4><div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Item</th><th>Sold</th><th>Revenue</th><th>Profit</th><th>Cost now</th></tr></thead><tbody>${Object.keys(per).map((k) => { const p = per[k], o = sold[k] || { qty: 0, rev: 0, cost: 0 }; return `<tr><td>${msEsc(p.name)}</td><td>${msEsc(msQtyStr(o.qty))} ${msEsc(p.unit || 'pcs')}</td><td>${msEsc(msKes(o.rev))}</td><td>${msEsc(msKes(o.rev - o.cost))}</td><td>${msEsc(msKes(p.wholesalePrice))}/${msEsc(p.unit || 'pcs')}</td></tr>`; }).join('')}</tbody></table></div>` : ''}
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;"><select aria-label="Supplier" style="flex:1; min-width:130px;" onchange="msPurchasesFilter('supplier', this.value)"><option value="">All suppliers</option>${suppliers2.map((s) => `<option value="${msEsc(s)}"${s === f.supplier ? ' selected' : ''}>${msEsc(s)}</option>`).join('')}</select>
+            <input type="search" aria-label="Search purchases" placeholder="Search item, reference…" value="${msEsc(f.q)}" style="flex:2; min-width:150px;" onchange="msPurchasesFilter('q', this.value)"></div>
+        <div class="ms-result" style="margin:10px 0;">${docs.length} purchase${docs.length === 1 ? '' : 's'} · ${msEsc(msKes(tot))} into stock</div>
+        ${docs.length ? docs.map((d) => `<details style="border:1px solid var(--border,#cfd6dc); border-radius:10px; margin:6px 0; padding:8px 10px;"><summary style="cursor:pointer; font-weight:700; display:flex; gap:8px; flex-wrap:wrap; justify-content:space-between;"><span>${msEsc(when(d.at))} · ${msEsc(d.supplier || 'No supplier')}${d.ref ? ' · ' + msEsc(d.ref) : ''}</span><span>${msEsc(msKes(d.total))}</span></summary>
+            <div style="font-size:12px; color:#667; margin:4px 0;">${d.lines.length} item${d.lines.length === 1 ? '' : 's'}${d.by ? ' · by ' + msEsc(d.by) : ''}</div>
+            <div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Item</th><th>Bought</th><th>Into stock</th><th>Paid</th><th>Per unit</th></tr></thead><tbody>${d.lines.map(({ p, x }) => `<tr><td>${msEsc(p.name)}</td><td>${msEsc(msQtyStr(x.purchaseQty))} ${msEsc(x.purchaseUnit)}${x.loose ? ` + ${msEsc(msQtyStr(x.loose))}` : ''}</td><td>${msEsc(msQtyStr(x.invQty))} ${msEsc(x.invUnit)}</td><td>${msEsc(msKes(x.totalCost))}</td><td>${msEsc(msKes(x.effUnitCost))}</td></tr>`).join('')}</tbody></table></div></details>`).join('')
+            : `<p style="color:#667; margin:14px 0;">${f.supplier || f.q ? 'No purchase matches this search.' : 'No purchases recorded in this period. Use “Record a purchase” to add stock you bought — it updates the stock and its cost.'}</p>`}
+        ${Object.keys(per).length ? `<details style="margin-top:12px;"><summary style="cursor:pointer; font-weight:700;">Sold in the same period</summary><div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Item</th><th>Sold</th><th>Revenue</th><th>Profit</th><th>Cost now</th></tr></thead><tbody>${Object.keys(per).map((k) => { const p = per[k], o = sold[k] || { qty: 0, rev: 0, cost: 0 }; return `<tr><td>${msEsc(p.name)}</td><td>${msEsc(msQtyStr(o.qty))} ${msEsc(p.unit || 'pcs')}</td><td>${msEsc(msKes(o.rev))}</td><td>${msEsc(msKes(o.rev - o.cost))}</td><td>${msEsc(msKes(p.wholesalePrice))}/${msEsc(p.unit || 'pcs')}</td></tr>`; }).join('')}</tbody></table></div></details>` : ''}
         <div class="ms-btns"><button class="ms-btn-main" onclick="msClose()">Close</button></div>`);
 }
 </script>

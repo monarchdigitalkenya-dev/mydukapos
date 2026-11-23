@@ -11,14 +11,16 @@
 //   bill-aud:<reverse-time>:.. the audit trail (who changed what, when), plus bill-aud-c:<client>:.. per shop
 //   bill-refcode:<CODE>        referral code -> shop id
 //
-// shortcut: KV has no compare-and-set, so two simultaneous callbacks for ONE payment could both pass the idempotency check; the check is made as late as possible
-// and the second writer repeats the same values. Upgrade to a D1 unique key if payments ever arrive concurrently in practice.
+// zip 304: every payment event is ALSO one row of the Owner Console's single money record (owner_money in OWNER_DB, see _owner-money.js). When OWNER_DB is
+// bound that row is written FIRST and its primary key (the ref) decides "first time or not" atomically, so two simultaneous callbacks for ONE payment can
+// no longer both pass. Without OWNER_DB the old KV check is used (KV has no compare-and-set; the second writer repeats the same values).
 
 import {
   SETTINGS_KEY, DAY_MS, readSettings, forgetSettings, validateSettings, mergeSettings, describeEffect, normaliseSettings,
   subscriptionState, nextPaidThrough, allowances, pickOffers, offerStatus, discountOf, eatDateTime, enforcementOn,
 } from './_billing-core.js';
 import { PRODUCTS, getLicense, saveLicense, listClientSummaries, getBranchGroupMembers, randomToken } from './_license.js';
+import { recordMoney, rowFromBillingEvent, db as moneyDb, getRow as moneyRow, deleteFailedRow } from './_owner-money.js';
 
 export { readSettings as getSettings } from './_billing-core.js';
 
@@ -45,15 +47,39 @@ export async function listAudit(env, { clientId = '', cursor, limit = 60 } = {})
 }
 // One payment event, ONCE. -> { first: true } the first time this ref is seen, { first: false, prior } after.
 export async function claimRef(env, ref, evt = {}) {
-  const key = `bill-ref:${ref}`, seen = await env.mydukapos_kv.get(key);
-  if (seen) { let prior = null; try { prior = JSON.parse(seen); } catch (e) { /* marker only */ } return { first: false, prior }; }
+  const key = `bill-ref:${ref}`;
   const at = Date.now(), body = { ref, at, ...evt }, evtKey = `bill-evt:${rev(at)}:${ref}`.slice(0, 500);
+  const seen = await env.mydukapos_kv.get(key);
+  if (seen) {
+    let prior = null; try { prior = JSON.parse(seen); } catch (e) { /* marker only */ }
+    // an event from before zip 304 that has no money row yet gets one now, with its ORIGINAL date (same ref, so never twice)
+    if (prior && moneyDb(env)) { try { const old = rowFromBillingEvent(prior); if (old) await recordMoney(env, old); } catch (e) { /* the reconciliation import does it */ } }
+    return { first: false, prior };
+  }
+  let row = null; try { row = rowFromBillingEvent(body); } catch (e) { row = null; }
+  let moneyWritten = false;
+  if (row && moneyDb(env)) {
+    try {
+      const r = await recordMoney(env, row);
+      if (r.inserted) moneyWritten = true;
+      else {
+        // the row exists but the KV marker did not: either another request is finishing this very payment right now (seconds ago) -> it is that one's,
+        // or an earlier attempt stopped half way (a minute or more ago) -> this one finishes it, without adding the money row again
+        const ex = r.existing || await moneyRow(env, ref);
+        if (ex && Date.now() - Number(ex.updated_at || ex.created_at || 0) < 60000) return { first: false, prior: null };
+      }
+    } catch (e) { /* the owner database is unavailable: the KV check still applies, and the money row is added by the reconciliation import */ }
+  }
   await env.mydukapos_kv.put(key, JSON.stringify(body));
   await env.mydukapos_kv.put(evtKey, JSON.stringify(body));
-  return { first: true, evtKey };
+  if (row && !moneyDb(env)) { try { await recordMoney(env, row); moneyWritten = true; } catch (e) { /* imported later by the reconciliation */ } }
+  return { first: true, evtKey, moneyWritten };
 }
 // If the work after a claim fails (a storage error), the claim is withdrawn so the retry can finish the payment instead of finding it "already done".
-async function unclaim(env, ref, c) { try { await env.mydukapos_kv.delete(`bill-ref:${ref}`); if (c && c.evtKey) await env.mydukapos_kv.delete(c.evtKey); } catch (e) { /* the retry then reports a duplicate; the owner can fix by hand */ } }
+async function unclaim(env, ref, c) {
+  try { await env.mydukapos_kv.delete(`bill-ref:${ref}`); if (c && c.evtKey) await env.mydukapos_kv.delete(c.evtKey); } catch (e) { /* the retry then reports a duplicate; the owner can fix by hand */ }
+  try { if (c && c.moneyWritten) await deleteFailedRow(env, ref); } catch (e) { /* the row stays; the retry finds it and does not add it twice */ }
+}
 export async function listEvents(env, { cursor, limit = 60 } = {}) {
   const page = await env.mydukapos_kv.list({ prefix: 'bill-evt:', cursor: cursor || undefined, limit: Math.min(100, limit) });
   const rows = (await Promise.all(page.keys.map(async (k) => { try { return JSON.parse(await env.mydukapos_kv.get(k.name)); } catch (e) { return null; } }))).filter(Boolean);
@@ -226,7 +252,10 @@ export async function syncGroupBilling(env, main) {
 export async function completePurchase(env, record, ctx = {}) {
   const now = ctx.now || Date.now(), s = ctx.settings || await readSettings(env);
   const pid = ctx.purchase ? ctx.purchase.id : record.id, ref = `purchase:${pid}`;
-  const c = await claimRef(env, ref, { kind: 'purchase', clientId: record.id, amount: ctx.quote ? ctx.quote.total : ctx.amount || 0, method: ctx.method || '', receipt: ctx.receipt || '', data: { purchaseId: pid, referrerId: ctx.purchase && ctx.purchase.referral && ctx.purchase.referral.referrerId || '', offers: ctx.quote ? ctx.quote.discount.offers.map((x) => x.id) : [] } });
+  // zip 304: a link given away (free / test / internal) is recorded as complimentary: amount 0, never counted as a KES 3,000 sale
+  const comp = ctx.method === 'complimentary';
+  const listAmount = ctx.quote ? ctx.quote.total : ctx.amount || 0;
+  const c = await claimRef(env, ref, { kind: 'purchase', clientId: record.id, amount: comp ? 0 : listAmount, method: ctx.method || '', receipt: ctx.receipt || '', data: { purchaseId: pid, branch: !!ctx.parent, complimentary: comp || undefined, listAmount: comp ? listAmount : undefined, referrerId: ctx.purchase && ctx.purchase.referral && ctx.purchase.referral.referrerId || '', offers: ctx.quote ? ctx.quote.discount.offers.map((x) => x.id) : [] } });
   if (!c.first) return { dup: true };
   try {
   const live = isLive(s, now);
@@ -241,7 +270,7 @@ export async function completePurchase(env, record, ctx = {}) {
     if (!pa.purchases.includes(pid)) { pa.branches = (pa.branches || 0) + 1; pa.purchases = [pid, ...pa.purchases].slice(0, 100); parent.billing.addons = pa; parentDirty = true; }   // once per purchase, even on a retry
   } else if (parent) billing = newBilling(s, now, 'grandfathered');                       // a branch of a shop that predates billing stays exempt with it
   else billing = newBilling(s, now, live ? 'new' : 'grandfathered');
-  billing.history = pushCapped([], { ref, at: now, kind: parent ? 'branch-purchase' : 'purchase', amount: ctx.quote ? ctx.quote.total : ctx.amount || 0, quoted: ctx.quote ? ctx.quote.snapshot : undefined, method: ctx.method || '', receipt: ctx.receipt || '' }, 60);
+  billing.history = pushCapped([], { ref, at: now, kind: parent ? 'branch-purchase' : 'purchase', amount: comp ? 0 : listAmount, quoted: ctx.quote ? ctx.quote.snapshot : undefined, method: ctx.method || '', receipt: ctx.receipt || '' }, 60);
   record.billing = billing;
   await saveLicense(env, record);                                                          // the new shop's record first, then the main shop's allowance
   if (parentDirty) await saveLicense(env, parent);
@@ -502,6 +531,10 @@ export async function confirmManualRenewal(env, id, { cycles = 1, amount, receip
   const rec = await getLicense(env, id); if (!rec || !rec.billing || rec.billing.cohort !== 'new') return { ok: false, error: 'This shop has no subscription.' };
   const quote = await buildQuote(env, { kind: 'renewal', record: rec, cycles });
   // the same payment however many times it is pressed: tied to the shop's pending claim, or to a key the screen sends, or to a 15-second window (a double-click)
+  // zip 269: a renewal that was JUST recorded (a pending claim is deleted when it is applied, so a second press finds none and would start a new 15-second window) is never applied again
+  // by a second press: the owner is told to look at the paid-through date first. A key the screen sends (an explicit separate payment) skips this check.
+  const justNow = (rec.billing.history || []).some((h) => h && h.kind === 'renewal' && Date.now() - (h.at || 0) < 60000);
+  if (justNow && !key && !(rec.billing.claim && rec.billing.claim.id)) return { ok: false, error: 'A renewal was recorded for this shop less than a minute ago. Check its paid-through date first; if a second payment really was received, wait a minute and confirm again.' };
   const claimRefId = rec.billing.claim && rec.billing.claim.id ? `renewal:${rec.billing.claim.id}` : `renewal:manual:${id}:${String(key || Math.floor(Date.now() / 15000)).slice(0, 40)}`;
   const r = await applyRenewal(env, rec, { ref: claimRefId, quote, method: 'owner-confirmed', receipt: clampText(receipt, 40), amount: amount != null ? Number(amount) : quote.total });
   if (r.ok) await audit(env, { actor, action: 'confirm-renewal', clientId: id, note: `${cycles} cycle(s) ${note}`.trim(), after: { paidThrough: r.paidThrough } });

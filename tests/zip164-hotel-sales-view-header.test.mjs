@@ -14,7 +14,7 @@ const vals = (d) => [...d.querySelectorAll('#my-sales-list .my-bills-box')].map(
 test('static: Sales button sits next to Bills; header has Hide and a Show bar', async () => {
   const { w, d, close } = await app();
   const ids = [...d.querySelectorAll('#my-bills-bar button')].map((b) => b.id);
-  assert.deepEqual(ids, ['my-bills-toggle-btn', 'my-sales-toggle-btn']);
+  assert.deepEqual(ids.filter((x) => x !== 'grid-sort-btn'), ['my-bills-toggle-btn', 'my-sales-toggle-btn']);   // zip 360: the ↓ Sort button sits just after 💰 Sales (both shown)
   assert.ok(d.getElementById('hdr-hide-btn') && d.getElementById('hdr-show-btn'));
   close();
 });

@@ -1,0 +1,175 @@
+<!-- HMIS COUNTER (zip 336) -------------------------------------------------------------------------------------------------------
+     The hospital Sales Counter, laid out for a cashier who works on it all day. Nothing here sells, prices or saves anything: the same buttons,
+     ids and handlers, only arranged.
+       - Search first: the product search is the first thing in the left column (F2 / a barcode scan still go straight to it).
+       - One slim "patient billing" strip under it: the patient bill search on one line, then the Cashier requests and the Cashier queue as two
+         compact chips that open when someone is waiting (and stay as the cashier left them otherwise).
+       - Products without a picture are compact text tiles (name, price, stock) instead of big empty boxes; tiles with a picture keep it.
+       - Tablet and desktop (760 px and wider): the cart is a column of its own that stays in view while the product list scrolls; its totals,
+         payment method and COMPLETE SALE sit at the bottom of that column and never cover the cart lines. Phones keep the cart sheet.
+       - A cart line's dose (Dosage / quick dose chips) is folded into one "💊 Dose" line until it is needed.
+     Classes / ids: hc-*. -->
+<style id="hc-css">
+html body #sales-tab.hc-on .pos-products { display: flex; flex-direction: column; }
+html body #sales-tab.hc-on .pos-products > .search-container { order: -10; margin: 0 0 8px; }
+html body #sales-tab.hc-on #hc-strip { order: -9; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+html body #sales-tab.hc-on #hc-strip > * { margin: 0 !important; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-panel { flex: 1 1 100%; padding: 8px 10px !important; border-radius: 12px !important; background-color: #eef6fb; background-image: radial-gradient(rgba(41,128,185,.10) 1px, transparent 1px); background-size: 9px 9px; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-panel > label { font-size: 12px; margin: 0 0 4px !important; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-panel input { height: 38px; min-height: 0; font-size: 14px; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-panel button { height: 38px; min-height: 0; padding: 0 14px !important; white-space: nowrap; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-waiting:empty { display: none; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-waiting { margin-top: 6px !important; }
+html body #sales-tab.hc-on #hc-strip > * { box-sizing: border-box; max-width: 100%; }
+html body #sales-tab.hc-on #hc-strip #patient-bill-panel input { min-width: 0; }
+html body #sales-tab.hc-on #hc-strip > details:not([open]) { padding: 5px 12px !important; min-height: 0 !important; height: auto !important; }
+html body #sales-tab.hc-on #hc-strip > details:not([open]) > :not(summary) { display: none !important; }
+html body #sales-tab.hc-on #hc-strip > details { flex: 1 1 150px; padding: 6px 12px !important; border-radius: 12px; border: 1px solid var(--border-color, #d6e2ea); background: var(--bg-surface, #fff); }
+html body #sales-tab.hc-on #hc-strip > details[open] { flex-basis: 100%; }
+html body #sales-tab.hc-on #hc-strip > details > summary { font-size: 13.5px; font-weight: 800; padding: 3px 0; list-style-position: inside; }
+html body #sales-tab.hc-on #hc-strip > details.hc-busy > summary { color: #b03a2e; }
+html body #sales-tab.hc-on #hc-strip > details.hc-busy { border-color: #e6b0aa; background: #fdf2f1; }
+html body #sales-tab.hc-on .pos-left-foot { display: none; }
+/* compact tiles for products without a picture */
+html body #sales-tab.hc-on #item-image-grid { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)) !important; gap: 8px !important; }
+html body #sales-tab.hc-on #item-image-grid .item-grid-cell.hc-noimg .igc-noimg { display: none !important; }
+html body #sales-tab.hc-on #item-image-grid .item-grid-cell.hc-noimg { min-height: 74px; display: flex; flex-direction: column; justify-content: space-between; padding-top: 22px; background-color: var(--bg-surface, #fff); background-image: linear-gradient(135deg, rgba(30,122,74,.06), rgba(41,128,185,.05)); }
+html body #sales-tab.hc-on #item-image-grid .item-grid-cell.hc-noimg .igc-name { font-size: 13px !important; line-height: 1.25; min-height: 0 !important; padding: 2px 8px 0 !important; }
+html body #sales-tab.hc-on #item-image-grid .item-grid-cell.hc-noimg .igc-price { font-size: 13px !important; padding: 2px 8px 6px !important; }
+/* the dose of a cart line, folded */
+html body #sales-tab.hc-on details.hc-dose { margin-top: 4px; }
+html body #sales-tab.hc-on details.hc-dose > summary { cursor: pointer; font-size: 12px; font-weight: 700; color: #1b6e4a; list-style: none; display: inline-flex; gap: 4px; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(30,122,74,.10); }
+html body #sales-tab.hc-on details.hc-dose > summary::-webkit-details-marker { display: none; }
+html body #sales-tab.hc-on details.hc-dose[open] > summary { margin-bottom: 4px; }
+/* tablet + desktop: the cart is its own column that stays in view; checkout at its foot, never over the lines */
+@media (min-width: 760px) {
+  html body #sales-tab.hc-on .pos-grid { display: grid !important; grid-template-columns: minmax(0, 1.25fr) minmax(330px, 1fr) !important; gap: 12px !important; align-items: start; }
+  html body #sales-tab.hc-on #active-checkout-cart-panel { position: sticky; top: 8px; display: flex !important; flex-direction: column; max-height: calc((100vh - 16px) / var(--pos-z, 1)); overflow: hidden; }
+  html body #sales-tab.hc-on #active-checkout-cart-panel > .pos-cart-scroll, html body #sales-tab.hc-on #active-checkout-cart-panel > .table-scroll { flex: 1 1 auto; min-height: 120px; overflow: auto; }
+  html body #sales-tab.hc-on #active-checkout-cart-panel > #cart-sticky-bar { position: static !important; flex: 0 0 auto; margin-top: 8px; box-shadow: 0 -6px 14px rgba(0,0,0,.06); }
+  html body #sales-tab.hc-on #active-checkout-cart-panel > :not(#cart-sticky-bar):not(.pos-cart-scroll):not(.table-scroll) { flex: 0 0 auto; }
+}
+html body #sales-tab.hc-on #hc-strip #patient-bill-waiting.hc-none { display: none !important; }
+@media (min-width: 760px) { html body.hc-cart-col #mobile-cart-fab { display: none !important; } }
+@media (max-width: 759px) { html body #sales-tab.hc-on #hc-strip #patient-bill-panel > label { display: none; } }
+@media (min-width: 760px) and (max-width: 1099px) {
+  html body #sales-tab.hc-on .pos-grid { grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr) !important; }
+  html body #sales-tab.hc-on #item-image-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)) !important; }
+}
+
+/* ===== zip 345: ROOMY layout (class hc2). Bigger type, bigger touch targets, one clear card per cart line, totals that never get cut off. ===== */
+html body #sales-tab.hc-on.hc2 .panel { padding: 18px; }
+html body #sales-tab.hc-on.hc2 .pos-products > .search-container input[type="text"], html body #sales-tab.hc-on.hc2 #sales-search { height: 50px; min-height: 50px; font-size: 16px; border-radius: 14px; padding-left: 16px; }
+html body #sales-tab.hc-on.hc2 .pos-products > .search-container button { height: 50px; min-width: 50px; font-size: 15px; border-radius: 14px; }
+html body #sales-tab.hc-on.hc2 #hc-strip { gap: 10px; margin-bottom: 14px; }
+html body #sales-tab.hc-on.hc2 #hc-strip #patient-bill-panel { padding: 12px 14px !important; }
+html body #sales-tab.hc-on.hc2 #hc-strip #patient-bill-panel > label { font-size: 13.5px; font-weight: 700; margin-bottom: 8px !important; }
+html body #sales-tab.hc-on.hc2 #hc-strip #patient-bill-panel input { height: 46px; font-size: 16px; }
+html body #sales-tab.hc-on.hc2 #hc-strip #patient-bill-panel button { height: 46px; font-size: 15px; padding: 0 20px !important; }
+html body #sales-tab.hc-on.hc2 #hc-strip > details > summary { font-size: 15px; padding: 6px 0; }
+html body #sales-tab.hc-on.hc2 #item-image-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)) !important; gap: 12px !important; }
+html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell, html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell.hc-noimg { min-height: 104px; padding: 30px 14px 12px; border-radius: 14px; justify-content: space-between; }
+html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell:hover { border-color: var(--accent, #0b7a5f); box-shadow: 0 4px 14px rgba(11,122,95,.18); }
+html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell:active { transform: scale(.98); }
+html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell .igc-name, html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell.hc-noimg .igc-name { font-size: 15.5px !important; font-weight: 700; line-height: 1.3; padding: 0 !important; }
+html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell .igc-price, html body #sales-tab.hc-on.hc2 #item-image-grid .item-grid-cell.hc-noimg .igc-price { font-size: 16px !important; font-weight: 800; padding: 6px 0 0 !important; }
+html body #sales-tab.hc-on.hc2 #item-image-grid .igc-stock { font-size: 12px; padding: 3px 9px; border-radius: 999px; top: 8px; left: 8px; }
+/* the cart: one card per line */
+html body #sales-tab.hc-on.hc2 #active-checkout-cart-panel > h3 { font-size: 18px; margin-bottom: 10px; }
+html body #sales-tab.hc-on.hc2 .order-type-toggle button, html body #sales-tab.hc-on.hc2 #order-type-toggle button { height: 46px; font-size: 15px; }
+html body #sales-tab.hc-on.hc2 #sales-location-select { height: 46px; font-size: 15px; }
+html body #sales-tab.hc-on.hc2 #cart-table { display: block; border: 0; background: transparent; width: 100%; }
+html body #sales-tab.hc-on.hc2 #cart-table thead { display: none; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody { display: block; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr:has(> td:nth-child(5)) { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "nm nm rm" "qt pr tt"; gap: 12px 14px; align-items: center; padding: 14px; margin: 0 0 12px; border: 1px solid var(--border-color, #d6e2ea); border-radius: 14px; background: var(--bg-surface, #fff); box-shadow: 0 1px 3px rgba(16,39,42,.06); }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td { display: block; padding: 0; border: 0; background: transparent; min-width: 0; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td:nth-child(1) { grid-area: nm; font-size: 16.5px; font-weight: 700; line-height: 1.3; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td:nth-child(2) { grid-area: qt; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td:nth-child(3) { grid-area: pr; justify-self: start; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td:nth-child(4) { grid-area: tt; font-size: 17px; font-weight: 800; text-align: right; white-space: nowrap; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td:nth-child(5) { grid-area: rm; justify-self: end; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr > td.empty-state { grid-column: 1 / -1; grid-area: auto; text-align: center; padding: 34px 10px; font-size: 15px; }
+html body #sales-tab.hc-on.hc2 #cart-table tbody tr:has(> td.empty-state) { display: block; border-style: dashed; box-shadow: none; background: transparent; }
+html body #sales-tab.hc-on.hc2 #cart-table .qty-controls { display: inline-flex; align-items: center; gap: 6px; }
+html body #sales-tab.hc-on.hc2 #cart-table .qty-controls button { width: 40px; height: 40px; min-height: 40px; font-size: 20px; border-radius: 10px; padding: 0; }
+html body #sales-tab.hc-on.hc2 #cart-table .qty-controls input { width: 64px !important; height: 40px; min-height: 40px; font-size: 16px; font-weight: 700; text-align: center; border-radius: 10px; }
+html body #sales-tab.hc-on.hc2 #cart-table .qty-controls span { font-size: 13px !important; }
+html body #sales-tab.hc-on.hc2 #cart-table .remove-btn { height: 34px; padding: 0 12px; font-size: 13px; border-radius: 999px; }
+html body #sales-tab.hc-on.hc2 #cart-table .cart-price-chip { min-height: 40px; padding: 4px 10px; }
+html body #sales-tab.hc-on.hc2 details.hc-dose > summary { font-size: 13px; padding: 4px 12px; }
+html body #sales-tab.hc-on.hc2 details.hc-dose input.cart-dosage-input { width: 100%; height: 42px; font-size: 15px; margin-top: 6px; }
+html body #sales-tab.hc-on.hc2 details.hc-dose .dose-chip { padding: 8px 14px; font-size: 14px; }
+/* totals, payment method, complete sale */
+html body #sales-tab.hc-on.hc2 #cart-sticky-bar .cart-total-box, html body #sales-tab.hc-on.hc2 #cart-sticky-bar [class*="total-grid"], html body #sales-tab.hc-on.hc2 #cart-sticky-bar .pos-money { gap: 8px; }
+html body #sales-tab.hc-on.hc2 #cart-sticky-bar button { min-height: 48px; font-size: 15px; }
+html body #sales-tab.hc-on.hc2 #cart-sticky-bar input, html body #sales-tab.hc-on.hc2 #cart-sticky-bar select { min-height: 46px; font-size: 16px; }
+html body #sales-tab.hc-on.hc2 #cart-sticky-bar #cc-actions > #main-checkout-btn { min-height: 56px; font-size: 17px; border-radius: 14px; }
+html body.hmu #sales-tab.hc-on.hc2 #hmu-pay { grid-template-columns: 1.5fr 1fr 1.25fr 1fr; }
+html body.hmu #sales-tab.hc-on.hc2 #hmu-pay > div { padding: 8px 9px; }
+html body.hmu #sales-tab.hc-on.hc2 #hmu-pay b { font-size: 14.5px; text-overflow: clip; }
+html body.hmu #sales-tab.hc-on.hc2 #hmu-pay .hmu-due b { font-size: 18px; }
+html body.hmu #sales-tab.hc-on.hc2 #hmu-pay .hmu-due { cursor: pointer; }
+@media (min-width: 760px) { html body #sales-tab.hc-on.hc2 #cart-sticky-bar #cart-grand-total { display: none; } }
+@media (max-width: 520px) { html body.hmu #sales-tab.hc-on.hc2 #hmu-pay { grid-template-columns: repeat(2, minmax(0, 1fr)); } html body.hmu #sales-tab.hc-on.hc2 #hmu-pay b { font-size: 16px; } }
+@media (min-width: 900px) {
+  html body #sales-tab.hc-on.hc2 .pos-grid { grid-template-columns: minmax(0, 1fr) minmax(430px, 480px) !important; gap: 16px !important; }
+}
+@media (max-width: 759px) {
+  html body #sales-tab.hc-on.hc2 #item-image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  html body #sales-tab.hc-on.hc2 #cart-table tbody tr:has(> td:nth-child(5)) { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "nm rm" "qt tt" "pr pr"; }
+}
+</style>
+<script id="hc-js">
+(function () {
+    'use strict';
+    if (window.__hc) return; window.__hc = true;
+    function $(id) { return document.getElementById(id); }
+    var seen = { rq: -1, st: -1 };
+    function count(el) { var m = /(\d+)\s+waiting/.exec(el ? el.textContent : ''); return m ? Number(m[1]) : 0; }
+    function arrange() {
+        var tab = $('sales-tab'); if (!tab) return;
+        var prod = tab.querySelector('.pos-products') || tab.querySelector('.pos-grid > .panel');
+        if (!prod) return;
+        tab.classList.add('hc-on', 'hc2');
+        var strip = $('hc-strip');
+        if (!strip) { strip = document.createElement('div'); strip.id = 'hc-strip'; prod.insertBefore(strip, prod.firstChild); }
+        var bill = $('patient-bill-panel'), rq = $('rq-queue'), stw = $('sales-station-wrap');
+        // always: the bill search, then the requests chip, then the queue chip (the requests list is created later by its own block)
+        var want = [bill, rq, stw].filter(Boolean);
+        if (want.some(function (el, i) { return strip.children[i] !== el; })) want.forEach(function (el) { strip.appendChild(el); });
+        var wait = $('patient-bill-waiting'); if (wait) wait.classList.toggle('hc-none', /^\s*No unpaid/i.test(wait.textContent || ''));
+        document.body.classList.add('hc-cart-col');
+        var due = document.querySelector('#hmu-pay .hmu-due'); if (due && !due.__q) { due.__q = 1; due.title = 'Tap to quote a custom price for the whole sale'; due.addEventListener('click', function () { try { if (typeof openCartTotalQuoteEditor === 'function') openCartTotalQuoteEditor(); } catch (e) { /* ignore */ } }); }
+        // open a chip when someone starts waiting; close it once nobody is; leave it as the cashier set it otherwise
+        [['rq', rq, $('rq-queue-sum')], ['st', stw, $('sales-station-summary')]].forEach(function (x) {
+            if (!x[1]) return;
+            var n = count(x[2]);
+            if (n !== seen[x[0]]) { x[1].open = n > 0; seen[x[0]] = n; }
+            x[1].classList.toggle('hc-busy', n > 0);
+        });
+        // tiles without a picture -> compact
+        var grid = $('item-image-grid');
+        if (grid) Array.prototype.forEach.call(grid.querySelectorAll('.item-grid-cell'), function (c) { var noimg = !c.querySelector('img') && !!c.querySelector('.igc-noimg'); if (c.classList.contains('hc-noimg') !== noimg) c.classList.toggle('hc-noimg', noimg); });
+    }
+    // the dose of a cart line, folded behind one "💊 Dose" line (open while the cashier is using it)
+    var openDose = {};
+    window.hcDoseToggle = function (key, open) { if (open) openDose[key] = 1; else delete openDose[key]; };
+    function wrapDose() {
+        if (typeof window.cartLineDoseHtml !== 'function' || window.cartLineDoseHtml.__hc) return;
+        var orig = window.cartLineDoseHtml;
+        var f = function (line) {
+            var h = orig.apply(this, arguments);
+            if (!h || !line) return h;
+            var k = String(line.cartKey || line.code), ka = k.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            var d = String(line.dosage || '').replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+            return '<details class="hc-dose"' + (openDose[k] ? ' open' : '') + ' ontoggle="hcDoseToggle(\'' + ka + '\', this.open)"><summary>💊 ' + (d ? d : 'Dose') + '</summary>' + h + '</details>';
+        };
+        f.__hc = true; window.cartLineDoseHtml = f;
+        try { if (typeof renderCart === 'function') renderCart(); } catch (e) { /* drawn on the next change */ }
+    }
+    function run() { try { arrange(); wrapDose(); } catch (e) { /* next time */ } }
+    run();
+    document.addEventListener('DOMContentLoaded', run);
+    setInterval(function () { var t = $('sales-tab'); if (t && t.classList.contains('active')) run(); }, 900);
+})();
+</script>

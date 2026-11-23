@@ -1,0 +1,880 @@
+<!-- HMIS RX (zip 359) ------------------------------------------------------------------------------------------------------------
+     Prescribing help on the consultation screen, all preloaded (works offline, nothing to configure):
+       1. "Suggested medicines" for the diagnosis / ICD-10 code: tap a chip to add it (doctor can still pick any medicine manually).
+       2. Safety checker under the medicine rows: allergy match (incl. drug-family cross-matches), drug-drug interactions, duplicate
+          therapy, and pregnancy / child cautions. Serious alerts ask for a confirmation before the visit is saved.
+     DECISION SUPPORT ONLY — not exhaustive, never replaces clinical judgement, the product label or a pharmacist.
+     Suggested doses are common adult starting points: always adjust for age, weight, pregnancy, kidney and liver function.
+------------------------------------------------------------------------------------------------------------------------------- -->
+<style id="hrx-style">
+#hrx-sugg{margin:4px 0 10px;border:1px solid #c9d8ee;border-left:4px solid #2e6fd6;background:linear-gradient(180deg,#f5f9ff,#eef4fd);border-radius:10px;padding:9px 11px;font-size:13px}
+#hrx-sugg .hrx-h{font-weight:700;color:#1d4f9f;margin-bottom:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#hrx-sugg .hrx-h small{font-weight:400;color:#6b7c93}
+.hrx-chip{display:inline-flex;align-items:center;gap:5px;margin:3px 5px 3px 0;padding:6px 10px;border-radius:18px;border:1px solid #9db9e6;background:#fff;color:#18407f;font-size:12.5px;cursor:pointer;font-family:inherit;line-height:1.2}
+.hrx-chip{min-height:36px;text-align:left}@media (pointer:coarse){.hrx-chip{min-height:44px;padding:8px 12px}}
+.hrx-chip:hover{background:#e6f0ff}
+.hrx-chip.off{border-style:dashed;color:#7a4b9c;border-color:#c3a3dc}
+.hrx-chip.alg{background:#fdecec;border-color:#e8a1a1;color:#7d1f16}
+.hrx-chip.on{background:#e3f6e9;border-color:#7cc596;color:#1c6a3a;cursor:default}
+.hrx-chip i{font-style:normal;font-size:11px;color:#6b7c93}
+#hrx-alerts{margin:6px 0 10px}
+.hrx-al{border-radius:10px;padding:8px 11px;margin:5px 0;font-size:13px;line-height:1.35;border:1px solid;border-left-width:5px}
+.hrx-al b{display:block;margin-bottom:1px}
+.hrx-al.major{background:#fdecec;border-color:#e8a1a1;border-left-color:#c0392b;color:#7d1f16}
+.hrx-al.mod{background:#fff6e5;border-color:#f0cd8a;border-left-color:#e08e0b;color:#7a4d06}
+.hrx-al.minor{background:#eef3f8;border-color:#c8d5e2;border-left-color:#7a93ad;color:#3b4d60}
+.hrx-ok{background:#e9f7ee;border:1px solid #a6d9b6;border-left:5px solid #2f9e57;color:#1c6a3a;border-radius:10px;padding:7px 11px;font-size:12.5px}
+.hrx-foot{font-size:11px;color:#7b8794;margin-top:4px}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.hrx) return;
+
+  /* ---------- 1. DIAGNOSIS -> SUGGESTED MEDICINES ---------------------------------------------------------------------------
+     k  = words/phrases that may appear in the diagnosis text      c = ICD-10 code prefixes
+     m  = [ catalogue search words (| = alternatives), dosage text ]                                                       */
+  var DX = [
+    { n: 'Malaria (uncomplicated)', k: ['malaria'], c: ['B50', 'B51', 'B52', 'B53', 'B54'], m: [
+      ['artemether', 'Artemether/Lumefantrine 80/480 mg (adult >35 kg): 4 tabs at 0, 8, 24, 36, 48, 60 h (6 doses, with fatty food/milk)'],
+      ['paracetamol', '1 g every 6-8 h when needed for fever (max 4 g/day)']] },
+    { n: 'Severe malaria', k: ['severe malaria', 'cerebral malaria'], c: [], m: [
+      ['artesunate', 'Artesunate 2.4 mg/kg IV/IM at 0, 12, 24 h then daily - REFER / admit'],
+      ['dextrose', '5-10% dextrose IV if hypoglycaemic']] },
+    { n: 'Upper respiratory tract infection / common cold', k: ['upper respiratory', 'urti', 'common cold', 'cold', 'rhinitis', 'coryza'], c: ['J00', 'J06'], m: [
+      ['paracetamol', '1 g every 6-8 h when needed (max 4 g/day)'],
+      ['cetirizine|chlorpheniramine|loratadine', '10 mg at night for 3-5 days'],
+      ['sodium chloride nasal|nasal drops', 'Saline nose drops 2-3 drops each nostril as needed']] },
+    { n: 'Tonsillitis / pharyngitis', k: ['tonsillitis', 'pharyngitis', 'sore throat', 'strep'], c: ['J02', 'J03'], m: [
+      ['amoxicillin|phenoxymethylpenicillin|penicillin v', 'Amoxicillin 500 mg every 8 h for 7 days (10 days if streptococcal)'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['ibuprofen', '400 mg every 8 h after food for 3 days']] },
+    { n: 'Sinusitis', k: ['sinusitis'], c: ['J01', 'J32'], m: [
+      ['amoxicillin', '500 mg every 8 h for 5-7 days'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['sodium chloride nasal|nasal drops', 'Saline nasal rinse/drops as needed']] },
+    { n: 'Pneumonia (community-acquired)', k: ['pneumonia', 'lower respiratory', 'lrti', 'chest infection'], c: ['J12', 'J13', 'J14', 'J15', 'J18', 'J22'], m: [
+      ['amoxicillin', '1 g every 8 h for 5-7 days (child: 40-50 mg/kg/day in 2-3 doses)'],
+      ['azithromycin|erythromycin|doxycycline', 'Add azithromycin 500 mg daily for 3 days if atypical cover needed'],
+      ['paracetamol', '1 g every 6-8 h when needed']] },
+    { n: 'Bronchitis (acute)', k: ['bronchitis'], c: ['J20', 'J21'], m: [
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['salbutamol 4 mg|salbutamol', 'Salbutamol 2-4 mg every 6-8 h if wheezy'],
+      ['amoxicillin', 'Only if bacterial infection suspected: 500 mg every 8 h for 5 days']] },
+    { n: 'Asthma', k: ['asthma', 'wheez', 'bronchospasm'], c: ['J45', 'J46'], m: [
+      ['salbutamol 100 mcg|salbutamol', 'Salbutamol inhaler 2 puffs (100 mcg each) every 4-6 h when needed; nebulise in acute attack'],
+      ['prednisolone', 'Prednisolone 40 mg daily for 5 days in acute attack'],
+      ['beclomethasone|budesonide', 'Inhaled steroid 1-2 puffs twice daily for control']] },
+    { n: 'Cough', k: ['cough'], c: ['R05'], m: [
+      ['cough', 'Cough syrup 5-10 ml three times daily'],
+      ['salbutamol 4 mg|salbutamol', '2-4 mg every 8 h if wheezy'],
+      ['paracetamol', '1 g every 6-8 h when needed']] },
+    { n: 'Pulmonary tuberculosis', k: ['tuberculosis', ' tb ', 'pulmonary tb'], c: ['A15', 'A16', 'A17', 'A18', 'A19'], m: [
+      ['rifampicin|rhze|isoniazid', 'Use national TB programme fixed-dose regimen (2RHZE/4RH) - register at TB clinic'],
+      ['pyridoxine', '10-25 mg daily with isoniazid']] },
+    { n: 'Hypertension', k: ['hypertension', 'high blood pressure', 'htn'], c: ['I10', 'I11', 'I12', 'I13', 'I15'], m: [
+      ['amlodipine', '5 mg once daily (up to 10 mg)'],
+      ['losartan|enalapril|lisinopril|telmisartan', 'Enalapril 5-10 mg or losartan 50 mg once daily (not in pregnancy)'],
+      ['hydrochlorothiazide', '12.5-25 mg once daily in the morning'],
+      ['atenolol|bisoprolol', 'Atenolol 50 mg or bisoprolol 5 mg once daily']] },
+    { n: 'Heart failure', k: ['heart failure', 'cardiac failure', 'chf'], c: ['I50'], m: [
+      ['furosemide|frusemide', '40 mg once or twice daily (adjust to fluid status)'],
+      ['enalapril|lisinopril|ramipril|captopril', 'Enalapril 2.5-10 mg twice daily'],
+      ['spironolactone', '25 mg once daily (check potassium and creatinine)'],
+      ['bisoprolol|carvedilol', 'Start low (bisoprolol 1.25 mg daily) when stable']] },
+    { n: 'Angina / ischaemic heart disease', k: ['angina', 'ischaemic heart', 'ischemic heart', 'coronary'], c: ['I20', 'I24', 'I25'], m: [
+      ['aspirin', '75-150 mg once daily'],
+      ['atorvastatin|simvastatin', 'Atorvastatin 20-40 mg at night'],
+      ['isosorbide|glyceryl|nitroglycerin', 'GTN 0.5 mg sublingual when needed'],
+      ['atenolol|bisoprolol', 'Beta-blocker once daily']] },
+    { n: 'Type 2 diabetes mellitus', k: ['diabetes', 'dm type 2', 'type 2 dm', 't2dm', 'hyperglycaemia', 'hyperglycemia'], c: ['E11', 'E14', 'E13'], m: [
+      ['metformin', '500 mg twice daily with meals, titrate to 1 g twice daily'],
+      ['glibenclamide|gliclazide|glimepiride', 'Gliclazide 40-80 mg daily (watch hypoglycaemia)'],
+      ['insulin', 'Insulin per glucose control - doctor to set dose']] },
+    { n: 'Type 1 diabetes / diabetic ketoacidosis', k: ['type 1 diabetes', 'dka', 'ketoacidosis'], c: ['E10'], m: [
+      ['insulin', 'Insulin regimen per protocol - admit/refer for DKA'],
+      ['normal saline|sodium chloride 0.9%', '0.9% sodium chloride IV resuscitation per protocol']] },
+    { n: 'Hypoglycaemia', k: ['hypoglyc'], c: ['E16'], m: [
+      ['dextrose|glucose', '50% dextrose 50 ml IV slowly (child: 5 ml/kg of 10%) or oral glucose if awake']] },
+    { n: 'Urinary tract infection', k: ['urinary tract infection', 'uti', 'cystitis', 'pyelonephritis'], c: ['N30', 'N39', 'N10', 'N12'], m: [
+      ['ciprofloxacin|nitrofurantoin|cotrimoxazole|trimethoprim', 'Nitrofurantoin 100 mg twice daily x5 days, or ciprofloxacin 500 mg twice daily x3-7 days (avoid in pregnancy)'],
+      ['amoxicillin', 'Amoxicillin 500 mg every 8 h x5-7 days if sensitive / pregnancy-safe option'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['potassium citrate|sodium bicarbonate|alkalin', 'Urine alkaliniser sachet 3 times daily for 3 days if available']] },
+    { n: 'Gastroenteritis / diarrhoea', k: ['gastroenteritis', 'diarrhoea', 'diarrhea', 'loose stool'], c: ['A09', 'A08', 'A00', 'K52'], m: [
+      ['oral rehydration|ors', 'ORS after each loose stool (adult 200-400 ml; child 50-100 ml)'],
+      ['zinc', 'Zinc 20 mg daily for 10 days (child <6 months 10 mg)'],
+      ['ondansetron', '4-8 mg when needed for vomiting']] },
+    { n: 'Amoebiasis / giardiasis', k: ['amoeb', 'amoeba', 'giardia', 'dysentery'], c: ['A06', 'A07', 'A03'], m: [
+      ['metronidazole', '400-800 mg three times daily for 5-7 days (with food; avoid alcohol)'],
+      ['oral rehydration|ors', 'ORS to prevent dehydration']] },
+    { n: 'Typhoid fever', k: ['typhoid', 'enteric fever'], c: ['A01'], m: [
+      ['ciprofloxacin|azithromycin|ceftriaxone', 'Azithromycin 1 g day 1 then 500 mg daily x6 days, or ciprofloxacin 500 mg twice daily x7-10 days'],
+      ['paracetamol', '1 g every 6-8 h when needed']] },
+    { n: 'Intestinal worms (helminths)', k: ['worm', 'helminth', 'ascaris', 'hookworm', 'trichuris', 'strongyloid'], c: ['B76', 'B77', 'B79', 'B78', 'B80', 'B81', 'B82'], m: [
+      ['albendazole|mebendazole', 'Albendazole 400 mg single dose (child >2 y); repeat in 2-4 weeks if needed']] },
+    { n: 'Peptic ulcer / gastritis / dyspepsia', k: ['peptic ulcer', 'gastritis', 'dyspepsia', 'ulcer', 'epigastric', 'heartburn', 'gerd', 'reflux'], c: ['K21', 'K25', 'K26', 'K29', 'K30'], m: [
+      ['omeprazole|esomeprazole|pantoprazole', 'Omeprazole 20-40 mg once daily before breakfast for 4-8 weeks'],
+      ['antacid|aluminium|magnesium', '10 ml or 1-2 tablets after meals and at bedtime when needed'],
+      ['amoxicillin', 'H. pylori triple therapy: amoxicillin 1 g + clarithromycin 500 mg + PPI, all twice daily x7-14 days'],
+      ['clarithromycin', 'See triple therapy above']] },
+    { n: 'Constipation', k: ['constipation'], c: ['K59'], m: [
+      ['lactulose|bisacodyl|senna', 'Lactulose 15 ml twice daily or bisacodyl 5-10 mg at night']] },
+    { n: 'Nausea and vomiting', k: ['vomiting', 'nausea', 'emesis'], c: ['R11'], m: [
+      ['ondansetron|metoclopramide|promethazine', 'Ondansetron 4-8 mg every 8 h when needed'],
+      ['oral rehydration|ors', 'ORS sips to prevent dehydration']] },
+    { n: 'Haemorrhoids / anal fissure', k: ['haemorrhoid', 'hemorrhoid', 'piles', 'fissure'], c: ['K60', 'K64'], m: [
+      ['lactulose|bisacodyl', 'Stool softener to avoid straining'],
+      ['haemorrhoid|hydrocortisone 1%', 'Haemorrhoid cream/suppository twice daily x5-7 days']] },
+    { n: 'Anaemia (iron deficiency)', k: ['anaemia', 'anemia'], c: ['D50', 'D51', 'D52', 'D53', 'D64'], m: [
+      ['ferrous|iron', 'Ferrous sulphate 200 mg (65 mg iron) twice or three times daily, 3 months'],
+      ['folic', 'Folic acid 5 mg daily'],
+      ['vitamin c 500', '250 mg daily to aid iron absorption']] },
+    { n: 'Pain / headache / fever', k: ['headache', 'migraine', 'fever', 'pyrexia', 'pain', 'myalgia', 'body ache'], c: ['R50', 'R51', 'G43', 'G44', 'R52', 'M79'], m: [
+      ['paracetamol', '1 g every 6-8 h when needed (max 4 g/day)'],
+      ['ibuprofen|diclofenac', 'Ibuprofen 400 mg every 8 h after food for 3-5 days']] },
+    { n: 'Back pain / arthritis / sprain', k: ['back pain', 'arthritis', 'osteoarthritis', 'sprain', 'strain', 'arthralgia', 'joint pain', 'sciatica', 'lumbago', 'rheumat'], c: ['M54', 'M15', 'M16', 'M17', 'M19', 'M25', 'M06', 'S93', 'M13'], m: [
+      ['diclofenac|ibuprofen|naproxen', 'Diclofenac 50 mg twice daily after food for 5-7 days (with omeprazole if risk of ulcer)'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['diclofenac gel|gel|ointment', 'Topical NSAID gel to affected area 2-3 times daily'],
+      ['omeprazole', '20 mg daily while on NSAID']] },
+    { n: 'Gout', k: ['gout'], c: ['M10', 'M1A'], m: [
+      ['diclofenac|naproxen|indomethacin|ibuprofen', 'Naproxen 500 mg twice daily or indomethacin 50 mg three times daily for 5-7 days'],
+      ['colchicine', 'Colchicine 0.5 mg 2-3 times daily (acute)'],
+      ['allopurinol', 'Allopurinol 100 mg daily AFTER the attack settles (not during)']] },
+    { n: 'Skin: bacterial infection (impetigo, cellulitis, abscess, boil)', k: ['impetigo', 'cellulitis', 'abscess', 'boil', 'furuncle', 'wound infection', 'skin infection', 'infected wound'], c: ['L01', 'L02', 'L03', 'L08', 'T14'], m: [
+      ['flucloxacillin|cloxacillin|amoxicillin', 'Flucloxacillin/cloxacillin 500 mg every 6 h for 5-7 days'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['povidone|chlorhexidine|silver', 'Clean wound/dressing daily']] },
+    { n: 'Skin: fungal (tinea, candidiasis, ringworm)', k: ['tinea', 'ringworm', 'fungal', 'candid', 'thrush', 'athlete'], c: ['B35', 'B36', 'B37'], m: [
+      ['clotrimazole|miconazole|ketoconazole', 'Apply twice daily for 2-4 weeks'],
+      ['fluconazole', 'Fluconazole 150 mg single dose (vaginal/oral thrush) or 50 mg daily for 7-14 days'],
+      ['griseofulvin|terbinafine', 'For extensive/scalp tinea: per prescriber']] },
+    { n: 'Scabies / lice', k: ['scabies', 'lice', 'pediculosis'], c: ['B85', 'B86'], m: [
+      ['benzyl benzoate|permethrin|sulphur', 'Apply to whole body from neck down, leave 24 h (repeat in 7 days); treat contacts'],
+      ['cetirizine|chlorpheniramine|piriton', 'Antihistamine at night for itching']] },
+    { n: 'Eczema / dermatitis / allergic skin reaction', k: ['eczema', 'dermatitis', 'urticaria', 'rash', 'allergic', 'pruritus', 'itch'], c: ['L20', 'L23', 'L30', 'L50', 'L29', 'T78'], m: [
+      ['hydrocortisone 1%|betamethasone|clobetasol', 'Hydrocortisone 1% (face/folds) or betamethasone cream (body) thinly twice daily, 1-2 weeks'],
+      ['cetirizine|chlorpheniramine|loratadine', '10 mg at night'],
+      ['emollient|petroleum|vaseline|aqueous', 'Emollient several times daily']] },
+    { n: 'Burns (minor)', k: ['burn', 'scald'], c: ['T20', 'T21', 'T22', 'T23', 'T24', 'T25', 'T30'], m: [
+      ['silver sulf|silverex|flamazine|burn', 'Silver sulfadiazine cream daily after cleaning'],
+      ['paracetamol', '1 g every 6 h for pain'],
+      ['tetanus', 'Tetanus toxoid if not up to date']] },
+    { n: 'Wound / laceration / injury', k: ['wound', 'laceration', 'cut', 'injury', 'trauma', 'bite', 'fracture'], c: ['S01', 'S61', 'T14', 'W54'], m: [
+      ['tetanus', 'Tetanus toxoid 0.5 ml IM if not vaccinated within 5-10 years'],
+      ['amoxicillin|co-amoxiclav|augmentin', 'Antibiotic cover for contaminated/bite wounds'],
+      ['paracetamol|diclofenac|ibuprofen', 'Analgesia as needed'],
+      ['lignocaine 2%|lidocaine', 'Local anaesthetic for suturing']] },
+    { n: 'Eye: conjunctivitis', k: ['conjunctivitis', 'red eye', 'pink eye'], c: ['H10'], m: [
+      ['chloramphenicol eye|tetracycline eye|gentamicin eye', 'Eye drops/ointment 1 drop every 2-4 h (ointment 3 times daily) for 5-7 days'],
+      ['cetirizine|chlorpheniramine|olopatadine', 'Antihistamine if allergic']] },
+    { n: 'Ear: otitis media / externa', k: ['otitis', 'ear infection', 'earache', 'ear pain'], c: ['H60', 'H65', 'H66'], m: [
+      ['amoxicillin', '500 mg every 8 h for 5-7 days (child 40 mg/kg/day)'],
+      ['paracetamol', '1 g every 6-8 h when needed'],
+      ['ciprofloxacin ear|gentamicin ear|ear drops', 'Ear drops 3-4 drops 3 times daily for otitis externa']] },
+    { n: 'Dental infection / toothache', k: ['dental', 'tooth', 'toothache', 'gingivitis', 'periodont'], c: ['K02', 'K04', 'K05', 'K08', 'K12'], m: [
+      ['amoxicillin', '500 mg every 8 h for 5 days'],
+      ['metronidazole', '400 mg every 8 h for 5 days (anaerobic cover)'],
+      ['ibuprofen|diclofenac|paracetamol', 'Analgesia as needed']] },
+    { n: 'Vaginal candidiasis / vaginitis', k: ['vaginal', 'vaginitis', 'vaginosis', 'vulvovaginal', 'discharge'], c: ['N76', 'N77', 'B37', 'N89'], m: [
+      ['clotrimazole', 'Clotrimazole 500 mg pessary single dose (or 200 mg x3 nights)'],
+      ['fluconazole', '150 mg single dose'],
+      ['metronidazole', 'Bacterial vaginosis: 400 mg twice daily x7 days (avoid alcohol)']] },
+    { n: 'Sexually transmitted infection (syndromic)', k: ['sti', 'urethritis', 'gonorrh', 'chlamydia', 'syphilis', 'pelvic inflammatory', 'pid'], c: ['A50', 'A51', 'A54', 'A56', 'N34', 'N73'], m: [
+      ['ceftriaxone', 'Ceftriaxone 500 mg IM single dose'],
+      ['azithromycin|doxycycline', 'Azithromycin 1 g single dose or doxycycline 100 mg twice daily x7 days'],
+      ['metronidazole', '400 mg twice daily x7 days (PID/trichomonas)'],
+      ['benzathine', 'Syphilis: benzathine penicillin 2.4 MU IM weekly']] },
+    { n: 'HIV (care & prophylaxis)', k: ['hiv'], c: ['B20', 'B21', 'B22', 'B23', 'B24', 'Z21'], m: [
+      ['cotrimoxazole', 'Cotrimoxazole 960 mg once daily (prophylaxis)'],
+      ['tenofovir|dolutegravir|lamivudine', 'ART per national guidelines - initiate/continue at the comprehensive care clinic']] },
+    { n: 'Epilepsy / convulsions', k: ['epilep', 'convuls', 'seizure', 'fit'], c: ['G40', 'G41', 'R56'], m: [
+      ['diazepam', 'Diazepam 10 mg IV/rectal for an active seizure (child 0.3-0.5 mg/kg)'],
+      ['phenobarbital|phenobarbitone|carbamazepine|phenytoin|valpro', 'Maintenance per prescriber (phenobarbital 60-180 mg at night, or carbamazepine 200 mg twice daily)']] },
+    { n: 'Anxiety / insomnia', k: ['anxiety', 'insomnia', 'panic'], c: ['F41', 'F51', 'G47'], m: [
+      ['diazepam|lorazepam', 'Short course only (<2 weeks): diazepam 2-5 mg at night'],
+      ['amitriptyline|fluoxetine|sertraline', 'Per prescriber for persistent anxiety']] },
+    { n: 'Depression', k: ['depression', 'depressive'], c: ['F32', 'F33'], m: [
+      ['fluoxetine|sertraline|amitriptyline', 'Fluoxetine 20 mg or sertraline 50 mg once daily in the morning; review in 2-4 weeks']] },
+    { n: 'Pregnancy: antenatal supplements / prophylaxis', k: ['antenatal', 'pregnan', 'anc ', 'gravid'], c: ['Z34', 'Z35', 'Z36', 'O09'], m: [
+      ['ferrous|iron', 'Ferrous + folic acid combined tablet once daily'],
+      ['folic', 'Folic acid 400 mcg daily (5 mg if high risk)'],
+      ['sulfadoxine|fansidar|sp ', 'IPTp-SP 3 tablets single dose from 13 weeks, monthly (not with cotrimoxazole)'],
+      ['albendazole|mebendazole', 'Albendazole 400 mg single dose after 1st trimester'],
+      ['tetanus', 'Tetanus toxoid per schedule']] },
+    { n: 'Pre-eclampsia / eclampsia', k: ['pre-eclampsia', 'preeclampsia', 'eclampsia', 'pregnancy induced hypertension'], c: ['O13', 'O14', 'O15'], m: [
+      ['magnesium sulph', 'MgSO4 loading 4 g IV + 10 g IM; maintenance per protocol - REFER'],
+      ['methyldopa|nifedipine|labetalol|hydralazine', 'Methyldopa 250-500 mg three times daily or nifedipine 10 mg to control BP']] },
+    { n: 'Postpartum haemorrhage / third stage', k: ['postpartum haemorrhage', 'pph', 'haemorrhage'], c: ['O72'], m: [
+      ['oxytocin', '10 IU IM / 20-40 IU in 1 L infusion'],
+      ['misoprostol|ergometrine', 'Misoprostol 800 mcg sublingual if oxytocin unavailable']] },
+    { n: 'Contraception / family planning', k: ['contracepti', 'family planning'], c: ['Z30'], m: [
+      ['levonorgestrel|ethinylestradiol|microgynon|postinor', 'Combined pill 1 tab daily x21-28 days, or emergency contraception 1.5 mg single dose within 72 h'],
+      ['medroxyprogesterone|depo', 'Medroxyprogesterone 150 mg IM every 3 months']] },
+    { n: 'Dysmenorrhoea', k: ['dysmenorrh', 'period pain', 'menstrual'], c: ['N94', 'N92'], m: [
+      ['ibuprofen|mefenamic|diclofenac', 'Mefenamic acid 500 mg three times daily or ibuprofen 400 mg every 8 h with food for 3 days'],
+      ['paracetamol', '1 g every 6-8 h when needed']] },
+    { n: 'Allergy / hay fever / anaphylaxis', k: ['hay fever', 'allergic rhinitis', 'anaphylaxis', 'angioedema'], c: ['J30', 'T78'], m: [
+      ['cetirizine|loratadine|chlorpheniramine', '10 mg once daily'],
+      ['adrenaline|epinephrine', 'ANAPHYLAXIS: adrenaline 0.5 mg IM (1:1000, 0.5 ml) immediately, repeat after 5 min'],
+      ['hydrocortisone|dexamethasone', 'Hydrocortisone 200 mg IV for severe reaction']] },
+    { n: 'Malnutrition / vitamin deficiency', k: ['malnutrition', 'kwashiorkor', 'marasmus', 'vitamin', 'rickets'], c: ['E40', 'E41', 'E42', 'E43', 'E44', 'E46', 'E50', 'E55', 'E56'], m: [
+      ['vitamin a 200', 'Vitamin A 200,000 IU single dose (child 6-12 months 100,000 IU)'],
+      ['zinc', 'Zinc 10-20 mg daily for 10-14 days'],
+      ['multivit|vitamin', 'Multivitamin daily'],
+      ['folic', 'Folic acid 5 mg single dose then 1 mg daily']] },
+    { n: 'Hyperthyroidism / hypothyroidism', k: ['thyroid', 'hypothyroid', 'hyperthyroid', 'goitre', 'goiter'], c: ['E03', 'E05', 'E04'], m: [
+      ['levothyroxine|thyroxine', 'Levothyroxine 50-100 mcg every morning on an empty stomach (hypothyroid)'],
+      ['carbimazole|propylthiouracil', 'Carbimazole 20-40 mg daily (hyperthyroid)']] },
+    { n: 'Sickle cell disease', k: ['sickle'], c: ['D57'], m: [
+      ['folic', 'Folic acid 5 mg daily'],
+      ['paracetamol|diclofenac|morphine|tramadol', 'Analgesia for crisis (paracetamol 1 g, NSAID, opioid if severe)'],
+      ['phenoxymethylpenicillin|penicillin v', 'Penicillin V prophylaxis in children']] },
+    { n: 'Tonsil / throat: oral thrush', k: ['oral thrush', 'oral candid', 'stomatitis', 'mouth ulcer'], c: ['K12', 'B37'], m: [
+      ['nystatin|miconazole|fluconazole', 'Nystatin 1 ml four times daily after meals x7 days'],
+      ['chlorhexidine|gentian', 'Mouth rinse twice daily']] },
+    { n: 'Snake bite / dog bite', k: ['snake', 'dog bite', 'rabies'], c: ['T63', 'W54', 'A82'], m: [
+      ['tetanus', 'Tetanus toxoid and rabies PEP per protocol'],
+      ['rabies', 'Rabies vaccine 4-dose schedule (days 0, 3, 7, 14) + immunoglobulin if category III - REFER']] },
+    { n: 'Malaria prophylaxis / fever in child', k: ['febrile child', 'fever in child'], c: [], m: [
+      ['paracetamol', 'Child: 15 mg/kg every 6 h when needed']] },
+    { n: 'Hyperlipidaemia', k: ['hyperlipid', 'dyslipid', 'cholesterol'], c: ['E78'], m: [
+      ['atorvastatin|simvastatin|rosuvastatin', 'Atorvastatin 20 mg at night (not in pregnancy)']] },
+    { n: 'Benign prostatic hyperplasia', k: ['prostat', 'bph'], c: ['N40'], m: [
+      ['tamsulosin|doxazosin|finasteride', 'Tamsulosin 0.4 mg daily at night']] },
+    { n: 'Hypokalaemia / dehydration (drip)', k: ['dehydration', 'hypokal'], c: ['E86', 'E87'], m: [
+      ['ringer|normal saline', 'IV fluid per deficit and ongoing losses'],
+      ['oral rehydration|ors', 'ORS if able to drink']] }
+  ];
+
+  /* ---------- 2. DRUG FAMILIES (matched against the medicine name) ---------------------------------------------------------- */
+  var G = {
+    warfarin: /warfarin|acenocoumarol/,
+    aspirin: /aspirin|acetylsalicyl/,
+    nsaid: /ibuprofen|diclofenac|naproxen|ketoprofen|indometacin|indomethacin|piroxicam|meloxicam|celecoxib|etoricoxib|mefenamic|ketorolac|nimesulide|aceclofenac/,
+    acei: /enalapril|lisinopril|captopril|ramipril|perindopril|quinapril/,
+    arb: /losartan|valsartan|telmisartan|candesartan|irbesartan|olmesartan/,
+    kspare: /spironolactone|amiloride|triamterene|eplerenone/,
+    loop: /furosemide|frusemide|bumetanide|torasemide/,
+    thiazide: /hydrochlorothiazide|indapamide|chlorthalidone|bendroflumethiazide|hctz/,
+    digoxin: /digoxin/,
+    statin: /atorvastatin|simvastatin|rosuvastatin|pravastatin|lovastatin/,
+    macrolide: /erythromycin|clarithromycin|azithromycin|roxithromycin/,
+    quinolone: /ciprofloxacin|levofloxacin|ofloxacin|norfloxacin|moxifloxacin/,
+    tetracycline: /doxycycline|tetracycline|minocycline|oxytetracycline/,
+    antacid: /antacid|aluminium|aluminum|magnesium (hydroxide|trisilicate)|calcium carbonate|gaviscon|mist\.? mag/,
+    iron: /ferrous|ferric|\biron\b|fefol|hematinic|haematinic/,
+    calcium: /calcium(?! carbonate antacid)/,
+    metformin: /metformin/,
+    sulfonylurea: /glibenclamide|glyburide|gliclazide|glimepiride|glipizide/,
+    insulin: /insulin|actrapid|mixtard|lantus|glargine/,
+    betablocker: /atenolol|propranolol|metoprolol|bisoprolol|carvedilol|nebivolol|labetalol|timolol/,
+    ccb: /amlodipine|nifedipine|felodipine|verapamil|diltiazem/,
+    azole: /fluconazole|ketoconazole|itraconazole|voriconazole|miconazole/,
+    metronidazole: /metronidazole|tinidazole|secnidazole/,
+    opioid: /morphine|codeine|pethidine|tramadol|fentanyl|oxycodone|dihydrocodeine/,
+    benzo: /diazepam|lorazepam|alprazolam|clonazepam|midazolam|nitrazepam|bromazepam/,
+    ssri: /fluoxetine|sertraline|citalopram|escitalopram|paroxetine|fluvoxamine/,
+    tca: /amitriptyline|imipramine|clomipramine|nortriptyline/,
+    carbamazepine: /carbamazepine|tegretol/,
+    phenytoin: /phenytoin|epanutin/,
+    phenobarb: /phenobarbit/,
+    valproate: /valpro/,
+    rifampicin: /rifampicin|rifampin|rhze|rifater|rifinah|\brh\b/,
+    isoniazid: /isoniazid|\binh\b/,
+    lumefantrine: /artemether|lumefantrine|coartem|artesunate|amodiaquine|dihydroartemisinin|piperaquine/,
+    quinine: /quinine/,
+    chloroquine: /chloroquine|hydroxychloroquine/,
+    sildenafil: /sildenafil|tadalafil|vardenafil/,
+    nitrate: /isosorbide|glyceryl|nitroglycerin|\bgtn\b/,
+    methotrexate: /methotrexate/,
+    cotrimoxazole: /cotrimoxazole|co-trimoxazole|trimethoprim|sulfamethoxazole|septrin|bactrim/,
+    theophylline: /theophylline|aminophylline/,
+    lithium: /lithium/,
+    steroid: /prednisolone|prednisone|dexamethasone|hydrocortisone|betamethasone|methylprednisolone|triamcinolone/,
+    potassium: /potassium chloride|slow-?k|\bkcl\b/,
+    efavirenz: /efavirenz|nevirapine/,
+    zidovudine: /zidovudine|\bazt\b/,
+    tenofovir: /tenofovir/,
+    pi: /lopinavir|ritonavir|atazanavir|darunavir/,
+    clopidogrel: /clopidogrel/,
+    ppi: /omeprazole|esomeprazole|pantoprazole|lansoprazole|rabeprazole/,
+    paracetamol: /paracetamol|acetaminophen|panadol/,
+    levothyroxine: /levothyroxine|thyroxine/,
+    ocp: /levonorgestrel|ethinylestradiol|microgynon|contracepti|norethisterone|desogestrel/,
+    penicillin: /amoxicillin|ampicillin|cloxacillin|flucloxacillin|benzylpenicillin|phenoxymethylpenicillin|penicillin|benzathine|piperacillin|amoxiclav|co-amoxiclav|augmentin|procaine/,
+    cephalosporin: /\bcef|cephalexin|cephradine|cefuroxime|ceftriaxone|cefixime|cefotaxime|ceftazidime/,
+    sulfa: /sulfamethoxazole|cotrimoxazole|co-trimoxazole|septrin|sulfadoxine|fansidar|sulphadoxine|sulfasalazine|sulfadiazine|sulphonamide/,
+    lidocaine: /lidocaine|lignocaine/,
+    antihistamine: /cetirizine|loratadine|chlorpheniramine|piriton|promethazine|hydroxyzine|diphenhydramine/,
+    ergot: /ergometrine|methylergometrine|ergotamine/,
+    misoprostol: /misoprostol/,
+    magnesium: /magnesium sulph/,
+    allopurinol: /allopurinol/,
+    azathioprine: /azathioprine/,
+    metoclopramide: /metoclopramide/,
+    ondansetron: /ondansetron/,
+    haloperidol: /haloperidol|chlorpromazine|risperidone|olanzapine/,
+    tramadolx: /tramadol/,
+    cipro: /ciprofloxacin/,
+    atorva: /atorvastatin|simvastatin/
+  };
+  /* Allergy words (as a patient or clerk would write them) -> drug family they imply. */
+  var AL = [
+    ['penicillin', /penicillin|amoxicillin|ampicillin|cloxacillin|augmentin|amoxiclav|pen\b/],
+    ['cephalosporin', /cephalosporin|ceftriaxone|cefuroxime|cefixime|cephalexin|\bcef/],
+    ['sulfa', /sulfa|sulpha|sulphonamide|sulfonamide|septrin|bactrim|cotrimoxazole|co-trimoxazole|fansidar|sulfadoxine/],
+    ['nsaid', /nsaid|ibuprofen|diclofenac|brufen|voltaren|naproxen|mefenamic|ponstan|ketorolac|anti-?inflammator/],
+    ['aspirin', /aspirin|salicylate/],
+    ['macrolide', /macrolide|erythromycin|azithromycin|clarithromycin/],
+    ['quinolone', /quinolone|ciprofloxacin|cipro\b|levofloxacin|ofloxacin|norfloxacin/],
+    ['tetracycline', /tetracycline|doxycycline|oxytetracycline/],
+    ['opioid', /opioid|morphine|codeine|pethidine|tramadol|opiate/],
+    ['acei', /ace inhibitor|ace-inhibitor|enalapril|lisinopril|captopril|ramipril/],
+    ['chloroquine', /chloroquine|hydroxychloroquine|nivaquine/],
+    ['quinine', /quinine/],
+    ['lumefantrine', /artemether|lumefantrine|coartem|artesunate|artemisinin|amodiaquine/],
+    ['metronidazole', /metronidazole|flagyl|tinidazole/],
+    ['lidocaine', /lidocaine|lignocaine|local anaesthetic|local anesthetic/],
+    ['paracetamol', /paracetamol|acetaminophen|panadol/],
+    ['azole', /fluconazole|ketoconazole|miconazole|azole antifungal/],
+    ['carbamazepine', /carbamazepine|tegretol/],
+    ['phenytoin', /phenytoin/],
+    ['cotrimoxazole', /cotrimoxazole|co-trimoxazole|septrin|bactrim/],
+    ['insulin', /insulin/],
+    ['statin', /statin/],
+    ['antihistamine', /antihistamine|cetirizine|loratadine|piriton|chlorpheniramine/],
+    ['steroid', /steroid|prednisolone|dexamethasone|hydrocortisone/]
+  ];
+  var FAMILY_NAME = { penicillin: 'penicillins', cephalosporin: 'cephalosporins', sulfa: 'sulfonamides (sulfa)', nsaid: 'NSAIDs', aspirin: 'aspirin', macrolide: 'macrolides', quinolone: 'quinolones', tetracycline: 'tetracyclines', opioid: 'opioids', acei: 'ACE inhibitors', chloroquine: 'chloroquine', quinine: 'quinine', lumefantrine: 'artemisinin antimalarials', metronidazole: 'nitroimidazoles', lidocaine: 'local anaesthetics', paracetamol: 'paracetamol', azole: 'azole antifungals', carbamazepine: 'carbamazepine', phenytoin: 'phenytoin', cotrimoxazole: 'cotrimoxazole', insulin: 'insulin', statin: 'statins', antihistamine: 'antihistamines', steroid: 'corticosteroids' };
+
+  /* ---------- 3. INTERACTIONS: [family A, family B, severity, what happens / what to do] ------------------------------------- */
+  var IX = [
+    ['warfarin', 'nsaid', 'major', 'Higher bleeding risk (and NSAIDs can cause stomach bleeding). Avoid; use paracetamol for pain.'],
+    ['warfarin', 'aspirin', 'major', 'Bleeding risk is much higher. Avoid unless a specialist has chosen this combination.'],
+    ['warfarin', 'macrolide', 'major', 'INR can rise sharply. Avoid or monitor INR closely.'],
+    ['warfarin', 'quinolone', 'major', 'INR can rise; bleeding risk. Monitor INR.'],
+    ['warfarin', 'metronidazole', 'major', 'Metronidazole strongly increases warfarin effect. Avoid or reduce warfarin and monitor INR.'],
+    ['warfarin', 'azole', 'major', 'Azole antifungals raise INR markedly. Avoid or monitor INR.'],
+    ['warfarin', 'cotrimoxazole', 'major', 'Cotrimoxazole raises INR; serious bleeding reported. Avoid or monitor INR.'],
+    ['warfarin', 'rifampicin', 'major', 'Rifampicin reduces warfarin effect (clots). INR monitoring and dose increase needed.'],
+    ['warfarin', 'carbamazepine', 'mod', 'Warfarin effect reduced. Monitor INR.'],
+    ['warfarin', 'phenytoin', 'mod', 'INR can change unpredictably. Monitor.'],
+    ['warfarin', 'tetracycline', 'mod', 'May raise INR. Monitor.'],
+    ['warfarin', 'ssri', 'mod', 'Higher bleeding risk. Monitor.'],
+    ['warfarin', 'steroid', 'mod', 'Steroids can raise INR and add stomach-bleed risk. Monitor.'],
+    ['warfarin', 'paracetamol', 'minor', 'Regular high-dose paracetamol can raise INR. Occasional use is fine.'],
+    ['aspirin', 'nsaid', 'mod', 'NSAIDs can block aspirin\'s heart protection and add stomach-bleed risk. Avoid combining.'],
+    ['aspirin', 'clopidogrel', 'mod', 'Intended dual antiplatelet therapy raises bleeding risk. Confirm indication.'],
+    ['aspirin', 'steroid', 'mod', 'Stomach ulcer / bleeding risk is higher. Consider a PPI.'],
+    ['aspirin', 'methotrexate', 'major', 'Aspirin raises methotrexate toxicity. Avoid.'],
+    ['aspirin', 'ssri', 'mod', 'Higher bleeding risk.'],
+    ['nsaid', 'nsaid', 'major', 'Two NSAIDs together: no extra benefit, more stomach, kidney and bleeding harm. Use only one.'],
+    ['nsaid', 'acei', 'mod', 'NSAID + ACE inhibitor: kidney injury risk and weaker BP control. Use with care, keep hydrated.'],
+    ['nsaid', 'arb', 'mod', 'NSAID + ARB: kidney injury risk and weaker BP control.'],
+    ['nsaid', 'loop', 'mod', 'NSAIDs weaken diuretics and can injure the kidneys.'],
+    ['nsaid', 'thiazide', 'mod', 'NSAIDs weaken diuretics and can injure the kidneys.'],
+    ['nsaid', 'steroid', 'mod', 'Stomach ulcer / bleeding risk is higher. Add a PPI.'],
+    ['nsaid', 'methotrexate', 'major', 'NSAIDs raise methotrexate toxicity. Avoid.'],
+    ['nsaid', 'lithium', 'major', 'NSAIDs raise lithium levels to toxic range.'],
+    ['nsaid', 'quinolone', 'mod', 'Higher risk of seizures with some quinolone + NSAID combinations.'],
+    ['nsaid', 'ssri', 'mod', 'Higher risk of stomach bleeding.'],
+    ['nsaid', 'betablocker', 'minor', 'NSAIDs can blunt the blood-pressure lowering effect.'],
+    ['nsaid', 'digoxin', 'mod', 'NSAIDs can raise digoxin levels via the kidneys. Monitor.'],
+    ['acei', 'kspare', 'major', 'High potassium risk (dangerous heart rhythm). Check potassium and kidney function; avoid unless monitored.'],
+    ['arb', 'kspare', 'major', 'High potassium risk. Check potassium and kidney function.'],
+    ['acei', 'arb', 'major', 'Dual blockade: kidney injury and high potassium. Avoid.'],
+    ['acei', 'potassium', 'major', 'High potassium risk. Avoid unless monitored.'],
+    ['arb', 'potassium', 'major', 'High potassium risk. Avoid unless monitored.'],
+    ['kspare', 'potassium', 'major', 'High potassium risk. Avoid.'],
+    ['acei', 'lithium', 'major', 'Raises lithium levels. Monitor or avoid.'],
+    ['arb', 'lithium', 'major', 'Raises lithium levels. Monitor or avoid.'],
+    ['acei', 'allopurinol', 'mod', 'Higher risk of hypersensitivity reactions.'],
+    ['acei', 'insulin', 'minor', 'Can increase hypoglycaemia risk. Counsel the patient.'],
+    ['loop', 'digoxin', 'mod', 'Low potassium from the diuretic increases digoxin toxicity. Check potassium.'],
+    ['thiazide', 'digoxin', 'mod', 'Low potassium increases digoxin toxicity. Check potassium.'],
+    ['thiazide', 'lithium', 'major', 'Raises lithium levels.'],
+    ['loop', 'lithium', 'mod', 'Can raise lithium levels.'],
+    ['loop', 'macrolide', 'minor', 'Rare: loop diuretics with macrolides can add ear/rhythm effects at high doses.'],
+    ['thiazide', 'sulfonylurea', 'minor', 'Thiazides can raise blood sugar - watch diabetes control.'],
+    ['digoxin', 'macrolide', 'major', 'Macrolides raise digoxin levels. Monitor or reduce dose.'],
+    ['digoxin', 'verapamil', 'major', 'Verapamil raises digoxin levels and slows the heart. Reduce digoxin and monitor.'],
+    ['digoxin', 'betablocker', 'mod', 'Additive slowing of the heart rate.'],
+    ['digoxin', 'rifampicin', 'mod', 'Rifampicin lowers digoxin levels.'],
+    ['digoxin', 'tetracycline', 'mod', 'Doxycycline/tetracycline can raise digoxin levels.'],
+    ['betablocker', 'ccb', 'mod', 'With verapamil or diltiazem: heart block / very slow pulse. Avoid combining those; amlodipine and nifedipine are usually fine.'],
+    ['betablocker', 'insulin', 'mod', 'Beta-blockers can hide the warning signs of hypoglycaemia.'],
+    ['betablocker', 'sulfonylurea', 'mod', 'Beta-blockers can hide the warning signs of hypoglycaemia.'],
+    ['betablocker', 'steroid', 'minor', 'Steroids can reduce the blood-pressure effect.'],
+    ['statin', 'macrolide', 'major', 'Clarithromycin/erythromycin raise statin levels: muscle damage (rhabdomyolysis). Pause statin during the course.'],
+    ['statin', 'azole', 'major', 'Azoles raise statin levels: muscle damage risk. Avoid or pause statin.'],
+    ['statin', 'rifampicin', 'mod', 'Rifampicin lowers statin effect.'],
+    ['statin', 'ccb', 'mod', 'Verapamil/diltiazem raise simvastatin levels; limit dose.'],
+    ['statin', 'pi', 'major', 'Protease inhibitors raise statin levels: muscle damage risk.'],
+    ['statin', 'warfarin', 'mod', 'Some statins can raise INR. Monitor.'],
+    ['macrolide', 'quinolone', 'major', 'Both lengthen the QT interval - risk of dangerous heart rhythm. Avoid together.'],
+    ['macrolide', 'azole', 'mod', 'Both can prolong the QT interval.'],
+    ['macrolide', 'lumefantrine', 'major', 'Artemether/lumefantrine with macrolides can prolong QT. Avoid if possible.'],
+    ['macrolide', 'ssri', 'mod', 'Both can prolong the QT interval.'],
+    ['macrolide', 'carbamazepine', 'major', 'Erythromycin/clarithromycin raise carbamazepine to toxic levels.'],
+    ['macrolide', 'theophylline', 'major', 'Raises theophylline levels (toxicity). Monitor or avoid.'],
+    ['macrolide', 'ergot', 'major', 'Risk of severe ergotism. Avoid.'],
+    ['macrolide', 'sildenafil', 'mod', 'Raises sildenafil levels. Use a lower dose.'],
+    ['quinolone', 'antacid', 'major', 'Antacids bind quinolones and stop them being absorbed. Give quinolone 2 h before or 6 h after.'],
+    ['quinolone', 'iron', 'major', 'Iron binds quinolones and stops absorption. Separate by at least 2 h before / 6 h after.'],
+    ['quinolone', 'calcium', 'mod', 'Calcium reduces quinolone absorption. Separate doses.'],
+    ['quinolone', 'sulfonylurea', 'mod', 'Quinolones can cause low or high blood sugar with sulfonylureas.'],
+    ['quinolone', 'insulin', 'mod', 'Quinolones can disturb blood-sugar control.'],
+    ['quinolone', 'steroid', 'mod', 'Higher risk of tendon rupture. Avoid in older patients if possible.'],
+    ['quinolone', 'theophylline', 'major', 'Ciprofloxacin raises theophylline levels (toxicity, seizures).'],
+    ['quinolone', 'lumefantrine', 'mod', 'Both can prolong QT.'],
+    ['quinolone', 'tca', 'mod', 'Both can prolong QT and lower the seizure threshold.'],
+    ['quinolone', 'haloperidol', 'major', 'Additive QT prolongation.'],
+    ['tetracycline', 'antacid', 'major', 'Antacids/calcium/iron stop doxycycline and tetracycline being absorbed. Separate by 2-3 h.'],
+    ['tetracycline', 'iron', 'major', 'Iron stops tetracycline absorption (and vice versa). Separate by 2-3 h.'],
+    ['tetracycline', 'calcium', 'mod', 'Calcium/dairy reduces absorption. Separate doses.'],
+    ['tetracycline', 'penicillin', 'mod', 'Bacteriostatic antibiotics can weaken penicillin action in serious infections.'],
+    ['tetracycline', 'ocp', 'minor', 'Rare reduction of pill effect; advise extra precautions if vomiting/diarrhoea.'],
+    ['iron', 'antacid', 'mod', 'Antacids reduce iron absorption. Separate by 2 h.'],
+    ['iron', 'levothyroxine', 'mod', 'Iron reduces levothyroxine absorption. Separate by 4 h.'],
+    ['iron', 'calcium', 'minor', 'Calcium reduces iron absorption. Separate doses.'],
+    ['iron', 'ppi', 'minor', 'Acid suppression reduces iron absorption.'],
+    ['antacid', 'levothyroxine', 'mod', 'Antacids/calcium reduce levothyroxine absorption. Separate by 4 h.'],
+    ['antacid', 'azole', 'mod', 'Antacids/PPIs reduce ketoconazole and itraconazole absorption.'],
+    ['antacid', 'rifampicin', 'minor', 'Take rifampicin on an empty stomach, apart from antacids.'],
+    ['ppi', 'clopidogrel', 'mod', 'Omeprazole/esomeprazole weaken clopidogrel. Use pantoprazole instead.'],
+    ['ppi', 'methotrexate', 'mod', 'PPIs can raise methotrexate levels.'],
+    ['ppi', 'azole', 'mod', 'PPIs reduce ketoconazole/itraconazole absorption.'],
+    ['ppi', 'levothyroxine', 'minor', 'PPIs can reduce levothyroxine absorption.'],
+    ['metformin', 'steroid', 'minor', 'Steroids raise blood sugar - diabetes control may worsen.'],
+    ['metformin', 'thiazide', 'minor', 'Thiazides can raise blood sugar.'],
+    ['metformin', 'quinolone', 'mod', 'Blood-sugar disturbances reported.'],
+    ['metformin', 'loop', 'minor', 'Loop diuretics can raise metformin levels; watch kidney function.'],
+    ['sulfonylurea', 'azole', 'major', 'Fluconazole/miconazole raise sulfonylurea levels: severe hypoglycaemia.'],
+    ['sulfonylurea', 'cotrimoxazole', 'major', 'Cotrimoxazole increases sulfonylurea effect: severe hypoglycaemia.'],
+    ['sulfonylurea', 'rifampicin', 'mod', 'Rifampicin lowers sulfonylurea effect.'],
+    ['sulfonylurea', 'steroid', 'mod', 'Steroids raise blood sugar and weaken the diabetes drug effect.'],
+    ['sulfonylurea', 'aspirin', 'mod', 'Aspirin in high doses increases the risk of hypoglycaemia.'],
+    ['sulfonylurea', 'sulfonylurea', 'major', 'Two sulfonylureas together: severe hypoglycaemia risk. Use only one.'],
+    ['insulin', 'steroid', 'mod', 'Steroids raise blood sugar - insulin dose may need to increase.'],
+    ['insulin', 'thiazide', 'minor', 'Thiazides can raise blood sugar.'],
+    ['metronidazole', 'lithium', 'mod', 'Metronidazole can raise lithium levels.'],
+    ['metronidazole', 'phenytoin', 'mod', 'Metronidazole raises phenytoin levels.'],
+    ['metronidazole', 'phenobarb', 'mod', 'Phenobarbital lowers metronidazole levels.'],
+    ['azole', 'rifampicin', 'major', 'Rifampicin sharply lowers azole levels (treatment failure).'],
+    ['azole', 'carbamazepine', 'mod', 'Azoles raise carbamazepine levels; carbamazepine lowers azole levels.'],
+    ['azole', 'phenytoin', 'major', 'Fluconazole raises phenytoin to toxic levels; phenytoin lowers azole levels.'],
+    ['azole', 'lumefantrine', 'mod', 'Azoles raise artemether/lumefantrine levels and prolong QT.'],
+    ['azole', 'sildenafil', 'mod', 'Raises sildenafil levels.'],
+    ['azole', 'benzo', 'mod', 'Azoles raise midazolam/alprazolam levels (heavy sedation).'],
+    ['opioid', 'benzo', 'major', 'Opioid + benzodiazepine: deep sedation and slowed breathing. Avoid or use lowest doses with monitoring.'],
+    ['opioid', 'tca', 'mod', 'Additive sedation; tramadol + antidepressants can cause seizures.'],
+    ['opioid', 'ssri', 'major', 'Tramadol + SSRI: serotonin syndrome and seizure risk.'],
+    ['opioid', 'carbamazepine', 'mod', 'Carbamazepine lowers opioid effect (tramadol, codeine).'],
+    ['opioid', 'phenobarb', 'mod', 'Additive sedation / respiratory depression.'],
+    ['opioid', 'haloperidol', 'mod', 'Additive sedation.'],
+    ['benzo', 'phenobarb', 'mod', 'Additive sedation / breathing suppression.'],
+    ['benzo', 'tca', 'mod', 'Additive sedation.'],
+    ['benzo', 'antihistamine', 'mod', 'Additive drowsiness (chlorpheniramine, promethazine, cetirizine at high dose).'],
+    ['benzo', 'valproate', 'mod', 'Valproate raises lorazepam levels; additive sedation.'],
+    ['ssri', 'tca', 'mod', 'SSRIs raise tricyclic levels; serotonin and heart-rhythm risk.'],
+    ['ssri', 'ssri', 'major', 'Two SSRIs: serotonin syndrome risk. Use only one.'],
+    ['ssri', 'tramadolx', 'major', 'Tramadol + SSRI: serotonin syndrome and seizures.'],
+    ['ssri', 'carbamazepine', 'mod', 'Carbamazepine lowers SSRI levels; SSRIs raise carbamazepine.'],
+    ['ssri', 'metoclopramide', 'mod', 'Higher risk of serotonin syndrome and movement side-effects.'],
+    ['ssri', 'ondansetron', 'mod', 'Serotonin syndrome and QT prolongation risk.'],
+    ['tca', 'antihistamine', 'mod', 'Additive drowsiness and dry mouth/urine retention.'],
+    ['tca', 'lumefantrine', 'mod', 'Both can prolong QT.'],
+    ['tca', 'haloperidol', 'mod', 'Additive QT prolongation and sedation.'],
+    ['carbamazepine', 'rifampicin', 'mod', 'Rifampicin lowers carbamazepine levels (loss of seizure control).'],
+    ['carbamazepine', 'valproate', 'mod', 'Levels of both change; monitor.'],
+    ['carbamazepine', 'ocp', 'major', 'Carbamazepine makes hormonal contraception unreliable. Use IUD/injectable (or higher-dose pill with advice).'],
+    ['carbamazepine', 'isoniazid', 'mod', 'Isoniazid raises carbamazepine levels.'],
+    ['carbamazepine', 'cotrimoxazole', 'mod', 'Cotrimoxazole can alter carbamazepine levels.'],
+    ['carbamazepine', 'lumefantrine', 'mod', 'Carbamazepine lowers artemether/lumefantrine levels.'],
+    ['phenytoin', 'isoniazid', 'major', 'Isoniazid raises phenytoin to toxic levels.'],
+    ['phenytoin', 'rifampicin', 'mod', 'Rifampicin lowers phenytoin levels.'],
+    ['phenytoin', 'cotrimoxazole', 'major', 'Cotrimoxazole raises phenytoin; also folate depletion.'],
+    ['phenytoin', 'ocp', 'major', 'Phenytoin makes hormonal contraception unreliable.'],
+    ['phenytoin', 'valproate', 'mod', 'Levels of both change; monitor.'],
+    ['phenytoin', 'steroid', 'mod', 'Phenytoin reduces steroid effect.'],
+    ['phenytoin', 'lumefantrine', 'mod', 'Phenytoin lowers artemether/lumefantrine levels.'],
+    ['phenobarb', 'ocp', 'major', 'Phenobarbital makes hormonal contraception unreliable.'],
+    ['phenobarb', 'warfarin', 'major', 'Phenobarbital reduces warfarin effect.'],
+    ['phenobarb', 'steroid', 'mod', 'Phenobarbital lowers steroid effect.'],
+    ['phenobarb', 'lumefantrine', 'mod', 'Phenobarbital lowers artemether/lumefantrine levels.'],
+    ['phenobarb', 'valproate', 'mod', 'Phenobarbital raises valproate-related toxicity risk; monitor.'],
+    ['rifampicin', 'ocp', 'major', 'Rifampicin makes hormonal contraception unreliable. Use non-hormonal or injectable/IUD.'],
+    ['rifampicin', 'efavirenz', 'mod', 'Rifampicin lowers efavirenz/nevirapine levels. Follow HIV/TB guideline dosing.'],
+    ['rifampicin', 'pi', 'major', 'Rifampicin cannot be combined with most protease inhibitors. Refer to HIV/TB guideline.'],
+    ['rifampicin', 'steroid', 'mod', 'Rifampicin lowers steroid effect; increase dose may be needed.'],
+    ['rifampicin', 'sulfonylurea', 'mod', 'See above: lower sugar-lowering effect.'],
+    ['rifampicin', 'ccb', 'mod', 'Rifampicin lowers calcium-channel blocker effect.'],
+    ['rifampicin', 'betablocker', 'mod', 'Rifampicin lowers beta-blocker effect.'],
+    ['rifampicin', 'lumefantrine', 'major', 'Rifampicin greatly lowers artemether/lumefantrine levels (malaria treatment failure).'],
+    ['rifampicin', 'sildenafil', 'minor', 'Rifampicin lowers sildenafil levels.'],
+    ['rifampicin', 'isoniazid', 'minor', 'Standard TB combination: watch liver function and symptoms.'],
+    ['isoniazid', 'paracetamol', 'minor', 'Isoniazid + paracetamol: extra liver caution with regular dosing.'],
+    ['lumefantrine', 'quinine', 'major', 'QT prolongation: avoid quinine within 6 h of artemether/lumefantrine unless no alternative.'],
+    ['lumefantrine', 'chloroquine', 'mod', 'Additive QT prolongation.'],
+    ['lumefantrine', 'efavirenz', 'mod', 'Efavirenz/nevirapine lower artemether/lumefantrine levels; check treatment response.'],
+    ['lumefantrine', 'pi', 'mod', 'Protease inhibitors raise lumefantrine levels; QT risk.'],
+    ['lumefantrine', 'haloperidol', 'major', 'QT prolongation with antipsychotics.'],
+    ['quinine', 'digoxin', 'major', 'Quinine raises digoxin levels.'],
+    ['quinine', 'quinolone', 'major', 'Additive QT prolongation.'],
+    ['quinine', 'macrolide', 'mod', 'Additive QT prolongation.'],
+    ['quinine', 'chloroquine', 'mod', 'Additive QT prolongation and seizures.'],
+    ['chloroquine', 'antacid', 'mod', 'Antacids reduce chloroquine absorption. Separate by 4 h.'],
+    ['chloroquine', 'macrolide', 'mod', 'Additive QT prolongation.'],
+    ['chloroquine', 'metronidazole', 'minor', 'Both can cause QT prolongation / GI upset.'],
+    ['sildenafil', 'nitrate', 'major', 'Severe, life-threatening drop in blood pressure. NEVER combine.'],
+    ['sildenafil', 'acei', 'minor', 'Additive lowering of BP.'],
+    ['sildenafil', 'ccb', 'mod', 'Additive lowering of BP.'],
+    ['sildenafil', 'betablocker', 'minor', 'Additive lowering of BP.'],
+    ['methotrexate', 'cotrimoxazole', 'major', 'Severe bone-marrow suppression. Avoid.'],
+    ['methotrexate', 'penicillin', 'mod', 'Penicillins can raise methotrexate levels.'],
+    ['methotrexate', 'ppi', 'mod', 'PPIs can raise methotrexate levels.'],
+    ['cotrimoxazole', 'acei', 'mod', 'Raises potassium; kidney effects.'],
+    ['cotrimoxazole', 'arb', 'mod', 'Raises potassium; kidney effects.'],
+    ['cotrimoxazole', 'kspare', 'major', 'Dangerous potassium rise.'],
+    ['cotrimoxazole', 'digoxin', 'minor', 'May raise digoxin levels.'],
+    ['cotrimoxazole', 'azathioprine', 'major', 'Severe bone-marrow suppression.'],
+    ['cotrimoxazole', 'zidovudine', 'mod', 'Additive bone-marrow suppression.'],
+    ['zidovudine', 'rifampicin', 'minor', 'Rifampicin can reduce zidovudine levels.'],
+    ['zidovudine', 'cotrimoxazole', 'mod', 'Additive anaemia/neutropenia - monitor blood count.'],
+    ['zidovudine', 'nsaid', 'minor', 'NSAIDs may add haematological/GI side-effects.'],
+    ['efavirenz', 'ocp', 'mod', 'Efavirenz may reduce hormonal contraception effect. Add a barrier or use IUD/DMPA.'],
+    ['efavirenz', 'carbamazepine', 'mod', 'Interaction affecting both drug levels.'],
+    ['efavirenz', 'ssri', 'minor', 'Possible CNS side-effects increase.'],
+    ['pi', 'ocp', 'mod', 'Protease inhibitors may reduce hormonal contraception effect.'],
+    ['pi', 'sildenafil', 'major', 'Large rise in sildenafil level; use a very low dose.'],
+    ['pi', 'steroid', 'mod', 'Ritonavir raises corticosteroid levels (Cushing\'s with long courses).'],
+    ['pi', 'benzo', 'major', 'Ritonavir greatly raises midazolam/diazepam/alprazolam levels - heavy sedation.'],
+    ['pi', 'carbamazepine', 'major', 'Both levels change; avoid or monitor.'],
+    ['pi', 'azole', 'mod', 'Azoles and protease inhibitors raise each other\'s levels.'],
+    ['theophylline', 'cipro', 'major', 'Ciprofloxacin raises theophylline levels (seizures, arrhythmia).'],
+    ['theophylline', 'carbamazepine', 'mod', 'Carbamazepine lowers theophylline levels.'],
+    ['theophylline', 'phenytoin', 'mod', 'Phenytoin lowers theophylline levels.'],
+    ['theophylline', 'betablocker', 'mod', 'Beta-blockers can cause bronchospasm and antagonise theophylline.'],
+    ['betablocker', 'antihistamine', 'minor', 'Rarely relevant.'],
+    ['lithium', 'metronidazole', 'mod', 'Metronidazole can raise lithium levels.'],
+    ['lithium', 'ssri', 'mod', 'Lithium + SSRI: serotonin syndrome risk.'],
+    ['lithium', 'haloperidol', 'mod', 'Possible neurotoxicity.'],
+    ['clopidogrel', 'warfarin', 'major', 'Higher bleeding risk.'],
+    ['clopidogrel', 'nsaid', 'mod', 'Higher bleeding risk.'],
+    ['allopurinol', 'azathioprine', 'major', 'Allopurinol raises azathioprine toxicity. Reduce azathioprine dose.'],
+    ['allopurinol', 'penicillin', 'minor', 'Ampicillin/amoxicillin with allopurinol: higher rash rate.'],
+    ['allopurinol', 'warfarin', 'mod', 'May increase warfarin effect.'],
+    ['ergot', 'macrolide', 'major', 'Severe ergotism with erythromycin/clarithromycin.'],
+    ['ergot', 'pi', 'major', 'Severe ergotism with protease inhibitors.'],
+    ['ergot', 'azole', 'major', 'Severe ergotism with azole antifungals.'],
+    ['ergot', 'betablocker', 'mod', 'Peripheral ischaemia risk.'],
+    ['metoclopramide', 'haloperidol', 'major', 'Higher risk of movement disorders (extrapyramidal effects).'],
+    ['metoclopramide', 'opioid', 'minor', 'Opioids may reduce metoclopramide effect on gut movement.'],
+    ['ondansetron', 'macrolide', 'mod', 'Additive QT prolongation.'],
+    ['ondansetron', 'quinolone', 'mod', 'Additive QT prolongation.'],
+    ['ondansetron', 'lumefantrine', 'mod', 'Additive QT prolongation.'],
+    ['ondansetron', 'haloperidol', 'major', 'Additive QT prolongation.'],
+    ['levothyroxine', 'warfarin', 'mod', 'Thyroxine increases warfarin effect.'],
+    ['levothyroxine', 'carbamazepine', 'mod', 'Carbamazepine lowers levothyroxine levels.'],
+    ['levothyroxine', 'phenytoin', 'mod', 'Phenytoin lowers levothyroxine levels.'],
+    ['levothyroxine', 'rifampicin', 'mod', 'Rifampicin lowers levothyroxine levels.'],
+    ['ocp', 'lumefantrine', 'minor', 'Vomiting/diarrhoea can reduce pill effect; add barrier method.'],
+    ['ocp', 'steroid', 'minor', 'Oestrogens raise corticosteroid levels.'],
+    ['steroid', 'macrolide', 'minor', 'Clarithromycin/erythromycin raise methylprednisolone/dexamethasone levels.'],
+    ['steroid', 'thiazide', 'mod', 'Additive potassium loss.'],
+    ['steroid', 'loop', 'mod', 'Additive potassium loss.'],
+    ['steroid', 'azole', 'mod', 'Azoles raise steroid levels.'],
+    ['steroid', 'quinolone', 'mod', 'Tendon rupture risk.'],
+    ['potassium', 'kspare', 'major', 'High potassium risk.'],
+    ['magnesium', 'ccb', 'mod', 'Magnesium sulphate with nifedipine: profound hypotension / muscle weakness - monitor.'],
+    ['magnesium', 'quinolone', 'minor', 'Magnesium reduces quinolone absorption (oral).'],
+    ['misoprostol', 'nsaid', 'minor', 'Misoprostol is sometimes given WITH NSAIDs to protect the stomach; counsel on diarrhoea.'],
+    ['ccb', 'ccb', 'mod', 'Two calcium-channel blockers: usually avoid; (amlodipine + diltiazem raises amlodipine level).'],
+    ['acei', 'acei', 'major', 'Two ACE inhibitors together: no extra benefit, more harm. Use only one.'],
+    ['arb', 'arb', 'major', 'Two ARBs together: no extra benefit, more harm. Use only one.'],
+    ['ppi', 'ppi', 'mod', 'Two PPIs together: unnecessary. Use only one.'],
+    ['kspare', 'kspare', 'major', 'Two potassium-sparing diuretics: high potassium risk.']
+  ];
+
+  /* Same-class duplicates worth flagging (a drug repeated, or two of one family) */
+  var DUP = ['nsaid', 'statin', 'ppi', 'acei', 'arb', 'benzo', 'ssri', 'tca', 'penicillin', 'macrolide', 'quinolone', 'tetracycline', 'betablocker', 'thiazide', 'loop', 'opioid', 'antihistamine', 'cephalosporin', 'lumefantrine', 'sulfonylurea', 'ccb', 'steroid'];
+
+  /* Pregnancy and children cautions. [family, text] */
+  var PREG = [
+    ['warfarin', 'Warfarin is teratogenic - avoid in pregnancy (use LMWH).'],
+    ['acei', 'ACE inhibitors harm the fetus - avoid in pregnancy.'],
+    ['arb', 'ARBs harm the fetus - avoid in pregnancy.'],
+    ['statin', 'Statins are not recommended in pregnancy.'],
+    ['tetracycline', 'Tetracyclines affect fetal bone/teeth - avoid in pregnancy.'],
+    ['quinolone', 'Quinolones are generally avoided in pregnancy.'],
+    ['methotrexate', 'Methotrexate is contraindicated in pregnancy.'],
+    ['misoprostol', 'Misoprostol can cause miscarriage / uterine rupture - only for obstetric indications.'],
+    ['valproate', 'Valproate causes major malformations - avoid; refer.'],
+    ['nsaid', 'NSAIDs: avoid from ~30 weeks (ductus arteriosus closure); use paracetamol.'],
+    ['aspirin', 'Aspirin: low dose only if prescribed (pre-eclampsia prevention); avoid analgesic doses.'],
+    ['ergot', 'Ergometrine/ergotamine: avoid in pregnancy before delivery.'],
+    ['lithium', 'Lithium: specialist review in pregnancy.'],
+    ['kspare', 'Spironolactone: avoid in pregnancy.'],
+    ['azole', 'Fluconazole high dose / ketoconazole: avoid in pregnancy (single 150 mg dose is usually accepted).'],
+    ['cotrimoxazole', 'Cotrimoxazole: avoid in 1st trimester and near term; do not combine with SP prophylaxis.'],
+    ['sulfa', 'Sulfadoxine-pyrimethamine: not before 13 weeks.'],
+    ['ocp', 'Hormonal contraceptives are not for use in pregnancy.']
+  ];
+  var KIDS = [
+    ['aspirin', 14, 'Aspirin in children under 16 risks Reye\'s syndrome - avoid (except Kawasaki disease).'],
+    ['tetracycline', 8, 'Tetracyclines stain developing teeth - avoid under 8 years.'],
+    ['quinolone', 12, 'Quinolones are generally avoided in children (joint concerns) unless specialist-approved.'],
+    ['opioid', 12, 'Codeine/tramadol are not advised under 12 years (breathing risk).'],
+    ['nsaid', 0.5, 'NSAIDs under 6 months: avoid.'],
+    ['metoclopramide', 18, 'Metoclopramide: movement-disorder risk is higher in children and young adults - use only with a clear indication.'],
+    ['ocp', 10, 'Check indication.']
+  ];
+
+  /* ---------- helpers ---------------------------------------------------------------------------------------------------- */
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function low(s) { return String(s || '').toLowerCase(); }
+  function famsOf(name) { var n = low(name), out = []; for (var k in G) { if (G[k].test(n)) out.push(k); } return out; }
+  function curPatient() { try { return patients.find(function (p) { return p.id === currentVisitPatientId; }) || null; } catch (e) { return null; } }
+  function invList() { try { return inventory || []; } catch (e) { return []; } }
+  function stockedItems() {
+    try { return invList().filter(function (p) { return isSellableProduct(p) && isStockedProduct(p); }); } catch (e) { return []; }
+  }
+  function findItem(spec) {
+    var alts = spec.split('|'), items = stockedItems(), best = null;
+    for (var a = 0; a < alts.length; a++) {
+      var words = low(alts[a]).trim().split(/\s+/).filter(Boolean);
+      var res = words.map(function (w) { return new RegExp('(^|[^a-z0-9])' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); });
+      var hits = items.filter(function (it) { var n = low(it.name); return res.every(function (r) { return r.test(n); }); });
+      if (hits.length) {
+        hits.sort(function (x, y) { return ((Number(y.qty) > 0) - (Number(x.qty) > 0)) || String(x.name).length - String(y.name).length; });
+        best = hits[0]; break;
+      }
+    }
+    return best;
+  }
+  function dxMatches(text, icd) {
+    var t = ' ' + low(text) + ' ', c = String(icd || '').toUpperCase().replace(/[^A-Z0-9.]/g, '');
+    var out = [];
+    DX.forEach(function (d) {
+      var score = 0;
+      if (c) { for (var i = 0; i < d.c.length; i++) { if (c.indexOf(d.c[i]) === 0) { score = 3; break; } } }
+      if (!score) { for (var j = 0; j < d.k.length; j++) { if (t.indexOf(' ' + d.k[j].trim()) >= 0 || (d.k[j].length > 4 && t.indexOf(d.k[j]) >= 0)) { score = 2; break; } } }
+      if (score) out.push({ d: d, s: score });
+    });
+    out.sort(function (a, b) { return b.s - a.s; });
+    return out.slice(0, 3).map(function (o) { return o.d; });
+  }
+  function draftNames() {
+    var rows = [];
+    try { visitMedicationDraft.forEach(function (r, i) {
+      var nm = '';
+      if (r.notStocked) nm = (r.freeName || '').trim();
+      else if (r.code) { var it = invList().find(function (p) { return p.code === r.code; }); nm = it ? it.name : ''; }
+      if (nm) rows.push({ name: nm, idx: i, fam: famsOf(nm) });
+    }); } catch (e) { /* nothing yet */ }
+    return rows;
+  }
+  function inDraft(item, freeName) {
+    try { return visitMedicationDraft.some(function (r) { return item ? r.code === item.code : (r.notStocked && low(r.freeName) === low(freeName)); }); } catch (e) { return false; }
+  }
+  function gestating(p) {
+    return !!(p && p.maternity && p.maternity.lmp && !(p.maternity.deliveries || []).some(function (d) { return d.at >= p.maternity.lmp; }));
+  }
+
+  function allergyAlerts(p, meds) {
+    var alerts = [];
+    if (p && p.allergies && String(p.allergies).trim()) {
+      var atext = low(p.allergies);
+      var famAllergic = [];
+      AL.forEach(function (a) { if (a[1].test(atext)) famAllergic.push(a[0]); });
+      var tokens = atext.split(/[,;\/\n]+|\band\b/).map(function (t) { return t.trim(); }).filter(function (t) { return t.length >= 3; });
+      meds.forEach(function (m) {
+        var hit = null, how = '';
+        famAllergic.forEach(function (f) { if (!hit && m.fam.indexOf(f) >= 0) { hit = f; how = FAMILY_NAME[f] || f; } });
+        if (!hit) {
+          var first = low(m.name).split(/[\s(]/)[0];
+          tokens.forEach(function (t) { if (!hit && first.length >= 4 && (t.indexOf(first) >= 0 || (t.length >= 5 && low(m.name).indexOf(t) >= 0))) { hit = t; how = t; } });
+        }
+        if (hit) alerts.push({ sev: 'major', allergy: true, t: 'ALLERGY: ' + m.name, d: 'Patient has a recorded allergy to ' + how + ' ("' + String(p.allergies).trim() + '"). Do not give unless the allergy has been checked and ruled out.' });
+        else if (famAllergic.indexOf('penicillin') >= 0 && m.fam.indexOf('cephalosporin') >= 0) alerts.push({ sev: 'mod', t: 'Possible cross-allergy: ' + m.name, d: 'Penicillin allergy: about 1-2% also react to cephalosporins. Give only if the penicillin reaction was not severe, with observation.' });
+        else if (famAllergic.indexOf('cephalosporin') >= 0 && m.fam.indexOf('penicillin') >= 0) alerts.push({ sev: 'mod', t: 'Possible cross-allergy: ' + m.name, d: 'Cephalosporin allergy recorded: penicillins can cross-react. Check the history.' });
+        else if (famAllergic.indexOf('aspirin') >= 0 && m.fam.indexOf('nsaid') >= 0) alerts.push({ sev: 'major', allergy: true, t: 'Cross-allergy: ' + m.name, d: 'Aspirin allergy: NSAIDs frequently cross-react (asthma/urticaria). Avoid.' });
+        else if (famAllergic.indexOf('nsaid') >= 0 && m.fam.indexOf('aspirin') >= 0) alerts.push({ sev: 'major', allergy: true, t: 'Cross-allergy: ' + m.name, d: 'NSAID allergy: aspirin frequently cross-reacts. Avoid.' });
+        else if (famAllergic.indexOf('sulfa') >= 0 && m.fam.indexOf('cotrimoxazole') >= 0) alerts.push({ sev: 'major', allergy: true, t: 'ALLERGY: ' + m.name, d: 'Sulfonamide allergy recorded: cotrimoxazole is a sulfonamide.' });
+        else if (famAllergic.indexOf('chloroquine') >= 0 && m.fam.indexOf('quinine') >= 0) alerts.push({ sev: 'mod', t: 'Check cross-allergy: ' + m.name, d: 'Chloroquine allergy recorded; quinine is related. Check history.' });
+      });
+        }
+    return alerts;
+  }
+
+  /* ---------- 4. the checker --------------------------------------------------------------------------------------------- */
+  function analyse() {
+    var meds = draftNames(), p = curPatient(), alerts = [];
+    var sev = { major: 3, mod: 2, minor: 1 };
+    alerts = alerts.concat(allergyAlerts(p, meds));
+    // interactions
+    var seen = {};
+    for (var i = 0; i < meds.length; i++) {
+      for (var j = i + 1; j < meds.length; j++) {
+        IX.forEach(function (r) {
+          var a = r[0], b = r[1];
+          var ok = (meds[i].fam.indexOf(a) >= 0 && meds[j].fam.indexOf(b) >= 0) || (meds[i].fam.indexOf(b) >= 0 && meds[j].fam.indexOf(a) >= 0);
+          if (!ok) return;
+          if (a === b && low(meds[i].name) === low(meds[j].name)) return; // identical product repeated is handled by the duplicate check
+          var key = i + '-' + j + '-' + a + '-' + b; if (seen[key]) return; seen[key] = 1;
+          // ccb: only verapamil/diltiazem with beta-blocker is serious
+          if ((a === 'betablocker' && b === 'ccb') || (a === 'ccb' && b === 'betablocker')) {
+            var cc = meds[i].fam.indexOf('ccb') >= 0 ? meds[i].name : meds[j].name;
+            if (!/verapamil|diltiazem/.test(low(cc))) return;
+          }
+          if ((a === 'quinolone' && b === 'theophylline') || (b === 'quinolone' && a === 'theophylline')) return;
+          if (a === 'macrolide' && b === 'statin') { /* ok */ }
+          if ((a === 'ssri' && b === 'tramadolx') || (a === 'tramadolx' && b === 'ssri')) { /* ok */ }
+          alerts.push({ sev: r[2], t: meds[i].name + '  +  ' + meds[j].name, d: r[3] });
+        });
+      }
+    }
+    // duplicates
+    for (var x = 0; x < meds.length; x++) {
+      for (var y = x + 1; y < meds.length; y++) {
+        if (low(meds[x].name) === low(meds[y].name)) { alerts.push({ sev: 'mod', t: 'Duplicate: ' + meds[x].name, d: 'The same medicine is on the list twice - merge into one row unless intentional (e.g. different dosing times).' }); continue; }
+        var shared = DUP.filter(function (f) { return meds[x].fam.indexOf(f) >= 0 && meds[y].fam.indexOf(f) >= 0; });
+        if (shared.length) {
+          // already covered by an explicit interaction row for same family? skip generic message when explicit exists
+          var exists = alerts.some(function (al) { return al.t === meds[x].name + '  +  ' + meds[y].name; });
+          if (!exists) alerts.push({ sev: 'minor', t: 'Same drug family: ' + meds[x].name + ' + ' + meds[y].name, d: 'Both are ' + (FAMILY_NAME[shared[0]] || shared[0]) + '. Check this is intended (duplicate therapy).' });
+        }
+      }
+    }
+    // pregnancy / age
+    if (p) {
+      var preg = gestating(p) || /pregnan/i.test(String(p.notes || '') + ' ' + String(p.condition || ''));
+      var age = null; try { age = hmisAgeYears(p); } catch (e) { age = null; }
+      meds.forEach(function (m) {
+        if (preg) PREG.forEach(function (r) { if (m.fam.indexOf(r[0]) >= 0) alerts.push({ sev: 'mod', t: 'Pregnancy caution: ' + m.name, d: r[1] }); });
+        if (age !== null) KIDS.forEach(function (r) { if (m.fam.indexOf(r[0]) >= 0 && age < r[1] && r[1] > 1) alerts.push({ sev: 'mod', t: 'Age caution (' + age + ' y): ' + m.name, d: r[2] }); });
+      });
+    }
+    alerts.sort(function (a, b) { return sev[b.sev] - sev[a.sev]; });
+    return { alerts: alerts, count: meds.length };
+  }
+
+  /* ---------- 5. UI ------------------------------------------------------------------------------------------------------ */
+  function ensureHosts() {
+    var rows = document.getElementById('visit-medication-rows');
+    if (!rows || !rows.parentNode) return false;
+    if (!document.getElementById('hrx-sugg')) {
+      var s = document.createElement('div'); s.id = 'hrx-sugg'; s.style.display = 'none';
+      rows.parentNode.insertBefore(s, rows);
+    }
+    if (!document.getElementById('hrx-alerts')) {
+      var a = document.createElement('div'); a.id = 'hrx-alerts';
+      rows.parentNode.insertBefore(a, rows.nextSibling);
+    }
+    return true;
+  }
+  function renderAlerts() {
+    if (!ensureHosts()) return;
+    var host = document.getElementById('hrx-alerts'), r = analyse();
+    if (!r.count) { host.innerHTML = ''; return; }
+    var h = '';
+    if (!r.alerts.length) h = '<div class="hrx-ok">✅ <b>Safety check:</b> no allergy, interaction or duplicate found for these ' + r.count + ' medicine(s).</div>';
+    else {
+      r.alerts.forEach(function (a) {
+        var cls = a.sev === 'major' ? 'major' : (a.sev === 'mod' ? 'mod' : 'minor');
+        var ico = a.sev === 'major' ? '⛔' : (a.sev === 'mod' ? '⚠️' : 'ℹ️');
+        var lab = a.sev === 'major' ? (a.allergy ? 'Allergy' : 'Serious') : (a.sev === 'mod' ? 'Caution' : 'Note');
+        h += '<div class="hrx-al ' + cls + '"><b>' + ico + ' ' + lab + ' - ' + esc(a.t) + '</b>' + esc(a.d) + '</div>';
+      });
+    }
+    h += '<div class="hrx-foot">Decision support only - not exhaustive. Always confirm with the product label, a pharmacist or a current formulary.</div>';
+    host.innerHTML = h;
+  }
+  function renderSuggestions() {
+    if (!ensureHosts()) return;
+    var host = document.getElementById('hrx-sugg');
+    var dx = (document.getElementById('visit-diagnosis-input') || {}).value || '';
+    var icd = (document.getElementById('visit-icd10-input') || {}).value || '';
+    var soap = (document.getElementById('visit-soap-a-input') || {}).value || '';
+    var hits = dxMatches(dx + ' ' + soap, icd);
+    if (!hits.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    var h = '<div class="hrx-h">💡 Suggested medicines <small>for ' + esc(hits.map(function (d) { return d.n; }).join(' / ')) + ' - tap to add. You can still choose any medicine yourself below.</small></div>';
+    var n = 0;
+    hits.forEach(function (d) {
+      d.m.forEach(function (m, i) {
+        var item = findItem(m[0]);
+        var label = item ? item.name : m[0].split('|')[0].replace(/\b\w/g, function (c) { return c.toUpperCase(); }) + ' (not stocked)';
+        var on = inDraft(item, label), alg = item && allergyAlerts(curPatient(), [{ name: item.name, fam: famsOf(item.name) }]).some(function (x) { return x.sev === 'major'; });
+        h += '<button type="button" class="hrx-chip' + (item ? '' : ' off') + (on ? ' on' : '') + (alg ? ' alg' : '') + '" data-d="' + DX.indexOf(d) + '" data-i="' + i + '" title="' + esc(m[1]) + '">' + (on ? '✓ ' : (alg ? '⚠ ' : '+ ')) + esc(label) + (alg ? ' <i>(allergy on file)</i>' : '') + ' <i>' + esc(m[1].length > 52 ? m[1].slice(0, 50) + '…' : m[1]) + '</i></button>';
+        n++;
+      });
+    });
+    h += '<div class="hrx-foot">Suggestions only - the doctor decides. Doses are common adult starting points; adjust for age, weight, pregnancy, kidney and liver function. "Not stocked" items are added as prescribe-only (patient buys elsewhere).</div>';
+    host.innerHTML = h; host.style.display = '';
+  }
+  function addSuggestion(di, mi) {
+    var d = DX[di]; if (!d) return; var m = d.m[mi]; if (!m) return;
+    var item = findItem(m[0]);
+    var label = m[0].split('|')[0].replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    if (inDraft(item, label)) return;
+    var blank = null;
+    try { blank = visitMedicationDraft.find(function (r) { return !r.notStocked && !r.code && !(r.dosage || '').trim(); }); } catch (e) { /* ignore */ }
+    var row = blank || { code: '', qty: '1', dosage: '', saleMode: 'piece', notStocked: false, freeName: '', give: 'take-home' };
+    if (item) { row.code = item.code; row.notStocked = false; row.saleMode = 'piece'; }
+    else { row.notStocked = true; row.code = ''; row.freeName = label; }
+    row.dosage = m[1];
+    if (!blank) visitMedicationDraft.push(row);
+    try { renderVisitMedicationRows(); } catch (e) { /* ignore */ }
+    var p = curPatient(); if (p && item && typeof cwAllergyCheck === 'function') { try { cwAllergyCheck(item.code); } catch (e) { /* ignore */ } }
+    try { showToast('Added ' + (item ? item.name : label) + ' - set the quantity and check the dose.'); } catch (e) { /* ignore */ }
+  }
+
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.hrx-chip'); if (!b) return;
+    e.preventDefault(); addSuggestion(+b.getAttribute('data-d'), +b.getAttribute('data-i'));
+  });
+
+  var tmr = null;
+  function later() { clearTimeout(tmr); tmr = setTimeout(function () { try { renderSuggestions(); renderAlerts(); } catch (e) { /* never break the screen */ } }, 120); }
+  ['input', 'change'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) {
+      var id = e.target && e.target.id;
+      if (id === 'visit-diagnosis-input' || id === 'visit-icd10-input' || id === 'visit-soap-a-input') later();
+    }, true);
+  });
+
+  // after every re-render of the medicine rows, refresh chips + safety panel
+  (function wrap() {
+    if (typeof renderVisitMedicationRows !== 'function') { setTimeout(wrap, 400); return; }
+    var orig = renderVisitMedicationRows;
+    renderVisitMedicationRows = function () { var r = orig.apply(this, arguments); try { renderAlerts(); renderSuggestions(); } catch (e) { /* ignore */ } return r; };
+    window.renderVisitMedicationRows = renderVisitMedicationRows;
+  })();
+
+  // also re-run when a medicine input's value changes (combo pick triggers change on the select -> inline handler re-renders already)
+  // and when a visit screen is opened with a restored draft
+  setInterval(function () { if (document.getElementById('visit-medication-rows') && document.getElementById('visit-medication-rows').offsetParent) { var sig = (curPatient() || {}).id + '|' + (document.getElementById('visit-diagnosis-input') || {}).value + '|' + (document.getElementById('visit-icd10-input') || {}).value + '|' + (typeof visitMedicationDraft !== 'undefined' ? visitMedicationDraft.length : 0); if (sig !== analyse._sig) { analyse._sig = sig; later(); } } }, 1500);
+
+  // serious alerts need a confirmation before the visit is saved
+  (function wrapSave() {
+    if (typeof saveVisit !== 'function') { setTimeout(wrapSave, 400); return; }
+    var orig = saveVisit;
+    saveVisit = function () {
+      try {
+        var r = analyse(), majors = r.alerts.filter(function (a) { return a.sev === 'major'; });
+        if (majors.length) {
+          var msg = '⛔ SERIOUS SAFETY ALERT' + (majors.length > 1 ? 'S (' + majors.length + ')' : '') + ' on this prescription:\n\n' + majors.slice(0, 5).map(function (a) { return '• ' + a.t + '\n  ' + a.d; }).join('\n\n') + '\n\nSave the visit anyway? (Cancel = go back and change the medicines)';
+          if (!confirm(msg)) return;
+          try { logAudit('Prescription safety alert overridden', (curPatient() || {}).name || '', majors.map(function (a) { return a.t; }).join(' | ').slice(0, 300)); } catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* the checker must never block saving */ }
+      return orig.apply(this, arguments);
+    };
+    window.saveVisit = saveVisit;
+  })();
+
+  window.hrx = { analyse: analyse, suggest: dxMatches, findItem: findItem, famsOf: famsOf, DX: DX, IX: IX, G: G, AL: AL, refresh: later };
+})();
+</script>

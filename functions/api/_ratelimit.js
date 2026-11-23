@@ -8,6 +8,9 @@
 // Limits are per SHOP per hour and can be changed without a code change (Pages -> Settings -> Environment variables):
 //   SMS_HOURLY_LIMIT   default 1500 recipients      STK_HOURLY_LIMIT   default 60 prompts
 
+import { atomicHit, atomicPeek } from './_atomic-counter.js';
+import { secEvent, callerIp } from './_sec-events.js';
+
 export const RL_HIT_PREFIX = 'ratelimit-hit:';
 
 const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
@@ -36,7 +39,21 @@ export const LIMITS = {
   // zip 263: "Get my own link" requests (each can send a payment prompt), per caller IP per hour
   buyLink: (env) => num(env && env.BUY_LINK_HOURLY_LIMIT, 12),
   slugCheck: (env) => num(env && env.SLUG_CHECK_HOURLY_LIMIT, 240),      // typing an address checks it as you go, per caller IP per hour
+  // zip 273: the rest of the audit's "no limit at all" routes. Each is keyed so that a shop behind one shared network is never blocked by its neighbours.
+  ownerSignup: (env) => num(env && env.OWNER_SIGNUP_HOURLY_LIMIT, 5),     // owner-auth sign-up, per caller IP
+  claim: (env) => num(env && env.CLAIM_HOURLY_LIMIT, 6),                  // "I have paid" claims, per shop (unauthenticated route)
+  claimIp: (env) => num(env && env.CLAIM_IP_HOURLY_LIMIT, 40),            // ... and per caller IP
+  mpesaCheck: (env) => num(env && env.MPESA_CHECK_HOURLY_LIMIT, 180),     // typed M-Pesa code checks, per shop (a code-guessing brake)
+  stkStatus: (env) => num(env && env.STK_STATUS_HOURLY_LIMIT, 4000),      // status polls while a prompt is open, per shop (generous: one prompt polls ~40 times)
+  lookup: (env) => num(env && env.LOOKUP_HOURLY_LIMIT, 600),              // barcode / image lookups that call an outside service, per shop
+  upload: (env) => num(env && env.UPLOAD_HOURLY_LIMIT, 600),              // picture uploads, per shop
+  webhook: (env) => num(env && env.WEBHOOK_HOURLY_LIMIT, 3000),           // payment callbacks, per shop and rail (legitimate callbacks are far below this)
+  // zip 288: Owner Console SEO tab. A site audit makes ~25 requests to the site itself, so it is held to a few per hour; Google calls are capped well under Google's own quotas.
+  seoAudit: (env) => num(env && env.SEO_AUDIT_HOURLY_LIMIT, 20),
+  seoGoogle: (env) => num(env && env.SEO_GOOGLE_HOURLY_LIMIT, 60),
 };
+// zip 273: these counters are ATOMIC (ledger D1) where the database is bound; the rest stay on KV (cheap, approximate).
+const ATOMIC = new Set(['sms', 'stk', 'stkPhone', 'pair', 'staffPin', 'staffShop', 'otp', 'contact', 'payProof', 'buyLink', 'ownerSignup', 'claim', 'claimIp', 'mpesaCheck', 'qr', 'qrtok']);
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).
 export async function checkRateLimit(env, name, clientId, cost = 1) {
@@ -45,6 +62,14 @@ export async function checkRateLimit(env, name, clientId, cost = 1) {
   const now = Date.now();
   const bucket = Math.floor(now / (windowSec * 1000));
   const key = `rl:${name}:${clientId}:${bucket}`;
+  if (ATOMIC.has(name)) {
+    const n = await atomicHit(env, key, cost, windowSec * 2);
+    if (n !== null) {
+      const retry = Math.max(1, Math.ceil(((bucket + 1) * windowSec * 1000 - now) / 1000));
+      if (n > limit) { await recordHit(env, name, clientId, limit, now); return { ok: false, used: Math.min(n, limit), limit, retryAfter: retry }; }
+      return { ok: true, used: n, limit, retryAfter: retry };
+    }
+  }
   let used = 0;
   try {
     used = Number(await env.mydukapos_kv.get(key)) || 0;
@@ -65,6 +90,7 @@ export async function checkRateLimit(env, name, clientId, cost = 1) {
 // One small record per shop+kind: { count, last, first, limit } — written at most once a minute so a flood of
 // blocked calls cannot itself hammer KV.
 async function recordHit(env, name, clientId, limit, now) {
+  await secEvent(env, 'rate_limited', { route: name, shop: String(clientId).split(':')[0].slice(0, 60), detail: 'limit ' + limit });
   const key = `${RL_HIT_PREFIX}${name}:${clientId}`;
   try {
     const raw = await env.mydukapos_kv.get(key);
@@ -98,8 +124,8 @@ function loginKeys(request, account) {
 // -> null when allowed, or a 429 Response to send back
 export async function loginBlocked(env, request, account, headers = {}) {
   for (const k of loginKeys(request, account)) {
-    let used = 0;
-    try { used = Number(await env.mydukapos_kv.get(k.key)) || 0; } catch (e) { return null; }   // never lock anyone out because the limiter failed
+    let used = await atomicPeek(env, k.key);                                   // zip 273: the atomic counter when the database is bound
+    if (used === null) { try { used = Number(await env.mydukapos_kv.get(k.key)) || 0; } catch (e) { return null; } }   // never lock anyone out because the limiter failed
     if (used >= k.limit(env)) {
       return new Response(JSON.stringify({ error: 'Too many wrong passwords. Wait an hour and try again, or use "Forgot password".', code: 'rate_limited' }),
         { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(LOGIN_WINDOW_SEC), ...headers } });
@@ -108,7 +134,9 @@ export async function loginBlocked(env, request, account, headers = {}) {
   return null;
 }
 export async function noteLoginFailure(env, request, account) {
+  await secEvent(env, 'login_failed', { route: 'login', ip: callerIp(request) });       // zip 273: counted and shown to the owner, never the account or password
   for (const k of loginKeys(request, account)) {
+    if ((await atomicHit(env, k.key, 1, LOGIN_WINDOW_SEC * 2)) !== null) continue;   // zip 273: counted atomically
     try {
       const used = Number(await env.mydukapos_kv.get(k.key)) || 0;
       await env.mydukapos_kv.put(k.key, String(used + 1), { expirationTtl: LOGIN_WINDOW_SEC * 2 });

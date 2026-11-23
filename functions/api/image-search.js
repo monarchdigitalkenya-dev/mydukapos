@@ -17,6 +17,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -36,6 +37,8 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  const rll = await checkRateLimit(env, 'lookup', clientId);            // zip 273: each search calls an outside service
+  if (!rll.ok) return rateLimitResponse('picture searches', rll);
 
   const url = new URL(request.url);
   const configRaw = await env.mydukapos_kv.get(`image-search-config:${clientId}`);
@@ -92,6 +95,8 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  const rll = await checkRateLimit(env, 'lookup', clientId);            // zip 273: each search calls an outside service
+  if (!rll.ok) return rateLimitResponse('picture searches', rll);
 
   let body;
   try {

@@ -449,11 +449,16 @@ function buildReceiptCanvas(text, opts) {
             opts = opts || {};
             // zip 144: the PDF / shared image uses the SAME laid-out lines as the paper (header and footer centred, items aligned as set),
             // so a shared receipt looks exactly like the printed one.
-            let lines;
+            let lines, bigFlags = null;
             const secs = (typeof receiptSectionsFor === 'function') ? receiptSectionsFor(text) : null;
             if (secs && typeof receiptGridLines === 'function') {
                 const al = typeof receiptItemAlign !== 'undefined' && (receiptItemAlign === 'center' || receiptItemAlign === 'right') ? receiptItemAlign : 'left';
-                lines = [...receiptGridLines(secs.header, 'center'), ...receiptGridLines(secs.items, al), ...receiptGridLines(secs.footer, 'center')];
+                const head = receiptGridLines(secs.header, 'center');
+                const items = receiptGridLines(secs.items, al, undefined, { bigTotal: true });
+                const foot = receiptGridLines(secs.footer, 'center');
+                lines = [...head, ...items, ...foot];
+                // the grand TOTAL is drawn big and bold, like on the paper
+                bigFlags = [...head.map(() => false), ...receiptBigTotalFlags(items, getPaperCols()), ...foot.map(() => false)];
             } else {
                 lines = text.split('\n');   // other documents (statements) keep their own width
             }
@@ -471,10 +476,13 @@ function buildReceiptCanvas(text, opts) {
                 const shown = lines.slice(0, MAX_LINES);
                 shown.push(`... truncated (${lines.length - MAX_LINES} more lines) — use Print for the full statement.`);
                 lines = shown;
+                if (bigFlags) { bigFlags = bigFlags.slice(0, MAX_LINES); bigFlags.push(false); }
             }
-            const maxLineLen = lines.reduce((m, l) => l.length > m ? l.length : m, 32);
+            const isBig = (i) => !!(bigFlags && bigFlags[i]);
+            const maxLineLen = lines.reduce((m, l, i) => { const w = isBig(i) ? l.length * 2 : l.length; return w > m ? w : m; }, 32);
+            const heightOf = (i) => (isBig(i) ? lineHeight * 2 : lineHeight);
             const canvasWidth = opts.width || Math.max(500, Math.round(maxLineLen * fontSize * 0.62) + paddingX * 2);
-            const canvasHeight = paddingY * 2 + lineHeight * lines.length;
+            const canvasHeight = paddingY * 2 + lines.reduce((n, l, i) => n + heightOf(i), 0);
             const canvas = document.createElement('canvas');
             canvas.width = canvasWidth;
             canvas.height = canvasHeight;
@@ -482,9 +490,18 @@ function buildReceiptCanvas(text, opts) {
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, canvasWidth, canvasHeight);
             ctx.fillStyle = '#000000';
-            ctx.font = `${fontSize}px 'Courier New', monospace`;
             ctx.textBaseline = 'top';
-            lines.forEach((line, i) => ctx.fillText(line, paddingX, paddingY + i * lineHeight));
+            let y = paddingY;
+            lines.forEach((line, i) => {
+                if (isBig(i)) {
+                    ctx.font = `bold ${fontSize * 2}px 'Courier New', monospace`;
+                    ctx.fillText(line, paddingX, y + Math.round(fontSize * 0.4));
+                } else {
+                    ctx.font = `${fontSize}px 'Courier New', monospace`;
+                    ctx.fillText(line, paddingX, y);
+                }
+                y += heightOf(i);
+            });
             return canvas;
         }
 
@@ -522,7 +539,7 @@ function cancelCartTotalQuote() {
 
 //@fn captureReviewInventoryOptions
 function captureReviewInventoryOptions(selectedId) {
-            const pool = inventory.filter(p => p.type !== 'service').slice().sort((a, b) => a.name.localeCompare(b.name));
+            const pool = inventory.filter(p => p.type !== 'service').slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             let html = `<option value="">✨ New Item</option>`;
             pool.forEach(p => {
                 html += `<option value="${escapeHtml(p.code)}" ${p.code === selectedId ? 'selected' : ''}>${escapeQuotes(p.name)}</option>`;
@@ -687,9 +704,15 @@ async function checkEtimsStatus() {
 function checkExistingContractMatch() {
             const name = document.getElementById('contract-name-input').value.trim();
             const phone = document.getElementById('contract-phone-input').value.trim();
+            const idEl = document.getElementById('contract-id-input');
+            const idv = idEl ? idEl.value.trim() : '';
+            // zip 328: one contract per PERSON - found by phone, then ID number. A bare name only matches a contract that has neither (two different people can share a name).
+            const live = contracts.filter(c => c && !c._deleted && c.status !== 'cancelled');
+            const pk = custPhoneKey(phone), ik = custIdKey(idv);
             let existing = null;
-            if (phone) existing = contracts.find(c => c.phone && c.phone.replace(/\D/g, '') === phone.replace(/\D/g, '') && phone.replace(/\D/g, '').length >= 6);
-            if (!existing && name) existing = contracts.find(c => c.name.trim().toLowerCase() === name.toLowerCase());
+            if (pk) existing = live.find(c => custPhoneKey(c.phone) === pk);
+            if (!existing && ik) existing = live.find(c => custIdKey(c.idNumber) === ik);
+            if (!existing && !pk && !ik && name) existing = live.find(c => !custPhoneKey(c.phone) && !custIdKey(c.idNumber) && String(c.name || '').trim().toLowerCase() === name.toLowerCase());
 
             const group = document.getElementById('contract-existing-group');
             const hint = document.getElementById('contract-existing-hint');
@@ -703,6 +726,8 @@ function checkExistingContractMatch() {
                 wholesaleBtn.disabled = true;
                 group.style.display = 'block';
                 hint.textContent = `Adding a new visit to ${existing.name}'s existing ${existing.type === 'wholesale' ? 'Wholesale' : 'Retail'} contract.`;
+                if (idEl && !idEl.value && existing.idNumber) idEl.value = existing.idNumber;
+                const adEl = document.getElementById('contract-address-input'); if (adEl && !adEl.value && existing.address) adEl.value = existing.address;
             } else {
                 activeContractId = null;
                 retailBtn.disabled = false;
@@ -860,6 +885,99 @@ async function claimLicensePayment() {
                 if (btn) { btn.disabled = false; btn.textContent = 'I’ve made this payment'; }
             }
         }
+
+//@fn upgradeStkInit
+async function upgradeStkInit() {
+            // zip 286: "Upgrade to permanent" by M-Pesa prompt, shown ABOVE the manual instructions, only when the owner's payment gateway is set up
+            // (the server says so). Nothing changes when it isn't: the shop pays by hand and taps "I've made this payment".
+            const claim = document.getElementById('license-claim-payment-btn');
+            if (!claim || claim.style.display === 'none') { upgradeStkRender(); return; }          // deleted link, offline estimate, or the claim is already sent
+            const st = window.__upgradeStk = window.__upgradeStk || { checked: false, stk: false, phase: 'idle', pay: null, msg: '' };
+            if (st.checked) { upgradeStkRender(); return; }
+            st.checked = true;
+            try {
+                const res = await fetch(apiUrl('/api/license-upgrade'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }) });
+                const j = await res.json();
+                if (res.ok && j && j.stk) {
+                    st.stk = true; st.amount = j.amount;
+                    let saved = null; try { saved = JSON.parse(localStorage.getItem('upg_stk_pay') || 'null'); } catch (e) { /* none */ }
+                    if (saved && saved.id && saved.token && Date.now() - (saved.at || 0) < 3 * 86400000) { st.pay = saved; st.phase = 'wait'; upgradeStkPoll(0); }       // a refresh picks the waiting payment up again
+                } else { st.checked = false; }
+            } catch (e) { st.checked = false; /* offline: the manual way is still there */ }
+            upgradeStkRender();
+        }
+
+//@fn upgradeStkRender
+function upgradeStkRender() {
+            const st = window.__upgradeStk, hint = document.querySelector('.license-lock-hint');
+            let box = document.getElementById('license-upgrade-stk');
+            const claim = document.getElementById('license-claim-payment-btn');
+            if (!hint || !st || !st.stk || !claim || claim.style.display === 'none') { if (box) box.remove(); return; }
+            if (!box) {
+                box = document.createElement('div'); box.id = 'license-upgrade-stk';
+                box.style.cssText = 'margin:12px 0; padding:12px; border:1.5px solid #cfe3d6; border-radius:10px; text-align:left; font-size:14px;';
+                hint.parentNode.insertBefore(box, hint);
+            }
+            const amt = 'KES ' + Number(st.amount || 0).toLocaleString('en-KE'), msg = st.msg ? `<div style="margin-top:8px; color:#b03a2e;">${escapeHtml(st.msg)}</div>` : '';
+            if (st.phase === 'wait') {
+                box.innerHTML = `<div style="font-weight:700;">📲 Check your phone</div><div style="margin-top:6px;">Enter your M-Pesa PIN to pay <b>${amt}</b>. This page upgrades by itself once it is paid.</div>${st.info ? `<div style="margin-top:6px; color:#5b6b60;">${escapeHtml(st.info)}</div>` : ''}
+                    <button type="button" class="btn-main" style="margin-top:10px; background:transparent; color:inherit; border:1.5px solid currentColor;" onclick="upgradeStkCancel()">Start again</button>`;
+            } else if (st.phase === 'done') {
+                box.innerHTML = `<div style="font-weight:700; color:#1e8449;">✅ Paid — you are now permanent. Opening…</div>`;
+            } else {
+                box.innerHTML = `<div style="font-weight:700;">📲 Pay ${amt} by M-Pesa prompt</div>
+                    <input type="tel" id="license-upgrade-stk-phone" inputmode="tel" autocomplete="tel" placeholder="M-Pesa number, e.g. 0712345678" style="width:100%; box-sizing:border-box; margin-top:8px; padding:10px; border-radius:8px; border:1.5px solid #cfd8d3; font-size:16px;" value="${escapeHtml(st.phone || '')}">
+                    <button type="button" class="btn-main" id="license-upgrade-stk-btn" style="margin-top:10px;" onclick="upgradeStkStart()">Send M-Pesa prompt</button>${msg}
+                    <div style="margin-top:8px; color:#5b6b60; font-size:12px;">Or pay by hand below and tap “I’ve made this payment”.</div>`;
+            }
+        }
+
+//@fn upgradeStkStart
+async function upgradeStkStart() {
+            const st = window.__upgradeStk; if (!st || st.phase === 'wait') return;
+            const inp = document.getElementById('license-upgrade-stk-phone'), btn = document.getElementById('license-upgrade-stk-btn');
+            st.phone = inp ? inp.value.trim() : '';
+            if (!st.phone) { st.msg = 'Enter the M-Pesa number to send the prompt to.'; upgradeStkRender(); return; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+            try {
+                const res = await fetch(apiUrl('/api/license-upgrade'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', phone: st.phone }) });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok || !j.id) { st.msg = (j && j.error) || 'The prompt could not be sent. Please try again.'; st.phase = 'idle'; upgradeStkRender(); return; }
+                st.pay = { id: j.id, token: j.token, at: Date.now() }; st.phase = 'wait'; st.msg = ''; st.info = '';
+                try { localStorage.setItem('upg_stk_pay', JSON.stringify(st.pay)); } catch (e) { /* not remembered across a refresh */ }
+                upgradeStkRender(); upgradeStkPoll(0);
+            } catch (e) { st.msg = netErrText('Could not reach the server'); st.phase = 'idle'; upgradeStkRender(); }
+        }
+
+//@fn upgradeStkPoll
+async function upgradeStkPoll(n) {
+            const st = window.__upgradeStk; if (!st || st.phase !== 'wait' || !st.pay) return;
+            clearTimeout(st.timer);
+            let again = true;
+            try {
+                const res = await fetch(apiUrl('/api/license-upgrade'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'poll', id: st.pay.id, token: st.pay.token }) });
+                const j = await res.json().catch(() => ({}));
+                if (res.status === 404) { again = false; upgradeStkReset(''); }
+                else if (j.status === 'paid') {
+                    again = false; st.phase = 'done'; upgradeStkRender(); try { localStorage.removeItem('upg_stk_pay'); } catch (e) { /* fine */ }
+                    showToast('Payment received — your shop is now permanent.');
+                    setTimeout(() => { try { location.reload(); } catch (e) { /* the next open is permanent anyway */ } }, 1500);
+                } else if (j.status === 'failed') { again = false; upgradeStkReset(j.message || 'The payment did not go through. You can try again.'); }
+                else if (j.status === 'claimed') { st.info = j.message || ''; upgradeStkRender(); }
+            } catch (e) { /* offline for a moment: try again */ }
+            if (again && st.phase === 'wait') st.timer = setTimeout(() => upgradeStkPoll(n + 1), n < 40 ? 3000 : 8000);
+        }
+
+//@fn upgradeStkReset
+function upgradeStkReset(msg) {
+            const st = window.__upgradeStk; if (!st) return;
+            clearTimeout(st.timer); st.phase = 'idle'; st.pay = null; st.msg = msg || ''; st.info = '';
+            try { localStorage.removeItem('upg_stk_pay'); } catch (e) { /* fine */ }
+            upgradeStkRender();
+        }
+
+//@fn upgradeStkCancel
+function upgradeStkCancel() { upgradeStkReset(''); }
 
 //@fn clearAuthUrlParams
 function clearAuthUrlParams() {
@@ -1323,7 +1441,7 @@ function contractRowProduct(row) {
 function contractRowUnitPrice(row) {
             if (activeContractType === 'retail') {
                 const product = contractRowProduct(row);
-                return product ? product.price : 0;
+                return product ? (row.mode === 'piece' && product.dualUnit ? (Number(product.piecePrice) || 0) : product.price) : 0;
             }
             return parseFloat(row.price) || 0;
         }
@@ -2352,6 +2470,16 @@ function findCsvColumn(lowerHeaderRow, aliases) {
                 const at = lowerHeaderRow.indexOf(alias.trim().toLowerCase());
                 if (at !== -1) return at;
             }
+            // zip 323: a header that differs only in spacing, punctuation or a unit in brackets ("Selling_Price", "Price (KSh)", "unit-price") still matches
+            // (an unrecognised price header used to be skipped without a word, so every imported price became 0)
+            const squash = (s) => String(s == null ? '' : s).toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]+/g, '');
+            const squashed = lowerHeaderRow.map(squash);
+            for (const alias of aliases) {
+                const k = squash(alias);
+                if (!k) continue;
+                const at = squashed.indexOf(k);
+                if (at !== -1) return at;
+            }
             return -1;
         }
 
@@ -2702,11 +2830,17 @@ function getExchangeReplacementTotal() {
 
 //@fn getExpiringItems
 function getExpiringItems() {
-            return inventory
-                .filter(p => (p.type || 'item') !== 'service' && p.expiryDate)
-                .map(p => ({ ...p, daysLeft: daysUntilExpiry(p.expiryDate) }))
-                .filter(p => p.daysLeft !== null && p.daysLeft <= EXPIRY_WARNING_DAYS)
-                .sort((a, b) => a.daysLeft - b.daysLeft);
+            // zip 317: a variant can carry its own expiry date (milk 500 ml vs 1 L from different deliveries): each dated variant is listed on its own,
+            // named "Product — Variant", with its own code; the product's own date still counts for a plain item.
+            const out = [];
+            inventory.forEach(p => {
+                if (!p || (p.type || 'item') === 'service') return;
+                if (p.expiryDate) out.push({ ...p, daysLeft: daysUntilExpiry(p.expiryDate) });
+                if (p.hasVariants && Array.isArray(p.variants)) p.variants.forEach(v => {
+                    if (v && v.expiryDate && v.active !== false) out.push({ ...p, code: v.code || p.code, name: `${p.name} — ${v.name}`, expiryDate: v.expiryDate, qty: v.qty, variantId: v.id, daysLeft: daysUntilExpiry(v.expiryDate) });
+                });
+            });
+            return out.filter(p => p.daysLeft !== null && p.daysLeft <= EXPIRY_WARNING_DAYS).sort((a, b) => a.daysLeft - b.daysLeft);
         }
 
 //@fn getFaultyReturns
@@ -2857,7 +2991,9 @@ function cartStockShortfall(entries) {
                 const key = l.variantId ? l.code + '::v::' + l.variantId : String(l.code);
                 const g = groups[key] || (groups[key] = { code: l.code, variantId: l.variantId || null, box: 0, piece: 0, name: l.name });
                 const isPiece = l.variantId ? l.variantSaleMode === 'piece' : l.saleMode === 'piece';
-                if (isPiece) g.piece += Number(l.qty) || 0; else g.box += Number(l.qty) || 0;
+                // zip 336: a package line (saleMode 'pack:<level>') is that many packages - counted here in the item's base unit
+                const per = (/^pack:/.test(String(l.saleMode || '')) && typeof window !== 'undefined' && window.SE) ? window.SE.linePer(l, inventory.find(x => x && x.code === l.code)) : 1;
+                if (isPiece) g.piece += Number(l.qty) || 0; else g.box += (Number(l.qty) || 0) * per * (Number(l.unitPieces) > 1 ? Number(l.unitPieces) : 1);   // zip 381: an MOQ pack / order line holds unitPieces pieces
             });
             for (const g of Object.values(groups)) {
                 const p = inventory.find(x => x && x.code === g.code);
@@ -2871,6 +3007,16 @@ function cartStockShortfall(entries) {
                     continue;
                 }
                 if (p.qty === undefined || p.qty === null || !isFinite(Number(p.qty))) continue;   // no stock count kept for it: nothing to protect
+                // zip 336 (Pharmacy / Hospital): only USABLE batches can be sold - expired, quarantined and recalled ones never
+                const lotOn = typeof window !== 'undefined' && window.SE && window.__SE_LOTS && window.SE.lotTracked(p);
+                if (lotOn) {
+                    const usable = window.SE.usableQty(p), want = g.box + g.piece;
+                    if (want > usable + 1e-9) {
+                        const blocked = window.SE.r3((Number(p.qty) || 0) - usable);
+                        return `Not enough usable "${label}": the cart has ${window.SE.r3(want)}, only ${usable} can be sold${blocked > 0 ? ` (${blocked} more are expired, quarantined or recalled and can never be sold)` : ''}.`;
+                    }
+                    continue;
+                }
                 const whole = Number(p.qty) || 0;
                 if (p.dualUnit) {
                     if (g.box > whole + 1e-9) return `Not enough "${label}" in stock: the cart has ${g.box}, only ${Math.max(0, whole)} available.`;
@@ -2885,6 +3031,8 @@ function cartStockShortfall(entries) {
             // came back on a void. Lines of the material itself in the same cart count too.
             const need = {}, who = {};
             (entries || []).forEach(l => {
+                // zip 381: a service sold with a chosen material (Price List: e.g. Printing on Glossy paper) takes that material off the shelf
+                if (l && l.isService && Array.isArray(l.recipe) && l.recipe.length && !l.isCrossBranch) { l.recipe.forEach(r => { if (!r || !r.code) return; need[r.code] = (need[r.code] || 0) + (Number(r.qtyPerUnit) || 0) * (Number(l.qty) || 0); if (!who[r.code]) who[r.code] = l.name; }); return; }
                 if (!l || l.isService || l.isCrossBranch || l.isAdhoc || !l.code || l.variantId) return;
                 const p = inventory.find(x => x && x.code === l.code);
                 if (!p) return;
@@ -3183,12 +3331,11 @@ async function sealStoredHashes() {
                     try { v = localStorage.getItem(k); } catch (e) { /* none */ }
                     if (v && !v.startsWith('p2$')) { const sealed = await sealHash(v); if (sealed !== v) { safeSetItem(k, sealed); changed = true; pwChanged = true; } }
                 }
-                if (pwChanged) {
-                    // stamp both fields so the sealed form wins on the server, exactly like a password change (see changePassword)
-                    window.__fieldAck = window.__fieldAck || new Map();
-                    window.__fieldAck.set('pwHash', '__force_stamp__');
-                    window.__fieldAck.set('adminPwHash', '__force_stamp__');
-                }
+                // zip 347: sealing NO LONGER stamps the two password fields as "newly changed". The sealed form and the plain form are the same password
+                // (hashMatches accepts both), so nothing needs to win. The stamp was the bug: a device that sealed its OLD password a moment after an
+                // Owner Console reset - before it had pulled the reset - sent the old password with a NEWER stamp than the reset and put it back on the
+                // server, so the reset password stopped working for everyone and the sealed old one was all that was left. A real password change
+                // (changePassword) still stamps its own fields.
                 if (hashSealGateOpen() && typeof staff !== 'undefined' && Array.isArray(staff)) {
                     let staffChanged = false;
                     for (const m of staff) {
@@ -3418,15 +3565,22 @@ function handleSplitAmountChange(source) {
             const total = cartTotal();
             const cashInput = document.getElementById('split-cash-input');
             const mpesaInput = document.getElementById('split-mpesa-input');
+            const cardInput = document.getElementById('split-card-input');      // zip 296: optional third leg (only apps with a Card payment have it)
             const cash = parseFloat(cashInput.value);
             const mpesa = parseFloat(mpesaInput.value);
+            const card = cardInput ? (parseFloat(cardInput.value) || 0) : 0;
 
             if (source === 'cash' && !isNaN(cash)) {
-                const remainder = Math.max(0, Math.round((total - cash) * 100) / 100);
+                const remainder = Math.max(0, Math.round((total - cash - card) * 100) / 100);
                 mpesaInput.value = remainder.toFixed(2);
             } else if (source === 'mpesa' && !isNaN(mpesa)) {
-                const remainder = Math.max(0, Math.round((total - mpesa) * 100) / 100);
+                const remainder = Math.max(0, Math.round((total - mpesa - card) * 100) / 100);
                 cashInput.value = remainder.toFixed(2);
+            } else if (source === 'card' && cardInput) {
+                // the card amount comes off the M-Pesa side first (the default split puts everything there), keeping any cash typed
+                const c = (isNaN(cash) ? 0 : cash);
+                const remainder = Math.max(0, Math.round((total - c - card) * 100) / 100);
+                mpesaInput.value = remainder.toFixed(2);
             }
             updateSplitBalanceLine();
             updateChangeDue();
@@ -3458,7 +3612,7 @@ function ingredientOptionsHtml(selectedCode) {
             // A recipe can draw on a dedicated ingredient OR a normal sellable item —
             // a bar pours the same bottled soda it also sells by the bottle.
             const components = inventory.filter(isRecipeComponent)
-                .sort((a, b) => a.name.localeCompare(b.name));
+                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             const ingredients = components.filter(isIngredientProduct);
             const items = components.filter(p => !isIngredientProduct(p));
 
@@ -3595,6 +3749,8 @@ function initLoyaltySettingsUI() {
             if (panel) panel.style.display = loyaltyEnabled ? 'block' : 'none';
             const valueInput = document.getElementById('loyalty-token-value-input');
             if (valueInput) valueInput.value = tokenValueKES;
+            const rt = document.getElementById('loyalty-receipt-toggle');       // zip 313
+            if (rt) rt.checked = typeof receiptShowLoyalty === 'undefined' ? true : receiptShowLoyalty !== false;
             renderLoyaltyTiersList();
         }
 
@@ -4139,7 +4295,7 @@ function loadSheetJsOnce(url) {
 
 //@fn loadStoreItems
 async function loadStoreItems(forceRefresh) {
-            if (!myBranchGroupId) return [];
+            // zip 293: a Store does not need a branch group - the server keys a standalone shop's store to the shop itself
             if (!forceRefresh && storeItemsCache.length > 0) return storeItemsCache;
             try {
                 const res = await fetch(apiUrl('/api/store'), {
@@ -4986,28 +5142,42 @@ function performCartTotalQuote(newTotal) {
             const belowMin = cartTotalBelowMinimumMessage(newTotal);
             if (belowMin) { showToast(belowMin, true); renderCart(); return; }
 
-            const scale = newTotal / itemsTotal;
-            const oldPrices = entries.map((l) => l.price);
-            let allocated = 0;
+            // zip 388: whole shillings only. Each line's new unit price is a whole shilling; one line takes what is left so the cart totals
+            // EXACTLY what was quoted - a line of one unit if there is one (any whole figure fits it), else the last line. When that line has
+            // several units and the remainder does not divide, it is split in two: e.g. 3 x 333 quoted at 1000 = 2 x 333 + 1 x 334. Never
+            // a price with cents (3 x 333.33 printed 999.99 under a total of 1,000).
+            const target = Math.round(newTotal);
+            const scale = target / itemsTotal;
+            const oldPrices = entries.map((l) => l.price), oldQty = entries.map((l) => l.qty);
+            const keyOf = (line) => Object.keys(currentCart).find((k) => currentCart[k] === line);
+            let absorb = entries.findIndex((l) => l.qty === 1);
+            if (absorb < 0) absorb = entries.length - 1;
+            let allocated = 0, splitKey = null;
             entries.forEach((l, idx) => {
-                if (idx === entries.length - 1) {
-                    const remaining = round2(newTotal - allocated);
-                    if (l.qty > 0) {
-                        // zip 185: 3 x 50 quoted at 100 gave 3 x 33.33 = 99.99 - the cart ended 1 cent off what the customer was told. When the rounded unit
-                        // price does not multiply back to the remainder, the last line keeps the exact (unrounded) unit price, as bakeItemShares does for
-                        // a line it cannot split.
-                        const unit = round2(remaining / l.qty);
-                        l.price = Math.abs(unit * l.qty - remaining) < 0.004 ? unit : remaining / l.qty;
-                    }
-                } else {
-                    l.price = round2(l.price * scale);
-                    allocated = round2(allocated + l.price * l.qty);
-                }
+                if (idx === absorb) return;
+                l.price = Math.round(l.price * scale);
+                allocated += l.price * l.qty;
             });
+            {
+                const l = entries[absorb];
+                const remaining = Math.round((target - allocated) * 1000) / 1000;
+                if (l.qty > 0) {
+                    if (Number.isInteger(l.qty) && l.qty > 1 && Number.isInteger(remaining) && remaining % l.qty !== 0) {
+                        const unit = Math.floor(remaining / l.qty), extra = remaining - unit * l.qty;   // `extra` units cost one shilling more
+                        const k = keyOf(l);
+                        l.qty -= extra; l.price = unit;
+                        splitKey = (k || l.code) + '::q' + Date.now().toString(36);
+                        currentCart[splitKey] = { ...l, cartKey: splitKey, qty: extra, price: unit + 1 };
+                    } else {
+                        l.price = remaining / l.qty;                                          // one unit (or a weighed quantity): the whole remainder
+                    }
+                }
+            }
             // zip 185: the minimum was checked against the ratio BEFORE rounding; check each line again with its new price (a cent of rounding is allowed).
-            const broke = entries.find((l) => { const min = cartLineMinimumPrice(l); return min > 0 && l.price < min - 0.005; });
+            const broke = entries.concat(splitKey ? [currentCart[splitKey]] : []).find((l) => { const min = cartLineMinimumPrice(l); return min > 0 && l.price < min - 0.005; });
             if (broke) {
-                entries.forEach((l, i) => { l.price = oldPrices[i]; });
+                entries.forEach((l, i) => { l.price = oldPrices[i]; l.qty = oldQty[i]; });
+                if (splitKey) delete currentCart[splitKey];
                 showToast(`That total is too low: "${broke.name}" would fall below its minimum price of ${money(cartLineMinimumPrice(broke))}.`, true);
                 renderCart();
                 return;
@@ -5054,6 +5224,7 @@ function performResetExceptInventory() {
             inventory.forEach(p => {
                 if (p.openingStock) {
                     p.qty = p.openingStock.qty || 0;
+                    if (typeof p._sq === 'number') p._sq = p.qty;      // zip 327: the server rolls its own figure back to the same number - without this the stock safety net reads the difference as an un-itemised change and adds it back
                     rolledBack++;
                 }
             });
@@ -5062,13 +5233,14 @@ function performResetExceptInventory() {
             safeSetItem('pos_bills', JSON.stringify(bills));
             safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
             safeSetItem('pos_inventory', JSON.stringify(inventory));
+            logsResetStart(['salesLog', 'bills', 'stockMovementLog'], { rollbackStock: true });      // zip 327: the server removes them too and no device can bring them back
             queuePush();
             renderDailySales();
             renderBillsTab();
             renderInventoryTable();
             renderStockReport();
             renderStockValuationSummary();
-            showToast(`Cleared ${salesCleared} sale(s) and ${billsCleared} bill(s). ${rolledBack} item(s) rolled back to their opening stock.`);
+            showToast(`Cleared ${salesCleared} sale(s) and ${billsCleared} bill(s). ${rolledBack} item(s) rolled back to their opening stock.` + (navigator.onLine === false ? ' You are offline: the reset is applied on this device now and reaches the server when you are back online.' : ''));
         }
 
 //@fn performSupplierGasExchange
@@ -5430,16 +5602,42 @@ function profitPeriodLabel(range) {
 
 //@fn promptAppInstall
 async function promptAppInstall() {
-            if (!deferredInstallPrompt) {
-                updateInstallUI();
+            // zip 393: ONE button installs the app. The same tap stores the app on the device for offline use. If the browser's install offer
+            // has not come yet, it is waited for (a few seconds, still inside the tap) and then shown - no written steps.
+            const btn = document.getElementById('install-app-btn');
+            const st = document.getElementById('install-status');
+            const say = (t, bad) => { if (st) { st.className = 'settings-msg' + (bad ? ' error' : ''); st.textContent = t; } };
+            if (typeof isRunningStandalone === 'function' && isRunningStandalone()) { updateInstallUI(); return; }
+            try { if (typeof refreshOfflineCache === 'function' && navigator.onLine !== false) refreshOfflineCache(); } catch (e) { /* storing for offline is best-effort here */ }
+            let p = deferredInstallPrompt || window.__bip || null;
+            if (!p) {
+                say('Preparing the install\u2026');
+                if (btn) btn.disabled = true;
+                try { if ('serviceWorker' in navigator) await navigator.serviceWorker.register('sw.js'); } catch (e) { /* the wait below still runs */ }
+                for (let i = 0; i < 16 && !p; i++) {
+                    await new Promise((r) => setTimeout(r, 250));
+                    p = deferredInstallPrompt || window.__bip || null;
+                }
+                if (btn) btn.disabled = false;
+            }
+            if (!p) {
+                const ua = navigator.userAgent || '';
+                const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+                say(ios
+                    ? 'iPhone and iPad do not allow installing from a button. The app is stored for offline use.'
+                    : 'This browser did not offer the install - the app may already be installed on this device, or the browser cannot install apps. Open it in Chrome or Edge and tap Install again.', true);
                 return;
             }
-            deferredInstallPrompt.prompt();
+            deferredInstallPrompt = p;
+            let accepted = false;
             try {
-                await deferredInstallPrompt.userChoice;
-            } catch (e) { /* dismissed — nothing to do */ }
-            deferredInstallPrompt = null;
+                await p.prompt();
+                const c = await p.userChoice;
+                accepted = !!(c && c.outcome === 'accepted');
+            } catch (e) { /* dismissed or refused by the browser */ }
+            deferredInstallPrompt = null; window.__bip = null;
             updateInstallUI();
+            if (accepted) say('Installed. Open it from the home screen.');
         }
 
 //@fn pruneOrphanedLocStates
@@ -5473,6 +5671,7 @@ function perfInstall() {
 function markSync(status) {
             // zip 186: the "N items need attention — Retry" strip, the "server storage is full" notice and the slow automatic retry of parked records ride on the sync dot's updates
             try { syncAttentionBar(); syncDeadProbe(); } catch (e) { /* cosmetic */ }
+            try { if (status === 'synced' || status === 'error') { if (status === 'synced') window.__lastPushOkAt = Date.now(); syncHealthUpload(false); } } catch (e) { /* diagnostics only */ }
             // zip 129: connectivity is decided in ONE place (window.PosNet, the connectivity block). A sync that worked says so; a request
             // that got no answer is only a reason for it to CHECK — it never sets "offline" by itself.
             try {
@@ -5544,6 +5743,66 @@ async function pullState() {
             if (window.__pullAgain) { window.__pullAgain = false; setTimeout(() => { try { pullState().catch(() => {}); } catch (e) { /* the poll will */ } }, 0); }
         }
 
+//@fn wsHealthStart
+function wsHealthStart(sock) {
+            // zip 280: the live connection is only trusted to carry news while it PROVES it is alive. A ping goes out right away and every 20 s; the server
+            // answers 'pong' (without waking anything). Until a pong has been seen on this connection - and again after 45 s of silence - syncPollTick keeps
+            // polling every few seconds, exactly as before. 40 s of silence from a connection that has answered before means it died quietly (a phone that
+            // lost signal, a sleeping tablet): it is closed, which reconnects it.
+            const now = Date.now();
+            window.__wsOpenedAt = now; window.__wsLastRxAt = now; window.__wsPongSeen = false;
+            try { sock.addEventListener('message', (evt) => {
+                window.__wsLastRxAt = Date.now(); window.__wsPongSeen = true;
+                // zip 306: the room's answer to 'v?' - the newest version of the shop it knows of. A version newer than this device has means
+                // "pull now"; the same or older means nothing changed, so no HTTP request is made (see window.__liveDue below).
+                try {
+                    const d = typeof evt.data === 'string' && evt.data.charAt(0) === '{' && evt.data.indexOf('"t":"v"') > 0 ? JSON.parse(evt.data) : null;
+                    if (d && d.t === 'v') {
+                        window.__roomVer = Number(d.ver) || 0; window.__roomVerAt = Date.now();
+                        const local = Math.max(parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10) || 0, parseInt(localStorage.getItem('aqua_last_synced_at') || '0', 10) || 0);      // Water keeps aqua_ (and may hold pos_ = '0')
+                        if (window.__roomVer > local && window.__roomVer !== window.__roomPulledFor && typeof window.__livePullFn === 'function') {
+                            window.__roomPulledFor = window.__roomVer; window.__roomPullAt = Date.now();
+                            window.__livePullFn();
+                        }
+                    }
+                } catch (e) { /* the HTTP check covers it */ }
+            }); } catch (e) { /* no listener: never "healthy" */ }
+            // zip 306: while the connection is healthy, should this tick make an HTTP pull? Asks the room 'v?' every 30 s (a WebSocket message:
+            // 1/20 of a request, no Worker, no database) and pulls only when the room knows a newer version than this device, or every 3 minutes
+            // as a backstop. A room that never answers (router not updated yet) or knows no version yet -> the old rule, a pull every 30 s.
+            window.__liveDue = function (now, sinceLastPull) {
+                const s2 = (typeof syncSocket !== 'undefined') ? syncSocket : null;
+                // zip 308: a screen that must not lag (the kitchen / bar board) sets window.__liveAskMs (8 s); everything else asks every 30 s
+                const askMs = Number(window.__liveAskMs) > 0 ? Math.max(4000, Number(window.__liveAskMs)) : 30000;
+                if (s2 && s2.readyState === 1 && now - (window.__roomAskAt || 0) >= askMs) { window.__roomAskAt = now; try { s2.send('v?'); } catch (e) { /* next tick */ } }
+                const known = window.__roomVerAt && now - window.__roomVerAt < 75000 && window.__roomVer > 0;
+                if (!known) return sinceLastPull >= askMs;
+                const local = Math.max(parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10) || 0, parseInt(localStorage.getItem('aqua_last_synced_at') || '0', 10) || 0);      // Water keeps aqua_ (and may hold pos_ = '0')
+                if (window.__roomVer > local && (window.__roomVer !== window.__roomPulledFor || now - (window.__roomPullAt || 0) >= 30000)) {
+                    window.__roomPulledFor = window.__roomVer; window.__roomPullAt = now; return true;
+                }
+                return sinceLastPull >= 180000;
+            };
+            clearInterval(window.__wsBeat);
+            const beat = () => {
+                if (typeof syncSocket === 'undefined' || syncSocket !== sock || sock.readyState !== 1) { clearInterval(window.__wsBeat); return; }
+                if (Date.now() - window.__wsLastRxAt > 40000 && window.__wsPongSeen) { window.__wsPongSeen = false; try { sock.close(); } catch (e) { /* closing anyway */ } return; }
+                try { sock.send('ping'); } catch (e) { /* the next beat or the poll */ }
+            };
+            window.__wsBeat = setInterval(beat, 20000);
+            setTimeout(beat, 500);
+        }
+
+//@fn pullFreshAfterPoke
+function pullFreshAfterPoke() {
+            // zip 279: the server said "something changed on another device". Ask for the very latest copy (?fresh=1 makes the server wait until its copy
+            // is as new as the last save) and, if the answer is still "unchanged" (a lagging read), look again after 0.8 s and 2.5 s instead of waiting for
+            // the next poll. A pull already on its way is repeated right after it instead of being dropped.
+            window.__pullFresh = true; window.__pokeRetries = 3;      // zip 308: 0.8 s, 2.5 s, 6 s
+            if (window.__pullInFlight && Date.now() - (window.__pullStartedAt || 0) < 120000) { window.__pullAgain = true; return; }
+            pullState();
+        }
+
 //@fn syncPollTick
 function syncPollTick() {
             // zip 260: the 7 s timer keeps ticking (a tick is free, it runs on the device) but it only goes to the server when it is needed.
@@ -5555,10 +5814,16 @@ function syncPollTick() {
             try {
                 const now = Date.now(), since = now - (window.__pullStartedAt || 0);
                 const sock = (typeof syncSocket !== 'undefined') ? syncSocket : null;
-                const live = !!(sock && sock.readyState === 1 && window.__wsOpenedAt && now - window.__wsOpenedAt > 15000);
-                let every = live ? 45000 : 6500;
-                if (typeof document !== 'undefined' && document.visibilityState === 'hidden') every = Math.max(every, 300000);
-                if (since < every) return;
+                const live = !!(sock && sock.readyState === 1 && window.__wsOpenedAt && now - window.__wsOpenedAt > 15000 && window.__wsPongSeen && now - (window.__wsLastRxAt || 0) < 45000);      // zip 280: alive = it answered a ping within 45 s
+                const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+                window.__livePullFn = pullState;
+                // zip 306: healthy connection in a visible tab -> ask the room instead of the server (window.__liveDue, set by wsHealthStart)
+                if (live && !hidden && typeof window.__liveDue === 'function') { if (!window.__liveDue(now, since)) return; }
+                else {
+                    let every = live ? 30000 : 6500 + (window.__pullJit || (window.__pullJit = Math.floor(Math.random() * 1500)));   // zip 335: a per-device spread so phones that lose Wi-Fi together do not all retry on the same beat
+                    if (hidden) every = Math.max(every, 300000);
+                    if (since < every) return;
+                }
             } catch (e) { /* any doubt: poll as before */ }
             pullState();
         }
@@ -5599,12 +5864,20 @@ async function pullStateOnce() {
             try {
                 // ?since= lets the server answer \"unchanged\" (a few bytes) instead of
                 // re-sending the whole shop every poll — see pos-sync.js onRequestGet.
-                const res = await fetch(apiUrl(SYNC_URL + (localUpdatedAt > 0 ? '?since=' + localUpdatedAt : '')), { method: 'GET', signal: controller.signal });
+                const askFresh = !!window.__pullFresh; window.__pullFresh = false;
+                // zip 315: a shop in its own database answers a pull after any change with the whole shop, including 120 days of every log - megabytes
+                // a phone on mobile data could not finish before the time limit, so it never caught up (orange dot, "Syncing" for ever). With the change
+                // cursor of its last APPLIED pull it gets 3 days of logs plus every log record changed since (whatever its date); everything else is sent
+                // in full as before. No cursor yet (first pull, a "fetch everything" repair, a shop not in a database): the full answer, exactly as before.
+                let logCursor = 0;
+                try { logCursor = fullFetch || !(localUpdatedAt > 0) ? 0 : (Number(localStorage.getItem(typeof appStoreKey === 'function' ? appStoreKey('pos_log_cursor') : 'pos_log_cursor')) || 0); } catch (e) { logCursor = 0; }
+                const qs = [localUpdatedAt > 0 ? 'since=' + localUpdatedAt : '', askFresh ? 'fresh=1' : '', logCursor > 0 ? 'hot=3&after=' + logCursor : ''].filter(Boolean).join('&');
+                const res = await fetch(apiUrl(SYNC_URL + (qs ? '?' + qs : '')), { method: 'GET', signal: controller.signal });
                 // The server ANSWERED, so none of these is "offline" (zip 129: 403 and 4xx used to show as Offline).
                 if (!res.ok) {
                     let code = '';
                     try { code = ((await res.clone().json()) || {}).code || ''; } catch (e) { /* no body */ }
-                    if (window.PosNet) window.PosNet.reportHttp(res.status, code);
+                    if (window.PosNet) window.PosNet.reportHttp(res.status, code, res);
                     if (res.status === 403) checkLicenseStatus();
                     markSync('error');
                     return;
@@ -5612,6 +5885,7 @@ async function pullStateOnce() {
                 const data = await res.json();
                 window.__pullPatienceMs = 0;
                 if (data && data.unchanged) {
+                    if (askFresh && window.__pokeRetries > 0) { const n = window.__pokeRetries--; setTimeout(() => { window.__pullFresh = true; try { pullState().catch(() => {}); } catch (e) { /* the poll will */ } }, n >= 3 ? 800 : n === 2 ? 2500 : 6000); }      // zip 279: told "changed" but the copy lagged: look again soon
                     // zip 155: a device that has never had a baseline for its settings (it booted with an up-to-date copy, so no pull was ever applied) takes
                     // one now - otherwise its first real edit of a setting goes out unstamped. Never when it holds unsent edits: those must stay changes.
                     try { if (!(window.__fieldAck && window.__fieldAck.size) && typeof hasUnsyncedWork === 'function' && !hasUnsyncedWork()) ackLocalFields(); } catch (e) { /* baseline only */ }
@@ -5633,6 +5907,8 @@ async function pullStateOnce() {
                         return;
                     }
                     applyRemotePayload(preparePulledPayload(data));
+                    // zip 315: only an answer that was APPLIED moves the cursor (a deferred one above is asked for again from the old cursor)
+                    try { if (typeof data._seq === 'number' && data._seq > 0) localStorage.setItem(typeof appStoreKey === 'function' ? appStoreKey('pos_log_cursor') : 'pos_log_cursor', String(data._seq)); } catch (e) { /* the next pull is a full one */ }
                 }
                 window.__pullOkOnce = true;
                 markSync(typeof hasUnsyncedWork === 'function' && hasUnsyncedWork() ? 'syncing' : 'synced');      // zip 185: see above
@@ -5716,6 +5992,7 @@ function preparePulledPayload(data) {
             // the server's copy of every record wins, and records only this device has are kept. Never removes anything.
             try {
                 if (!data || typeof data !== 'object') return data;
+                try { if (wipeApplyLocal(data)) return data; logsResetApplyLocal(data); data = logsResetFilterPulled(data); } catch (e) { /* the ordinary pull still applies */ }      // zip 327: a reset stays reset
                 try { if (typeof window.salesJournalSeen === 'function') window.salesJournalSeen(data); } catch (e) { /* housekeeping */ }
                 try { if (Array.isArray(data.salesLog)) repairInstallmentSales(data.salesLog); } catch (e) { /* the sale keeps its old shape */ }   // zip 156
                 try { if (Array.isArray(data.salesLog) && (Array.isArray(data.bills) || typeof bills !== 'undefined')) repairLegacyBillPayments(data.salesLog, Array.isArray(data.bills) ? data.bills : bills); } catch (e) { /* the payment stays unlinked */ }   // zip 158
@@ -5752,6 +6029,8 @@ function preparePulledPayload(data) {
                         out.customers = data.customers.map((c) => {
                             const m = c && c.id != null ? mineById.get(String(c.id)) : null;
                             if (!m || m === c) return c;
+                            // zip 378: a customer deleted HERE (a tombstone newer than the server's copy) stays deleted - an older copy from the server never brings it back
+                            if (m._deleted === true && c._deleted !== true) { const tt = (v) => (Number.isFinite(Number(v)) ? Number(v) : (Date.parse(v) || 0)); if (tt(m.updatedAt) >= tt(c.updatedAt)) return m; }
                             const lf = mergeLoyaltyFields(m, c);
                             return lf ? { ...c, ...lf } : c;
                         });
@@ -5919,7 +6198,7 @@ async function pushNow(opts) {
                     } else {
                         notePushHttp(res);                                  // the server ANSWERED: busy (sent again in seconds) or refused
                         const code = await pushErrorCode(res);
-                        if (window.PosNet) window.PosNet.reportHttp(res.status, code);
+                        if (window.PosNet) window.PosNet.reportHttp(res.status, code, res);
                         if (res.status === 403) checkLicenseStatus();
                         if (res.status === 413) {
                             if (code === 'push_too_large') { pushShrinkBatches(); markSync('syncing'); return false; }   // smaller batches, sent again
@@ -6011,7 +6290,7 @@ function receiptImageWidthPx() {
 
 //@fn recipeIngredientMatchOptions
 function recipeIngredientMatchOptions(selectedCode) {
-            const pool = inventory.filter(isRecipeComponent).slice().sort((a, b) => a.name.localeCompare(b.name));
+            const pool = inventory.filter(isRecipeComponent).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             let html = `<option value="">✨ New Ingredient</option>`;
             pool.forEach(p => {
                 html += `<option value="${escapeHtml(p.code)}" ${p.code === selectedCode ? 'selected' : ''}>${escapeQuotes(p.name)}</option>`;
@@ -6086,7 +6365,7 @@ async function registerTillUrls() {
                     return;
                 }
                 msgEl.className = 'settings-msg success';
-                msgEl.textContent = '✅ Registered' + (data.shortCode ? ' for ' + data.shortCode : '') + ' — payments made straight to your till will now show up below.';
+                msgEl.textContent = '✅ ' + (data.message || ('Registered' + (data.shortCode ? ' for ' + data.shortCode : '') + ' — payments made straight to your till will now show up below.'));   // zip 358: what Safaricom said for each number
             } catch (e) {
                 msgEl.className = 'settings-msg error';
                 msgEl.textContent = netErrText('Could not reach the server');
@@ -6982,6 +7261,10 @@ function renderVariantsModalList() {
                             <input type="number" min="0" step="1" value="${v.qty}" oninput="updateVariantsModalField('${escapeJsAttr(v.id)}', 'qty', this.value)">
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label>Expiry date <span style="font-weight:normal; color:#7f8c8d;">(optional - leave empty if it does not expire)</span></label>
+                        <input type="date" value="${escapeHtml(v.expiryDate && v.expiryDate !== '9999-12-31' ? v.expiryDate : '')}" onchange="updateVariantsModalField('${escapeJsAttr(v.id)}', 'expiryDate', this.value)">
+                    </div>
 
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:8px 0 0; font-weight:normal; font-size:13px;">
                         <input type="checkbox" ${v.dualUnit ? 'checked' : ''} onchange="updateVariantsModalField('${escapeJsAttr(v.id)}', 'dualUnit', this.checked); renderVariantsModalList();" style="width:auto;">
@@ -7238,6 +7521,71 @@ function resetReturnForm() {
             setReturnMode('exchange');
         }
 
+//@fn smsOnfonStatus
+// zip 327: what the Settings > SMS screen shows for Onfon, from the server's /api/sms-config answer (which never contains a secret): "saved" hints on the two secret
+// boxes, the Client ID / Sender ID filled in, the on/off switch, and the Check balance button only while Onfon is the provider.
+function smsOnfonStatus(data) {
+            try {
+                const o = (data && data.onfon) || {};
+                window.__smsOnfonSaved = o;
+                const set = (id, v) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v || ''; };
+                set('sms-onfon-clientid-input', o.clientId); set('sms-onfon-senderid-input', o.senderId);
+                const ph = (id, saved, name) => { const el = document.getElementById(id); if (el) el.placeholder = saved ? name + ' (saved - leave blank to keep it)' : name; };
+                ph('sms-onfon-accesskey-input', o.hasAccessKey, 'Access Key'); ph('sms-onfon-apikey-input', o.hasApiKey, 'API Key');
+                const en = document.getElementById('sms-onfon-enabled-input'); if (en) en.checked = o.enabled !== false;
+                const tg = document.getElementById('sms-onfon-enabled-toggle'); if (tg) tg.checked = o.enabled !== false;
+                const on = !!(data && data.provider === 'onfon');
+                const bal = document.getElementById('sms-onfon-balance-row'); if (bal) bal.style.display = on ? '' : 'none';
+                const off = document.getElementById('sms-onfon-off-note'); if (off) off.style.display = on && o.enabled === false ? '' : 'none';
+            } catch (e) { /* cosmetic */ }
+        }
+
+//@fn smsOnfonTest
+// "Send test SMS" for Onfon: the SERVER sends it with the saved credentials (nothing secret in the browser) and the answer is Onfon's real result.
+async function smsOnfonTest() {
+            const msgEl = document.getElementById('sms-test-msg');
+            const phone = (document.getElementById('sms-test-phone-input') || {}).value;
+            const say = (cls, t) => { if (msgEl) { msgEl.className = 'settings-msg' + (cls ? ' ' + cls : ''); msgEl.textContent = t; } };
+            if (!phone || !phone.trim()) { say('error', 'Enter a phone number to test with.'); return; }
+            if (window.__smsTestBusy) return;
+            window.__smsTestBusy = true; say('', 'Sending…');
+            try {
+                const res = await fetch(apiUrl('/api/sms-test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: phone.trim() }) });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok && d.ok) say('success', 'Onfon accepted the test message' + (d.messageId ? ' (id ' + d.messageId + ')' : '') + '. That means it was submitted - check the phone to confirm it arrived.');
+                else say('error', (d && d.error) || 'The test message was not accepted (HTTP ' + res.status + ').');
+            } catch (e) { say('error', netErrText('Could not reach the server')); }
+            finally { window.__smsTestBusy = false; }
+        }
+
+//@fn smsOnfonBalance
+// "Check balance" for Onfon: shows the figure Onfon returns, or the reason it could not - never a made-up number.
+async function smsOnfonBalance() {
+            const el = document.getElementById('sms-balance-msg');
+            const say = (cls, t) => { if (el) { el.className = 'settings-msg' + (cls ? ' ' + cls : ''); el.textContent = t; } };
+            if (window.__smsBalBusy) return;
+            window.__smsBalBusy = true; say('', 'Checking…');
+            try {
+                const res = await fetch(apiUrl('/api/sms-test?action=balance'));
+                const d = await res.json().catch(() => ({}));
+                if (res.ok && d.ok) say('success', 'Onfon balance: ' + Number(d.balance).toLocaleString('en-KE') + ' ' + (d.currency || d.unit || 'SMS credits') + '.');
+                else say('error', (d && d.error) || 'The balance could not be read right now (HTTP ' + res.status + ').');
+            } catch (e) { say('error', netErrText('Could not reach the server')); }
+            finally { window.__smsBalBusy = false; }
+        }
+
+//@fn setOnfonEnabled
+// The on/off switch for Onfon (the saved credentials are kept either way). Saved straight away; the text on screen follows what the server confirmed.
+async function setOnfonEnabled(on) {
+            const msgEl = document.getElementById('sms-config-msg');
+            try {
+                const res = await fetch(apiUrl('/api/sms-config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ onfonEnabled: !!on }) });
+                if (!res.ok) throw new Error('save failed');
+                if (msgEl) { msgEl.className = 'settings-msg success'; msgEl.textContent = on ? 'Onfon is on.' : 'Onfon is off - no text messages are sent until you turn it on.'; }
+            } catch (e) { if (msgEl) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Could not change it - try again.'; } }
+            try { checkSmsStatus(); } catch (e) { /* next open */ }
+        }
+
 //@fn resetSmsConfig
 async function resetSmsConfig() {
             if (!confirm('Turn off SMS? Automatic thank-you texts will stop until you save an account again.')) return;
@@ -7250,6 +7598,7 @@ async function resetSmsConfig() {
                         celcomApiKey: '', celcomPartnerId: '', celcomShortcode: '',
                         advantaApiKey: '', advantaPartnerId: '', advantaShortcode: '',
                         talksasaApiKey: '', talksasaSenderId: '',
+                        onfonAccessKey: '', onfonApiKey: '', onfonClientId: '', onfonSenderId: '',
                     }),
                 });
             } catch (e) { /* fall through — status check below reflects reality either way */ }
@@ -7299,13 +7648,16 @@ function batchesPutBack(product, qty) {
         }
 
 //@fn restoreStockForSaleUnit
-function restoreStockForSaleUnit(product, qty, saleMode) {
+function restoreStockForSaleUnit(product, qty, saleMode, line) {
             if (product.dualUnit && saleMode === 'piece') {
                 product.pieceQty = stockRound3((product.pieceQty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'pieceQty');
             } else {
-                try { if (Array.isArray(product.batches) && typeof stockAlignBatches === 'function') stockAlignBatches(product); } catch (e) { /* used as they are */ }
-                if (!batchesPutBack(product, qty)) product.qty = stockRound3((product.qty || 0) + qty);
+                // zip 336 (Pharmacy / Hospital): a voided sale's units go back into the very batches the sale took them from (line.lots), with
+                // their own expiry and cost - not into "the soonest-expiring batch". Without that record, the old rule below.
+                const lotsBack = !!(line && Array.isArray(line.lots) && line.lots.length && typeof window !== 'undefined' && window.SE && window.__SE_LOTS && window.SE.restore(product, line.lots, qty));
+                try { if (!lotsBack && Array.isArray(product.batches) && typeof stockAlignBatches === 'function') stockAlignBatches(product); } catch (e) { /* used as they are */ }
+                if (!lotsBack && !batchesPutBack(product, qty)) product.qty = stockRound3((product.qty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'qty');
             }
         }
@@ -7588,87 +7940,47 @@ function saveAttendanceLocal() {
         }
 
 //@fn saveContract
-function saveContract() {
-            const name = document.getElementById('contract-name-input').value.trim();
-            const phone = document.getElementById('contract-phone-input').value.trim();
-            const errorEl = document.getElementById('contract-form-error');
-            errorEl.textContent = '';
-
-            if (!name) {
-                errorEl.textContent = 'Please enter a name.';
-                return;
-            }
-
-            const validRows = contractDraft.filter(r => r.name.trim() && parseFloat(r.qty) > 0);
-            if (validRows.length === 0) {
-                errorEl.textContent = 'Add at least one item with a name and quantity.';
-                return;
-            }
-
-            const lineItems = [];
-            for (const r of validRows) {
-                const product = contractRowProduct(r);
-                if (!product) {
-                    errorEl.textContent = `"${r.name}" was not found in inventory — add it first from 📦 Add New Items.`;
-                    return;
+// The "Save Contract and Deduct Stock" button. All the rules live in contractIssue(); this only reads the form. The operation id stays the same until
+// the issue is saved, so pressing the button twice, or again after a failed print, can never deduct the stock a second time.
+async function saveContract() {
+            if (window.__contractSaving) return;                       // a second click while the first is still being checked
+            window.__contractSaving = true;
+            try {
+                const val = (id) => { const el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; };
+                const errorEl = document.getElementById('contract-form-error');
+                errorEl.textContent = '';
+                const rows = contractDraft.filter(r => r.name.trim() && parseFloat(r.qty) > 0);
+                const rec = { name: val('contract-name-input'), phone: val('contract-phone-input'), idNumber: val('contract-id-input'), address: val('contract-address-input') };
+                if (!window.__contractOp) window.__contractOp = 'ctr-' + genSaleId();
+                const spec = {
+                    opId: window.__contractOp, contractId: activeContractId || null, type: activeContractType, recipient: rec,
+                    contractNo: val('contract-ref-input'), expectedReturn: val('contract-expected-input'), terms: val('contract-terms-input'), approvedBy: val('contract-approver-input'),
+                    issuedBy: typeof activeServerName === 'function' ? activeServerName() : '',
+                    items: rows.map(r => ({ name: r.name, qty: parseFloat(r.qty), price: activeContractType === 'wholesale' ? r.price : undefined, mode: r.mode === 'piece' ? 'piece' : 'box' })),
+                };
+                const bad = contractCheckRecipient(rec);
+                if (bad) { errorEl.textContent = bad; return; }
+                // a phone / ID that belongs to a different saved person: ask, never guess
+                if (!activeContractId && typeof window.custChooseDialog === 'function' && (custPhoneKey(rec.phone) || custIdKey(rec.idNumber))) {
+                    const probe = upsertCustomer(rec, { create: false });
+                    if (probe.status === 'ambiguous') {
+                        const choice = await window.custChooseDialog(probe.candidates, probe.reason, rec);
+                        if (choice === null) return;
+                        spec.choice = choice;
+                    }
                 }
-                const qty = parseFloat(r.qty);
-                if (qty > (product.qty || 0)) {
-                    errorEl.textContent = `Only ${formatQtyDisplay(product.qty, product.unit)} ${unitLabel(product.unit)} of "${product.name}" in stock.`;
-                    return;
-                }
-                const price = contractRowUnitPrice(r);
-                if (activeContractType === 'wholesale' && (isNaN(price) || price <= 0)) {
-                    errorEl.textContent = `Please enter a valid price given for "${product.name}".`;
-                    return;
-                }
-                lineItems.push({ code: product.code, name: product.name, unit: product.unit || 'pcs', qty, price });
-            }
-
-            // Deduct stock now — it's physically leaving the shop with the contract holder.
-            lineItems.forEach(li => {
-                const product = inventory.find(p => p.code === li.code);
-                if (product) product.qty = stockRound3(Math.max(0, (product.qty || 0) - li.qty));
-            });
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
-
-            let contract = activeContractId ? contracts.find(c => c.id === activeContractId) : null;
-            if (!contract) {
-                contract = { id: genSaleId(), name, phone, type: activeContractType, createdAt: new Date().toISOString(), items: {}, visits: [] };
-                contracts.push(contract);
-            } else {
-                // Keep the contract's own name/phone/type as the source of truth (this
-                // form visit might just be re-typed slightly differently).
-                contract.phone = contract.phone || phone;
-            }
-
-            contract.visits.push({ date: new Date().toISOString(), items: lineItems.map(li => ({ code: li.code, name: li.name, qty: li.qty, price: li.price })) });
-            lineItems.forEach(li => {
-                if (!contract.items[li.code]) {
-                    contract.items[li.code] = { code: li.code, name: li.name, unit: li.unit, price: li.price, qtyCarried: 0, qtyReturned: 0, qtySettled: 0 };
-                }
-                const agg = contract.items[li.code];
-                agg.qtyCarried += li.qty;
-                agg.price = li.price; // most recent negotiated/shop price
-            });
-
-            safeSetItem('pos_contracts', JSON.stringify(contracts));
-            queuePush();
-
-            renderInventoryTable();
-            renderNotifications();
-            renderContractsTab();
-            renderBillsTab();
-            showToast(`Contract saved for ${contract.name} — stock deducted.`);
-
-            printContractCarryNote(contract, lineItems);
-
-            // Reset form for the next contract/visit
-            contractDraft = [];
-            addContractRow();
-            document.getElementById('contract-name-input').value = '';
-            document.getElementById('contract-phone-input').value = '';
-            startNewContract();
+                const res = contractIssue(spec);
+                if (!res.ok) { errorEl.textContent = res.error; return; }
+                window.__contractOp = null;
+                renderInventoryTable(); renderNotifications(); renderContractsTab(); renderBillsTab();
+                try { if (typeof renderCustomersList === 'function') renderCustomersList(); } catch (e) { /* customers tab not drawn */ }
+                showToast(res.duplicate ? 'This contract was already saved - stock was not deducted again.' : 'Contract saved for ' + res.contract.name + ' - stock deducted.');
+                if (!res.duplicate) contractPrintIssue(res.contract.id, res.visit.id, 'thermal');
+                contractDraft = [];
+                addContractRow();
+                ['contract-id-input', 'contract-address-input', 'contract-ref-input', 'contract-expected-input', 'contract-terms-input', 'contract-approver-input'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+                startNewContract();
+            } finally { window.__contractSaving = false; }
         }
 
 //@fn saveDebtsLocal
@@ -7884,6 +8196,27 @@ async function saveSmsConfig() {
                 payload.advantaApiKey = apiKey;
                 payload.advantaPartnerId = partnerId;
                 payload.advantaShortcode = shortcode;
+            } else if (smsProviderChoice === 'onfon') {
+                // zip 327: Onfon Media. The two secrets are only sent when typed (a blank box = "keep what is saved"); the Client ID and Sender ID are always sent.
+                const g = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+                const accessKey = g('sms-onfon-accesskey-input'), apiKey = g('sms-onfon-apikey-input'), clientId = g('sms-onfon-clientid-input'), senderId = g('sms-onfon-senderid-input');
+                const have = window.__smsOnfonSaved || {};
+                if ((!accessKey && !have.hasAccessKey) || (!apiKey && !have.hasApiKey) || !clientId || !senderId) {
+                    msgEl.className = 'settings-msg error';
+                    msgEl.textContent = 'Enter the Onfon Access Key, API Key, Client ID and Sender ID.';
+                    return;
+                }
+                if (senderId.length > 11 && /^[A-Za-z0-9 ]+$/.test(senderId)) {
+                    msgEl.className = 'settings-msg error';
+                    msgEl.textContent = 'A text Sender ID is at most 11 letters or numbers - use the one Onfon approved for you.';
+                    return;
+                }
+                if (accessKey) payload.onfonAccessKey = accessKey;
+                if (apiKey) payload.onfonApiKey = apiKey;
+                payload.onfonClientId = clientId;
+                payload.onfonSenderId = senderId;
+                const en = document.getElementById('sms-onfon-enabled-input');
+                if (en) payload.onfonEnabled = !!en.checked;
             } else if (smsProviderChoice === 'talksasa') {
                 const apiKey = document.getElementById('sms-talksasa-apikey-input').value.trim();
                 const senderId = document.getElementById('sms-talksasa-senderid-input').value.trim();
@@ -7917,7 +8250,7 @@ async function saveSmsConfig() {
                 ['sms-at-username-input', 'sms-at-apikey-input', 'sms-mobitech-apikey-input', 'sms-mobitech-sender-input',
                  'sms-celcom-apikey-input', 'sms-celcom-partnerid-input', 'sms-celcom-shortcode-input',
                  'sms-advanta-apikey-input', 'sms-advanta-partnerid-input', 'sms-advanta-shortcode-input',
-                 'sms-talksasa-apikey-input', 'sms-talksasa-senderid-input'].forEach((id) => {
+                 'sms-talksasa-apikey-input', 'sms-talksasa-senderid-input', 'sms-onfon-accesskey-input', 'sms-onfon-apikey-input'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) el.value = '';
                 });
@@ -7985,7 +8318,12 @@ function saveVariantsModal() {
                     seenCodes.add(checkCode.toLowerCase());
                 }
 
-                cleanVariants.push({
+                const vExp = String(v.expiryDate || '').trim();
+                if (vExp && vExp !== '9999-12-31' && !/^\d{4}-\d{2}-\d{2}$/.test(vExp)) { errEl.textContent = `Enter a valid expiry date for "${vName}", or leave it empty.`; return; }
+                // zip 317: the variant keeps every field this window does not show (attributes, barcode, photo, reorder level, active, serial tracking ...);
+                // it used to be rebuilt from the fields on screen only, so an edit here wiped those.
+                const before = (product.variants || []).find(x => x && x.id === v.id) || {};
+                const kept = Object.assign({}, before, {
                     id: v.id, name: vName, code: vCode, price: vPrice,
                     wholesaleSellingPrice: parseFloat(v.wholesaleSellingPrice) || 0,
                     wholesalePrice: parseFloat(v.wholesalePrice) || 0,
@@ -7994,6 +8332,9 @@ function saveVariantsModal() {
                     pieceCode: vPieceCode, piecePrice: vPiecePrice,
                     pieceWholesalePrice: vPieceWholesalePrice, pieceQty: vPieceQty,
                 });
+                if (vExp && vExp !== '9999-12-31') kept.expiryDate = vExp; else delete kept.expiryDate;
+                kept.updatedAt = Date.now();
+                cleanVariants.push(kept);
             }
 
             product.variants = cleanVariants;
@@ -8088,7 +8429,13 @@ async function searchOtherBranchesForCart(query) {
                 if (!stillCurrent) return;
 
                 if (!res.ok) {
-                    return; // a failed lookup shouldn't disrupt the local results already showing
+                    // zip 327: a failed lookup keeps the local results, but says so - it is NOT "no matches in other branches"
+                    const failEl = document.createElement('div');
+                    failEl.className = 'notif-dropdown-header cross-branch-search-failed';
+                    failEl.style.cssText = 'padding:6px 12px; font-size:11px; color:var(--danger,#c0392b);';
+                    failEl.textContent = '⚠ Other branches could not be searched right now.';
+                    resultsBox.appendChild(failEl);
+                    return;
                 }
                 if (!data.results || data.results.length === 0) {
                     const noneEl = document.createElement('div');
@@ -8124,8 +8471,12 @@ async function searchOtherBranchesForCart(query) {
             } catch (e) {
                 const stillLoading = document.getElementById('cross-branch-search-loading');
                 if (stillLoading) stillLoading.remove();
-                // A failed cross-branch lookup shouldn't disrupt the local
-                // search results already showing — fail silently.
+                // A failed cross-branch lookup keeps the local results already showing, and says so (zip 327) rather than looking like "no matches".
+                const failEl = document.createElement('div');
+                failEl.className = 'notif-dropdown-header cross-branch-search-failed';
+                failEl.style.cssText = 'padding:6px 12px; font-size:11px; color:var(--danger,#c0392b);';
+                failEl.textContent = navigator.onLine === false ? '⚠ Offline - only this branch was searched.' : '⚠ Other branches could not be searched right now.';
+                try { if (document.getElementById('sales-search').value.trim().toLowerCase() === query) resultsBox.appendChild(failEl); } catch (e2) { /* the box is gone */ }
             }
         }
 
@@ -8143,7 +8494,11 @@ async function searchOtherBranchesForExchange() {
                     body: JSON.stringify({ action: 'searchOtherBranches', query: query.toLowerCase() }),
                 });
                 const data = await res.json();
-                if (!res.ok || !data.results || data.results.length === 0) {
+                if (!res.ok) {
+                    resultsBox.innerHTML = `<div class="search-item">⚠ Other branches could not be searched right now - try again.</div>`;
+                    return;
+                }
+                if (!data.results || data.results.length === 0) {
                     resultsBox.innerHTML = `<div class="search-item">No matches in other branches.</div>`;
                     return;
                 }
@@ -8626,7 +8981,7 @@ function setShowItemImageGrid(checked) {
 
 //@fn setSmsProvider
 function setSmsProvider(provider) {
-            const valid = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
+            const valid = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa', 'onfon'];
             smsProviderChoice = valid.includes(provider) ? provider : 'africastalking';
             const idsByProvider = {
                 africastalking: ['sms-provider-at-btn', 'sms-provider-at-fields'],
@@ -8634,6 +8989,7 @@ function setSmsProvider(provider) {
                 celcom: ['sms-provider-celcom-btn', 'sms-provider-celcom-fields'],
                 advanta: ['sms-provider-advanta-btn', 'sms-provider-advanta-fields'],
                 talksasa: ['sms-provider-talksasa-btn', 'sms-provider-talksasa-fields'],
+                onfon: ['sms-provider-onfon-btn', 'sms-provider-onfon-fields'],
             };
             valid.forEach((p) => {
                 const [btnId, fieldsId] = idsByProvider[p];
@@ -8802,6 +9158,7 @@ function showUpgradeScreen() {
             if (claimBtn) claimBtn.style.display = licenseInfo.paymentClaimed ? 'none' : 'block';
             const closeBtn = document.getElementById('license-upgrade-close-btn');
             if (closeBtn) closeBtn.style.display = 'block';
+            try { upgradeStkInit(); } catch (e) { /* the manual way still works */ }      // zip 286
         }
 
 //@fn slugifyServiceName
@@ -8867,6 +9224,139 @@ function pushIsAcked(field, r) {
                 const k = pushKeyOf(r);
                 if (k == null || !window.__pushAck || !window.__pushAck[field]) return false;
                 return window.__pushAck[field].get(k) === pushSigOf(r);
+            } catch (e) { return false; }
+        }
+
+//@fn logsResetStart
+// zip 327 - RESET THAT STAYS RESET. Called by every deliberate reset (reset sales, purge demo data, delete voided sales) AFTER it has emptied this device's
+// own lists. It records a durable instruction `{ id, at, fields, rollbackStock, voided }` that the next push sends to the server (pos-sync / shop-store keep it as
+// `logsReset`), and that stays stored here until the server has accepted it - so a reset made offline is still delivered once the device is back online.
+// Until the server has it, a pull must not hand the old records back (see logsResetFilterPulled). Returns the instruction. `fields` are list names.
+function logsResetStart(fields, opts) {
+            const o = opts || {};
+            const req = { id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), at: Date.now(), fields: (fields || []).slice(), rollbackStock: !!o.rollbackStock, voided: !!o.voided };
+            try { localStorage.setItem('pos_logs_reset_pending', JSON.stringify(req)); } catch (e) { /* kept in memory below */ }
+            window.__logsResetPending = req;
+            return req;
+        }
+
+//@fn logsResetPending
+// The reset instruction the server has not accepted yet (or null).
+function logsResetPending() {
+            try {
+                if (window.__logsResetPending) return window.__logsResetPending;
+                const raw = localStorage.getItem('pos_logs_reset_pending');
+                if (!raw) return null;
+                const r = JSON.parse(raw);
+                return r && r.id && Array.isArray(r.fields) ? (window.__logsResetPending = r) : null;
+            } catch (e) { return null; }
+        }
+
+//@fn logsResetDelivered
+// The server accepted a push that carried the instruction: it no longer has to be carried (and this device has already applied it locally).
+function logsResetDelivered(id) {
+            try {
+                const p = logsResetPending();
+                if (p && p.id === id) { window.__logsResetPending = null; localStorage.removeItem('pos_logs_reset_pending'); localStorage.setItem('pos_logs_reset_id', id); }
+            } catch (e) { /* the next push carries it again - harmless, the server ignores a repeat */ }
+        }
+
+//@fn logsResetCovered
+// Is this record covered by a reset instruction / server epoch ({ at, fields, voided, floors })? Same rule as coveredByEpoch in functions/api/_merge.js.
+function logsResetCovered(field, rec, e) {
+            if (!e || !rec || typeof rec !== 'object') return false;
+            let t = NaN;
+            for (const f of ['timestamp', 'date', 'createdAt', 'openedAt', 'clockIn', 'at', 'updatedAt']) { if (rec[f] != null) { const x = typeof rec[f] === 'number' ? rec[f] : Date.parse(rec[f]); if (isFinite(x)) { t = x; break; } } }
+            const fl = e.floors && e.floors[field];
+            if (fl && (isFinite(t) ? t <= fl : true)) return true;
+            if (e.voided && Array.isArray(e.fields) && e.fields.indexOf(field) >= 0 && rec.voided === true && (isFinite(t) ? t <= e.at : true)) return true;
+            return false;
+        }
+
+//@fn logsResetFilterPulled
+// A pull that arrives while a reset is still waiting to reach the server must not bring the old records back: drop the covered ones from what the server sent.
+function logsResetFilterPulled(data) {
+            try {
+                const p = logsResetPending();
+                if (!p || !data || typeof data !== 'object') return data;
+                const e = { at: p.at, fields: p.fields, voided: p.voided, floors: {} };
+                if (!p.voided) p.fields.forEach((f) => { e.floors[f] = p.at; });
+                let out = data;
+                p.fields.forEach((f) => {
+                    if (!Array.isArray(data[f])) return;
+                    const keep = data[f].filter((r) => !logsResetCovered(f, r, e));
+                    if (keep.length !== data[f].length) { if (out === data) out = { ...data }; out[f] = keep; }
+                });
+                return out;
+            } catch (err) { return data; }
+        }
+
+//@fn logsResetApplyLocal
+// The server says a reset happened (`data.logsReset`, with a counter n) that this device has not applied: empty this device's own copies of the lists it covers, forget
+// what it had "already sent" for them, and remember the reset id. Runs before the pulled lists are merged, so old local history is not merged back in.
+function logsResetApplyLocal(data) {
+            try {
+                const e = data && data.logsReset;
+                if (!e || !e.id) return false;
+                if (localStorage.getItem('pos_logs_reset_id') === e.id) return false;
+                const pend = logsResetPending();
+                if (pend && pend.id === e.id) return false;
+                const map = { salesLog: ['pos_sales_log', () => salesLog, (v) => { salesLog = v; }], bills: ['pos_bills', () => bills, (v) => { bills = v; }], stockMovementLog: ['pos_stock_movement_log', () => stockMovementLog, (v) => { stockMovementLog = v; }] };
+                let changed = 0;
+                Object.keys(map).forEach((f) => {
+                    if (!(e.fields || []).includes(f) && !(e.floors && e.floors[f])) return;
+                    let cur; try { cur = map[f][1](); } catch (x) { return; }
+                    if (!Array.isArray(cur) || !cur.length) return;
+                    const keep = cur.filter((r) => !logsResetCovered(f, r, e));
+                    if (keep.length === cur.length) return;
+                    changed += cur.length - keep.length;
+                    if (f === 'bills') { try { if (typeof markBulkDelete === 'function') { /* the server already dropped them: no tombstones needed */ } } catch (x) { /* nothing */ } }
+                    map[f][2](keep);
+                    safeSetItem(map[f][0], JSON.stringify(keep));
+                    if (window.__pushAck && window.__pushAck[f]) window.__pushAck[f] = new Map();
+                    if (f === 'bills' && window.__keyAck) { window.__keyAck.bills = new Set(keep.map((r) => pushKeyOf(r)).filter((k) => k != null)); try { saveKeyAck(); } catch (x) { /* next push */ } }
+                });
+                try { if (changed && typeof window.salesJournalForget === 'function') window.salesJournalForget('server reset applied on this device'); } catch (x) { /* bookkeeping */ }
+                localStorage.setItem('pos_logs_reset_id', e.id);
+                window.__logsResetJustApplied = changed;
+                return true;
+            } catch (err) { return false; }
+        }
+
+//@fn resetAppOnServer
+// zip 327 - RESET APP, for real. Asks the server to forget the shop (it checks the typed business name itself, snapshots a backup first, and refuses a non-manager when
+// staff sessions are required). Resolves { ok:true } only when the SERVER confirmed; offline or refused -> { ok:false, error } and NOTHING is cleared on this device.
+async function resetAppOnServer(bizName, ownerName) {
+            const id = 'w' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+            try {
+                if (typeof navigator !== 'undefined' && navigator.onLine === false) return { ok: false, error: 'You are offline. The server was not reset and nothing was changed here. Reconnect and try again.' };
+                const res = await fetch(apiUrl('/api/pos-sync'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ _wipeApp: { id, confirm: bizName, ownerName } }) });
+                const out = await res.json().catch(() => ({}));
+                if (res.ok && out && out.ok) return { ok: true, id, ledger: out.ledger };
+                return { ok: false, error: (out && out.error) || ('The server answered HTTP ' + res.status + '. Nothing was changed.') };
+            } catch (e) { return { ok: false, error: 'The server could not be reached. Nothing was changed. Check the connection and try again.' }; }
+        }
+
+//@fn wipeApplyLocal
+// The server says the shop was reset (`data.wiped`, an id) and this device has not applied that: clear this device's data (keeping the business and owner name),
+// remember the id and reload. A brand-new empty device only remembers the id. Returns true when it is reloading.
+function wipeApplyLocal(data) {
+            try {
+                const w = data && data.wiped;
+                if (!w || !w.id) return false;
+                if (localStorage.getItem('pos_wiped_id') === w.id) return false;
+                const fresh = !localStorage.getItem('pos_inventory') && !localStorage.getItem('pos_sales_log');
+                const biz = String((data && data.businessName) || localStorage.getItem('pos_biz_name') || '');
+                const owner = String((data && data.ownerName) || localStorage.getItem('pos_owner_name') || '');
+                if (fresh) { localStorage.setItem('pos_wiped_id', w.id); return false; }
+                try { if (typeof window.salesJournalForget === 'function') window.salesJournalForget('app reset on the server'); } catch (e) { /* bookkeeping */ }
+                localStorage.clear();
+                if (biz) localStorage.setItem('pos_biz_name', biz);
+                if (owner) localStorage.setItem('pos_owner_name', owner);
+                localStorage.setItem('pos_wiped_id', w.id);
+                window.__wipedReloading = true;
+                setTimeout(() => { try { window.location.reload(); } catch (e) { /* the next start-up is clean anyway */ } }, 400);
+                return true;
             } catch (e) { return false; }
         }
 
@@ -8965,7 +9455,7 @@ function slimPayloadForPush(payload) {
             //    point, and identical to the old behaviour.
             //  * If any record in a log has no id, that whole log is sent as before (the server can't match it).
             //  * Nothing is marked as acknowledged until the server says OK (call commit() then); a failed push resends.
-            const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog', 'svcJobs', 'svcAppointments'];   // svc*: Services engine (absent from other apps' payloads)
+            const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog', 'svcJobs', 'svcAppointments', 'cwJobs', 'cwPayments', 'cwLoyalty', 'cwSms', 'cwAudit', 'cwCustomers', 'cwVehicles', 'cwComplaints', 'cwExpenses', 'cwCashups', 'cwSupplyMoves'];   // svc*: Services engine; cw*: Car Wash app (zip 361) - absent from other apps' payloads
             stampLocalContext(payload);
             window.__pushAck = window.__pushAck || {};
             const body = { ...payload };
@@ -8978,7 +9468,7 @@ function slimPayloadForPush(payload) {
             // first), the next batch straight after the last one is accepted.
             let more = false;
             const scale = window.__pushBatchScale || 1;
-            const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150, svcJobs: 120, svcAppointments: 150 };
+            const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150, svcJobs: 120, svcAppointments: 150, cwJobs: 150, cwPayments: 300, cwLoyalty: 400, cwSms: 300, cwAudit: 400, cwCustomers: 300, cwVehicles: 300, cwExpenses: 300, cwCashups: 300, cwSupplyMoves: 400, cwComplaints: 100 };
             const known = typeof window.salesJournalKnownOnServer === 'function' ? window.salesJournalKnownOnServer : null;
             // zip 186: records the server kept refusing wait in the "needs attention" list (never deleted); they are left out of the automatic pushes
             // until Retry puts them back (syncRetryAttention). A record that is left out here is NOT marked as acknowledged (it is not in `pending`).
@@ -9046,7 +9536,9 @@ function slimPayloadForPush(payload) {
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
                 'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges', 'resources', 'resourceSessions', 'facilityBookings', 'serviceRequests', 'customOrders', 'kegs', 'inventoryCategories',
                 'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials',
-                'svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig']);
+                'svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig',
+                'cwCustomers', 'cwVehicles', 'cwJobs', 'cwPayments', 'cwLoyalty', 'cwSms', 'cwAudit', 'cwComplaints', 'cwConfig', 'cwExpenses', 'cwCashups', 'cwSupplies', 'cwSupplyMoves',
+                'cashConfig', 'cashMovements', 'cashPoints', 'cashSessions', 'mpesaAgentTx', 'mpesaAgentCfg', 'mpesaAgentClosings', 'hmisConfig', 'importBatches', 'serialUnits', 'matMovements', 'productionLog', 'restockLog', 'aquaInvoices']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
@@ -9089,6 +9581,7 @@ function slimPayloadForPush(payload) {
             try { body._till = getOrCreateDeviceId(); } catch (e) { /* no id: the device keeps its own reference form */ }
             // and which app release it runs (device list in Settings and the Owner Console)
             try { body._dev = { v: window.__APP_RELEASE || '', app: (location.pathname.split('/')[1] || 'shop').slice(0, 20) }; } catch (e) { /* optional */ }
+            try { const pr = logsResetPending(); if (pr) body._logsReset = { id: pr.id, at: pr.at, fields: pr.fields, rollbackStock: !!pr.rollbackStock, voided: !!pr.voided }; } catch (e) { /* the next push carries it */ }      // zip 327
             window.__lastPushBody = body;          // zip 186: what the failure counter (pushErrorCode -> pushNoteOutcome) counts against
             return {
                 body,
@@ -9100,6 +9593,7 @@ function slimPayloadForPush(payload) {
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
                     Object.keys(gone).forEach((c) => { if (window.__bulkDelete) delete window.__bulkDelete[c]; });      // zip 185: the tombstones are delivered; the opt-in is spent
                     saveKeyAck();
+                    try { if (body._logsReset) logsResetDelivered(body._logsReset.id); } catch (e) { /* the next push carries it again */ }      // zip 327
                     window.__pushFailed = false;
                     try { if (typeof window.salesJournalSent === 'function') window.salesJournalSent(sentVersions); } catch (e) { /* never block a push */ }
                 },
@@ -9409,6 +9903,90 @@ function syncDeadProbe() {
                 if (window.__pushInFlight > 0) return;
                 Promise.resolve(syncRetryAttention(true)).catch(() => {});
             } catch (e) { /* the Retry button remains */ }
+        }
+
+//@fn syncHealthCategory
+// A plain category for a parked record's last error text (shown to the admin; the raw text is never uploaded beyond 120 characters).
+function syncHealthCategory(why) {
+            const w = String(why || '').toLowerCase();
+            if (/network|timeout|offline|abort|fetch/.test(w)) return 'network';
+            if (/busy|429|503|too many/.test(w)) return 'busy';
+            if (/session|401|sign in|auth/.test(w)) return 'auth';
+            if (/forbidden|403|not allowed|permission|held/.test(w)) return 'forbidden';
+            if (/invalid|bad_|validation|400|too big|413|schema/.test(w)) return 'validation';
+            if (/conflict|stale|409/.test(w)) return 'conflict';
+            if (/50\d|server|storage/.test(w)) return 'server';
+            return 'other';
+        }
+
+//@fn syncHealthReport
+// zip 328: a compact picture of THIS device's sync state for the admin's "Sync health" view. Counts and record ids only — no PINs, tokens,
+// customer details or record bodies.
+function syncHealthReport() {
+            const dead = syncDeadMap(), retries = syncRetryMap();
+            const ls = (k) => { try { return parseInt(localStorage.getItem(k) || '0', 10) || 0; } catch (e) { return 0; } };
+            const parked = Object.keys(dead).slice(0, 50).map((k) => ({ col: dead[k].f, id: dead[k].id, n: dead[k].n || 0, at: dead[k].at || 0, cat: syncHealthCategory(dead[k].why), why: dead[k].why || '' }));
+            const retrying = Object.keys(retries).filter((k) => !dead[k]).slice(0, 50).map((k) => {
+                const i = k.indexOf('|');
+                return { col: k.slice(0, i), id: k.slice(i + 1), n: retries[k].n || 0, at: retries[k].at || 0, cat: 'other', why: '' };
+            });
+            let pending = 0;
+            try { pending = typeof window.salesJournalPendingCount === 'function' ? window.salesJournalPendingCount() : 0; } catch (e) { pending = 0; }
+            let conflicts = 0, held = 0;
+            try {
+                (JSON.parse(localStorage.getItem('pos_sync_journal_v1') || '[]') || []).slice(0, 100).forEach((e) => {
+                    if (e && /conflict/i.test(e.kind || '')) conflicts++;
+                    if (e && /held|permission/i.test(e.kind || '')) held++;
+                });
+            } catch (e) { /* diagnostics only */ }
+            return {
+                version: (typeof window !== 'undefined' && window.__swVersion) || '',
+                online: typeof navigator === 'undefined' || navigator.onLine !== false,
+                pending, dirty: Math.max(0, ls('pos_dirty_seq') - ls('pos_acked_seq')),
+                parked, parkedCount: Object.keys(dead).length, retrying,
+                lastOk: ls('pos_last_synced_at') || ls('aqua_last_synced_at'), lastPush: window.__lastPushOkAt || 0, lastPull: ls('pos_last_synced_at') || 0,
+                conflicts, held, breaker: syncPausedUntil() > 0 || (Number(window.__pushFails) || 0) >= 8,
+            };
+        }
+
+//@fn syncHealthUpload
+// Throttled (once in 5 minutes, at once when the number of parked records changes). Fire-and-forget: a failure is ignored, never retried in a loop.
+async function syncHealthUpload(force) {
+            try {
+                if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+                const rep = syncHealthReport();
+                const sig = rep.parkedCount + ':' + rep.pending + ':' + rep.dirty;
+                const now = Date.now();
+                if (!force && window.__shAt && now - window.__shAt < 300000 && window.__shSig === sig) return false;
+                if (window.__shBusy) return false;
+                window.__shBusy = true; window.__shAt = now; window.__shSig = sig;
+                try {
+                    const name = typeof activeServerName === 'function' ? activeServerName() : '';
+                    const dev = getOrCreateDeviceId();
+                    const res = await fetch(apiUrl('/api/sync-diag'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: dev, name, report: rep }) });
+                    return !!(res && res.ok);
+                } finally { window.__shBusy = false; }
+            } catch (e) { return false; }
+        }
+
+//@fn syncHealthFetch
+// The admin's view: every device that has reported (managers only when staff sessions are enforced).
+async function syncHealthFetch() {
+            const res = await fetch(apiUrl('/api/sync-diag'));        // the staff session (if any) is added to every request by the staff-session block
+            const out = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(out.error || ('The server answered ' + res.status));
+            return out;
+        }
+
+//@fn syncHealthReconcile
+// "Retry / Reconcile": the SAFE repair. Puts parked records back into the queue (nothing is deleted), sends, then pulls what the server has.
+// A record is sent again with the same id, so the server's merge makes a second attempt harmless (no double sale, no double stock).
+async function syncHealthReconcile() {
+            let sent = false, pulled = false;
+            try { sent = await syncRetryAttention(false); } catch (e) { sent = false; }
+            try { if (typeof flushThenPull === 'function') { await flushThenPull(); pulled = true; } } catch (e) { pulled = false; }
+            try { await syncHealthUpload(true); } catch (e) { /* the view refreshes itself */ }
+            return { sent: !!sent, pulled, left: Object.keys(syncDeadMap()).length };
         }
 
 //@fn pushErrorCode
@@ -9793,7 +10371,15 @@ async function trackPush(fn, o) {
                     window.__pushFailed = true;
                     window.__pushFailKind = '';
                     window.__pushAttemptLast = attempt >= maxTries - 1;          // zip 186: only the last try of a cycle counts against the records (pushNoteOutcome)
-                    r = await fn();
+                    // zip 315: a send that NEVER settles (a phone that slept or changed network mid-request, a browser that does not cancel a timed-out
+                    // fetch) used to keep __pushInFlight above 0 for good: the device then believed it always had unsent work - "Syncing" for ever,
+                    // every pull with news put off ("send first"), and the automatic retry (which waits for nothing in flight) never ran again. Each
+                    // attempt is now given up after a hard limit, so the counter is always released; the server applies a change only once, so a late
+                    // answer to the abandoned attempt is harmless.
+                    r = await new Promise((resolve, reject) => {
+                        const hard = setTimeout(() => { window.__pushFailed = true; window.__pushFailKind = 'network'; window.__pushHardStops = (window.__pushHardStops || 0) + 1; resolve(false); }, window.__pushHardLimitMs || 120000);
+                        Promise.resolve().then(fn).then((v) => { clearTimeout(hard); resolve(v); }, (e) => { clearTimeout(hard); reject(e); });
+                    });
                     if (!window.__pushFailed || window.__pushFailKind !== 'busy' || attempt >= maxTries - 1) break;
                     markSync('syncing');
                     await new Promise((res) => setTimeout(res, window.__pushRetryAfterMs || jitter(window.__pushBusyRetryMs != null ? window.__pushBusyRetryMs : 1200)));
@@ -10051,6 +10637,48 @@ function stockRecSig(it) {
             return JSON.stringify(c);
         }
 
+//@fn stockFormCarry
+// zip 385: the Add / Edit Item form rebuilds an edited item as a NEW record. Two things were lost on the way:
+//   1. the server's stock stamps (_sv / _ct / _sq / _sp) - without _sq the stock safety net (reconcileLocalStockChanges) skips the item;
+//   2. the changed quantity itself was never written down as a movement - the server ignores a plain number, so it kept its own figure.
+// Result: 16 in stock, 13 typed in the form, 16 again after a refresh. Now the stamps are carried to the new record and every changed
+// figure (the item, each variant, the loose pieces) is recorded as a COUNT movement - the number typed is what is on the shelf, exactly
+// like a stock take, so it holds on every device and after every refresh. Returns the number of counts recorded.
+function stockFormCarry(old, item) {
+            if (!old || !item || old === item) return 0;
+            const STAMPS = ['_sv', '_ct', '_sq', '_sp'];
+            const carry = (from, to) => STAMPS.forEach((k) => { if (from[k] !== undefined && to[k] === undefined) to[k] = from[k]; });
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            let made = 0;
+            const count = (obj, name, unit, before) => {
+                if (typeof obj[unit] !== 'number' && typeof before !== 'number') return;
+                const now = r3(obj[unit]);
+                if (Math.abs(now - r3(before)) < 1e-9) return;
+                if (typeof logStockCount !== 'function') return;
+                const m = logStockCount(obj, name, unit, now, r3(before));
+                if (m) m.reason = 'Stock set in the item form';
+                made++;
+            };
+            carry(old, item);
+            const hasV = (r) => !!(r && r.hasVariants && Array.isArray(r.variants) && r.variants.length > 0);
+            if (hasV(item)) {
+                const oldV = new Map((Array.isArray(old.variants) ? old.variants : []).filter((v) => v && v.code != null).map((v) => [String(v.code).toLowerCase(), v]));
+                item.variants.forEach((v) => {
+                    if (!v || v.code == null) return;
+                    const o = oldV.get(String(v.code).toLowerCase());
+                    if (!o) return;                                   // a new size: the server takes its first figure as given
+                    carry(o, v);
+                    count(v, `${item.name} — ${v.name}`, 'qty', Number(o.qty) || 0);
+                    if (v.dualUnit || o.dualUnit) count(v, `${item.name} — ${v.name}`, 'pieceQty', Number(o.pieceQty) || 0);
+                });
+            } else {
+                count(item, item.name, 'qty', Number(old.qty) || 0);
+                if (item.dualUnit || old.dualUnit) count(item, item.name, 'pieceQty', Number(old.pieceQty) || 0);
+            }
+            if (made) { try { if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* saved with the next change */ } }
+            return made;
+        }
+
 //@fn stockMoveDelta
 // How much a movement ACTUALLY changed the stock: the server's own figures when it has processed it (a duplicate, a sale already
 // covered by a later stock take = 0), otherwise the movement's own delta. Reports use this so they agree with the real stock.
@@ -10164,11 +10792,18 @@ function stockApplyPulledLedger(data) {
 // of the variants - the owner saw +5, nobody else ever did. A typed variant code now restocks THAT variant; a parent code of an item that has
 // variants is refused with a clear message (see restockParentHasVariants).
 function restockVariantByCode(code) {
+            // zip 371: a variant is found by its code, SKU, barcode, or the full name shown in the list ("Socks (Large)"), any capitals.
             const c = String(code || '').trim().toLowerCase();
             if (!c || typeof inventory === 'undefined' || !Array.isArray(inventory)) return null;
+            const eq = (x) => x != null && String(x).trim().toLowerCase() === c;
             for (const it of inventory) {
                 if (!it || it.type === 'service' || !Array.isArray(it.variants)) continue;
-                const v = it.variants.find((x) => x && x.code != null && String(x.code).trim().toLowerCase() === c);
+                const v = it.variants.find((x) => x && (eq(x.code) || eq(x.sku) || eq(x.barcode) || eq(x.pieceCode)));
+                if (v) return { item: it, variant: v };
+            }
+            for (const it of inventory) {
+                if (!it || it.type === 'service' || !Array.isArray(it.variants)) continue;
+                const v = it.variants.find((x) => x && String(it.name || '').trim().toLowerCase() + ' (' + String(x.name || '').trim().toLowerCase() + ')' === c);
                 if (v) return { item: it, variant: v };
             }
             return null;
@@ -10604,7 +11239,7 @@ async function startBackgroundCameraScan() {
 function startDeviceNetworkHeartbeat() {
             heartbeatDeviceNetwork();
             if (!deviceNetworkHeartbeatInterval) {
-                deviceNetworkHeartbeatInterval = setInterval(heartbeatDeviceNetwork, 20000);
+                deviceNetworkHeartbeatInterval = setInterval(heartbeatDeviceNetwork, 60000);   // zip 397: was 20 s - every beat was a storage write on the server
             }
         }
 
@@ -10716,6 +11351,10 @@ function stockReportTotals(kind, a, b) {
             } else {
                 (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog : []).forEach((m) => {
                     if (!m || !inWin(dateKey(new Date(m.timestamp))) || !stockReportSiteOK(m)) return;
+                    // zip 354: a sale (and the void that undoes it) is already counted by the "Sold" column, which comes from the sales log. Counting its
+                    // stock movement as well made every sale appear twice: Opening came out too high, Removed included the sales, Closing of a past period too high.
+                    // Loose-piece movements are a different unit from the box/qty figure this report shows.
+                    if (m.unit === 'pieceQty' || /^(Sale( void| \(recorded late\)| \(box opened\))?|Box opened for sale)$/.test(String(m.reason || ''))) return;
                     const d = stockMoveDelta(m);
                     if (kind === 'mvAfter') add(m.code, d);
                     else if (kind === 'mvAdded' ? d > 0 : d < 0) add(m.code, Math.abs(d));
@@ -11415,7 +12054,7 @@ function checkoutGuardFailed(g, e) {
             if (saved) {
                 try {
                     if (typeof currentCart !== 'undefined') currentCart = {};
-                    ['cash-tendered-input', 'split-cash-input', 'split-mpesa-input', 'split-cash-tendered-input', 'bill-customer-name-input', 'bill-upfront-amount-input'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+                    ['cash-tendered-input', 'split-cash-input', 'split-mpesa-input', 'split-card-input', 'split-cash-tendered-input', 'bill-customer-name-input', 'bill-upfront-amount-input'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
                     if (typeof renderCart === 'function') renderCart();
                 } catch (x) { /* the cart is cleared by the next sale at the latest */ }
             }
@@ -12173,19 +12812,23 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes,
                 chunks.forEach((c) => { out.set(c, o); o += c.length; });
                 return out;
             };
-            const line = (s) => enc.encode(thermalPrepareText(s) + '\n');
-            const boldLine = (s) => concat([b([0x1B, 0x45, 1]), line(s), b([0x1B, 0x45, 0])]);
+            // zip 379: DARK print - every line emphasized (ESC E 1) + double-strike (ESC G 1); re-sent per line because a big TOTAL line switches bold off
+            const DARK = b([0x1B, 0x45, 1, 0x1B, 0x47, 1]);
+            const line = (s) => concat([DARK, enc.encode(thermalPrepareText(s) + '\n')]);
+            const boldLine = (s) => line(s);
             const just = (n) => b([0x1B, 0x61, n]);
             const itemAlign = receiptItemAlign === 'center' ? 1 : receiptItemAlign === 'right' ? 2 : 0;
+            const itemRaw = String(itemsText).split('\n');
+            const bigF = receiptBigTotalFlags(itemRaw, getPaperCols());            // the grand TOTAL prints big and bold (double size)
             const refBarcode = receiptRefBarcodeBytes(footerText);
             const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
             const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;   // zip 155: the stamp, above the item lines
             return concat([
-                b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),                                   // initialise + font A
+                b([0x1B, 0x40, 0x1B, 0x4D, 0x00, 0x1B, 0x45, 0x01, 0x1B, 0x47, 0x01]),                                   // initialise + font A
                 ...(logoRaster ? [logoRaster] : []),
                 just(1), ...String(headerText).split('\n').map((l, i) => (i === 0 ? boldLine(l) : line(l))),
                 ...(stampRaster ? [stampRaster] : []),
-                just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l) ? boldLine(l) : line(l))),
+                just(itemAlign), ...itemRaw.map((l, i) => (bigF[i] ? receiptBigLineBytes(l) : (receiptIsBoldItemLine(l) ? boldLine(l) : line(l)))),
                 just(1), line(footerText),
                 ...(refBarcode ? [line(''), refBarcode] : []),                        // scannable reference barcode (image)
                 b([0x1B, 0x64, 0x03]),                                                // feed
@@ -12240,7 +12883,7 @@ function receiptRasterFromRgba(rgba, W, h, maxRows, asList) {
                         const i = ((y0 + y) * W + x) * 4;
                         const a = (rgba[i + 3] == null ? 255 : rgba[i + 3]) / 255;
                         const lum = 0.299 * (rgba[i] * a + 255 * (1 - a)) + 0.587 * (rgba[i + 1] * a + 255 * (1 - a)) + 0.114 * (rgba[i + 2] * a + 255 * (1 - a));
-                        if (lum < 150) band[8 + y * bpr + (x >> 3)] |= 0x80 >> (x & 7);
+                        if (lum < 190) band[8 + y * bpr + (x >> 3)] |= 0x80 >> (x & 7);   // zip 379: was 150 - grey edges of letters were dropped (faint print)
                     }
                 }
                 bands.push(band);
@@ -12253,32 +12896,40 @@ function receiptRasterFromRgba(rgba, W, h, maxRows, asList) {
 
 //@fn receiptRasterLines
 function receiptRasterLines(lines, W, fontPx, cw) {
-            // lines: [{ text, bold, align: 'left' | 'center' | 'right' }] -> an array of Uint8Array (raster bands), or null when this browser cannot draw.
+            // lines: [{ text, bold, big, align: 'left' | 'center' | 'right' }] -> an array of Uint8Array (raster bands), or null when this browser cannot draw.
             // Every character is put on a grid `cw` dots wide, so columns line up exactly as in the preview whatever the font's own spacing is.
+            // big: the grand TOTAL - drawn twice the size (each character is two grid columns wide, the line twice as tall).
             const list = Array.isArray(lines) ? lines : [];
             const out = [];
             const lh = Math.max(8, Math.round(fontPx * 1.25));
             const face = `"Courier New", Courier, "Liberation Mono", "DejaVu Sans Mono", monospace`;
             for (let i0 = 0; i0 < list.length; i0 += 80) {                 // 80 lines a picture: a long receipt never becomes one enormous canvas
                 const chunk = list.slice(i0, i0 + 80);
-                const H = lh * chunk.length;
+                const heights = chunk.map((ln) => (ln && ln.big ? lh * 2 : lh));
+                const H = heights.reduce((n, h) => n + h, 0);
                 const c = document.createElement('canvas'); c.width = W; c.height = H;
                 const ctx = c.getContext('2d');
                 if (!ctx) return null;
                 ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
-                ctx.fillStyle = '#000000'; ctx.textBaseline = 'top';
+                ctx.fillStyle = '#000000'; ctx.strokeStyle = '#000000'; ctx.textBaseline = 'top'; ctx.lineJoin = 'round';
+                // zip 379: DARK print. Thin Courier strokes came out grey and broken on the handheld terminal's printer. Every letter is now drawn bold
+                // AND outlined in black (a hair: 1/30 of the letter size, so 6, 8 and 0 stay open), so each stroke is several dots wide and prints solid black.
+                const ink = (txt, x, y, px) => { ctx.fillText(txt, x, y); if (typeof ctx.strokeText === 'function') { try { ctx.lineWidth = Math.max(0.6, px / 30); ctx.strokeText(txt, x, y); } catch (e) { /* bold fill alone */ } } };
+                let yTop = 0;
                 chunk.forEach((ln, k) => {
+                    const rowTop = yTop, rowH = heights[k]; yTop += rowH;
+                    const sc = ln.big ? 2 : 1, px = fontPx * sc, cwx = cw * sc;
                     let t = String(ln.text == null ? '' : ln.text).replace(/\s+$/, '');
                     if (ln.align === 'center' || ln.align === 'right') t = t.replace(/^\s+/, '');
                     if (!t) return;
-                    const lineW = t.length * cw;
+                    const lineW = t.length * cwx;
                     const x0 = ln.align === 'center' ? Math.max(0, Math.floor((W - lineW) / 2)) : ln.align === 'right' ? Math.max(0, Math.floor(W - lineW)) : 0;
-                    const y = k * lh + Math.max(0, Math.floor((lh - fontPx) / 2));
-                    ctx.font = `${ln.bold ? 'bold ' : ''}${fontPx}px ${face}`;
+                    const y = rowTop + Math.max(0, Math.floor((rowH - px) / 2));
+                    ctx.font = `bold ${px}px ${face}`;                    // zip 379: every line bold (dark print)
                     let real = lineW;
                     try { real = ctx.measureText(t).width; } catch (e) { real = lineW; }
-                    if (Math.abs(real - lineW) <= 1) ctx.fillText(t, x0, y);
-                    else for (let j = 0; j < t.length; j++) if (t[j] !== ' ') ctx.fillText(t[j], x0 + j * cw, y);   // a font that is not truly monospaced: one character per column
+                    if (Math.abs(real - lineW) <= 1) ink(t, x0, y, px);
+                    else for (let j = 0; j < t.length; j++) if (t[j] !== ' ') ink(t[j], x0 + j * cwx, y, px);   // a font that is not truly monospaced: one character per column
                 });
                 const img = ctx.getImageData(0, 0, W, H);
                 receiptRasterFromRgba(img.data, W, H, 200, true).forEach((band) => out.push(band));
@@ -12306,16 +12957,22 @@ function buildReceiptRasterParts(headerText, itemsText, footerText, cutBytes) {
             const cols = Math.max(1, Math.min(getPaperCols(), Math.floor(W / m.cw)));       // the picture's own columns, from the real font
             const prep = (t) => thermalPrepareText(t, cols).split('\n');
             const itemAlign = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
-            const boldItem = (l) => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l);
+            const rawItems = String(itemsText).replace(/\r/g, '').split('\n');
+            const bigF = receiptBigTotalFlags(rawItems, cols);                      // the grand TOTAL is drawn big and bold (double size)
+            const itemRows = [];
+            rawItems.forEach((t, i) => {
+                if (bigF[i]) itemRows.push({ text: thermalAscii(t), bold: true, big: true, align: 'left' });
+                else prep(t).forEach((x) => itemRows.push({ text: x, bold: receiptIsBoldItemLine(x), align: itemAlign }));
+            });
             const head = receiptRasterLines(prep(headerText).map((t, i) => ({ text: t, bold: i === 0, align: 'center' })), W, fontPx, m.cw);
-            const items = receiptRasterLines(prep(itemsText).map((t) => ({ text: t, bold: boldItem(t), align: itemAlign })), W, fontPx, m.cw);
+            const items = receiptRasterLines(itemRows, W, fontPx, m.cw);
             const foot = receiptRasterLines(prep(footerText).map((t) => ({ text: t, bold: false, align: 'center' })), W, fontPx, m.cw);
             if (!head || !items || !foot) return null;
             const logoRaster = receiptLogoRasterBytes();
             const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;
             const refBarcode = receiptRefBarcodeBytes(footerText);
             return [
-                b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),
+                b([0x1B, 0x40, 0x1B, 0x4D, 0x00, 0x1B, 0x45, 0x01, 0x1B, 0x47, 0x01]),
                 ...(logoRaster ? [logoRaster] : []),
                 ...head,
                 ...(stampRaster ? [stampRaster] : []),
@@ -12349,7 +13006,7 @@ function receiptRasterTextBytes(text) {
                 const align = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
                 const bands = receiptRasterLines(thermalPrepareText(text, cols).split('\n').map((t) => ({ text: t, bold: false, align })), W, fontPx, m.cw);
                 if (!bands) { receiptRasterNotice(); return null; }
-                return receiptConcatBytes([new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00]), ...bands, new Uint8Array([0x1B, 0x64, 0x03]), new Uint8Array([0x1D, 0x56, 0x42, 0x00])]);
+                return receiptConcatBytes([new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, 0x1B, 0x45, 0x01, 0x1B, 0x47, 0x01]), ...bands, new Uint8Array([0x1B, 0x64, 0x03]), new Uint8Array([0x1D, 0x56, 0x42, 0x00])]);
             } catch (e) { receiptRasterNotice(); return null; }
         }
 
@@ -12529,14 +13186,21 @@ function buildReceiptDoc(sale, hooks) {
             const dateTime = `Date: ${stamp.date}   Time: ${stamp.time}`;
             if (dateTime.length <= cols) headerLines.push(dateTime);
             else { headerLines.push(`Date: ${stamp.date}`); headerLines.push(`Time: ${stamp.time}`); }
-            headerLines.push(`Served by: ${sale.servedBy || adminServerName()}`);   // bills and receipts always say who served
-            if (sale.customerName) headerLines.push(`Customer: ${sale.customerName}`);
+            const servedByName = sale.servedBy || adminServerName();
+            headerLines.push(`Served by: ${servedByName}`);   // bills and receipts always say who served
+            const customerClean = typeof receiptCleanText === 'function' ? receiptCleanText(sale.customerName) : (sale.customerName || '');
+            if (customerClean) headerLines.push(`Customer: ${customerClean}`);
+            // zip 328: the customer's phone and ID number when the sale has them (never a placeholder; a delivery receipt prints them in its own delivery block)
+            const customerExtraLines = (!deliverySale && typeof receiptCustomerLines === 'function') ? (receiptCustomerLines(sale, cols) || []) : [];
+            customerExtraLines.forEach(l => headerLines.push(l));
+            const locationLines = [];
             if (sale.tableOrRoom) {
                 // a module can say what the place is (Table 12 / Room 104) instead of the generic line (zip 144)
                 const loc = hooks.locationLines ? hooks.locationLines(sale) : null;
-                (Array.isArray(loc) ? loc : [`Table/Room: ${sale.tableOrRoom}`]).forEach(l => { if (l) headerLines.push(l); });
+                (Array.isArray(loc) ? loc : [`Table/Room: ${sale.tableOrRoom}`]).forEach(l => { if (l) { headerLines.push(l); locationLines.push(l); } });
             }
-            if (hooks.headerExtra) (hooks.headerExtra(sale) || []).forEach(l => headerLines.push(l));
+            const headerExtraLines = hooks.headerExtra ? (hooks.headerExtra(sale) || []) : [];
+            headerExtraLines.forEach(l => headerLines.push(l));
 
             // ---- item rows: one data set feeds BOTH the text and the on-screen table ----
             const hasQtyFmt = typeof formatQtyDisplay === 'function' && typeof unitLabel === 'function';
@@ -12553,7 +13217,7 @@ function buildReceiptDoc(sale, hooks) {
                 if (l.offerApplied) subs.push(`Offer: ${l.offerApplied.label} (-KES ${Number(l.offerApplied.amount).toFixed(2)})`);
                 if (Array.isArray(l.componentsUsed)) l.componentsUsed.forEach(c => subs.push(`Uses: ${hasQtyFmt ? formatQtyDisplay(c.qty, c.unit) + unitLabel(c.unit) : c.qty} ${c.name}`));
                 if (hooks.itemSubLines) (hooks.itemSubLines(l, sale) || []).forEach(s => subs.push(s));
-                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' || !showVat ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
+                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: (typeof receiptItemCodeOn === 'function' && receiptItemCodeOn()) ? (l.code || '') : '', vat: l.type === 'payment' || !showVat ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
             });
 
             const lines = [];
@@ -12573,9 +13237,11 @@ function buildReceiptDoc(sale, hooks) {
             const afterItemLines = hooks.afterItems ? (hooks.afterItems(sale, ctx) || []) : [];
             afterItemLines.forEach(l => lines.push(l));
             // zip 155: where the goods go and who they are for (every app - only Aqua POS used to print this); ID number and directions are optional
-            if (deliverySale) receiptDeliveryLines(sale, ctx).forEach(l => lines.push(l));
+            const deliveryLines = deliverySale ? (receiptDeliveryLines(sale, ctx) || []) : [];
+            deliveryLines.forEach(l => lines.push(l));
             // zip 156: a bill instalment shows where the bill stands (these three figures are NOT sale lines, so no report adds them up as revenue)
-            if (sale.installment && typeof receiptInstallmentLines === 'function') receiptInstallmentLines(sale, ctx).forEach(l => lines.push(l));
+            const installmentLines = (sale.installment && typeof receiptInstallmentLines === 'function') ? (receiptInstallmentLines(sale, ctx) || []) : [];
+            installmentLines.forEach(l => lines.push(l));
 
             lines.push(rule);
             const totalLineIndex = lines.length;
@@ -12583,15 +13249,20 @@ function buildReceiptDoc(sale, hooks) {
             // zip 253: PAID / UNPAID is wording ON the total line itself (no stamp picture, no space of its own); too narrow a line -> its own short line right below
             const paidWord = (typeof receiptPaidWording === 'function') ? receiptPaidWording(sale) : '';
             const totalWithWord = paidWord ? totalLabel + ' - ' + paidWord : totalLabel;
-            if (paidWord && totalWithWord.length > labelCol) { lines.push(...receiptMoneyRow(totalLabel, kes(total), cols)); lines.push(paidWord); }
+            // The total is printed BIG and BOLD (double size, laid out on half the columns); on a roll too narrow for that, the normal row.
+            const bigTotalRows = receiptBigTotalRows(totalLabel, kes(total), cols, paidWord);
+            if (bigTotalRows) lines.push(...bigTotalRows);
+            else if (paidWord && totalWithWord.length > labelCol) { lines.push(...receiptMoneyRow(totalLabel, kes(total), cols)); lines.push(paidWord); }
             else lines.push(...receiptMoneyRow(totalWithWord, kes(total), cols));
             const cartLevelOffers = Array.isArray(sale.cartOffersApplied)
                 ? sale.cartOffersApplied.filter(o => !entries.some(it => it.offerApplied && it.offerApplied.offerName === o.offerName && it.offerApplied.amount === o.amount && it.offerApplied.label === o.label))
                 : [];
-            cartLevelOffers.forEach(o => lines.push(`Offer: ${o.label} (-KES ${Number(o.amount).toFixed(2)})`));
+            const offerLines = cartLevelOffers.map(o => `Offer: ${o.label} (-KES ${Number(o.amount).toFixed(2)})`);
+            offerLines.forEach(l => lines.push(l));
             if (sale.totalDiscount > 0) lines.push(...receiptMoneyRow('Total Savings', kes(sale.totalDiscount), cols));
 
             // ---- payment ----
+            const payStart = lines.length;
             const custom = hooks.paymentLines ? hooks.paymentLines(sale, ctx) : null;
             const method = sale.paymentMethod || 'cash';
             const mpesaRef = sale.mpesaReceiptNumber || sale.mpesaCode || '';
@@ -12602,7 +13273,8 @@ function buildReceiptDoc(sale, hooks) {
                 if (paidNow > 0) {
                     lines.push(...receiptMoneyRow('PAID', kes(paidNow), cols));
                     lines.push(...receiptMoneyRow('BALANCE', kes(Math.max(0, total - paidNow)), cols));
-                    lines.push(`STATUS: ${method === 'pod' ? 'PAY ON DELIVERY' : 'PAY LATER'}`);
+                    // zip 328: a bill paid in full says so (it used to say PAY LATER with a zero balance); a part-paid one says what is still due
+                    lines.push(paidNow >= total - 0.005 ? 'STATUS: PAID IN FULL' : `STATUS: ${method === 'pod' ? 'PART PAID - PAY ON DELIVERY' : 'PART PAID - BALANCE DUE'}`);
                 } else {
                     lines.push(method === 'pod' ? 'STATUS: UNPAID — PAY ON DELIVERY' : 'STATUS: UNPAID — PAY LATER');
                 }
@@ -12635,6 +13307,11 @@ function buildReceiptDoc(sale, hooks) {
                 lines.push(...receiptMoneyRow('CHANGE', kes(Math.max(0, sale.change || 0)), cols));
             }
 
+            const payLines = lines.slice(payStart);
+            // zip 313: loyalty tokens earned by this sale and the customer's balance (when the shop shows them)
+            const loyaltyLines = typeof receiptLoyaltyLines === 'function' ? (receiptLoyaltyLines(sale, cols) || []) : [];
+            if (loyaltyLines.length) { lines.push(rule); loyaltyLines.forEach(l => lines.push(l)); }
+
             // ---- items count + VAT table (skipped for pure "payment" records such as bill instalments) ----
             const paymentRecord = entries.length > 0 && entries.every(l => l.type === 'payment');
             if (!paymentRecord) {
@@ -12649,9 +13326,11 @@ function buildReceiptDoc(sale, hooks) {
             }
 
             // zip 155: the delivery confirmation: the client and the delivery person both sign (two copies print, one for each)
-            if (deliverySale) receiptDeliverySignLines(sale, ctx).forEach(l => lines.push(l));
+            const deliverySignLines = deliverySale ? (receiptDeliverySignLines(sale, ctx) || []) : [];
+            deliverySignLines.forEach(l => lines.push(l));
 
             // ---- KRA eTIMS (two data shapes exist across the apps) ----
+            const etimsStart = lines.length;
             if (sale.etimsData) {
                 const e = sale.etimsData;
                 lines.push(rule);
@@ -12668,21 +13347,32 @@ function buildReceiptDoc(sale, hooks) {
                 if (sale.etimsSdcDateTime) lines.push(`SCU Date: ${sale.etimsSdcDateTime}`);
             }
 
+            const etimsLines = lines.slice(etimsStart).filter(l => l !== rule);
+            // zip 328: the signature area (Settings > Receipts): customer name / ID / phone / signature / date, and optionally a staff line
+            let sigLines = [];
+            if (typeof receiptSignatureLines === 'function') {
+                sigLines = receiptSignatureLines(sale, cols, sale.receiptKind === 'contract' ? 'contract' : (isBill ? 'bill' : 'sale')) || [];
+                if (sigLines.length) { lines.push(rule); sigLines.forEach(l => lines.push(l)); }
+            }
+
             // ---- footer (always centred) ----
             const footerLines = [];
-            if (!isBill) {
+            if (!isBill && sale.receiptKind !== 'contract') {
                 // Payment details now print on EVERY receipt, not only on bills.
                 const details = receiptPaymentDetailsList();
                 if (details.length) { footerLines.push(rule); footerLines.push('Payment details:'); details.forEach(d => footerLines.push(d)); }
             }
             footerLines.push(rule);
-            footerLines.push(isBill ? 'Thank you — kindly settle this bill promptly.' : 'Thank you for your business!');
+            // zip 395: no "Thank you for your business" line on a sales receipt; a bill keeps its settle-promptly line, a contract its label
+            const thanksLine = isBill ? 'Thank you — kindly settle this bill promptly.' : sale.receiptKind === 'contract' ? 'Contract copy' : '';
+            if (thanksLine) footerLines.push(thanksLine); else footerLines.pop();
             const footerNotes = String((hooks.footerNotes ? hooks.footerNotes(sale) : receiptFooterNotes) || '').trim();
             if (footerNotes) {
                 footerLines.push(rule);
                 footerNotes.split('\n').forEach(n => { if (n.trim()) footerLines.push(n.trim()); });
             }
-            const customerNo = assignCustomerNo(sale);                    // "Customer 12": how many customers were served today
+            const customerNo0 = assignCustomerNo(sale);                   // "Customer 12": how many customers were served today (always numbered)
+            const customerNo = (typeof receiptCustNoOn === 'function' && receiptCustNoOn()) ? customerNo0 : null;   // zip 395: printed only when switched on (off by default)
             if (showRef || customerNo) footerLines.push(rule);
             if (customerNo) footerLines.push(`Customer ${customerNo}`);
             if (showRef) footerLines.push(`Ref: ${sale.refNumber}`);
@@ -12692,7 +13382,7 @@ function buildReceiptDoc(sale, hooks) {
             // for text laid out for 32 or 48: the browser re-wrapped it — words and numbers split, columns out of line, and the preview
             // (always drawn 80 mm wide) looked fine while the paper did not.
             const itemAlign = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
-            const boldItem = (l) => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l);
+            const boldItem = receiptIsBoldItemLine;
             const headBold = (l, i) => i === 0 || l.trim() === String(docLabel).trim();
             let barcodeHtml = '';
             if (showBarcode) {
@@ -12705,10 +13395,19 @@ function buildReceiptDoc(sale, hooks) {
             // zip 155: the receipt STAMP sits between the header and the item lines (thermal printers get the same picture as dots)
             let stampHtml = '';
             try { if (typeof receiptStampBlockHtml === 'function') stampHtml = receiptStampBlockHtml(sale); } catch (e) { /* the stamp is an extra */ }
+            // zip 360: the DETAILED layout (Settings > Receipts > Receipt layout): the same facts, laid out as a boxed document (receipt-extras block)
+            if (!hooks.standardOnly && typeof receiptLayoutNow === 'function' && receiptLayoutNow() === 'detailed' && typeof receiptDetailedDoc === 'function') {
+                try {
+                    return receiptDetailedDoc({ sale, hooks, cols, rule, kes, total, entries, isBill, docLabel, deliverySale, stamp, servedByName, customerClean, customerExtraLines, locationLines, headerExtraLines,
+                        rows: orderedRows, showSections, showVat, showRef, showBarcode, barcodeHtml, stampHtml, afterItemLines, deliveryLines, installmentLines, offerLines, totalLabel, paidWord,
+                        totalSavings: Number(sale.totalDiscount) > 0 ? Number(sale.totalDiscount) : 0, payLines, loyaltyLines, deliverySignLines, etimsLines, sigLines,
+                        paymentDetails: receiptPaymentDetailsList(), thanksLine, footerNotes, customerNo, paymentRecord });
+                } catch (e) { try { console.warn('detailed receipt failed, standard used', e); } catch (e2) { /* none */ } }
+            }
             const html = receiptGridHtml([
                 { lines: headerLines, align: 'center', bold: headBold },
                 stampHtml ? { html: stampHtml } : null,
-                { lines, align: itemAlign, bold: boldItem },
+                { lines, align: itemAlign, bold: boldItem, bigTotal: true },
                 { lines: footerLines, align: 'center' },
             ], { cols }) + barcodeHtml;
 
@@ -12753,7 +13452,7 @@ function renderSharedReceipt(sale, hooks) {
             }
 
             // In System print dialog mode the drawer-kick command rides inside the receipt's own print job.
-            if (printerMode === 'system' && autoOpenDrawerEnabled && sale.paid !== false) {       // zip 147: never for an unpaid bill
+            if (printerMode === 'system' && autoOpenDrawerEnabled && sale.paid !== false && sale.receiptKind !== 'contract') {       // zip 147: never for an unpaid bill
                 const kickSpan = document.createElement('span');
                 kickSpan.className = 'drawer-kick-bytes';
                 kickSpan.textContent = buildDrawerKickAsciiString();
@@ -13081,6 +13780,21 @@ function poCanEdit(order) {
             return poIsOpen(order) && poOrderStats(order).receivedLines === 0;
         }
 
+//@fn poFindVariant
+function poFindVariant(code, name) {
+            // zip 292: a purchase line can be a variant ("Phone · Black / 128GB"); the list offers those labels and arrival resolves them here
+            const c = String(code || '').trim().toLowerCase(), n = String(name || '').trim().toLowerCase();
+            for (const p of (Array.isArray(inventory) ? inventory : [])) {
+                if (!p || p.type === 'service' || !p.hasVariants || !Array.isArray(p.variants)) continue;
+                for (const v of p.variants) {
+                    if (!v) continue;
+                    if (c && v.code && String(v.code).trim().toLowerCase() === c) return { p, v };
+                    if (n && (String(p.name || '') + ' \u00b7 ' + String(v.name || '')).trim().toLowerCase() === n) return { p, v };
+                }
+            }
+            return null;
+        }
+
 //@fn poFindProduct
 function poFindProduct(code, name) {
             // Same matching rule as Restock: a code is unambiguous and wins; only with no code
@@ -13091,6 +13805,21 @@ function poFindProduct(code, name) {
             if (c) return stocked.find(p => String(p.code || '').toLowerCase() === c) || null;
             if (n) return stocked.find(p => String(p.name || '').trim().toLowerCase() === n) || null;
             return null;
+        }
+
+//@fn poVariantParent
+function poVariantParent(code, name) {
+            // zip 354: a line that names an item WITH variants but not one of its variants has nowhere to put the stock (the parent's own quantity is only
+            // the sum of its variants and the next sync resets it), so the order said "received" while no variant gained a single unit. Returns that parent.
+            if (poFindVariant(code, name)) return null;
+            const p = poFindProduct(code, name);
+            return p && p.hasVariants && Array.isArray(p.variants) && p.variants.length > 0 ? p : null;
+        }
+
+//@fn poVariantParentMsg
+function poVariantParentMsg(p) {
+            const list = (p.variants || []).filter(Boolean).map((v) => p.name + ' \u00b7 ' + v.name).join(', ');
+            return `"${p.name}" has variants — pick the exact one on this line (${list}) instead of "${p.name}".`;
         }
 
 //@fn poSave
@@ -13127,7 +13856,9 @@ function poRefreshFormLists() {
             const il = document.getElementById('po-item-names');
             if (il) {
                 il.innerHTML = inventory.filter(p => p.type !== 'service')
-                    .map(p => `<option value="${escapeHtml(p.name)}">`).join('');
+                    .map(p => (p.hasVariants && Array.isArray(p.variants) && p.variants.length
+                        ? p.variants.filter(v => v).map(v => `<option value="${escapeHtml(p.name + ' \u00b7 ' + v.name)}">`).join('')
+                        : `<option value="${escapeHtml(p.name)}">`)).join('');
             }
         }
 
@@ -13318,6 +14049,7 @@ function poSaveOrder(sendAfter) {
                 // A row nobody touched isn't an error — the form always keeps one spare row.
                 if (!name && !code && r.qty.trim() === '' && String(r.cost).trim() === '' && r.retail === '' && r.wholesale === '') continue;
                 if (!label) return fail('Every line needs an item name or code.');
+                { const vp = poVariantParent(code, name); if (vp) return fail(poVariantParentMsg(vp)); }   // zip 354
                 const qty = parseQtyInput(r.qty);
                 if (!(qty > 0)) return fail(`Enter a quantity for "${label}".`);
                 const cost = parseFloat(r.cost);
@@ -13670,13 +14402,23 @@ function poApplyArrivedLine(order, item, qty) {
             const retail = item.retailPrice == null ? NaN : Number(item.retailPrice);
             const wholesale = item.wholesalePrice == null ? NaN : Number(item.wholesalePrice);
             const reason = `Order ${order.orderNo} received`;
+            const vh = poFindVariant(code, name);
+            if (vh) {
+                logStockMovement(vh.v.code != null && vh.v.code !== '' ? vh.v.code : vh.p.code, vh.p.name + ' ' + vh.v.name, qty, reason);   // zip 354: the SERVER keeps a variant's stock under the VARIANT's code; a movement under the parent's code was ignored ('variant-parent') and the purchase vanished on the next sync
+                vh.v.qty = stockRound3((Number(vh.v.qty) || 0) + qty);
+                vh.p.qty = stockRound3(vh.p.variants.reduce((a, x) => a + (Number(x && x.qty) || 0), 0));
+                if (cost > 0) vh.v.wholesalePrice = cost;
+                if (retail > 0) vh.v.price = retail;
+                if (wholesale > 0) vh.v.wholesaleSellingPrice = wholesale;
+                return { created: false };
+            }
             const product = poFindProduct(code, name);
             if (product) {
                 logStockMovement(product.code, product.name, qty, reason);
                 // An app whose stock model needs more than `qty +=` (e.g. Pharmacy's batches) defines
                 // poCustomStockIn locally and returns true once it has added the stock itself.
                 const oldQtyForCost = Number(product.qty) || 0;
-                const handled = (typeof poCustomStockIn === 'function') && poCustomStockIn(product, qty);
+                const handled = (typeof poCustomStockIn === 'function') && poCustomStockIn(product, qty, { cost: cost > 0 ? cost : null, ref: order.orderNo || null, supplier: order.supplierName || order.supplier || null });   // zip 336: the line's cost goes onto the new batch
                 if (!handled) product.qty = stockRound3((Number(product.qty) || 0) + qty);
                 if (typeof msApplyArrivedCost === 'function') msApplyArrivedCost(product, oldQtyForCost, qty, cost); else product.wholesalePrice = cost;   // zip 163: weighted average
                 if (retail > 0) product.price = retail;
@@ -13719,7 +14461,11 @@ function poConfirmArrival() {
                 picks.push({ item: it, qty });
             }
             if (picks.length === 0) { msgEl.textContent = 'Tick at least one item that has arrived.'; return; }
+            // zip 354: nothing is added (and the order stays open) while a line points at an item that has variants but names none of them
+            for (const pk of picks) { const vp = poVariantParent(pk.item.code, pk.item.name); if (vp) { msgEl.textContent = poVariantParentMsg(vp) + ' Edit is locked once received, so cancel this order and make a new one.'; return; } }
 
+            // zip 292: an item that tracks a unique identifier per unit needs its identifiers BEFORE its stock is added (inventory-pro asks for them and runs this again)
+            if (typeof window !== 'undefined' && typeof window.serialPurchaseGate === 'function' && window.serialPurchaseGate(o, picks) === false) return;
             st.arriveBusy = true;   // a double-tap must never add the stock twice
             const recordExpense = document.getElementById('po-arrive-expense-check').checked;
             let total = 0, newProducts = 0;
@@ -13727,6 +14473,7 @@ function poConfirmArrival() {
             try {
                 picks.forEach(({ item, qty }) => {
                     const r = poApplyArrivedLine(o, item, qty);
+                    try { if (typeof window.serialPurchaseApply === 'function') window.serialPurchaseApply(o, item, qty); } catch (e2) { console.error('serial purchase apply', e2); }
                     if (r.created) newProducts++;
                     item.receivedQty = poRound3((Number(item.receivedQty) || 0) + qty);
                     total += qty * (Number(item.cost) || 0);
@@ -13754,14 +14501,17 @@ function poConfirmArrival() {
 
             safeSetItem('pos_inventory', JSON.stringify(inventory));
             if (recordExpense && total > 0) {
-                expenses.push({
+                const poExp = {
                     id: genSaleId(),
                     timestamp: nowIso,
                     category: 'Restock',
                     description: `Order ${o.orderNo}${o.supplierName ? ' from ' + o.supplierName : ''} — ${applied.length} item${applied.length === 1 ? '' : 's'} received`,
                     amount: total,
                     auto: true,
-                });
+                };
+                // zip 292: paid out of the cash drawer -> exactly ONE cash movement, linked to this expense (ref = expense id), never a second one on a retry
+                try { if (typeof window.cashPurchasePaid === 'function') { const mv = window.cashPurchasePaid(poExp, o); if (mv) poExp.cashMovementId = mv; } } catch (e3) { console.error('cash purchase link', e3); }
+                expenses.push(poExp);
                 saveExpenses();
             }
             poSave();   // also queues the sync push that carries the inventory + stock-movement changes
@@ -13795,7 +14545,7 @@ function attendanceRosterList() {
             // Roster entries are the extra non-POS people added in Settings.
             const fromStaff = staff.filter(s => !s.removed).map(s => ({ key: `staff:${s.id}`, name: s.name, hasPin: false }));
             const fromRoster = attendanceRoster.map(r => ({ key: `roster:${r.id}`, name: r.name, hasPin: !!r.pin }));
-            return [...fromStaff, ...fromRoster].sort((a, b) => a.name.localeCompare(b.name));
+            return [...fromStaff, ...fromRoster].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
         }
 
 //@fn buildBillOwedMessage
@@ -13824,7 +14574,8 @@ function buildReceiptEscPosBytes(headerText, itemsText, footerText) {
             const headerChunks = headerLines.map((line, i) => i === 0 ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
             const itemLines = itemsText.replace(/\r/g, '').split('\n');
-            const itemChunks = itemLines.map(line => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
+            const bigF = receiptBigTotalFlags(itemLines, getPaperCols());          // the grand TOTAL prints big and bold (double size)
+            const itemChunks = itemLines.map((line, i) => bigF[i] ? receiptBigLineBytes(line) : (receiptIsBoldItemLine(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line)));
 
             const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
             const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;   // zip 155: the stamp, above the item lines
@@ -13868,6 +14619,8 @@ function collapseTabsIfNeeded() {
             const moreBtn = document.getElementById('tabs-more-btn');
             const moreMenu = document.getElementById('tabs-more-menu');
             if (!nav || !moreBtn || !moreMenu || TAB_MASTER_ORDER.length === 0) return;
+            // the side menu is in use: the old top bar is parked off-screen, so there is nothing to measure or re-order
+            if (document.body && document.body.classList.contains('snav-on')) return;
 
             // Reset first: every tab button back into the nav bar, in master order,
             // before measuring anything. This is what makes a fresh measurement
@@ -13893,8 +14646,11 @@ function collapseTabsIfNeeded() {
             // pixels past the edge of a phone (zip 125).
             const MORE_BTN_WIDTH = moreBtn.offsetWidth ? moreBtn.offsetWidth + 8 : 100;
             // The bar's own side padding is not room for tabs (counting it let "More" stick out past the edge of a phone). (zip 125)
-            const navCs = getComputedStyle(nav);
-            const available = nav.clientWidth - (parseFloat(navCs.paddingLeft) || 0) - (parseFloat(navCs.paddingRight) || 0) - 2;
+            // zip 316: the bar's side padding only changes with the screen width (its media queries) - asked once per width, not on every
+            // redraw (a full style computation each time; seconds at start-up on a slow device).
+            let pad = window.__navPadCache;
+            if (!pad || pad.w !== window.innerWidth || pad.nav !== nav) { const navCs = getComputedStyle(nav); pad = window.__navPadCache = { w: window.innerWidth, nav, l: parseFloat(navCs.paddingLeft) || 0, r: parseFloat(navCs.paddingRight) || 0 }; }
+            const available = nav.clientWidth - pad.l - pad.r - 2;
 
             // Greedy fit in master (declared) order.
             let used = 0;
@@ -14262,7 +15018,6 @@ function levenshteinDistance(a, b) {
 
 //@fn loadStoreLog
 async function loadStoreLog(forceRefresh) {
-            if (!myBranchGroupId) return [];
             if (!forceRefresh && storeLogCache.length > 0) return storeLogCache;
             try {
                 const res = await fetch(apiUrl('/api/store'), {
@@ -14488,7 +15243,7 @@ async function printStoreReport() {
             const filtered = (q
                 ? items.filter(it => it.name.toLowerCase().includes(q) || _codeMatches(it.code, q))
                 : items
-            ).slice().sort((a, b) => a.name.localeCompare(b.name));
+            ).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
 
             const rows = filtered.length === 0
                 ? `<tr><td colspan="4" class="empty-state">The store is empty.</td></tr>`
@@ -14851,7 +15606,7 @@ function salesTablePeriodRange() {
         }
 
 //@fn saveRecordBillModal
-function saveRecordBillModal() {
+async function saveRecordBillModal() {
             const errEl = document.getElementById('record-bill-error');
             const customerName = (document.getElementById('record-bill-customer-name').value || '').trim();
             const phoneRaw = (document.getElementById('record-bill-phone').value || '').trim();
@@ -14861,13 +15616,29 @@ function saveRecordBillModal() {
             const upfront = parseFloat(document.getElementById('record-bill-upfront').value) || 0;
             const upfrontMethod = document.getElementById('record-bill-upfront-method').value;
 
+            const idRaw = (document.getElementById('record-bill-id') ? document.getElementById('record-bill-id').value : '').trim();
+            errEl.textContent = '';
             if (!customerName) { errEl.textContent = 'Enter a customer name.'; return; }
+            // zip 328: a bill needs the customer's name AND phone number (the ID number is optional)
+            if (!phoneRaw) { errEl.textContent = "Enter the customer's phone number - a bill needs it."; return; }
+            if (!custPhoneValid(phoneRaw)) { errEl.textContent = 'That phone number does not look right - use a Kenyan number like 0712345678 or +254712345678.'; return; }
+            if (idRaw && !custIdKey(idRaw)) { errEl.textContent = 'The ID number looks too short.'; return; }
             if (!description) { errEl.textContent = "Describe what this bill is for."; return; }
             if (!(amount > 0)) { errEl.textContent = 'Enter a total amount greater than 0.'; return; }
             if (upfront < 0) { errEl.textContent = "Amount paid now can't be negative."; return; }
             if (upfront > amount + 0.004) { errEl.textContent = "Amount paid now can't be more than the total."; return; }
 
             const phone = phoneRaw ? normalizeKenyanPhone(phoneRaw) : null;
+            // the ONE customer profile (a phone / ID that belongs to a different saved person is asked about, never guessed)
+            let choice = null;
+            if (typeof window.custChooseDialog === 'function') {
+                const probe = upsertCustomer({ name: customerName, phone: phoneRaw, idNumber: idRaw }, { create: false });
+                if (probe.status === 'ambiguous') {
+                    choice = await window.custChooseDialog(probe.candidates, probe.reason, { name: customerName, phone: phoneRaw, idNumber: idRaw });
+                    if (choice === null) return;
+                }
+            }
+            const profile = upsertCustomer({ name: customerName, phone: phoneRaw, idNumber: idRaw }, choice ? { choice } : { onConflict: 'reuse' }).customer || null;
             const now = new Date().toISOString();
             const bill = {
                 id: genSaleId(),
@@ -14876,6 +15647,8 @@ function saveRecordBillModal() {
                 servedBy: activeServerName(),
                 customerName,
                 customerPhone: phone,
+                customerId: profile ? profile.id : undefined,
+                customerIdNumber: idRaw || (profile && profile.idNumber) || undefined,
                 items: [{ code: 'MANUAL', name: description, qty: 1, price: amount, unit: 'pcs', wholesalePrice: 0, isService: false, vatCategory: 'A' }],
                 amountPaid: upfront,
                 dueDate: dueDate || null,
@@ -14892,7 +15665,6 @@ function saveRecordBillModal() {
             bills.push(bill);
             safeSetItem('pos_bills', JSON.stringify(bills));
             createBillNotification('new_bill', bill);
-            if (phone) registerOrUpdateCustomer(phone, customerName);
 
             // Same "money collected right now is real revenue" pattern
             // checkoutCart() uses for its own bill-upfront payment — a
@@ -14906,6 +15678,8 @@ function saveRecordBillModal() {
                     paymentMethod: upfrontMethod,
                     servedBy: activeServerName(),
                     customerName,
+                    customerId: profile ? profile.id : undefined,
+                    customerPhone: phone || undefined,
                     items: [{ name: `Partial payment — Bill (${customerName})`, price: upfront, qty: 1, unit: 'payment', wholesalePrice: 0, isService: true, vatCategory: 'A' }],
                     cashAmount: upfrontMethod === 'cash' ? upfront : 0,
                     mpesaAmount: upfrontMethod === 'mpesa' ? upfront : 0,
@@ -16716,21 +17490,80 @@ function assignCustomerNo(sale) {
             return sale.customerNo;
         }
 
+//@fn applyScannedCodeToInventory
+function applyScannedCodeToInventory(code) {
+            // zip 371: a barcode scanned (or typed + Enter) while the Inventory list is open searches the inventory for it - the item's code,
+            // barcode, piece code, or any variant's code / barcode - instead of ringing it up on the Sales Counter.
+            const c = String(code == null ? '' : code).trim();
+            if (!c) return;
+            const box = document.getElementById('inventory-search-input');
+            if (box) box.value = c;
+            window._invPage = 1;
+            try { if (typeof toggleInventorySearchClear === 'function') toggleInventorySearchClear(); } catch (e) { /* cosmetic */ }
+            try { clearTimeout(window._invSearchDebounce); } catch (e) { /* none */ }
+            if (typeof renderInventoryTable === 'function') renderInventoryTable();
+            const hits = ((typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : []).filter((p) => p && !p.removed && !p._deleted && (typeof posSearchHit === 'function' ? posSearchHit(p, c) : String(p.code || '').toLowerCase() === c.toLowerCase()));
+            if (hits.length === 1) showToast(`Found: ${hits[0].name}`);
+            else if (hits.length > 1) showToast(`${hits.length} items match "${c}"`);
+            else showToast(`No item with code "${c}" in your inventory. Add it from 📦 Add New Items.`, true);
+            try { if (box && box.scrollIntoView) box.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic */ }
+        }
+
+//@fn stockUnitAvg
+function stockUnitAvg(p) {
+            // zip 371: what ONE unit of an item is worth (cost / retail / wholesale). A plain item: its own prices. An item WITH VARIANTS: the average of its
+            // variants weighted by how many of each are in stock, so quantity x this = the sum of every variant's own quantity x its own price. (The
+            // dashboard and the stock reports used the parent's one price, which is wrong when "Large" and "Small" cost different amounts.)
+            const base = { cost: Number(p && p.wholesalePrice) || 0, retail: Number(p && p.price) || 0, wholesale: Number(p && p.wholesaleSellingPrice) || Number(p && p.price) || 0 };
+            if (!p || !p.hasVariants || !Array.isArray(p.variants)) return base;
+            const vs = p.variants.filter((v) => v && !v._deleted);
+            if (!vs.length) return base;
+            let q = 0, c = 0, r = 0, w = 0, n = 0, c2 = 0, r2 = 0, w2 = 0;
+            vs.forEach((v) => {
+                const cost = Number(v.wholesalePrice) > 0 ? Number(v.wholesalePrice) : base.cost, retail = Number(v.price) > 0 ? Number(v.price) : base.retail,
+                    whole = Number(v.wholesaleSellingPrice) > 0 ? Number(v.wholesaleSellingPrice) : (Number(v.price) > 0 ? Number(v.price) : base.wholesale), qty = Math.max(0, Number(v.qty) || 0);
+                q += qty; c += qty * cost; r += qty * retail; w += qty * whole; n++; c2 += cost; r2 += retail; w2 += whole;
+            });
+            return q > 0 ? { cost: c / q, retail: r / q, wholesale: w / q } : { cost: c2 / n, retail: r2 / n, wholesale: w2 / n };
+        }
+
 //@fn itemSuggestMatches
-function itemSuggestMatches(query) {
-            const q = String(query || '').trim().toLowerCase();
-            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
-            let list;
-            if (!q) list = stock.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
-            else {
-                const starts = [], has = [];
-                stock.forEach((p) => {
-                    const n = String(p.name || '').toLowerCase(), c = String(p.code || '').toLowerCase();
-                    if (n.startsWith(q) || c === q) starts.push(p); else if (n.includes(q) || c.includes(q)) has.push(p);
-                });
-                list = starts.concat(has);
-            }
-            return list.slice(0, 30);
+function itemSuggestMatches(query, kind) {
+            // zip 371: ONE flat list of what can be restocked. An item that has variants is listed AS ITS VARIANTS ("Socks (Large)"), each with its own
+            // code, because a delivery is restocked per variant. Typing matches the name, code, SKU, barcode of the item AND of its variants; several
+            // words match in any order ("large socks", "socks lrg" is not a match but "socks l" is), with or without spaces / dashes.
+            const wantVariants = kind !== 'po';
+            const entries = [];
+            (Array.isArray(inventory) ? inventory : []).forEach((p) => {
+                if (!p || p.type === 'service' || p.removed || p._deleted) return;
+                const vs = wantVariants && p.hasVariants && Array.isArray(p.variants) ? p.variants.filter((v) => v && !v._deleted && v.code != null && String(v.code) !== '') : [];
+                if (vs.length) {
+                    vs.forEach((v) => entries.push({ item: p, variant: v, code: String(v.code), name: `${p.name} (${v.name})`, unit: p.unit || 'pcs', qty: Number(v.qty) || 0,
+                        cost: Number(v.wholesalePrice) > 0 ? Number(v.wholesalePrice) : (Number(p.wholesalePrice) > 0 ? Number(p.wholesalePrice) : 0),
+                        fields: [p.name, p.code, p.sku, p.barcode, v.name, v.code, v.sku, v.barcode, v.pieceCode] }));
+                } else {
+                    entries.push({ item: p, variant: null, code: String(p.code || ''), name: String(p.name || ''), unit: p.unit || 'pcs', qty: Number(p.qty) || 0,
+                        cost: Number(p.wholesalePrice) > 0 ? Number(p.wholesalePrice) : 0, fields: [p.name, p.code, p.pieceCode, p.sku, p.barcode, p.pieceBarcode] });
+                }
+            });
+            const q = searchNorm(query);
+            if (!q) return entries.sort((a, b) => String(a.name).localeCompare(String(b.name))).slice(0, 40);
+            const squash = (t) => t.replace(/[^a-z0-9]/g, '');
+            const qs = squash(q), words = q.split(' ').filter(Boolean);
+            const scored = [];
+            entries.forEach((e) => {
+                const norm = e.fields.filter((f) => f != null && f !== '').map(searchNorm).filter(Boolean);
+                const hay = norm.join(' '), comp = norm.map(squash);
+                const nm = searchNorm(e.name), cd = searchNorm(e.code);
+                let sc = -1;
+                if (cd === q || comp.some((c) => c === qs && qs)) sc = 0;
+                else if (nm.startsWith(q)) sc = 1;
+                else if ((' ' + nm).includes(' ' + q)) sc = 2;
+                else if (hay.includes(q) || (qs && comp.some((c) => c.includes(qs)))) sc = 3;
+                else if (words.length > 1 && words.every((w) => hay.includes(w) || (squash(w) && comp.some((c) => c.includes(squash(w)))))) sc = 4;
+                if (sc >= 0) scored.push({ e, sc });
+            });
+            return scored.sort((a, b) => a.sc - b.sc || String(a.e.name).localeCompare(String(b.e.name))).map((x) => x.e).slice(0, 40);
         }
 
 //@fn itemSuggestBox
@@ -16751,17 +17584,23 @@ function itemSuggestBox() {
 
 //@fn itemSuggestShow
 function itemSuggestShow(input) {
-            // A drop-down under the "item name" box of a restock / order line: it lists what you stock as you type. Pick one to fill in its code, unit
-            // and last cost; or just keep typing a name that is not in the list — it is a new item.
+            // A drop-down under the "item name" box of a restock / order / purchase line: it lists what you stock (variants too) as you type. Pick one
+            // to fill in its code, unit and last cost; or just keep typing a name that is not in the list - it is a new item.
             const box = itemSuggestBox();
             const kind = input.dataset.suggest, rowId = Number(input.dataset.row);
-            const list = itemSuggestMatches(input.value);
+            const list = itemSuggestMatches(input.value, kind);
             const typed = input.value.trim();
-            const exact = typed && list.some((p) => String(p.name || '').trim().toLowerCase() === typed.toLowerCase());
-            box.dataset.kind = kind; box.dataset.row = String(rowId); box._input = input; box._idx = -1;
-            box.innerHTML = list.map((p, i) => `<div class="is-opt" data-code="${escapeHtml(p.code)}" data-i="${i}"><strong>${escapeHtml(p.name)}</strong><div class="is-sub">${escapeHtml(p.code || '')} · in stock ${formatQtyDisplay(p.qty || 0, p.unit || 'pcs')}${Number(p.wholesalePrice) > 0 ? ` · last cost KES ${Number(p.wholesalePrice).toLocaleString('en-US')}` : ''}</div></div>`).join('')
+            const exact = typed && list.some((e) => String(e.name || '').trim().toLowerCase() === typed.toLowerCase() || String(e.code || '').toLowerCase() === typed.toLowerCase());
+            box.dataset.kind = kind; box.dataset.row = String(rowId); box._input = input; box._idx = -1; box._list = list;
+            box.innerHTML = list.map((e, i) => `<div class="is-opt" data-i="${i}"><strong>${escapeHtml(e.name)}</strong><div class="is-sub">${escapeHtml(e.code || '')} · in stock ${formatQtyDisplay(e.qty || 0, e.unit || 'pcs')}${e.cost > 0 ? ` · last cost KES ${Number(e.cost).toLocaleString('en-US')}` : ''}</div></div>`).join('')
                 + (typed && !exact ? `<div class="is-new">➕ “${escapeHtml(typed)}” is not in your inventory — keep typing to add it as a new item</div>` : '');
             if (!list.length && !typed) { box.style.display = 'none'; return; }
+            itemSuggestPlace(box, input);
+            box.style.display = 'block';
+        }
+
+//@fn itemSuggestPlace
+function itemSuggestPlace(box, input) {
             const r = input.getBoundingClientRect();
             const w = Math.max(r.width, 260);
             box.style.left = Math.max(4, Math.min(r.left, (window.innerWidth || 800) - w - 4)) + 'px';
@@ -16769,7 +17608,6 @@ function itemSuggestShow(input) {
             const below = (window.innerHeight || 700) - r.bottom;
             if (below < 200 && r.top > below) { box.style.top = 'auto'; box.style.bottom = ((window.innerHeight || 700) - r.top + 2) + 'px'; }
             else { box.style.bottom = 'auto'; box.style.top = (r.bottom + 2) + 'px'; }
-            box.style.display = 'block';
         }
 
 //@fn itemSuggestHide
@@ -16779,29 +17617,37 @@ function itemSuggestHide() {
         }
 
 //@fn itemSuggestPick
-function itemSuggestPick(kind, rowId, code) {
-            const p = inventory.find((x) => x.code === code);
-            if (!p) return;
+function itemSuggestPick(kind, rowId, which) {
+            // `which` is the position in the list that is showing (a number) - the exact entry the person tapped, whatever its code is.
+            const box = document.getElementById('item-suggest-box');
+            const e = typeof which === 'number' ? (box && box._list ? box._list[which] : null) : null;
+            if (!e) return;
+            // ROOT CAUSE of "I have to tap twice and only a few letters stay" (zip 371): the page's input guard puts back the text of the box being typed in
+            // whenever the page redraws around it - and a pick on touch / mouse-down is not one of the "person pressed something" moments it leaves alone.
+            // So the box is let go of FIRST; then the redraw really shows the full name.
+            try { if (box && box._input && box._input.blur) box._input.blur(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (er) { /* cosmetic */ }
             let focusEl = null;
             if (kind === 'po') {
                 const row = poState().draft.find((r) => r.rowId === rowId);
                 if (!row) return;
-                row.name = p.name; row.code = p.code || ''; row.autoCode = row.code; row.unit = p.unit || 'pcs';
-                if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                row.name = e.name; row.code = e.code || ''; row.autoCode = row.code; row.unit = e.unit || 'pcs';
+                if (e.cost > 0) row.cost = String(e.cost);
                 poRenderRows();
                 focusEl = document.getElementById(`po-row-${rowId}-qty`);
+            } else if (window.itemSuggestHooks && typeof window.itemSuggestHooks[kind] === 'function') {
+                focusEl = window.itemSuggestHooks[kind](e, rowId) || null;     // another screen (the Purchases tab) fills its own line
             } else {
                 const row = restockDraft.find((r) => r.rowId === rowId);
                 if (!row) return;
-                Object.assign(row, { code: p.code || '', name: p.name, unit: p.unit || 'pcs' });
-                if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                Object.assign(row, { code: e.code || '', name: e.name, unit: e.unit || 'pcs' });
+                if (e.cost > 0) row.cost = String(e.cost);
                 renderRestockRows();
                 const tr = document.querySelectorAll('#restock-rows-tbody tr')[restockDraft.indexOf(row)];
                 focusEl = tr ? tr.querySelector('input[inputmode="decimal"]') : null;
             }
             itemSuggestHide();
-            if (focusEl) { try { focusEl.focus(); if (focusEl.select) focusEl.select(); } catch (e) { /* cosmetic */ } }
-            if (typeof renderLowStockStrip === 'function') { try { renderLowStockStrip(kind); } catch (e) { /* extra */ } }
+            if (focusEl) { try { focusEl.focus(); if (focusEl.select) focusEl.select(); } catch (er) { /* cosmetic */ } }
+            if (typeof renderLowStockStrip === 'function') { try { renderLowStockStrip(kind); } catch (er) { /* extra */ } }
         }
 
 //@fn itemSuggestInstall
@@ -16823,20 +17669,34 @@ function itemSuggestInstall() {
                     e.preventDefault();
                 } else if (e.key === 'Enter' && box._idx >= 0 && opts[box._idx]) {
                     e.preventDefault();
-                    itemSuggestPick(box.dataset.kind, Number(box.dataset.row), opts[box._idx].dataset.code);
+                    itemSuggestPick(box.dataset.kind, Number(box.dataset.row), Number(opts[box._idx].dataset.i));
                 } else if (e.key === 'Escape' || e.key === 'Tab') itemSuggestHide();
             }, true);
-            const pick = (e) => {
-                const opt = e.target.closest && e.target.closest('#item-suggest-box .is-opt');
-                if (!opt) return;
+            // zip 371: ONE tap picks, on a phone as well. Before, the pick ran on touchstart (so a scroll of the list picked by accident) and ANY page
+            // scroll - which the phone keyboard opening causes - hid the list, so the first tap hit nothing and only a few letters stayed. Now: a tap
+            // (finger moved less than 10 px) picks; a drag just scrolls the list; the page moving only moves the list with the box.
+            let tap = null, lastTouch = 0;
+            const optOf = (e) => e.target && e.target.closest ? e.target.closest('#item-suggest-box .is-opt') : null;
+            const doPick = (opt) => { const box = document.getElementById('item-suggest-box'); if (box && opt) itemSuggestPick(box.dataset.kind, Number(box.dataset.row), Number(opt.dataset.i)); };
+            document.addEventListener('touchstart', (e) => { const o = optOf(e); const t = e.touches && e.touches[0]; tap = o && t ? { o, x: t.clientX, y: t.clientY } : null; }, { capture: true, passive: true });
+            document.addEventListener('touchend', (e) => {
+                if (!tap) return; const t = e.changedTouches && e.changedTouches[0]; const o = tap.o; const moved = t ? Math.abs(t.clientX - tap.x) + Math.abs(t.clientY - tap.y) : 0; tap = null;
+                if (moved < 10) { lastTouch = Date.now(); e.preventDefault(); doPick(o); }
+            }, { capture: true, passive: false });
+            document.addEventListener('mousedown', (e) => {
+                const o = optOf(e); if (!o) return;
                 e.preventDefault();                                            // keep the typing box focused until the pick lands
-                const box = document.getElementById('item-suggest-box');
-                itemSuggestPick(box.dataset.kind, Number(box.dataset.row), opt.dataset.code);
-            };
-            document.addEventListener('mousedown', pick, true);
-            document.addEventListener('touchstart', pick, { capture: true, passive: false });
+                if (Date.now() - lastTouch < 700) return;                      // the phone's copy of a tap that was already picked
+                doPick(o);
+            }, true);
             document.addEventListener('click', (e) => { if (!isField(e.target) && !(e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
-            window.addEventListener('scroll', (e) => { if (!(e.target && e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
+            window.addEventListener('scroll', (e) => {
+                const box = document.getElementById('item-suggest-box');
+                if (!box || box.style.display === 'none') return;
+                if (e.target && e.target.closest && e.target.closest('#item-suggest-box')) return;
+                if (box._input && document.activeElement === box._input && document.body.contains(box._input)) itemSuggestPlace(box, box._input);   // the box follows its field
+                else itemSuggestHide();
+            }, true);
             // Width changes only: on phones the keyboard opening and the address bar sliding away both fire 'resize' (zip 122).
             let lastW = window.innerWidth;
             window.addEventListener('resize', () => { if (window.innerWidth !== lastW) { lastW = window.innerWidth; itemSuggestHide(); } });
@@ -16927,16 +17787,80 @@ function reportSaleTotal(s) {
             return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it.price) || 0) * (Number(it.qty) || 0), 0) + fee;
         }
 
+//@fn wholeShillingCart
+function wholeShillingCart() {
+            // zip 392: money is whole shillings. A decimal quantity (0.75 l of paraffin at 155, 1.5 m of cloth) makes a line worth 116.25;
+            // that line is charged to the nearest shilling (116) by setting its unit price to amount / qty, so qty x price is a whole number on
+            // the receipt, the reports and the server. The price the line started from is kept (_wsBase) and used again when the quantity
+            // or price changes, so 1 l is back to exactly 155. The item's own price in Inventory is never touched.
+            try {
+                if (typeof currentCart !== 'object' || !currentCart) return;
+                Object.keys(currentCart).forEach((k) => {
+                    const l = currentCart[k];
+                    if (!l || typeof l !== 'object') return;
+                    const ours = l._wsAdj != null && Math.abs(Number(l.price) - Number(l._wsAdj)) < 1e-9;
+                    const base = ours ? Number(l._wsBase) : Number(l.price);
+                    const q = Number(l.qty) || 0;
+                    if (!isFinite(base)) return;
+                    const amt = q * base;
+                    if (!q || Math.abs(amt - Math.round(amt)) < 1e-6) {
+                        if (ours) l.price = base;
+                        delete l._wsAdj; delete l._wsBase;
+                        return;
+                    }
+                    const adj = Math.round(amt) / q;
+                    l._wsBase = base; l._wsAdj = adj; l.price = adj;
+                });
+            } catch (e) { /* never block the cart */ }
+        }
+
+//@fn shrinkImageDataUrl
+function shrinkImageDataUrl(dataUrl, maxSide, quality) {
+            // zip 396: a phone photo (3-8 MB) is shrunk to at most maxSide px on its longest side as a JPEG before it is sent for reading:
+            // far faster to upload and to read, and still sharp enough for an invoice or a handwritten list. Anything that fails -> the original.
+            return new Promise((resolve) => {
+                try {
+                    if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image') !== 0) { resolve(dataUrl); return; }
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            const max = maxSide || 1600, w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+                            if (!w || !h) { resolve(dataUrl); return; }
+                            const k = Math.min(1, max / Math.max(w, h));
+                            if (k === 1 && dataUrl.length < 1500000) { resolve(dataUrl); return; }
+                            const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+                            const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+                            const out = c.toDataURL('image/jpeg', quality || 0.85);
+                            resolve(out && out.length < dataUrl.length ? out : dataUrl);
+                        } catch (e) { resolve(dataUrl); }
+                    };
+                    img.onerror = () => resolve(dataUrl);
+                    img.src = dataUrl;
+                } catch (e) { resolve(dataUrl); }
+            });
+        }
+
+//@fn moneyLineCost
+function moneyLineCost(it, sale) {
+            // zip 390: THE cost of goods of one sale line, used by every screen (Profits, Dashboard, Reports, X / Z, Price List, Accounts' sales,
+            // the item tables). The cost is the one recorded on the line when it was sold (it never changes later because an item's buying price
+            // was edited), plus an approved cost correction that restates it (SE.lineFix). A payment line (bill payment, instalment) carries the
+            // cost of goods it pays for as `costShare`. An app with its own costing (water: refills, materials, a typed cost) keeps it: its
+            // itemCogs() gives the base cost. Before this, Profits, Dashboard and Reports each had their own rule and showed different profits.
+            if (!it) return 0;
+            const pay = it.unit === 'payment' || it.isPayment === true || it.type === 'payment';
+            let base;
+            if (typeof itemCogs === 'function') base = Number(itemCogs(it, sale)) || 0;
+            else if (pay) base = typeof it.costShare === 'number' && isFinite(it.costShare) ? it.costShare : 0;
+            else base = (Number(it.wholesalePrice) || 0) * (Number(it.qty) || 0);
+            const fix = (!pay && typeof window !== 'undefined' && window.SE && typeof window.SE.lineFix === 'function') ? (Number(window.SE.lineFix(it)) || 0) : 0;
+            return base + fix;
+        }
+
 //@fn reportSaleCost
 function reportSaleCost(s) {
-            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => {
-                // zip 185: a payment line (credit-bill sale, instalment) has no goods of its own, but the Shop may stamp the cost of goods this payment
-                // covers on it as a numeric `costShare` (KES, whole line). Counted when present; without it the line is skipped, exactly as before.
-                if (it.unit === 'payment' || it.isPayment) return typeof it.costShare === 'number' && isFinite(it.costShare) ? sum + it.costShare : sum;
-                let cost = Number(it.wholesalePrice);
-                if (!(cost > 0) && it.code != null) { const p = inventory.find((x) => x.code === it.code); cost = p ? Number(p.wholesalePrice) || 0 : 0; }
-                return sum + (cost || 0) * (Number(it.qty) || 0);
-            }, 0);
+            // zip 390: the sum of moneyLineCost over the sale's lines - the same figure on every screen
+            return (Array.isArray(s && s.items) ? s.items : []).reduce((sum, it) => sum + moneyLineCost(it, s), 0);
         }
 
 //@fn reportBarSvg
@@ -17157,12 +18081,16 @@ function reportBuildExpenses(range) {
             const revenue = sales.reduce((s, x) => s + reportSaleTotal(x), 0);
             const cogs = sales.reduce((s, x) => s + reportSaleCost(x), 0);
             const exp = (typeof expenses !== 'undefined' ? expenses : []).filter((e) => { if (!e || e.removed) return false; const t = new Date(e.timestamp || e.date); return t >= range.from && t <= range.to; });
-            const expTotal = exp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-            const cat = {}; exp.forEach((e) => { const k = e.category || 'Other'; cat[k] = (cat[k] || 0) + (Number(e.amount) || 0); });
+            // zip 321: stock bought (Restock, supplier payments) reaches profit through the cost of goods sold; it is listed but not taken off a second time
+            const stockBuys = exp.filter((e) => e.category === 'Restock').reduce((s, e) => s + (Number(e.amount) || 0), 0);
+            const expTotal = exp.filter((e) => e.category !== 'Restock').reduce((s, e) => s + (Number(e.amount) || 0), 0);
+            const cat = {}; exp.forEach((e) => { if (e.category === 'Restock') return; const k = e.category || 'Other'; cat[k] = (cat[k] || 0) + (Number(e.amount) || 0); });
             const gross = revenue - cogs, net = gross - expTotal;
+            const cd = (typeof CashDiff !== 'undefined' && CashDiff.between) ? CashDiff.between(range.from, range.to) : { surplus: 0, shortage: 0, net: 0, count: 0 };   // zip 376: counted cash surplus / shortage
+            const comm = (typeof StaffCommission !== 'undefined' && StaffCommission.between) ? StaffCommission.between(range.from, range.to).total : 0;   // zip 394: staff commission comes off profit
             const rows = Object.entries(cat).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, reportMoney(v), expTotal ? Math.round(v / expTotal * 100) + '%' : '0%']);
-            const html = reportCards([['Sales', reportMoney(revenue)], ['Cost of goods sold', reportMoney(cogs)], ['Gross profit', reportMoney(gross), revenue ? Math.round(gross / revenue * 100) + '% margin' : ''], ['Expenses', reportMoney(expTotal)], ['Net profit', reportMoney(net)]])
-                + '<p style="font-size:12px; color:#7f8c8d;">Cost of goods uses each line\u2019s buying price when recorded, otherwise the item\u2019s current buying price; lines without a buying price count as zero cost.</p>'
+            const html = reportCards([['Sales', reportMoney(revenue)], ['Cost of goods sold', reportMoney(cogs)], ['Gross profit', reportMoney(gross), revenue ? Math.round(gross / revenue * 100) + '% margin' : ''], ['Expenses', reportMoney(expTotal), 'excl. stock bought'], ['Stock bought', reportMoney(stockBuys), 'in cost of goods sold when sold'], ['Net profit', reportMoney(net)]].concat(cd.count ? [['Cash surplus', reportMoney(cd.surplus)], ['Cash shortage', reportMoney(cd.shortage)]] : []).concat(comm ? [['Staff commission', reportMoney(comm)]] : []).concat(cd.count || comm ? [['Final profit', reportMoney(net + cd.net - comm)]] : []))
+                + '<p style="font-size:12px; color:#7f8c8d;">Cost of goods uses the buying price recorded on each line when it was sold (plus any approved cost correction); a line sold without a buying price counts as zero cost.</p>'
                 + '<h4>Expenses by category</h4>' + reportTable(['Category', 'Amount', 'Share'], rows, { right: [1, 2] })
                 + '<h4>Expense list</h4>' + reportTable(['Date', 'Category', 'Description', 'Amount'], exp.slice().sort((a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)).map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', reportMoney(e.amount)]), { right: [3] });
             return { title: 'Expenses & Profit', html, csv: [['Date', 'Category', 'Description', 'Amount']].concat(exp.map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', Number(e.amount) || 0])) };
@@ -18078,6 +19006,8 @@ function ensureReceiptGridCss() {
                 // the apps set a proportional font on EVERY element (* { font-family: Segoe UI … }): the lines must take the grid's own
                 '.receipt-grid .rg-l{white-space:pre;min-height:1.28em;overflow:visible;font-family:inherit !important;font-size:inherit !important;line-height:inherit !important;letter-spacing:0 !important;}',
                 '.receipt-grid .rg-b{font-weight:700;}',
+                // the grand TOTAL: bold and twice the size (its row is laid out on half the columns, so it still fills the paper exactly)
+                '.receipt-grid .rg-l.rg-big{font-size:2em !important;font-weight:900;line-height:1.2 !important;min-height:1.2em;}',
                 '.receipt-grid-barcode{text-align:center;margin:6px 0 2px;}',
                 '.receipt-grid-barcode svg{max-width:100%;height:auto;}',
                 '#receipt-modal .receipt-paper,#kitchen-ticket-modal .receipt-paper{box-sizing:border-box;width:var(--rg-paper,80mm);padding-left:var(--rg-side,4mm);padding-right:var(--rg-side,4mm);}',
@@ -18113,21 +19043,27 @@ function receiptGridSafe(s) {
         }
 
 //@fn receiptGridLines
-function receiptGridLines(lines, align, cols) {
+function receiptGridLines(lines, align, cols, opts) {
             // The ONE line-layout step, shared by the preview, the system print dialog, the PDF and (through thermalPrepareText) the
             // USB / Bluetooth printers: every line is fitted to `cols` characters and wrapped at word boundaries, never inside a word or
             // a number, never leaving "KES" without its amount. Centre / right alignment is done with spaces, exactly as a printer does.
+            // opts.bigTotal: the grand-total rows (receiptBigTotalFlags) are left exactly as built - they are already half the columns wide and
+            // are drawn double size, so they are never aligned, re-fitted or wrapped.
             cols = cols || getPaperCols();
-            const out = [];
+            const flat = [];
             (Array.isArray(lines) ? lines : String(lines == null ? '' : lines).split('\n')).forEach((raw) => {
-                String(raw == null ? '' : raw).replace(/\r/g, '').split('\n').forEach((one) => {
-                    const fitted = thermalFitLegacyWidth(receiptGridSafe(one), cols);
-                    thermalWrapLine(fitted, cols).forEach((l) => {
-                        let t = l;
-                        if (align === 'center' && t.trim() && !/^-+$/.test(t.trim())) { t = t.trim(); t = ' '.repeat(Math.max(0, Math.floor((cols - t.length) / 2))) + t; }
-                        else if (align === 'right' && t.trim()) t = t.trim().padStart(cols);
-                        out.push(t);
-                    });
+                String(raw == null ? '' : raw).replace(/\r/g, '').split('\n').forEach((one) => flat.push(one));
+            });
+            const big = opts && opts.bigTotal ? receiptBigTotalFlags(flat, cols) : null;
+            const out = [];
+            flat.forEach((one, idx) => {
+                if (big && big[idx]) { out.push(receiptGridSafe(one).replace(/\s+$/, '')); return; }
+                const fitted = thermalFitLegacyWidth(receiptGridSafe(one), cols);
+                thermalWrapLine(fitted, cols).forEach((l) => {
+                    let t = l;
+                    if (align === 'center' && t.trim() && !/^-+$/.test(t.trim())) { t = t.trim(); t = ' '.repeat(Math.max(0, Math.floor((cols - t.length) / 2))) + t; }
+                    else if (align === 'right' && t.trim()) t = t.trim().padStart(cols);
+                    out.push(t);
                 });
             });
             return out;
@@ -18148,9 +19084,12 @@ function receiptGridHtml(blocks, opts) {
             (blocks || []).forEach((b) => {
                 if (!b) return;
                 if (typeof b.html === 'string') { html += b.html; return; }                       // zip 155: a picture (the receipt stamp) between the text blocks
-                receiptGridLines(b.lines || [], b.align || 'left', cols).forEach((l, i) => {
-                    const bold = typeof b.bold === 'function' ? !!b.bold(l, i) : false;
-                    html += `<div class="rg-l${bold ? ' rg-b' : ''}">${escapeHtml(l)}</div>`;
+                const gl = receiptGridLines(b.lines || [], b.align || 'left', cols, { bigTotal: !!b.bigTotal });
+                const bigF = b.bigTotal ? receiptBigTotalFlags(gl, cols) : null;
+                gl.forEach((l, i) => {
+                    const big = !!(bigF && bigF[i]);
+                    const bold = big || (typeof b.bold === 'function' ? !!b.bold(l, i) : false);
+                    html += `<div class="rg-l${bold ? ' rg-b' : ''}${big ? ' rg-big' : ''}">${escapeHtml(l)}</div>`;
                 });
             });
             html += '</div>';
@@ -18174,6 +19113,63 @@ function receiptMoneyRow(label, value, cols) {
             return [label, value.padStart(cols)];
         }
 
+//@fn receiptIsBoldItemLine
+function receiptIsBoldItemLine(l) {
+            // The rows of the item table that always print bold (column titles, TOTAL, the payment method).
+            return /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(String(l == null ? '' : l));
+        }
+
+//@fn receiptBigTotalRows
+function receiptBigTotalRows(label, value, cols, word) {
+            // The GRAND TOTAL of a receipt / bill in BIG BOLD letters (double width and height). Big letters take two columns each, so this row
+            // is laid out on HALF the paper's columns: "TOTAL ........ KES 1234.00" when that fits, otherwise the label and the amount on a line
+            // each. The PAID / UNPAID word stays with the label ("TOTAL - PAID") whenever that fits; only on a very narrow roll is it its own line below.
+            // null = too narrow for big letters, the caller keeps the normal row.
+            cols = cols || getPaperCols();
+            const half = Math.floor(cols / 2);
+            label = String(label); value = String(value);
+            if (!(half >= 8) || value.length > half || label.length > half) return null;
+            const row = (a, b) => a + ' '.repeat(Math.max(1, half - a.length - b.length)) + b;
+            const withWord = word ? label + ' - ' + word : label;
+            if (withWord.length + 1 + value.length <= half) return [row(withWord, value)];
+            if (word && withWord.length <= half) return [withWord, value.padStart(half)];          // "TOTAL - PAID" keeps its wording; the amount drops to the next big line
+            const out = [];
+            if (label.length + 1 + value.length <= half) out.push(row(label, value));
+            else { out.push(label); out.push(value.padStart(half)); }
+            if (word) out.push(String(word));
+            return out;
+        }
+
+//@fn receiptBigTotalFlags
+function receiptBigTotalFlags(lines, cols) {
+            // Which of these lines are the big grand-total rows (see receiptBigTotalRows): a TOTAL / DUE NOW / AMOUNT DUE TODAY line short enough
+            // to be doubled, and the amount line that follows a label-only total line. "TOTAL ITEMS: n" is not a total. One answer for every
+            // output (screen, system print, USB / Bluetooth text, picture print, PDF), so they all agree on which line is big.
+            const half = Math.floor((cols || getPaperCols()) / 2);
+            const arr = Array.isArray(lines) ? lines : String(lines == null ? '' : lines).split('\n');
+            const out = [];
+            let labelOnly = false;
+            arr.forEach((raw) => {
+                const t = String(raw == null ? '' : raw).replace(/\s+$/, '');
+                let big = false, next = false;
+                if (t.length <= half && /^\s*(?:TOTAL|AMOUNT DUE TODAY|DUE NOW)\b(?!\s+ITEMS)/.test(t)) { big = true; next = !/\d/.test(t); }
+                else if (labelOnly && t.length <= half && /^\s*KES\s+-?[\d,]+(?:\.\d+)?$/.test(t)) big = true;
+                out.push(big); labelOnly = next;
+            });
+            return out;
+        }
+
+//@fn receiptBigLineBytes
+function receiptBigLineBytes(str) {
+            // One line of ESC/POS text printed bold in double width + double height (GS ! 0x11), then back to normal. Never re-fitted or wrapped:
+            // the line was built at half the paper's columns so it fills the roll exactly once doubled.
+            const body = new TextEncoder().encode(thermalAscii(String(str == null ? '' : str)).replace(/\s+$/, '') + '\n');
+            const on = [0x1B, 0x45, 0x01, 0x1D, 0x21, 0x11], off = [0x1D, 0x21, 0x00];   // zip 379: bold is NOT switched off after the big TOTAL (dark print)
+            const out = new Uint8Array(on.length + body.length + off.length);
+            out.set(on, 0); out.set(body, on.length); out.set(off, on.length + body.length);
+            return out;
+        }
+
 //@fn printPaperWidthTest
 async function printPaperWidthTest() {
             // Prints two rulers straight to a USB / Bluetooth printer, with no fitting: the 32-character one always fits; if the
@@ -18182,7 +19178,7 @@ async function printPaperWidthTest() {
             const say = (t, err) => { if (msgEl) { msgEl.className = err ? 'settings-msg error' : 'settings-msg success'; msgEl.textContent = t; } else if (typeof showToast === 'function') showToast(t, !!err); };
             const r32 = '12345678901234567890123456789012', r42 = r32 + '3456789012', r48 = r32 + '3456789012345678';
             const text = ['PAPER WIDTH TEST', '', '32 characters:', r32, '', '42 characters:', r42, '', '48 characters:', r48, '', 'Last number you can read in full', 'on a line = your printer width.', 'Cut off or broken at 42? Set', 'Characters a line = 42 (or 32).', '', '', ''].join('\n');
-            const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, ...new TextEncoder().encode(text), 0x1D, 0x56, 0x42, 0x00]);
+            const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, 0x1B, 0x45, 0x01, 0x1B, 0x47, 0x01, ...new TextEncoder().encode(text), 0x1D, 0x56, 0x42, 0x00]);
             try {
                 if (printerMode === 'bluetooth' && typeof btPrinterCharacteristic !== 'undefined' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) { await sendBytesViaBluetooth(bytes); say('Test sent over Bluetooth — see the note on the paper.'); return; }
                 if (printerMode === 'usb' && typeof usbPrinterDevice !== 'undefined' && usbPrinterDevice && usbPrinterEndpoint !== null) { await sendBytesViaUSB(bytes); say('Test sent over USB — see the note on the paper.'); return; }
@@ -18727,7 +19723,12 @@ function customerLedgerBuild(customer, preset) {
             const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
             const ms = (x) => { const n = new Date(x).getTime(); return isFinite(n) ? n : 0; };
             const want = normalizeKenyanPhone(customer.phone);
-            const same = (p) => !!p && (p === customer.phone || (!!want && normalizeKenyanPhone(p) === want));
+            const alts = (Array.isArray(customer.altPhones) ? customer.altPhones : []).map((x) => normalizeKenyanPhone(x)).filter(Boolean);
+            const same = (p) => !!p && (p === customer.phone || (!!want && normalizeKenyanPhone(p) === want) || alts.indexOf(normalizeKenyanPhone(p)) >= 0);
+            // zip 328: a record linked to a customer id belongs to THAT customer (even when it carries another phone); one linked to someone else never matches by a shared phone
+            const cid = String(customer.id);
+            const linked = (r) => r && r.customerId != null && String(r.customerId) === cid;
+            const other = (r) => r && r.customerId != null && String(r.customerId) !== cid;
             const nameKey = String(customer.name || '').trim().toLowerCase();
             const BL = Array.isArray(typeof bills !== 'undefined' ? bills : null) ? bills : [];
             const SL = Array.isArray(typeof salesLog !== 'undefined' ? salesLog : null) ? salesLog : [];
@@ -18742,8 +19743,8 @@ function customerLedgerBuild(customer, preset) {
             const unlinked = [];
             BL.forEach((b) => {
                 if (!b || b._deleted) return;
-                const mine = same(b.customerPhone) || same(b.mpesaPhone);
-                if (!mine) { if (!(b.customerPhone || b.mpesaPhone) && nameKey && String(b.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('bill ' + (b.refNumber || b.id)); return; }
+                const mine = linked(b) || (!other(b) && (same(b.customerPhone) || same(b.mpesaPhone)));
+                if (!mine) { if (!other(b) && !(b.customerPhone || b.mpesaPhone) && nameKey && String(b.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('bill ' + (b.refNumber || b.id)); return; }
                 const total = billTotalOf(b), voided = !!b.voided, ref = b.refNumber || String(b.id);
                 const hist = (Array.isArray(b.paymentHistory) ? b.paymentHistory : []).filter((h) => h && Number(h.amount) > 0);
                 const histSum = r2(hist.reduce((s, h) => s + Number(h.amount), 0));
@@ -18758,7 +19759,7 @@ function customerLedgerBuild(customer, preset) {
             // ---- purchases (completed sales). Mirrors of bill payments are skipped (see above).
             const mySales = {};
             SL.forEach((s) => {
-                if (!s || s._deleted || !(same(s.customerPhone) || same(s.mpesaPhone))) return;
+                if (!s || s._deleted || !(linked(s) || (!other(s) && (same(s.customerPhone) || same(s.mpesaPhone))))) return;
                 if (s.billId != null || s.installment || billIds.has(String(s.id)) || (s.refNumber && billRefs.has(String(s.refNumber)))) { skippedMirrors++; return; }
                 const total = r2((s.cashAmount || 0) + (s.mpesaAmount || 0) + (s.cardAmount || 0));
                 if (s.refNumber) mySales[String(s.refNumber)] = s;
@@ -18767,7 +19768,7 @@ function customerLedgerBuild(customer, preset) {
             // ---- debts recorded on the account
             DL.forEach((d) => {
                 if (!d) return;
-                if (!same(d.phone)) { if (!d.phone && nameKey && String(d.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('debt ' + String(d.id).slice(-6)); return; }
+                if (!(linked(d) || (!other(d) && same(d.phone)))) { if (!other(d) && !d.phone && nameKey && String(d.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('debt ' + String(d.id).slice(-6)); return; }
                 const pays = (Array.isArray(d.payments) ? d.payments : []).filter((p) => p && Number(p.amount) > 0);
                 const paid = r2(pays.reduce((s, p) => s + Number(p.amount), 0)), amount = r2(d.amount), outstanding = r2(Math.max(0, amount - paid));
                 const status = outstanding <= 0.005 ? 'Paid' : (paid > 0 ? 'Partially paid' : 'Unpaid'), ref = 'D-' + String(d.id).slice(-6);
@@ -18928,6 +19929,21 @@ function customerStatementDocHtml(L, mode) {
             const css = '<style>@media print{.cl-table thead{display:table-header-group}.cl-table tr{page-break-inside:avoid}.cl-keep{page-break-inside:avoid}}</style>';
             const head = '<h2 style="text-align:center;margin-bottom:2px;">' + esc(businessName || 'Business POS') + '</h2>';
             const who = '<div class="cl-keep" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:10px 0;font-size:13px;"><div><b>Customer:</b> ' + esc(c.name || 'Unnamed Customer') + '<br><b>Phone:</b> ' + esc(c.phone || '') + '</div><div style="text-align:right;"><b>Date:</b> ' + now + '<br>';
+            if (mode === 'invoice' && typeof posInvoiceDocHtml === 'function') {      // zip 356: the shared invoice look
+                const no = 'INV-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(c.phone || '').replace(/\D/g, '').slice(-4);
+                const d2 = (t) => new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                const owed = Number(L.outstandingTotal) || 0;
+                return posInvoiceDocHtml({
+                    number: no, date: d2(Date.now()), status: owed > 0.005 ? 'unpaid' : 'paid',
+                    billTo: { name: c.name || 'Unnamed Customer', lines: [c.phone || '', c.email || '', c.idNumber ? 'ID ' + c.idNumber : ''] },
+                    meta: [['Statement', 'Unpaid items only']],
+                    cols: [{ h: 'Item' }, { h: 'Date' }, { h: 'Original', align: 'right' }, { h: 'Paid / credits', align: 'right' }, { h: 'Outstanding', align: 'right' }],
+                    rows: L.open.map((o) => [{ t: o.type + ' · ' + o.ref, sub: o.desc + (o.due ? ' — due ' + o.due : '') }, d2(o.at), m(o.original), m(o.applied), m(o.outstanding)]),
+                    emptyText: 'Nothing outstanding — this account is fully settled.',
+                    totals: L.creditOnAccount ? [['Credit held on account (not deducted)', L.creditOnAccount]] : [],
+                    due: owed, dueLabel: 'Total outstanding', notes: L.notes || [],
+                });
+            }
             if (mode === 'invoice') {
                 const no = 'INV-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(c.phone || '').replace(/\D/g, '').slice(-4);
                 const pay = receiptPaymentDetailsList();
@@ -18935,7 +19951,7 @@ function customerStatementDocHtml(L, mode) {
                 return css + head + '<h3 style="text-align:center;margin:0;">INVOICE &mdash; OUTSTANDING BALANCE</h3><p style="text-align:center;font-size:11px;color:#7f8c8d;margin:2px 0;">Unpaid items only. For the full history including settled items, use the Statement.</p>'
                     + who + '<b>Invoice no:</b> ' + no + '</div></div>'
                     + '<table class="cl-table" style="width:100%;border-collapse:collapse;font-size:12px;"><thead style="display:table-header-group;"><tr>' + ['Type', 'Date', 'Ref', 'Description', 'Original', 'Paid / credits applied', 'Outstanding'].map((h, i) => '<th style="padding:6px 8px;text-align:' + (i >= 4 ? 'right' : 'left') + ';border-bottom:2px solid #2c3e50;background:#f4f6f7;">' + h + '</th>').join('') + '</tr></thead><tbody>' + lines + '</tbody></table>'
-                    + '<p class="cl-keep" style="text-align:right;font-size:16px;font-weight:700;margin:12px 0 4px;">TOTAL OUTSTANDING: KES ' + m(L.outstandingTotal) + '</p>'
+                    + '<p class="cl-keep" style="text-align:right;font-size:26px;font-weight:900;margin:14px 0 6px;">TOTAL OUTSTANDING: KES ' + m(L.outstandingTotal) + '</p>'
                     + (L.creditOnAccount ? '<p style="text-align:right;font-size:12px;margin:0;">Credit held on account (not deducted above): KES ' + m(L.creditOnAccount) + '</p>' : '')
                     + (pay.length ? '<div class="cl-keep" style="margin-top:12px;padding:8px 10px;border:1px solid #d5dbdb;border-radius:8px;font-size:12px;"><b>How to pay</b><br>' + pay.map(esc).join('<br>') + '</div>' : '')
                     + L.notes.map((n) => '<p style="font-size:11px;color:#b9770e;">&#9888; ' + esc(n) + '</p>').join('');
@@ -18993,3 +20009,2113 @@ function printCustomerInvoice() {
             if (typeof window.triggerAutoPrintReport === "function") window.triggerAutoPrintReport();   // not every till has the auto-print hook
         }
 
+
+//@fn cashR2
+// --------------- CASH FLOAT & RECONCILIATION (Shop) ---------------
+// Pure logic (no DOM): cashier points, sessions, counts, movements, expected cash. Staff, device, cashier point and session are four
+// different things: a SESSION belongs to a CASHIER POINT (one physical drawer); any staff account on any device assigned to that point
+// shares it. Session ids are deterministic (point + sequence) so two offline devices that both "open" the same point collapse into ONE
+// record on merge (earliest opening wins; the other is kept as a conflict, never silently dropped). See _merge.js (cashSessions).
+function cashR2(n) {
+            const x = Number(n);
+            return Number.isFinite(x) ? Math.round(x * 100) / 100 : 0;
+        }
+
+//@fn cashDefaultSettings
+function cashDefaultSettings() {
+            return {
+                id: 'cfg', enabled: true, openingCount: true, closingCount: true, countMode: 'denoms', currency: 'KES',
+                denoms: [1000, 500, 200, 100, 50, 40, 20, 10, 5, 1],
+                reasonRequired: true,          // any variance needs a written reason
+                approvalThreshold: 500,        // |variance| above this needs a manager's approval (0 = every variance)
+                updatedAt: 0,
+            };
+        }
+
+//@fn cashSettingsFrom
+function cashSettingsFrom(list) {
+            const base = cashDefaultSettings();
+            const rec = Array.isArray(list) ? list.find((r) => r && r.id === 'cfg') : null;
+            if (!rec) return base;
+            const out = { ...base, ...rec };
+            const d = Array.isArray(rec.denoms) ? rec.denoms.map(Number).filter((v) => Number.isFinite(v) && v > 0) : [];
+            out.denoms = d.length ? Array.from(new Set(d)).sort((a, b) => b - a) : base.denoms;
+            return out;
+        }
+
+// counts = { "1000": 2, "500": 3 } (quantities). Returns { ok, total, counts, errors }. Blank / 0 allowed; negative or non-numeric rejected.
+//@fn cashCountFromDenoms
+function cashCountFromDenoms(counts, denoms) {
+            const errors = [], clean = {};
+            let cents = 0;
+            const list = Array.isArray(denoms) && denoms.length ? denoms : cashDefaultSettings().denoms;
+            Object.keys(counts || {}).forEach((k) => {
+                if (!list.some((d) => String(d) === String(k))) { errors.push(`KES ${k} is not a denomination in use.`); return; }
+                const raw = counts[k];
+                if (raw === '' || raw == null) return;
+                const q = Number(raw);
+                if (!Number.isFinite(q) || q < 0 || Math.floor(q) !== q) { errors.push(`Quantity for ${k} must be a whole number, 0 or more.`); return; }
+                if (q > 0) { clean[k] = q; cents += q * Math.round(Number(k) * 100); }
+            });
+            return { ok: errors.length === 0, total: cents / 100, counts: clean, errors };
+        }
+
+//@fn cashCountFromTotal
+function cashCountFromTotal(total) {
+            const raw = total === '' || total == null ? NaN : Number(total);
+            if (!Number.isFinite(raw) || raw < 0) return { ok: false, total: 0, counts: null, errors: ['Enter the total cash counted (0 or more).'] };
+            return { ok: true, total: cashR2(raw), counts: null, errors: [] };
+        }
+
+// Which cashier point does this device use? ok / none (no point yet - caller makes the default) / ambiguous (>1 assigned: resolve, never mix drawers)
+//@fn cashResolvePoint
+function cashResolvePoint(points, deviceId) {
+            const act = (Array.isArray(points) ? points : []).filter((p) => p && p.active !== false && !p.removed);
+            if (!act.length) return { status: 'none', point: null, candidates: [] };
+            const mine = act.filter((p) => Array.isArray(p.deviceIds) && p.deviceIds.includes(deviceId));
+            if (mine.length === 1) return { status: 'ok', point: mine[0], candidates: mine };
+            if (mine.length > 1) return { status: 'ambiguous', point: null, candidates: mine };
+            const unassigned = act.filter((p) => !Array.isArray(p.deviceIds) || !p.deviceIds.length);
+            if (act.length === 1) return { status: 'ok', point: act[0], candidates: act };
+            const def = act.find((p) => p.isDefault);
+            if (def && !(Array.isArray(def.deviceIds) && def.deviceIds.length && !def.deviceIds.includes(deviceId))) return { status: 'ok', point: def, candidates: [def] };
+            return { status: 'ambiguous', point: null, candidates: unassigned.length ? unassigned : act };
+        }
+
+//@fn cashOpenSessionFor
+function cashOpenSessionFor(sessions, pointId) {
+            return (Array.isArray(sessions) ? sessions : []).find((s) => s && s.pointId === pointId && s.status === 'open') || null;
+        }
+
+// Opens a session UNLESS the point already has one (then returns that one, created:false) - a second staff member, a refresh or a retry never recounts.
+//@fn cashOpenSession
+function cashOpenSession(sessions, point, o) {
+            o = o || {};
+            const settings = o.settings || cashDefaultSettings();
+            if (!point) return { ok: false, error: 'No cashier point.' };
+            const existing = cashOpenSessionFor(sessions, point.id);
+            if (existing) return { ok: true, created: false, session: existing };
+            let opening;
+            if (o.skip) {
+                if (settings.openingCount) return { ok: false, error: 'The opening cash count is required.' };
+                opening = { status: 'skipped', mode: 'none', counts: null, total: 0, remarks: String(o.remarks || ''), by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: o.now || Date.now() };
+            } else {
+                const c = (o.mode || settings.countMode) === 'total' ? cashCountFromTotal(o.total) : cashCountFromDenoms(o.counts, settings.denoms);
+                if (!c.ok) return { ok: false, error: c.errors[0], errors: c.errors };
+                if (!o.confirmed) return { ok: false, error: 'Confirm the opening count first.' };
+                opening = { status: 'counted', mode: (o.mode || settings.countMode) === 'total' ? 'total' : 'denoms', counts: c.counts, total: c.total, remarks: String(o.remarks || ''), by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: o.now || Date.now() };
+            }
+            const seq = (Array.isArray(sessions) ? sessions : []).filter((s) => s && s.pointId === point.id).reduce((m, s) => Math.max(m, Number(s.seq) || 0), 0) + 1;
+            const session = { id: `cs-${point.id}-${seq}`, pointId: point.id, pointName: point.name, seq, status: 'open', openedAt: opening.at, opening, closing: null, conflicts: [], corrections: [], updatedAt: opening.at };
+            return { ok: true, created: true, session };
+        }
+
+// One sale's money split by method - the SINGLE rule the drawer, Sales Record and reports share, so their cash / M-Pesa / card figures can never disagree.
+// A sale with per-method amounts uses them; an older sale with none is counted wholly under its paymentMethod. Voided / unpaid sales: nothing.
+//@fn salePaymentParts
+function salePaymentParts(sale) {
+            const out = { cash: 0, mpesa: 0, card: 0, other: 0 };
+            if (!sale || sale.voided || sale.paid === false) return out;
+            const r = (v) => Math.round(((Number(v) || 0) + (Number(v) < 0 ? -1e-9 : 1e-9)) * 100) / 100;
+            let c = r(sale.cashAmount), m = r(sale.mpesaAmount), k = r(sale.cardAmount), t = r(sale.otherAmount);
+            if (c + m + k + t <= 0.004) {
+                let v = typeof sale.total === 'number' && isFinite(sale.total) ? sale.total : (Array.isArray(sale.items) ? sale.items : []).reduce((a, it) => a + (Number(it && it.price) || 0) * (Number(it && it.qty) || 0), 0);
+                v = r(v);
+                if (v > 0) {
+                    const meth = String(sale.paymentMethod || 'cash').toLowerCase();
+                    if (meth === 'cash') c = v; else if (meth === 'mpesa') m = v; else if (meth === 'card') k = v; else t = v;
+                }
+            }
+            out.cash = c; out.mpesa = m; out.card = k; out.other = t;
+            return out;
+        }
+
+// Drawer cash from one sale: ONLY its cash component (split: cash part; M-Pesa / card / credit never). Voided / unpaid sales: nothing.
+//@fn cashSaleDrawerAmount
+function cashSaleDrawerAmount(sale) {
+            if (!sale || sale.voided || sale.paid === false) return 0;
+            return cashR2(salePaymentParts(sale).cash);
+        }
+
+// Manual movement. `opId` is the idempotency key: retrying or syncing the same movement twice never records it twice.
+//@fn cashMakeMovement
+function cashMakeMovement(movements, session, o) {
+            o = o || {};
+            if (!session || session.status !== 'open') return { ok: false, error: 'There is no open cash session.' };
+            const amount = cashR2(o.amount);
+            if (!(amount > 0)) return { ok: false, error: 'Enter an amount above 0.' };
+            const dir = o.direction === 'in' ? 'in' : 'out';
+            const cats = { in: ['cash_added', 'float_top_up', 'other_in'], out: ['petty_cash', 'supplier_payment', 'safe_transfer', 'bank_deposit', 'refund', 'expense', 'other_out'] };
+            const category = String(o.category || (dir === 'in' ? 'cash_added' : 'other_out'));
+            if (!cats[dir].includes(category)) return { ok: false, error: 'That category does not match the direction.' };
+            if (!String(o.reason || '').trim()) return { ok: false, error: 'A reason is required.' };
+            const id = String(o.opId || '');
+            if (!id) return { ok: false, error: 'Missing operation id.' };
+            const dup = (Array.isArray(movements) ? movements : []).find((m) => m && m.id === id);
+            if (dup) return { ok: true, created: false, movement: dup };
+            const now = o.now || Date.now();
+            return { ok: true, created: true, movement: { id, sessionId: session.id, pointId: session.pointId, direction: dir, category, amount, reason: String(o.reason).trim(), ref: o.ref || null, by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: now, updatedAt: now } };
+        }
+
+// Expected drawer cash from COMMITTED records only. Every movement counts once; voided movements and voided sales are excluded.
+//@fn cashSessionSummary
+function cashSessionSummary(session, salesLog, movements, o) {
+            o = o || {};
+            const out = { opening: cashR2(session && session.opening ? session.opening.total : 0), cashSales: 0, cashSalesCount: 0, refunds: 0, cashIn: 0, payouts: 0, safe: 0, bank: 0, otherOut: 0, nonCash: { mpesa: 0, card: 0 }, earlier: { cash: 0, mpesa: 0, card: 0, count: 0 }, expected: 0 };
+            if (!session) return out;
+            const from = Number(session.openedAt) || 0, to = session.closing ? Number(session.closing.at) || Infinity : Infinity;
+            const single = !!o.singlePoint;
+            (Array.isArray(salesLog) ? salesLog : []).forEach((s) => {
+                if (!s || s.voided) return;
+                const ts = new Date(s.timestamp).getTime();
+                const stamped = s.cashSessionId === session.id;
+                // Sales made before the feature stamped them (e.g. a bill settled later) belong here only in a single-drawer shop, by time window.
+                const legacy = !s.cashSessionId && single && Number.isFinite(ts) && ts >= from && ts <= to;
+                if (!stamped && !legacy) {
+                    // INFO ONLY (never added to expected): money taken the same day BEFORE this session opened and not stamped to it - e.g. sales rung up before the float was counted.
+                    if (s.paid !== false && Number.isFinite(ts) && ts < from && from - ts < 36e5 * 24 && new Date(ts).toDateString() === new Date(from).toDateString()) {
+                        const ep = salePaymentParts(s);
+                        if (ep.cash + ep.mpesa + ep.card > 0) { out.earlier.cash += ep.cash; out.earlier.mpesa += ep.mpesa; out.earlier.card += ep.card; out.earlier.count++; }
+                    }
+                    return;
+                }
+                if (s.paid === false) return;
+                const sp = salePaymentParts(s);
+                if (sp.cash > 0) { out.cashSales += sp.cash; out.cashSalesCount++; }
+                out.nonCash.mpesa += cashR2(sp.mpesa);
+                out.nonCash.card += cashR2(sp.card);
+            });
+            (Array.isArray(movements) ? movements : []).forEach((m) => {
+                if (!m || m.voided || m.sessionId !== session.id) return;
+                const a = cashR2(m.amount);
+                if (m.direction === 'in') out.cashIn += a;
+                else if (m.category === 'refund') out.refunds += a;
+                else if (m.category === 'safe_transfer') out.safe += a;
+                else if (m.category === 'bank_deposit') out.bank += a;
+                else if (m.category === 'petty_cash' || m.category === 'supplier_payment' || m.category === 'expense') out.payouts += a;
+                else out.otherOut += a;
+            });
+            ['cashSales', 'refunds', 'cashIn', 'payouts', 'safe', 'bank', 'otherOut'].forEach((k) => { out[k] = cashR2(out[k]); });
+            ['cash', 'mpesa', 'card'].forEach((k) => { out.earlier[k] = cashR2(out.earlier[k]); });
+            out.expected = cashR2(out.opening + out.cashSales + out.cashIn - out.refunds - out.payouts - out.safe - out.bank - out.otherOut);
+            return out;
+        }
+
+// Closing: the variance is preserved exactly as counted - never adjusted away, never covered by invented transactions.
+//@fn cashCloseSession
+function cashCloseSession(session, summary, o) {
+            o = o || {};
+            const settings = o.settings || cashDefaultSettings();
+            if (!session || session.status !== 'open') return { ok: false, error: 'This session is already closed.' };
+            let closing;
+            if (o.exempt) {
+                // zip 292: "exempted" = a manager decides this session needs no count (a drawer not used that day). Not the same as a skipped count: it needs a manager and a reason,
+                // it is shown as exempted, and it never counts toward shortage / surplus totals.
+                if (!o.isManager) return { ok: false, error: 'Only a manager or admin can exempt a session from counting.' };
+                if (!String(o.reason || '').trim()) return { ok: false, error: 'A reason is required to exempt a session.' };
+                closing = { status: 'exempted', mode: 'none', counts: null, counted: null, expected: summary.expected, variance: null, breakdown: summary, reason: String(o.reason).trim(), by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: o.now || Date.now(), approval: { status: 'not-required' }, exempt: { by: o.by || '', at: o.now || Date.now(), reason: String(o.reason).trim() } };
+            } else if (o.skip) {
+                if (settings.closingCount) return { ok: false, error: 'The closing cash count is required.' };
+                closing = { status: 'skipped', mode: 'none', counts: null, counted: null, expected: summary.expected, variance: null, breakdown: summary, reason: String(o.reason || ''), by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: o.now || Date.now(), approval: { status: 'not-required' } };
+            } else {
+                const c = (o.mode || settings.countMode) === 'total' ? cashCountFromTotal(o.total) : cashCountFromDenoms(o.counts, settings.denoms);
+                if (!c.ok) return { ok: false, error: c.errors[0], errors: c.errors };
+                if (!o.confirmed) return { ok: false, error: 'Confirm the closing count first.' };
+                const variance = cashR2(c.total - summary.expected);
+                if (variance !== 0 && settings.reasonRequired && !String(o.reason || '').trim()) return { ok: false, error: `The count is ${variance < 0 ? 'short' : 'over'} by KES ${Math.abs(variance).toFixed(2)} - a reason is required.`, needsReason: true, variance };
+                const needs = variance !== 0 && Math.abs(variance) > (Number(settings.approvalThreshold) || 0);
+                closing = { status: 'counted', mode: (o.mode || settings.countMode) === 'total' ? 'total' : 'denoms', counts: c.counts, counted: c.total, expected: summary.expected, variance, breakdown: summary, reason: String(o.reason || '').trim(), by: o.by || '', byId: o.byId || '', deviceId: o.deviceId || '', at: o.now || Date.now(), approval: { status: needs ? 'pending' : 'not-required' } };
+            }
+            return { ok: true, closing };
+        }
+
+//@fn cashDecideApproval
+function cashDecideApproval(session, o) {
+            o = o || {};
+            if (!o.isManager) return { ok: false, error: 'Only a manager or admin can approve a cash variance.' };
+            if (!session || session.status !== 'closed' || !session.closing || !session.closing.approval || session.closing.approval.status !== 'pending') return { ok: false, error: 'Nothing to approve.' };
+            if (!o.approve && !String(o.note || '').trim()) return { ok: false, error: 'A reason is required to reject.' };
+            return { ok: true, approval: { status: o.approve ? 'approved' : 'rejected', by: o.by || '', at: o.now || Date.now(), note: String(o.note || '').trim() } };
+        }
+
+// Correcting a FINISHED count (manager/admin only, with a reason): the original closing record is preserved inside `corrections`, the
+// session is re-measured against the same expected cash, and a changed variance goes back to manager approval. Never edits history in place.
+//@fn cashCorrectClosing
+function cashCorrectClosing(session, o) {
+            o = o || {};
+            const settings = o.settings || cashDefaultSettings();
+            if (!o.isManager) return { ok: false, error: 'Only a manager or admin can correct a finished cash count.' };
+            if (!session || session.status !== 'closed' || !session.closing || session.closing.status !== 'counted') return { ok: false, error: 'Only a counted, closed session can be corrected.' };
+            if (!String(o.reason || '').trim()) return { ok: false, error: 'A reason for the correction is required.' };
+            const c = (o.mode || settings.countMode) === 'total' ? cashCountFromTotal(o.total) : cashCountFromDenoms(o.counts, settings.denoms);
+            if (!c.ok) return { ok: false, error: c.errors[0], errors: c.errors };
+            const prev = session.closing, now = o.now || Date.now();
+            const variance = cashR2(c.total - prev.expected);
+            const needs = variance !== 0 && Math.abs(variance) > (Number(settings.approvalThreshold) || 0);
+            const closing = Object.assign({}, prev, { mode: (o.mode || settings.countMode) === 'total' ? 'total' : 'denoms', counts: c.counts, counted: c.total, variance, correctedAt: now, approval: { status: needs ? 'pending' : 'not-required' } });
+            const correction = { id: `cor-${now}-${o.by || ''}`, at: now, by: o.by || '', reason: String(o.reason).trim(), before: { counted: prev.counted, variance: prev.variance, counts: prev.counts, approval: prev.approval }, after: { counted: c.total, variance } };
+            return { ok: true, closing, correction };
+        }
+
+//@fn cashFilterSessions
+function cashFilterSessions(sessions, f) {
+            f = f || {};
+            const from = f.from ? new Date(f.from + 'T00:00:00').getTime() : 0, to = f.to ? new Date(f.to + 'T23:59:59.999').getTime() : Infinity;
+            const op = String(f.operator || '').trim().toLowerCase();
+            return (Array.isArray(sessions) ? sessions : []).filter((x) => {
+                if (!x) return false;
+                if (f.pointId && x.pointId !== f.pointId) return false;
+                if (f.status && x.status !== f.status) return false;
+                if (!(x.openedAt >= from && x.openedAt <= to)) return false;
+                if (f.varianceOnly && !(x.closing && x.closing.variance)) return false;
+                if (op && !((x.opening && String(x.opening.by).toLowerCase().includes(op)) || (x.closing && String(x.closing.by).toLowerCase().includes(op)))) return false;
+                return true;
+            });
+        }
+
+//@fn cashSessionsCsv
+function cashSessionsCsv(sessions) {
+            const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+            const head = ['Session', 'Cashier point', 'Status', 'Opened', 'Opened by', 'Opening float', 'Closed', 'Closed by', 'Cash sales', 'Cash added', 'Refunds', 'Payouts', 'To safe', 'Bank deposits', 'Other out', 'Expected', 'Counted', 'Variance', 'Reason', 'Approval', 'Approved by', 'Corrections'];
+            const rows = (Array.isArray(sessions) ? sessions : []).map((x) => {
+                const c = x.closing || {}, b = c.breakdown || {};
+                return [x.id, x.pointName, x.status, new Date(x.openedAt).toISOString(), x.opening && x.opening.by, x.opening && x.opening.total, c.at ? new Date(c.at).toISOString() : '', c.by || '', b.cashSales, b.cashIn, b.refunds, b.payouts, b.safe, b.bank, b.otherOut, c.expected, c.counted, c.variance, c.reason || '', c.approval ? c.approval.status : '', c.approval ? c.approval.by || '' : '', (x.corrections || []).length];
+            });
+            return [head].concat(rows).map((r) => r.map(q).join(',')).join('\n');
+        }
+
+// ---------------- SERIALIZED UNITS + VARIANT ATTRIBUTES + IMPORT ENGINE (Shop, pure logic) ----------------
+// A serialized product (phone, laptop ...) has ONE record per physical unit in the synced list `serialUnits`; a unit may carry several identifiers
+// (a dual-SIM phone has two IMEIs and is still ONE unit). Quantity (product.qty / variant.qty) is derived: in-stock units + legacy unregistered units.
+
+//@fn serialNorm
+function serialNorm(v) {
+            return String(v == null ? '' : v).replace(/[\s\-:./\\_]+/g, '').toUpperCase();
+        }
+
+//@fn serialStatuses
+function serialStatuses() {
+            return { in_stock: 'In stock', reserved: 'Reserved', sold: 'Sold', returned: 'Returned', awaiting_inspection: 'Awaiting inspection', damaged: 'Damaged', under_repair: 'Under repair', transferred: 'In transit', returned_to_supplier: 'Returned to supplier', written_off: 'Written off' };
+        }
+
+//@fn serialCanTransition
+function serialCanTransition(from, to) {
+            const T = {
+                in_stock: ['reserved', 'sold', 'damaged', 'under_repair', 'transferred', 'returned_to_supplier', 'written_off', 'awaiting_inspection'],
+                reserved: ['in_stock', 'sold'],
+                sold: ['returned'],
+                returned: ['awaiting_inspection', 'in_stock', 'damaged', 'under_repair', 'returned_to_supplier', 'written_off'],
+                awaiting_inspection: ['in_stock', 'damaged', 'under_repair', 'returned_to_supplier', 'written_off'],
+                damaged: ['under_repair', 'written_off', 'returned_to_supplier', 'in_stock'],
+                under_repair: ['in_stock', 'damaged', 'written_off', 'returned_to_supplier'],
+                transferred: ['in_stock'],
+                returned_to_supplier: [], written_off: [],
+            };
+            return !!(T[from] && T[from].indexOf(to) >= 0);
+        }
+
+// Moves a unit to a new status. Returns { ok, unit } (a NEW object; history is append-only) or { ok:false, error }.
+//@fn serialTransition
+function serialTransition(unit, to, o) {
+            o = o || {};
+            if (!unit) return { ok: false, error: 'Unit not found.' };
+            if (!serialCanTransition(unit.status, to)) return { ok: false, error: `A unit that is "${serialStatuses()[unit.status] || unit.status}" cannot become "${serialStatuses()[to] || to}".` };
+            const now = o.now || Date.now();
+            const entry = { id: `h-${now}-${(unit.history || []).length}-${String(o.by || '').slice(0, 12)}`, at: now, by: o.by || '', from: unit.status, to, reason: String(o.reason || ''), ref: o.ref || null, note: o.note || '' };
+            const u = Object.assign({}, unit, { status: to, history: (unit.history || []).concat([entry]), updatedAt: now });
+            if (o.patch) Object.assign(u, o.patch);
+            return { ok: true, unit: u };
+        }
+
+// "A|B" or "A+B" on one line = ONE unit with two identifiers (dual-SIM). Lines split on newline / comma / semicolon / tab.
+//@fn serialParseList
+function serialParseList(text) {
+            return String(text == null ? '' : text).split(/[\n\r,;\t]+/).map((l) => l.trim()).filter(Boolean).map((l) => l.split(/[|+]/).map((x) => x.trim()).filter(Boolean));
+        }
+
+// rows: array of identifier arrays (one per physical unit). Reports row numbers; nothing is created here.
+//@fn serialValidateBatch
+function serialValidateBatch(existingUnits, rows, o) {
+            o = o || {};
+            const errors = [], seen = new Map(), taken = new Map();
+            (Array.isArray(existingUnits) ? existingUnits : []).forEach((u) => { if (u && u.status !== 'removed') (u.ids || []).forEach((i) => taken.set(i.norm, u)); });
+            const units = [];
+            (Array.isArray(rows) ? rows : []).forEach((r, idx) => {
+                const n = idx + 1, vals = (Array.isArray(r) ? r : [r]).map((x) => String(x == null ? '' : x).trim()).filter(Boolean);
+                if (!vals.length) { errors.push({ row: n, msg: 'Missing identifier.' }); return; }
+                const ids = [];
+                vals.forEach((v, k) => {
+                    const norm = serialNorm(v);
+                    if (!norm) { errors.push({ row: n, msg: `Identifier "${v}" has no usable characters.` }); return; }
+                    if (taken.has(norm)) { const u = taken.get(norm); errors.push({ row: n, msg: `"${v}" is already registered (${u.name || u.code}, ${serialStatuses()[u.status] || u.status}).` }); return; }
+                    if (seen.has(norm)) { errors.push({ row: n, msg: `"${v}" repeats row ${seen.get(norm)} in this batch.` }); return; }
+                    seen.set(norm, n);
+                    ids.push({ type: (o.types && o.types[k]) || o.type || (k === 0 ? 'imei' : 'imei'), value: v, norm });
+                });
+                if (ids.length === vals.length) units.push({ row: n, ids });
+            });
+            if (o.expected != null && rows.length > o.expected) errors.push({ row: o.expected + 1, msg: `${rows.length} identifiers entered but only ${o.expected} unit(s) expected.` });
+            return { ok: errors.length === 0, errors, units, count: units.length };
+        }
+
+// Deterministic ids (batchId + row) make a retried / re-synced batch idempotent: the same unit id is produced, never a second unit.
+//@fn serialMakeUnits
+function serialMakeUnits(valid, o) {
+            o = o || {};
+            const now = o.now || Date.now();
+            return valid.map((u) => ({
+                id: `su-${o.batchId}-${u.row}`, code: o.code, variantId: o.variantId || null, name: o.name || o.code, ids: u.ids, status: 'in_stock', location: o.location || 'main',
+                cost: Number(o.cost) || 0, supplier: o.supplier || '', ref: o.ref || o.batchId, saleId: null, receivedAt: now,
+                history: [{ id: `h-${now}-0-${u.row}`, at: now, by: o.by || '', from: null, to: 'in_stock', reason: o.reason || 'Received', ref: o.ref || o.batchId, note: '' }], updatedAt: now,
+            }));
+        }
+
+//@fn serialUnitsFor
+function serialUnitsFor(units, code, variantId) {
+            return (Array.isArray(units) ? units : []).filter((u) => u && u.code === code && (variantId ? u.variantId === variantId : true));
+        }
+
+//@fn serialCounts
+function serialCounts(units, code, variantId) {
+            const c = { total: 0 };
+            Object.keys(serialStatuses()).forEach((k) => { c[k] = 0; });
+            serialUnitsFor(units, code, variantId).forEach((u) => { c.total++; c[u.status] = (c[u.status] || 0) + 1; });
+            c.available = c.in_stock;
+            return c;
+        }
+
+//@fn serialIsTracked
+function serialIsTracked(product, variant) {
+            if (!product) return false;
+            if (variant && typeof variant.serialized === 'boolean') return variant.serialized;
+            return !!product.serialized;
+        }
+
+// Quantity of a serialized product/variant = units that are in stock + legacy units not yet given an identifier (conversion of existing stock).
+//@fn serialQtyFor
+function serialQtyFor(units, product, variant) {
+            const c = serialCounts(units, product.code, variant ? variant.id : null);
+            return c.in_stock + Math.max(0, Number((variant || product).serialUnregistered) || 0);
+        }
+
+// Is every selected unit sellable? lines: [{ code, variantId, qty, unitIds, name }]. Returns { ok, errors[] }.
+//@fn serialCheckSale
+function serialCheckSale(units, lines, o) {
+            o = o || {};
+            const errors = [], used = new Set();
+            (lines || []).forEach((l) => {
+                const ids = Array.isArray(l.unitIds) ? l.unitIds : [];
+                if (ids.length !== Number(l.qty)) { errors.push(`${l.name || l.code}: select ${l.qty} unit(s) (${ids.length} selected).`); return; }
+                ids.forEach((id) => {
+                    const u = (units || []).find((x) => x && x.id === id);
+                    if (!u) { errors.push(`${l.name || l.code}: unit not found.`); return; }
+                    if (u.code !== l.code || (l.variantId ? u.variantId !== l.variantId : !!u.variantId)) { errors.push(`${l.name || l.code}: ${u.ids[0].value} belongs to a different product or variant.`); return; }
+                    if (used.has(id)) { errors.push(`${u.ids[0].value} is selected twice.`); return; }
+                    used.add(id);
+                    if (u.status !== 'in_stock' && !(u.status === 'reserved' && o.saleId && u.saleId === o.saleId)) errors.push(`${u.ids[0].value} is ${(serialStatuses()[u.status] || u.status).toLowerCase()} - it cannot be sold.`);
+                });
+            });
+            return { ok: errors.length === 0, errors };
+        }
+
+// Customer return of ONE unit, linked to its sale. A returned unit goes to inspection - it is never sellable until someone clears it.
+//@fn serialReturnUnit
+function serialReturnUnit(unit, o) {
+            o = o || {};
+            if (!unit || unit.status !== 'sold') return { ok: false, error: unit && unit.status === 'awaiting_inspection' ? 'This unit was already returned.' : 'Only a sold unit can be returned.' };
+            if (!String(o.reason || '').trim()) return { ok: false, error: 'A return reason is required.' };
+            const a = serialTransition(unit, 'returned', { by: o.by, reason: o.reason, ref: unit.saleId, now: o.now, note: o.condition || '' });
+            if (!a.ok) return a;
+            return serialTransition(a.unit, 'awaiting_inspection', { by: o.by, reason: 'Awaiting inspection after return', ref: unit.saleId, now: (o.now || Date.now()) + 1, note: o.condition || '', patch: { returnedFromSale: unit.saleId, saleId: null, returnCondition: o.condition || '' } });
+        }
+
+//@fn serialSearch
+function serialSearch(units, q) {
+            const n = serialNorm(q), t = String(q || '').trim().toLowerCase();
+            if (!n && !t) return [];
+            return (Array.isArray(units) ? units : []).filter((u) => u && ((u.ids || []).some((i) => i.norm.includes(n)) || String(u.name || '').toLowerCase().includes(t) || String(u.code || '').toLowerCase() === t));
+        }
+
+// ---- variants: reusable attribute combos (no irrelevant combinations: the caller deselects what it does not sell)
+//@fn variantComboKey
+function variantComboKey(attrs) {
+            return Object.keys(attrs || {}).filter((k) => String(attrs[k] == null ? '' : attrs[k]).trim()).sort().map((k) => `${k.trim().toLowerCase()}=${String(attrs[k]).trim().toLowerCase()}`).join('|');
+        }
+
+//@fn variantGenerate
+function variantGenerate(defs) {
+            const list = (defs || []).filter((d) => d && d.name && Array.isArray(d.values) && d.values.length);
+            let combos = [{}];
+            list.forEach((d) => { const next = []; combos.forEach((c) => d.values.forEach((v) => { if (String(v).trim()) next.push(Object.assign({}, c, { [d.name.trim()]: String(v).trim() })); })); combos = next; });
+            return list.length ? combos : [];
+        }
+
+//@fn variantLabel
+function variantLabel(attrs) {
+            return Object.keys(attrs || {}).map((k) => attrs[k]).filter(Boolean).join(' / ');
+        }
+
+//@fn variantFindDuplicate
+function variantFindDuplicate(product, attrs, ignoreId) {
+            const k = variantComboKey(attrs);
+            return k ? (product.variants || []).find((v) => v && v.id !== ignoreId && (v.attrs ? variantComboKey(v.attrs) === k : false)) || null : null;
+        }
+
+// ---- bulk import engine: PLAN (validate, no changes) then APPLY. Row numbers are the spreadsheet's (header = row 1, first data row = 2).
+//@fn importFields
+function importFields() {
+            return [
+                ['name', 'Product name'], ['parentSku', 'Parent product ID / SKU'], ['sku', 'Product SKU / code'], ['variantSku', 'Variant SKU'], ['variantName', 'Variant name'],
+                ['size', 'Size'], ['colour', 'Colour'], ['model', 'Model'], ['storage', 'Storage capacity'], ['barcode', 'Barcode'], ['cost', 'Cost price'], ['price', 'Selling price'],
+                ['quantity', 'Quantity'], ['category', 'Category'], ['supplier', 'Supplier'], ['reorder', 'Reorder level'], ['serialized', 'Serialized tracking (yes/no)'], ['idType', 'Identifier type'], ['identifier', 'IMEI / serial number'], ['identifier2', 'Second IMEI / identifier'],
+            ];
+        }
+
+//@fn importGuessMapping
+function importGuessMapping(headers) {
+            const syn = {
+                parentSku: ['parent sku', 'parent id', 'parent code', 'parent', 'parent product'], variantSku: ['variant sku', 'variant code', 'variant id'], sku: ['sku', 'code', 'item code', 'product code'],
+                variantName: ['variant name', 'variant'], name: ['product name', 'name', 'item', 'item name', 'description', 'product'], size: ['size'], colour: ['colour', 'color'], model: ['model'],
+                storage: ['storage', 'capacity', 'storage capacity', 'memory'], barcode: ['barcode', 'ean', 'upc'], cost: ['cost', 'cost price', 'buying price', 'purchase price'], price: ['selling price', 'price', 'retail', 'retail price'],
+                quantity: ['quantity', 'qty', 'stock', 'opening stock', 'on hand'], category: ['category', 'group'], supplier: ['supplier', 'vendor'], reorder: ['reorder', 'reorder level', 'min stock', 'minimum'],
+                serialized: ['serialized', 'serialised', 'unique', 'tracked'], idType: ['identifier type', 'id type'], identifier: ['imei', 'imei 1', 'imei1', 'serial', 'serial number', 'identifier', 'serial no'], identifier2: ['imei 2', 'imei2', 'second imei', 'identifier 2'],
+            };
+            const map = {}, used = new Set();
+            Object.keys(syn).forEach((f) => { (headers || []).forEach((h, i) => { if (map[f] === undefined && !used.has(i) && syn[f].indexOf(String(h).trim().toLowerCase()) >= 0) { map[f] = i; used.add(i); } }); });
+            return map;
+        }
+
+//@fn importFindProduct
+function importFindProduct(inventory, key) {
+            const k = String(key == null ? '' : key).trim().toLowerCase();
+            if (!k) return { found: [] };
+            const byCode = (inventory || []).filter((p) => p && String(p.code || '').toLowerCase() === k);
+            if (byCode.length) return { found: byCode };
+            const byId = (inventory || []).filter((p) => p && String(p.id || '').toLowerCase() === k);
+            if (byId.length) return { found: byId };
+            const byVar = (inventory || []).filter((p) => p && (p.variants || []).some((v) => v && String(v.code || '').toLowerCase() === k));
+            if (byVar.length) return { found: byVar };
+            return { found: (inventory || []).filter((p) => p && String(p.name || '').trim().toLowerCase() === k), byName: true };
+        }
+
+//@fn importPlan
+function importPlan(rows, map, type, ctx) {
+            ctx = ctx || {};
+            const inv = ctx.inventory || [], units = ctx.units || [], mode = ctx.mode || 'add', policy = ctx.policy || 'skip';
+            const cell = (r, f) => (map[f] === undefined || map[f] === '' || map[f] == null) ? '' : String(r[map[f]] == null ? '' : r[map[f]]).trim();
+            const num = (s) => { if (s === '') return null; const x = Number(String(s).replace(/,/g, '')); return Number.isFinite(x) ? x : NaN; };
+            const yes = (s) => /^(y|yes|true|1|x)$/i.test(String(s || '').trim());
+            const out = [], seenSku = new Map(), seenIds = [];
+            const claimed = new Set();   // variant/product codes created earlier in THIS file
+            const take = (code, n) => { const k = String(code).toLowerCase(); if (claimed.has(k)) return false; claimed.add(k); return true; };
+            const codeUsed = (code, exceptProduct) => inv.some((p) => p && p !== exceptProduct && (String(p.code || '').toLowerCase() === String(code).toLowerCase() || (p.variants || []).some((v) => v && String(v.code || '').toLowerCase() === String(code).toLowerCase())));
+            (rows || []).forEach((r, i) => {
+                const n = i + 2, row = { n, errors: [], warns: [], op: null, data: {} };
+                const attrs = {}; ['size', 'colour', 'model', 'storage'].forEach((f) => { const v = cell(r, f); if (v) attrs[f === 'colour' ? 'Colour' : f === 'storage' ? 'Storage' : f[0].toUpperCase() + f.slice(1)] = v; });
+                const qty = num(cell(r, 'quantity')), cost = num(cell(r, 'cost')), price = num(cell(r, 'price')), reorder = num(cell(r, 'reorder'));
+                if (Number.isNaN(qty) || (qty !== null && (qty < 0 || (qty % 1 !== 0 && ctx.wholeOnly)))) row.errors.push('Quantity is not a valid number (0 or more).');
+                if (Number.isNaN(cost) || (cost !== null && cost < 0)) row.errors.push('Cost price is not valid.');
+                if (Number.isNaN(price) || (price !== null && price < 0)) row.errors.push('Selling price is not valid.');
+                if (Number.isNaN(reorder)) row.errors.push('Reorder level is not valid.');
+                row.data = { name: cell(r, 'name'), attrs, qty, cost, price, reorder, category: cell(r, 'category'), supplier: cell(r, 'supplier'), barcode: cell(r, 'barcode'), serialized: cell(r, 'serialized') ? yes(cell(r, 'serialized')) : null };
+                if (type === 'products') {
+                    const sku = cell(r, 'sku') || cell(r, 'variantSku');
+                    if (!row.data.name && !sku) row.errors.push('Product name is missing.');
+                    const hit = sku ? importFindProduct(inv, sku) : { found: [] };
+                    if (hit.found.length > 1) row.errors.push(`"${sku}" matches ${hit.found.length} products - ambiguous.`);
+                    else if (hit.found.length === 1) {
+                        const p = hit.found[0];
+                        row.data.target = p.code;
+                        if (policy === 'update_info') { row.op = 'product_update'; if (qty) row.warns.push('Quantity ignored: an update never changes stock. Use a Stock import.'); }
+                        else { row.op = 'skip'; row.warns.push('Already exists - skipped (update policy: skip).'); }
+                    } else {
+                        if (sku && !take(sku, n)) row.errors.push(`SKU "${sku}" repeats an earlier row of this file.`);
+                        if (sku && codeUsed(sku)) row.errors.push(`SKU "${sku}" is used by another product or variant.`);
+                        row.data.code = sku;
+                        const ser = row.data.serialized;
+                        if (ser && qty > 0) row.errors.push('Serialized item: stock needs one identifier per unit. Import the product with quantity 0, then use a Serialized units import.');
+                        row.op = 'product_create';
+                    }
+                } else if (type === 'variants') {
+                    const pk = cell(r, 'parentSku'), vsku = cell(r, 'variantSku') || cell(r, 'sku');
+                    if (!pk) row.errors.push('Parent product ID / SKU is missing.');
+                    const hit = pk ? importFindProduct(inv, pk) : { found: [] };
+                    if (pk && hit.found.length === 0) row.errors.push(`Parent "${pk}" was not found - fix the SKU or import the parent first.`);
+                    else if (hit.found.length > 1) row.errors.push(`Parent "${pk}" matches ${hit.found.length} products - use the exact SKU.`);
+                    const parent = hit.found.length === 1 ? hit.found[0] : null;
+                    if (parent) {
+                        row.data.parent = parent.code;
+                        if (!parent.hasVariants && (Number(parent.qty) || 0) > 0) row.errors.push(`"${parent.name}" is a plain item with ${parent.qty} in stock - convert it to variants in the app first (nothing is guessed).`);
+                        if (!Object.keys(attrs).length && !cell(r, 'variantName')) row.errors.push('A variant needs a name or at least one attribute (size, colour, model, storage).');
+                        const label = cell(r, 'variantName') || variantLabel(attrs);
+                        row.data.label = label;
+                        const exV = (parent.variants || []).find((v) => v && ((vsku && String(v.code || '').toLowerCase() === vsku.toLowerCase()) || (Object.keys(attrs).length && v.attrs && variantComboKey(v.attrs) === variantComboKey(attrs)) || (!vsku && String(v.name || '').toLowerCase() === label.toLowerCase())));
+                        if (exV) {
+                            row.data.variantId = exV.id;
+                            if (policy === 'update_info') { row.op = 'variant_update'; if (qty) row.warns.push('Quantity ignored: an update never changes stock.'); }
+                            else { row.op = 'skip'; row.warns.push('Variant already exists - skipped (update policy: skip).'); }
+                        } else {
+                            if (vsku) { if (!take(vsku, n)) row.errors.push(`Variant SKU "${vsku}" repeats an earlier row of this file.`); else if (codeUsed(vsku)) row.errors.push(`Variant SKU "${vsku}" is already used.`); }
+                            else row.warns.push('No variant SKU - none will be set.');
+                            const combo = `${parent.code}|${variantComboKey(attrs) || label.toLowerCase()}`;
+                            if (seenSku.has(combo)) row.errors.push(`Same variant combination as row ${seenSku.get(combo)}.`); else seenSku.set(combo, n);
+                            row.data.vsku = vsku;
+                            if (row.data.serialized && qty > 0) row.errors.push('Serialized variant: stock needs one identifier per unit (use a Serialized units import).');
+                            row.op = 'variant_create';
+                        }
+                    }
+                } else if (type === 'stock') {
+                    const key = cell(r, 'variantSku') || cell(r, 'sku') || cell(r, 'parentSku');
+                    const hit = key ? importFindProduct(inv, key) : { found: [] };
+                    if (!key) row.errors.push('SKU is missing.');
+                    else if (hit.found.length === 0) row.errors.push(`"${key}" was not found.`);
+                    else if (hit.found.length > 1) row.errors.push(`"${key}" matches ${hit.found.length} products - ambiguous.`);
+                    if (qty === null) row.errors.push('Quantity is missing.');
+                    else if (qty <= 0) row.errors.push('Quantity must be above 0.');
+                    if (hit.found.length === 1 && qty > 0) {
+                        const p = hit.found[0], v = (p.variants || []).find((x) => x && String(x.code || '').toLowerCase() === key.toLowerCase());
+                        if (p.hasVariants && !v) row.errors.push(`"${p.name}" has variants - give the variant SKU.`);
+                        row.data.target = p.code; row.data.variantId = v ? v.id : null;
+                        if (serialIsTracked(p, v)) row.errors.push('Serialized item: add stock with one identifier per unit (Serialized units import).');
+                        const cur = Number((v || p).qty) || 0;
+                        if (mode === 'opening' && cur > 0) row.errors.push(`Opening stock refused: already has ${cur} in stock. Use "Add received stock" or a stock-take.`);
+                        row.data.current = cur; row.op = mode === 'opening' ? 'stock_open' : 'stock_add';
+                    }
+                } else if (type === 'serials') {
+                    const key = cell(r, 'variantSku') || cell(r, 'sku') || cell(r, 'parentSku');
+                    const hit = key ? importFindProduct(inv, key) : { found: [] };
+                    if (!key) row.errors.push('SKU is missing.');
+                    else if (hit.found.length === 0) row.errors.push(`"${key}" was not found.`);
+                    else if (hit.found.length > 1) row.errors.push(`"${key}" matches ${hit.found.length} products - ambiguous.`);
+                    const ids = [cell(r, 'identifier'), cell(r, 'identifier2')].filter(Boolean);
+                    if (!ids.length) row.errors.push('Missing identifier (IMEI / serial number).');
+                    if (hit.found.length === 1) {
+                        const p = hit.found[0], v = (p.variants || []).find((x) => x && String(x.code || '').toLowerCase() === key.toLowerCase());
+                        if (p.hasVariants && !v) row.errors.push(`"${p.name}" has variants - give the variant SKU.`);
+                        if (!serialIsTracked(p, v)) row.errors.push(`"${p.name}${v ? ' ' + v.name : ''}" is not set to track a unique identifier per item.`);
+                        row.data.target = p.code; row.data.variantId = v ? v.id : null; row.data.idType = cell(r, 'idType') || 'imei';
+                    }
+                    row.data.ids = ids; seenIds.push(ids);
+                    row.op = 'unit_register';
+                }
+                if (row.errors.length) row.op = row.op === 'skip' ? 'skip' : 'error';
+                out.push(row);
+            });
+            if (type === 'serials') {   // identifier checks run over the whole file at once (duplicates inside the file + already registered)
+                const good = out.filter((x) => x.op === 'unit_register' && x.data.ids.length);
+                const v = serialValidateBatch(units, good.map((x) => x.data.ids), {});
+                v.errors.forEach((e) => { const x = good[e.row - 1]; if (x) { x.errors.push(e.msg.replace(/row (\d+) in this batch/, (m, a) => `row ${good[Number(a) - 1] ? good[Number(a) - 1].n : a} of this file`)); x.op = 'error'; } });
+            }
+            const count = (k) => out.filter((x) => x.op === k).length;
+            return { rows: out, total: out.length, failed: out.filter((x) => x.op === 'error').length, skipped: count('skip'), creatable: out.filter((x) => x.op && x.op !== 'error' && x.op !== 'skip').length, type, mode, policy };
+        }
+
+// Applies a plan to { inventory, units }. Only rows without errors run. Row keys make a re-run idempotent. Returns counts + stock movements to log.
+//@fn importApply
+function importApply(plan, state, o) {
+            o = o || {};
+            const now = o.now || Date.now(), res = { created: 0, updated: 0, skipped: 0, failed: 0, movements: [], rowKeys: [], unitsCreated: 0, rejected: [] };
+            const done = new Set(o.doneKeys || []);
+            const regRows = [];
+            plan.rows.forEach((row) => {
+                const key = `${o.importId}:${row.n}`;
+                if (row.op === 'error') { res.failed++; res.rejected.push({ n: row.n, errors: row.errors }); return; }
+                if (row.op === 'skip' || !row.op) { res.skipped++; return; }
+                if (done.has(key)) { res.skipped++; return; }
+                const d = row.data, inv = state.inventory;
+                const parent = d.target ? inv.find((p) => p.code === d.target) : (d.parent ? inv.find((p) => p.code === d.parent) : null);
+                if (row.op === 'product_create') {
+                    const code = d.code || (String(d.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `item-${row.n}`) + '-' + String(now).slice(-5) + row.n;
+                    const p = { code, type: 'item', name: d.name || code, qty: d.qty > 0 ? d.qty : 0, price: d.price || 0, wholesalePrice: d.cost || 0, wholesaleSellingPrice: 0, unit: 'pcs', vatCategory: 'A', image: null };
+                    if (d.category) p.category = d.category; if (d.supplier) p.supplier = d.supplier; if (d.barcode) p.barcode = d.barcode; if (d.reorder != null) p.reorderLevel = d.reorder; if (d.serialized) p.serialized = true;
+                    inv.push(p); res.created++; if (p.qty > 0) res.movements.push({ code, name: p.name, delta: p.qty, reason: `Import ${o.importId} (opening stock)` });
+                } else if (row.op === 'product_update' && parent) {
+                    if (d.name) parent.name = d.name; if (d.price != null) parent.price = d.price; if (d.cost != null) parent.wholesalePrice = d.cost; if (d.category) parent.category = d.category; if (d.supplier) parent.supplier = d.supplier; if (d.reorder != null) parent.reorderLevel = d.reorder; res.updated++;
+                } else if (row.op === 'variant_create' && parent) {
+                    parent.hasVariants = true; parent.variants = parent.variants || [];
+                    const v = { id: `v-${o.importId}-${row.n}`, name: d.label, code: d.vsku || '', price: d.price || 0, image: null, wholesaleSellingPrice: 0, wholesalePrice: d.cost || 0, qty: d.qty > 0 ? d.qty : 0, dualUnit: false, attrs: d.attrs, active: true };
+                    if (d.barcode) v.barcode = d.barcode; if (d.reorder != null) v.reorderLevel = d.reorder; if (d.serialized) v.serialized = true;
+                    parent.variants.push(v);
+                    parent.qty = stockRound3(parent.variants.reduce((a, x) => a + (Number(x.qty) || 0), 0));
+                    const ps = parent.variants.map((x) => Number(x.price) || 0).filter((x) => x > 0); if (ps.length) parent.price = Math.min.apply(null, ps);
+                    res.created++; if (v.qty > 0) res.movements.push({ code: v.code || parent.code, name: `${parent.name} ${v.name}`, delta: v.qty, reason: `Import ${o.importId} (opening stock)` });
+                } else if (row.op === 'variant_update' && parent) {
+                    const v = (parent.variants || []).find((x) => x.id === d.variantId);
+                    if (v) { if (d.price != null) v.price = d.price; if (d.cost != null) v.wholesalePrice = d.cost; if (d.attrs && Object.keys(d.attrs).length) v.attrs = Object.assign({}, v.attrs, d.attrs); if (d.reorder != null) v.reorderLevel = d.reorder; res.updated++; }
+                } else if ((row.op === 'stock_add' || row.op === 'stock_open') && parent) {
+                    const v = d.variantId ? (parent.variants || []).find((x) => x.id === d.variantId) : null, tgt = v || parent;
+                    tgt.qty = stockRound3((Number(tgt.qty) || 0) + d.qty);
+                    if (v) parent.qty = stockRound3(parent.variants.reduce((a, x) => a + (Number(x.qty) || 0), 0));
+                    if (d.cost != null) (v || parent).wholesalePrice = d.cost;
+                    res.updated++; res.movements.push({ code: v ? (v.code || parent.code) : parent.code, name: v ? `${parent.name} ${v.name}` : parent.name, delta: d.qty, reason: `Import ${o.importId} (${row.op === 'stock_open' ? 'opening stock' : 'received'})` });
+                } else if (row.op === 'unit_register' && parent) { regRows.push({ row, parent }); return; }
+                res.rowKeys.push(key);
+            });
+            // serialized rows: grouped per product/variant so quantity moves with the registered units only
+            const groups = new Map();
+            regRows.forEach(({ row, parent }) => { const g = `${parent.code}|${row.data.variantId || ''}`; if (!groups.has(g)) groups.set(g, []); groups.get(g).push({ row, parent }); });
+            groups.forEach((list) => {
+                const { parent } = list[0], variantId = list[0].row.data.variantId, v = variantId ? (parent.variants || []).find((x) => x.id === variantId) : null;
+                const valid = list.map(({ row }) => ({ row: row.n, ids: row.data.ids.map((val, k) => ({ type: k === 0 ? row.data.idType : row.data.idType, value: val, norm: serialNorm(val) })) }));
+                const made = serialMakeUnits(valid, { batchId: o.importId, code: parent.code, variantId, name: v ? `${parent.name} ${v.name}` : parent.name, cost: (v || parent).wholesalePrice, by: o.by, now, ref: `Import ${o.importId}`, reason: 'Imported' });
+                made.forEach((u) => { if (!state.units.some((x) => x.id === u.id)) { state.units.push(u); res.unitsCreated++; } });
+                const tgt = v || parent, unreg = Number(tgt.serialUnregistered) || 0, conv = Math.min(unreg, made.length);
+                if (conv) tgt.serialUnregistered = unreg - conv;
+                const add = made.length - conv; tgt.qty = stockRound3((Number(tgt.qty) || 0) + add);
+                if (v) parent.qty = stockRound3(parent.variants.reduce((a, x) => a + (Number(x.qty) || 0), 0));
+                if (add) res.movements.push({ code: v ? (v.code || parent.code) : parent.code, name: tgt === v ? `${parent.name} ${v.name}` : parent.name, delta: add, reason: `Import ${o.importId} (${made.length} serialized unit(s))` });
+                list.forEach(({ row }) => { res.created++; res.rowKeys.push(`${o.importId}:${row.n}`); });
+            });
+            return res;
+        }
+
+// ---- zip 314: CATALOGUE export / import - ONE format both ways, one row per sellable item (a plain product, or one variant of a product).
+// The old inventory CSV wrote one row per product and dropped every variant (SKU, attributes, prices, stock) and every batch; the import
+// wizard could read variants only through a separate second file and only four fixed attributes. Here: any number of attributes
+// ("Attr: <name>" columns), stable ids (Product SKU + Variant ID), a product and its variants in ONE file, nothing matched by name,
+// a catalogue update NEVER changes stock, an empty cell keeps the stored value ("[clear]" empties it). Batches have their own file.
+//@fn catalogueAttrNames
+function catalogueAttrNames(inventory) {
+            const seen = new Map();
+            (inventory || []).forEach((p) => { ((p && p.variants) || []).forEach((v) => { Object.keys((v && v.attrs) || {}).forEach((k) => { const t = String(k).trim(); if (t && !seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t); }); }); });
+            return Array.from(seen.values());
+        }
+
+//@fn catalogueColumns
+function catalogueColumns(attrNames) {
+            return ['Product SKU', 'Product name', 'Category', 'Sub-category', 'Unit', 'Variant ID', 'Variant SKU', 'Variant name']
+                .concat((attrNames || []).map((a) => 'Attr: ' + a))
+                .concat(['Barcode', 'Cost price', 'Selling price', 'Wholesale selling price', 'Minimum price', 'Reorder level', 'VAT category', 'Location', 'Expiry date', 'Active', 'Image', 'Quantity on hand']);
+        }
+
+//@fn catalogueExportRows
+function catalogueExportRows(inventory) {
+            const attrNames = catalogueAttrNames(inventory);
+            const out = [catalogueColumns(attrNames)];
+            const n = (x) => (x === undefined || x === null || x === '' ? '' : x);
+            const img = (x) => (typeof x === 'string' && !/^data:/i.test(x) ? x : '');           // an embedded photo is not a spreadsheet value
+            (inventory || []).forEach((p) => {
+                if (!p || p.removed || p._deleted || (p.type || 'item') === 'service') return;
+                const head = [p.code || '', p.name || '', p.category || '', p.subCat || '', p.unit || 'pcs'];
+                const tail = (o, isVar) => [n(o.barcode), n(o.wholesalePrice), n(o.price), n(o.wholesaleSellingPrice), n(o.minimumPrice), n(o.reorderLevel),
+                    p.vatCategory || '', p.location || '', (isVar ? o.expiryDate : p.expiryDate) && (isVar ? o.expiryDate : p.expiryDate) !== '9999-12-31' ? (isVar ? o.expiryDate : p.expiryDate) : '',   // zip 317: a variant has its own
+                    isVar ? (o.active === false ? 'no' : 'yes') : (p.inactive ? 'no' : 'yes'), img(o.image), n(o.qty)];
+                const vars = Array.isArray(p.variants) ? p.variants.filter((v) => v && !v._deleted) : [];
+                if (p.hasVariants && vars.length) {
+                    vars.forEach((v) => { out.push(head.concat([v.id || '', v.code || '', v.name || '']).concat(attrNames.map((a) => { const k = Object.keys(v.attrs || {}).find((x) => x.trim().toLowerCase() === a.toLowerCase()); return k ? v.attrs[k] : ''; })).concat(tail(v, true))); });
+                } else {
+                    out.push(head.concat(['', '', '']).concat(attrNames.map(() => '')).concat(tail(p, false)));
+                }
+            });
+            return out;
+        }
+
+//@fn catalogueReadHeader
+function catalogueReadHeader(header) {
+            const syn = {
+                sku: ['product sku', 'sku', 'code', 'product code', 'item code', 'parent sku', 'parent product id / sku'], name: ['product name', 'name', 'item name'],
+                category: ['category'], subCat: ['sub-category', 'subcategory', 'sub category'], unit: ['unit'], variantId: ['variant id'], variantSku: ['variant sku', 'variant code'],
+                variantName: ['variant name', 'variant'], barcode: ['barcode', 'ean', 'upc'], cost: ['cost price', 'cost', 'buying price'], price: ['selling price', 'price', 'retail price'],
+                wsell: ['wholesale selling price', 'wholesale price'], minPrice: ['minimum price', 'min price', 'minimum selling price'], reorder: ['reorder level', 'reorder threshold'],
+                vat: ['vat category', 'vat'], location: ['location'], expiry: ['expiry date', 'expiry'], active: ['active', 'status'], image: ['image', 'image url'],
+                qty: ['quantity on hand', 'quantity', 'qty', 'opening stock'],
+            };
+            const map = {}, attrs = [];
+            (header || []).forEach((h, i) => {
+                const t = String(h == null ? '' : h).trim(), lo = t.toLowerCase();
+                const m = /^(attr|attribute)\s*:\s*(.+)$/i.exec(t);
+                if (m) { attrs.push({ name: m[2].trim(), i }); return; }
+                if (['size', 'colour', 'color', 'brand', 'model', 'material', 'storage'].indexOf(lo) >= 0) { attrs.push({ name: lo === 'color' ? 'Colour' : t[0].toUpperCase() + t.slice(1), i }); return; }
+                Object.keys(syn).forEach((f) => { if (map[f] === undefined && syn[f].indexOf(lo) >= 0) map[f] = i; });
+            });
+            return { map, attrs };
+        }
+
+// PLAN (no changes). rows = the whole sheet INCLUDING the header row. ctx: { inventory, policy: 'create'|'update'|'both', opening: bool }.
+// opening = the "Quantity on hand" of a NEW product / variant is recorded as its opening stock (a logged movement); off = new items start at 0.
+//@fn cataloguePlan
+function cataloguePlan(rows, ctx) {
+            ctx = ctx || {};
+            const inv = ctx.inventory || [], policy = ctx.policy || 'both';
+            const { map, attrs } = catalogueReadHeader((rows || [])[0] || []);
+            const out = [];
+            if (map.sku === undefined && map.name === undefined) return { rows: [], total: 0, failed: 0, skipped: 0, creatable: 0, headerError: 'The file needs a "Product SKU" (or "Product name") column.' };
+            const CLEAR = '[clear]';
+            const cell = (r, f) => (map[f] === undefined ? undefined : String(r[map[f]] == null ? '' : r[map[f]]).trim());
+            const num = (s) => { if (s === undefined || s === '' || s === CLEAR) return s === CLEAR ? CLEAR : undefined; const x = Number(String(s).replace(/,/g, '')); return Number.isFinite(x) ? x : NaN; };
+            const lc = (s) => String(s == null ? '' : s).trim().toLowerCase();
+            const findP = (sku) => { const k = lc(sku); return k ? inv.filter((p) => p && !p._deleted && (lc(p.code) === k || (p.id != null && lc(p.id) === k))) : []; };
+            const owners = new Map();                                           // lower-case code / barcode -> "p:<code>" or "v:<code>:<id>" already in the shop
+            inv.forEach((p) => {
+                if (!p || p._deleted) return;
+                if (p.code) owners.set('c:' + lc(p.code), 'p:' + p.code); if (p.barcode) owners.set('b:' + lc(p.barcode), 'p:' + p.code);
+                (p.variants || []).forEach((v) => { if (!v) return; if (v.code) owners.set('c:' + lc(v.code), 'v:' + p.code + ':' + v.id); if (v.barcode) owners.set('b:' + lc(v.barcode), 'v:' + p.code + ':' + v.id); });
+            });
+            const fileCodes = new Map(), fileBars = new Map(), fileCombos = new Map(), planned = new Map();   // planned: product code (lc) -> { creating, hasVariantRows, plainRow }
+            (rows || []).slice(1).forEach((r, i) => {
+                const n = i + 2, row = { n, errors: [], warns: [], op: null, data: {} };
+                if (!Array.isArray(r) || !r.some((c) => String(c == null ? '' : c).trim())) return;
+                const d = row.data;
+                d.sku = cell(r, 'sku') || ''; d.name = cell(r, 'name'); d.category = cell(r, 'category'); d.subCat = cell(r, 'subCat'); d.unit = cell(r, 'unit');
+                d.variantId = cell(r, 'variantId') || ''; d.variantSku = cell(r, 'variantSku') || ''; d.variantName = cell(r, 'variantName');
+                d.attrs = {}; attrs.forEach((a) => { const v = String(r[a.i] == null ? '' : r[a.i]).trim(); if (v && v !== CLEAR) d.attrs[a.name] = v; });
+                d.barcode = cell(r, 'barcode'); d.vat = cell(r, 'vat'); d.location = cell(r, 'location'); d.image = cell(r, 'image'); d.expiry = cell(r, 'expiry');
+                ['cost', 'price', 'wsell', 'minPrice', 'reorder', 'qty'].forEach((f) => { d[f] = num(cell(r, f)); if (Number.isNaN(d[f]) || (typeof d[f] === 'number' && d[f] < 0)) row.errors.push(`${{ cost: 'Cost price', price: 'Selling price', wsell: 'Wholesale selling price', minPrice: 'Minimum price', reorder: 'Reorder level', qty: 'Quantity on hand' }[f]} is not a valid number (0 or more).`); });
+                const act = cell(r, 'active'); d.active = act === undefined || act === '' ? undefined : /^(y|yes|true|1|active)$/i.test(act) ? true : /^(n|no|false|0|inactive)$/i.test(act) ? false : NaN;
+                if (Number.isNaN(d.active)) row.errors.push('Active must be yes or no.');
+                if (d.expiry && d.expiry !== CLEAR) { const iso = catalogueDate(d.expiry); if (!iso) row.errors.push(`Expiry date "${d.expiry}" is not a date (use YYYY-MM-DD).`); else d.expiry = iso; }
+                if (d.vat && d.vat !== CLEAR && !/^[A-Ea-e]$/.test(d.vat)) row.errors.push(`VAT category "${d.vat}" must be one letter A-E.`);
+                const isVar = !!(d.variantId || d.variantSku || d.variantName || Object.keys(d.attrs).length);
+                if (!d.sku) {
+                    if (isVar) row.errors.push('Product SKU is missing: a variant row must name its product.');
+                    else if (!d.name) row.errors.push('Product SKU and Product name are both missing.');
+                }
+                const hit = d.sku ? findP(d.sku) : [];
+                if (hit.length > 1) row.errors.push(`Product SKU "${d.sku}" matches ${hit.length} products.`);
+                const p = hit.length === 1 ? hit[0] : null;
+                // the same code must not already belong to a VARIANT of some product (a product SKU and a variant SKU share one namespace)
+                if (!p && d.sku) { const o = owners.get('c:' + lc(d.sku)); if (o && o.startsWith('v:')) row.errors.push(`"${d.sku}" is the SKU of a variant, not of a product. Put it in "Variant SKU" and the product's own SKU in "Product SKU".`); }
+                if (!p && d.name && d.name !== CLEAR) { const same = inv.find((q) => q && !q._deleted && lc(q.name) === lc(d.name)); if (same) row.warns.push(`A product named "${same.name}" already exists (SKU ${same.code}). This row has a different SKU, so a NEW product is created - check it is not a duplicate.`); }
+                const key = lc(d.sku || ('~new~' + d.name));
+                const pl = planned.get(key) || { creating: !p, variantRows: 0, plainRows: 0 };
+                planned.set(key, pl);
+                d.target = p ? p.code : null;
+                const claim = (bag, k, who) => { const prev = bag.get(k); if (prev && prev.who !== who) return prev.n; if (!prev) bag.set(k, { who, n }); return 0; };
+                if (!isVar) {
+                    pl.plainRows++;
+                    if (pl.plainRows > 1) row.errors.push(`Product "${d.sku || d.name}" appears on more than one plain row.`);
+                    if (p && p.hasVariants && (p.variants || []).length) row.errors.push(`"${p.name}" has variants - give the Variant ID or Variant SKU on this row.`);
+                    if (pl.variantRows) row.errors.push(`Product "${d.sku}" has variant rows in this file - a row without a variant cannot also describe it.`);
+                    if (d.barcode && d.barcode !== CLEAR) { const o = owners.get('b:' + lc(d.barcode)); if (o && o !== 'p:' + (p ? p.code : '')) row.errors.push(`Barcode "${d.barcode}" already belongs to another item.`); const k = claim(fileBars, lc(d.barcode), 'p:' + key); if (k) row.errors.push(`Barcode "${d.barcode}" repeats row ${k}.`); }
+                    if (p) { row.op = policy === 'create' ? 'skip' : 'product_update'; if (row.op === 'skip') row.warns.push('Already exists - skipped (create-only).'); else if (typeof d.qty === 'number' && Math.abs(d.qty - (Number(p.qty) || 0)) > 1e-9) row.warns.push(`Quantity on hand is ${p.qty} in the shop; the file's ${d.qty} is ignored (an update never changes stock).`); }
+                    else { row.op = policy === 'update' ? 'skip' : 'product_create'; if (row.op === 'skip') row.warns.push('Not in the shop - skipped (update-only).'); else { if (d.sku) { const k = claim(fileCodes, lc(d.sku), 'p:' + key); if (k) row.errors.push(`SKU "${d.sku}" repeats row ${k}.`); } if (!d.name) row.errors.push('Product name is missing for a new product.'); } }
+                } else {
+                    pl.variantRows++;
+                    if (pl.plainRows) row.errors.push(`Product "${d.sku}" also has a plain row in this file.`);
+                    if (p && !p.hasVariants && (Number(p.qty) || 0) > 0) row.errors.push(`"${p.name}" is a plain item with ${p.qty} in stock - convert it to variants in the app first (nothing is guessed).`);
+                    let v = null;
+                    if (p) {
+                        const vs = (p.variants || []).filter((x) => x && !x._deleted);
+                        if (d.variantId) v = vs.find((x) => String(x.id) === d.variantId) || null;
+                        if (!v && d.variantSku) v = vs.find((x) => lc(x.code) === lc(d.variantSku)) || null;
+                        if (!v && !d.variantId && !d.variantSku && Object.keys(d.attrs).length) v = vs.find((x) => x.attrs && variantComboKey(x.attrs) === variantComboKey(d.attrs)) || null;
+                        if (!v && !d.variantId && !d.variantSku && !Object.keys(d.attrs).length && d.variantName) v = vs.find((x) => lc(x.name) === lc(d.variantName)) || null;
+                        if (v && d.variantSku && v.code && lc(v.code) !== lc(d.variantSku)) row.warns.push(`Variant SKU changes from "${v.code}" to "${d.variantSku}".`);
+                    }
+                    if (!v && d.variantId && !p) { /* a new product: its exported variant id is kept below */ }
+                    else if (!v && d.variantId && p) row.warns.push(`Variant ID "${d.variantId}" is not on "${p.name}" - it will be added as a new variant.`);
+                    const label = d.variantName || variantLabel(d.attrs);
+                    if (!label && !v) row.errors.push('A new variant needs a Variant name or at least one attribute.');
+                    const comboKey = key + '|' + (v ? 'id:' + v.id : (variantComboKey(d.attrs) || lc(label)));
+                    if (fileCombos.has(comboKey)) row.errors.push(`Same variant as row ${fileCombos.get(comboKey)}.`); else fileCombos.set(comboKey, n);
+                    const vwho = v ? 'v:' + p.code + ':' + v.id : 'nv:' + comboKey;
+                    if (d.variantSku) { const o = owners.get('c:' + lc(d.variantSku)); if (o && o !== vwho) row.errors.push(`Variant SKU "${d.variantSku}" already belongs to another item.`); const k = claim(fileCodes, lc(d.variantSku), vwho); if (k) row.errors.push(`Variant SKU "${d.variantSku}" repeats row ${k}.`); }
+                    if (d.barcode && d.barcode !== CLEAR) { const o = owners.get('b:' + lc(d.barcode)); if (o && o !== vwho) row.errors.push(`Barcode "${d.barcode}" already belongs to another item.`); const k = claim(fileBars, lc(d.barcode), vwho); if (k) row.errors.push(`Barcode "${d.barcode}" repeats row ${k}.`); }
+                    if (!p && d.sku && !d.name && pl.variantRows === 1) row.errors.push('Product name is missing for a new product.');
+                    d.label = label; d.vid = v ? v.id : null;
+                    if (v) { row.op = policy === 'create' ? 'skip' : 'variant_update'; if (row.op === 'skip') row.warns.push('Variant already exists - skipped (create-only).'); else if (typeof d.qty === 'number' && Math.abs(d.qty - (Number(v.qty) || 0)) > 1e-9) row.warns.push(`Quantity on hand is ${v.qty} in the shop; the file's ${d.qty} is ignored (an update never changes stock).`); }
+                    else { row.op = policy === 'update' ? 'skip' : 'variant_create'; if (row.op === 'skip') row.warns.push('Not in the shop - skipped (update-only).'); }
+                }
+                if (row.op === 'product_create' || row.op === 'variant_create') {
+                    if (typeof d.qty === 'number' && d.qty > 0) { if (ctx.opening) { row.opening = d.qty; } else row.warns.push(`Quantity ${d.qty} not recorded: tick "Record the quantity of NEW items as opening stock" to record it.`); }
+                }
+                if (row.errors.length) row.op = 'error';
+                out.push(row);
+            });
+            const count = (k) => out.filter((x) => x.op === k).length;
+            return { rows: out, total: out.length, failed: count('error'), skipped: count('skip'), creatable: out.filter((x) => x.op && x.op !== 'error' && x.op !== 'skip').length,
+                newProducts: count('product_create') + new Set(out.filter((x) => x.op === 'variant_create' && !x.data.target).map((x) => lc(x.data.sku))).size,
+                newVariants: count('variant_create'), updates: count('product_update') + count('variant_update'), openingRows: out.filter((x) => x.opening && x.op !== 'error').length, policy, type: 'catalogue' };
+        }
+
+//@fn catalogueDate
+function catalogueDate(s) {
+            const t = String(s == null ? '' : s).trim();
+            let y, m, d, x;
+            if ((x = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))) { y = +x[1]; m = +x[2]; d = +x[3]; }
+            else if ((x = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(t))) { d = +x[1]; m = +x[2]; y = +x[3]; }        // DD/MM/YYYY (Kenya)
+            else if (/^\d{5}$/.test(t)) { const dt = new Date(Date.UTC(1899, 11, 30) + Number(t) * 86400000); y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate(); }   // an Excel date number
+            else return '';
+            const dt = new Date(Date.UTC(y, m - 1, d));
+            if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+            return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+
+// APPLY a catalogue plan to state.inventory. Only rows without errors run; row keys (importId:row) make a resumed / retried run idempotent.
+// Returns counts + the stock movements to log (opening stock of NEW items only - an update never moves stock).
+//@fn catalogueApply
+function catalogueApply(plan, state, o) {
+            o = o || {};
+            const now = o.now || Date.now(), res = { created: 0, updated: 0, skipped: 0, failed: 0, movements: [], rowKeys: [], rejected: [], unitsCreated: 0 };
+            const done = new Set(o.doneKeys || []), inv = state.inventory, CLEAR = '[clear]';
+            const lc = (s) => String(s == null ? '' : s).trim().toLowerCase();
+            const setF = (obj, f, val) => { if (val === undefined || val === '') return false; if (val === CLEAR) { if (obj[f] === undefined) return false; delete obj[f]; return true; } if (obj[f] === val) return false; obj[f] = val; return true; };
+            const newCode = (d, n) => d.sku || ((String(d.name || 'item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'item') + '-' + String(now).slice(-5) + n);
+            const findP = (code) => inv.find((p) => p && !p._deleted && lc(p.code) === lc(code)) || null;
+            const recalc = (p) => { const vs = (p.variants || []).filter((x) => x && !x._deleted); p.qty = stockRound3(vs.reduce((a, x) => a + (Number(x.qty) || 0), 0)); const ps = vs.map((x) => Number(x.price) || 0).filter((x) => x > 0); if (ps.length) p.price = Math.min.apply(null, ps); };
+            const productFields = (p, d) => {
+                let ch = false;
+                ch = setF(p, 'name', d.name === CLEAR ? undefined : d.name) || ch; ch = setF(p, 'category', d.category) || ch; ch = setF(p, 'subCat', d.subCat) || ch; ch = setF(p, 'unit', d.unit === CLEAR ? undefined : d.unit) || ch;
+                ch = setF(p, 'vatCategory', d.vat && d.vat !== CLEAR ? d.vat.toUpperCase() : d.vat) || ch; ch = setF(p, 'location', d.location) || ch;
+                return ch;
+            };
+            const priceFields = (t, d, plain) => {
+                let ch = false;
+                ch = setF(t, 'barcode', d.barcode) || ch; ch = setF(t, 'wholesalePrice', d.cost) || ch; ch = setF(t, 'price', d.price) || ch; ch = setF(t, 'wholesaleSellingPrice', d.wsell) || ch;
+                ch = setF(t, 'minimumPrice', d.minPrice) || ch; ch = setF(t, 'reorderLevel', d.reorder) || ch; ch = setF(t, 'image', d.image) || ch;
+                if (plain) { ch = setF(t, 'expiryDate', d.expiry) || ch; if (d.active !== undefined && !!t.inactive !== !d.active) { if (d.active) delete t.inactive; else t.inactive = true; ch = true; } }
+                else { ch = setF(t, 'expiryDate', d.expiry) || ch; if (d.active !== undefined && (t.active !== false) !== d.active) { t.active = d.active; ch = true; } }   // zip 317: variant expiry
+                return ch;
+            };
+            (plan.rows || []).forEach((row) => {
+                const key = `${o.importId}:${row.n}`;
+                if (row.op === 'error') { res.failed++; res.rejected.push({ n: row.n, errors: row.errors }); return; }
+                if (row.op === 'skip' || !row.op) { res.skipped++; return; }
+                if (done.has(key)) { res.skipped++; return; }
+                const d = row.data;
+                if (row.op === 'product_create') {
+                    if (d.sku && findP(d.sku)) { res.skipped++; res.rowKeys.push(key); return; }        // created meanwhile (a resumed run)
+                    const p = { code: newCode(d, row.n), type: 'item', name: d.name || d.sku, qty: 0, price: 0, wholesalePrice: 0, unit: 'pcs', vatCategory: 'A', image: null };
+                    productFields(p, d); priceFields(p, d, true);
+                    if (row.opening > 0) { p.qty = stockRound3(row.opening); res.movements.push({ code: p.code, name: p.name, delta: p.qty, reason: `Import ${o.importId} (opening stock)` }); }
+                    p.updatedAt = now; inv.push(p); res.created++;
+                } else if (row.op === 'product_update') {
+                    const p = findP(d.target); if (!p) { res.failed++; res.rejected.push({ n: row.n, errors: ['The product is no longer in the shop.'] }); return; }
+                    const ch = productFields(p, d) | priceFields(p, d, true);
+                    if (ch) { p.updatedAt = now; res.updated++; } else res.skipped++;
+                } else if (row.op === 'variant_create' || row.op === 'variant_update') {
+                    let p = findP(d.target || d.sku);
+                    if (!p) {
+                        p = { code: newCode(d, row.n), type: 'item', name: d.name || d.sku, qty: 0, price: 0, wholesalePrice: 0, unit: 'pcs', vatCategory: 'A', image: null, hasVariants: true, variants: [] };
+                        productFields(p, d); inv.push(p); res.created++;
+                    } else if (productFields(p, d)) p.updatedAt = now;
+                    p.variants = Array.isArray(p.variants) ? p.variants : [];
+                    let v = d.vid ? p.variants.find((x) => x && x.id === d.vid) : null;
+                    if (row.op === 'variant_create' || !v) {
+                        if (d.variantSku && p.variants.some((x) => x && !x._deleted && lc(x.code) === lc(d.variantSku))) { res.skipped++; res.rowKeys.push(key); return; }   // resumed run
+                        const idFree = d.variantId && !inv.some((q) => q && (q.variants || []).some((x) => x && x.id === d.variantId));
+                        v = { id: idFree ? d.variantId : `v-${o.importId}-${row.n}`, name: d.label, code: d.variantSku || '', price: 0, image: null, wholesalePrice: 0, qty: 0, dualUnit: false, attrs: Object.assign({}, d.attrs), active: true };
+                        priceFields(v, d, false);
+                        if (row.opening > 0) { v.qty = stockRound3(row.opening); res.movements.push({ code: v.code || p.code, name: `${p.name} ${v.name}`, delta: v.qty, reason: `Import ${o.importId} (opening stock)` }); }
+                        p.hasVariants = true; p.variants.push(v); recalc(p); p.updatedAt = now; res.created++;
+                    } else {
+                        let ch = priceFields(v, d, false);
+                        if (d.variantSku && v.code !== d.variantSku) { v.code = d.variantSku; ch = true; }
+                        if (d.variantName && d.variantName !== CLEAR && v.name !== d.variantName) { v.name = d.variantName; ch = true; }
+                        if (Object.keys(d.attrs).length) { const merged = Object.assign({}, v.attrs, d.attrs); if (variantComboKey(merged) !== variantComboKey(v.attrs || {})) { v.attrs = merged; ch = true; } }
+                        if (ch) { v.updatedAt = now; if (d.price !== undefined) recalc(p); p.updatedAt = now; res.updated++; } else res.skipped++;
+                    }
+                }
+                res.rowKeys.push(key);
+            });
+            return res;
+        }
+
+// ---- zip 314: BATCHES & EXPIRY file - one row per batch of a product (batches are kept per product, as the pharmacy screens do).
+//@fn batchExportRows
+function batchExportRows(inventory) {
+            const out = [['Product SKU', 'Product name', 'Batch number', 'Expiry date', 'Quantity', 'Batch ID']];
+            (inventory || []).forEach((p) => { if (!p || p._deleted || !Array.isArray(p.batches)) return; p.batches.forEach((b) => { if (b && (Number(b.qty) || 0) > 0) out.push([p.code || '', p.name || '', b.batchNumber || '', b.expiryDate && b.expiryDate !== '9999-12-31' ? b.expiryDate : '', b.qty, b.id || '']); }); });
+            return out;
+        }
+
+// PLAN a batch file. ctx.mode: 'add' (stock received: adds to what is there) | 'opening' (refused for an item that already holds stock)
+// | 'assign' (NO stock change: splits stock already on hand - e.g. the opening stock a catalogue import just recorded - into these batches;
+// accepted only when a product's rows add up exactly to its stock not yet in a batch). Receiving a batch IS a stock change: logged as a movement.
+//@fn batchPlan
+function batchPlan(rows, ctx) {
+            ctx = ctx || {};
+            const inv = ctx.inventory || [], mode = ctx.mode === 'opening' || ctx.mode === 'assign' ? ctx.mode : 'add', out = [];
+            const lc = (s) => String(s == null ? '' : s).trim().toLowerCase();
+            const h = ((rows || [])[0] || []).map(lc), col = (names) => h.findIndex((x) => names.indexOf(x) >= 0);
+            const C = { sku: col(['product sku', 'sku', 'code']), batch: col(['batch number', 'batch', 'lot', 'lot number', 'batch/lot number']), exp: col(['expiry date', 'expiry']), qty: col(['quantity', 'qty']), id: col(['batch id']) };
+            if (C.sku < 0 || C.qty < 0) return { rows: [], total: 0, failed: 0, skipped: 0, creatable: 0, headerError: 'The file needs "Product SKU" and "Quantity" columns.' };
+            const seen = new Map();
+            (rows || []).slice(1).forEach((r, i) => {
+                const n = i + 2, row = { n, errors: [], warns: [], op: 'batch_receive', data: {} };
+                if (!Array.isArray(r) || !r.some((c) => String(c == null ? '' : c).trim())) return;
+                const g = (k) => (C[k] < 0 ? '' : String(r[C[k]] == null ? '' : r[C[k]]).trim());
+                const d = row.data; d.sku = g('sku'); d.batch = g('batch'); d.id = g('id');
+                const q = Number(g('qty').replace(/,/g, ''));
+                if (!g('qty') || !Number.isFinite(q) || q <= 0) row.errors.push('Quantity must be a number above 0.'); else d.qty = stockRound3(q);
+                if (g('exp')) { d.expiry = catalogueDate(g('exp')); if (!d.expiry) row.errors.push(`Expiry date "${g('exp')}" is not a date (use YYYY-MM-DD).`); } else d.expiry = '';
+                const hit = d.sku ? inv.filter((p) => p && !p._deleted && lc(p.code) === lc(d.sku)) : [];
+                if (!d.sku) row.errors.push('Product SKU is missing.');
+                else if (!hit.length) row.errors.push(`"${d.sku}" was not found. Import the catalogue first.`);
+                else if (hit.length > 1) row.errors.push(`"${d.sku}" matches ${hit.length} products.`);
+                const p = hit.length === 1 ? hit[0] : null;
+                if (p && p.hasVariants && (p.variants || []).length) row.errors.push(`"${p.name}" has variants: batches are kept per product, and this product's stock is held by its variants.`);
+                if (p && mode === 'opening' && (Number(p.qty) || 0) > 0) row.errors.push(`Opening stock refused: "${p.name}" already has ${p.qty} in stock. Use "Received stock", or "Split stock already on hand" if this stock was recorded without its batches.`);
+                if (p && d.id && Array.isArray(p.batches) && p.batches.some((b) => b && String(b.id) === d.id)) { row.op = 'skip'; row.warns.push('This batch is already in the shop - skipped (stock is never added twice).'); }
+                const k = lc(d.sku) + '|' + lc(d.batch) + '|' + d.expiry;
+                if (d.batch && seen.has(k)) row.errors.push(`Same batch as row ${seen.get(k)}.`); else seen.set(k, n);
+                d.target = p ? p.code : null;
+                if (row.errors.length) row.op = 'error';
+                out.push(row);
+            });
+            if (mode === 'assign') {                                              // per product: the file must describe exactly the stock not yet in a batch
+                const byP = new Map();
+                out.forEach((x) => { if (x.op === 'batch_receive') { const a = byP.get(x.data.target) || []; a.push(x); byP.set(x.data.target, a); } });
+                byP.forEach((list, code) => {
+                    const p = inv.find((x) => x && x.code === code), inB = (Array.isArray(p.batches) ? p.batches : []).reduce((a, b) => a + (Number(b && b.qty) || 0), 0);
+                    const loose = stockRound3((Number(p.qty) || 0) - inB), sum = stockRound3(list.reduce((a, x) => a + x.data.qty, 0));
+                    if (Math.abs(loose - sum) > 1e-6) list.forEach((x) => { x.errors.push(`"${p.name}" has ${loose} in stock not yet in a batch, but this file's batches add up to ${sum}. They must match exactly (nothing is added or removed in this mode).`); x.op = 'error'; });
+                    else list.forEach((x) => { x.op = 'batch_assign'; });
+                });
+            }
+            const count = (k) => out.filter((x) => x.op === k).length;
+            return { rows: out, total: out.length, failed: count('error'), skipped: count('skip'), creatable: count('batch_receive') + count('batch_assign'), units: out.filter((x) => x.op === 'batch_receive' || x.op === 'batch_assign').reduce((a, x) => a + x.data.qty, 0), mode, type: 'batches' };
+        }
+
+//@fn batchApply
+function batchApply(plan, state, o) {
+            o = o || {};
+            const res = { created: 0, updated: 0, skipped: 0, failed: 0, movements: [], rowKeys: [], rejected: [], unitsCreated: 0 }, done = new Set(o.doneKeys || []);
+            (plan.rows || []).forEach((row) => {
+                const key = `${o.importId}:${row.n}`;
+                if (row.op === 'error') { res.failed++; res.rejected.push({ n: row.n, errors: row.errors }); return; }
+                if ((row.op !== 'batch_receive' && row.op !== 'batch_assign') || done.has(key)) { res.skipped++; return; }
+                const d = row.data, p = state.inventory.find((x) => x && x.code === d.target);
+                if (!p) { res.failed++; res.rejected.push({ n: row.n, errors: ['The product is no longer in the shop.'] }); return; }
+                const id = d.id || `b-${o.importId}-${row.n}`;
+                p.batches = Array.isArray(p.batches) ? p.batches : [];
+                if (p.batches.some((b) => b && String(b.id) === id)) { res.skipped++; res.rowKeys.push(key); return; }
+                // stock already on hand without a batch keeps its own line, so "quantity = the sum of the batches" stays true
+                const inBatches = p.batches.reduce((a, b) => a + (Number(b && b.qty) || 0), 0), loose = stockRound3((Number(p.qty) || 0) - inBatches);
+                if (row.op === 'batch_assign') {                                  // existing stock gets its batch details; the quantity does not move
+                    p.batches.push({ id, batchNumber: d.batch || `Import ${o.importId}`, expiryDate: d.expiry || '9999-12-31', qty: d.qty, source: `Import ${o.importId}` });
+                    const real0 = p.batches.filter((b) => b && (Number(b.qty) || 0) > 0 && b.expiryDate && b.expiryDate !== '9999-12-31').map((b) => b.expiryDate).sort();
+                    if (real0.length) p.expiryDate = real0[0];
+                    p.updatedAt = o.now || Date.now(); res.updated++; res.rowKeys.push(key); return;
+                }
+                if (loose > 0) p.batches.push({ id: `b-${o.importId}-loose-${p.code}`, batchNumber: 'Stock before batches', expiryDate: p.expiryDate || '9999-12-31', qty: loose });
+                p.batches.push({ id, batchNumber: d.batch || `Import ${o.importId}`, expiryDate: d.expiry || '9999-12-31', qty: d.qty, receivedAt: o.now || Date.now(), source: `Import ${o.importId}` });
+                p.qty = stockRound3(p.batches.reduce((a, b) => a + (Number(b && b.qty) || 0), 0));
+                const real = p.batches.filter((b) => b && (Number(b.qty) || 0) > 0 && b.expiryDate && b.expiryDate !== '9999-12-31').map((b) => b.expiryDate).sort();
+                if (real.length) p.expiryDate = real[0];
+                p.updatedAt = o.now || Date.now();
+                res.updated++; res.rowKeys.push(key);
+                res.movements.push({ code: p.code, name: p.name, delta: d.qty, reason: `Import ${o.importId} (${plan.mode === 'opening' ? 'opening stock' : 'received'}, batch ${d.batch || id}${d.expiry ? ', expires ' + d.expiry : ''})` });
+            });
+            return res;
+        }
+
+// Voiding a wrong cash movement (manager/admin, reason required, only while the session is still open: a closed session's
+// expected cash is already fixed in its closing record). The movement stays on record; the maths simply stops counting it.
+//@fn cashVoidMovement
+function cashVoidMovement(movement, session, o) {
+            o = o || {};
+            if (!o.isManager) return { ok: false, error: 'Only a manager or admin can void a cash movement.' };
+            if (!movement) return { ok: false, error: 'Movement not found.' };
+            if (movement.voided) return { ok: false, error: 'This movement is already voided.' };
+            if (!session || session.status !== 'open' || session.id !== movement.sessionId) return { ok: false, error: 'Only a movement in the open session can be voided.' };
+            if (!String(o.reason || '').trim()) return { ok: false, error: 'A reason for voiding is required.' };
+            const now = o.now || Date.now();
+            return { ok: true, movement: Object.assign({}, movement, { voided: true, voidedBy: o.by || '', voidedAt: now, voidReason: String(o.reason).trim(), updatedAt: now }) };
+        }
+
+// Correcting the OPENING count (manager/admin, reason, while the session is open). The original count is kept in `corrections`.
+//@fn cashCorrectOpening
+function cashCorrectOpening(session, o) {
+            o = o || {};
+            const settings = o.settings || cashDefaultSettings();
+            if (!o.isManager) return { ok: false, error: 'Only a manager or admin can correct the opening count.' };
+            if (!session || session.status !== 'open' || !session.opening) return { ok: false, error: 'Only the opening count of an open session can be corrected.' };
+            if (!String(o.reason || '').trim()) return { ok: false, error: 'A reason for the correction is required.' };
+            const c = (o.mode || settings.countMode) === 'total' ? cashCountFromTotal(o.total) : cashCountFromDenoms(o.counts, settings.denoms);
+            if (!c.ok) return { ok: false, error: c.errors[0], errors: c.errors };
+            const prev = session.opening, now = o.now || Date.now();
+            const opening = Object.assign({}, prev, { status: 'counted', mode: (o.mode || settings.countMode) === 'total' ? 'total' : 'denoms', counts: c.counts, total: c.total, correctedAt: now });
+            const correction = { id: `cor-open-${now}-${o.by || ''}`, kind: 'opening', at: now, by: o.by || '', reason: String(o.reason).trim(), before: { total: prev.total, counts: prev.counts, status: prev.status }, after: { total: c.total } };
+            return { ok: true, opening, correction };
+        }
+
+//@fn searchNorm
+function searchNorm(s) {
+            // zip 327: what the user typed (or a stored name), made comparable: lower case, accents removed, every run of spaces one space, no edge spaces.
+            // The stored product is never changed - only the copy used for comparing.
+            let t = String(s == null ? '' : s).toLowerCase();
+            try { t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) { /* old engine: accents stay */ }
+            return t.replace(/\s+/g, ' ').trim();
+        }
+
+//@fn posSearchHit
+function posSearchHit(p, q) {
+            // zip 327: THE product search - the till, Inventory, restock, purchases, selectors and the photo grid all call this one function (before, ten
+            // screens each had their own name-only test, and a product with no name even crashed the list). A product matches when what was typed is
+            //  * inside its name, code, piece code, SKU or barcode - at the start, middle or end, any capitals, any spacing, with or without - . / & etc.
+            //    ("coca cola", "cocacola" and "Coca-Cola" are the same), OR
+            //  * inside the name / code / barcode of one of its VARIANTS (one word is enough: "large"), OR
+            //  * made of several words that are each found somewhere in those fields, in any order ("socks h&f", "mince fresh").
+            // Zero stock, a missing photo or category, the unit and archived-ness do not matter here (the screens decide what to do with the hit).
+            if (!p) return false;
+            const qn = searchNorm(q);
+            if (!qn) return false;
+            const fields = [p.name, p.code, p.pieceCode, p.sku, p.barcode, p.pieceBarcode];
+            if (Array.isArray(p.variants)) p.variants.forEach((v) => { if (v) fields.push(v.name, v.code, v.pieceCode, v.sku, v.barcode); });
+            const norm = [], comp = [];
+            for (let i = 0; i < fields.length; i++) {
+                if (fields[i] == null || fields[i] === '') continue;
+                const n = searchNorm(fields[i]);
+                if (n) { norm.push(n); comp.push(n.replace(/[^a-z0-9]/g, '')); }
+            }
+            const hay = norm.join(' ');
+            if (hay.includes(qn)) return true;
+            const found = (w) => {
+                if (hay.includes(w)) return true;
+                const wc = w.replace(/[^a-z0-9]/g, '');
+                if (!wc) return false;
+                for (let i = 0; i < comp.length; i++) if (comp[i].includes(wc)) return true;
+                return false;
+            };
+            const qc = qn.replace(/[^a-z0-9]/g, '');
+            if (qc) for (let i = 0; i < comp.length; i++) if (comp[i].includes(qc)) return true;
+            const words = qn.split(' ');
+            return words.length > 1 && words.every(found);
+        }
+
+//@fn posSearchRank
+function posSearchRank(list, q) {
+            // zip 312: the best matches first, so the one you want is never pushed out of the list by a long run of similar names:
+            // an exact code, then items IN STOCK before out of stock, then names that start with the text, then a word that starts with it, then A-Z.
+            const ql = String(q || '').toLowerCase();
+            const has = (p) => { try { if (Array.isArray(p.variants) && p.variants.length) return p.variants.some((v) => Number(v && v.qty) > 0); return (typeof getAvailableStock === 'function' ? getAvailableStock(p) : Number(p.qty) || 0) > 0; } catch (e) { return Number(p.qty) > 0; } };
+            const score = (p) => {
+                const code = String(p.code || '').toLowerCase(), name = String(p.name || '').toLowerCase();
+                if (code === ql || String(p.pieceCode || '').toLowerCase() === ql) return 0;
+                if (name.startsWith(ql)) return 1;
+                if ((' ' + name).includes(' ' + ql)) return 2;
+                return 3;
+            };
+            return list.map((p) => ({ p, ex: score(p) === 0 ? 0 : 1, st: has(p) ? 0 : 1, s: score(p) }))
+                .sort((a, b) => a.ex - b.ex || a.st - b.st || a.s - b.s || String(a.p.name).localeCompare(String(b.p.name)))
+                .map((x) => x.p);
+        }
+
+//@fn loyaltyBalanceOf
+function loyaltyBalanceOf(phone) {
+            // zip 313: the customer's token balance right now (null when there is no such customer)
+            try {
+                if (!phone || typeof customers === 'undefined' || !Array.isArray(customers)) return null;
+                const c = customers.find((x) => x && x.phone === phone);
+                return c ? (Number(c.tokens) || 0) : null;
+            } catch (e) { return null; }
+        }
+
+//@fn loyaltyStampSale
+function loyaltyStampSale(sale, phone, before, receiptCopy) {
+            // zip 313: writes what this sale earned and the balance after it onto the sale (and the copy the receipt prints from), so the receipt
+            // - and any reprint later - shows "Tokens earned" and "Token balance" as they were at this sale. Earned = balance after - before,
+            // so member multipliers (Hotel) are counted too. Only when loyalty tokens are on and the sale has a known customer.
+            try {
+                if (!sale || typeof loyaltyEnabled === 'undefined' || !loyaltyEnabled) return null;
+                const after = loyaltyBalanceOf(phone);
+                if (after === null) return null;
+                const b = before === null || before === undefined ? after : Number(before) || 0;
+                const ly = { earned: Math.max(0, Math.round((after - b) * 100) / 100), balance: after, value: Number(typeof tokenValueKES !== 'undefined' ? tokenValueKES : 0) || 0 };
+                sale.loyalty = ly;
+                if (receiptCopy && receiptCopy !== sale) receiptCopy.loyalty = ly;
+                try { if (typeof salesLog !== 'undefined' && Array.isArray(salesLog) && salesLog.indexOf(sale) >= 0) safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_sales_log') : 'pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* saved with the next change */ }
+                // a receipt already on screen for this sale is redrawn with the lines
+                try {
+                    const shown = receiptCopy || sale, modal = document.getElementById('receipt-modal');
+                    if (modal && modal.style.display === 'flex' && modal.dataset.saleId && modal.dataset.saleId === shown.id && typeof renderReceipt === 'function') renderReceipt(shown);
+                } catch (e) { /* the receipt keeps what it shows */ }
+                return ly;
+            } catch (e) { return null; }
+        }
+
+//@fn receiptLoyaltyLines
+function receiptLoyaltyLines(sale, cols) {
+            // zip 313: the receipt's loyalty lines - only when the shop shows them (Settings > Loyalty), tokens are on and the sale has a customer
+            try {
+                const ly = sale && sale.loyalty;
+                if (!ly || typeof loyaltyEnabled === 'undefined' || !loyaltyEnabled) return [];
+                if (typeof receiptShowLoyalty !== 'undefined' && receiptShowLoyalty === false) return [];
+                const n = (v) => { const x = Math.round((Number(v) || 0) * 100) / 100; return String(x); };
+                const out = ['LOYALTY TOKENS'];
+                out.push(...receiptMoneyRow('Earned this sale', (ly.earned > 0 ? '+' : '') + n(ly.earned), cols));
+                out.push(...receiptMoneyRow('Token balance', n(ly.balance), cols));
+                if (ly.value > 0) out.push(...receiptMoneyRow('Balance worth', 'KES ' + (Math.round(ly.balance * ly.value * 100) / 100).toFixed(2), cols));
+                return out;
+            } catch (e) { return []; }
+        }
+
+//@fn setReceiptShowLoyalty
+function setReceiptShowLoyalty(checked) {
+            // zip 313: Settings > Loyalty > "Show tokens earned and the token balance on the receipt" (synced to every device of the shop)
+            receiptShowLoyalty = !!checked;
+            safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_receipt_show_loyalty') : 'pos_receipt_show_loyalty', String(receiptShowLoyalty));
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* saved on this device; synced with the next change */ }
+            try { if (typeof showToast === 'function') showToast(receiptShowLoyalty ? 'Receipts will show tokens earned and the balance.' : 'Receipts will not show loyalty tokens.'); } catch (e) { /* ok */ }
+        }
+
+// ===================== CUSTOMER CORE (zip 328) =====================
+// ONE customer profile per person, many transactions linked to it by a stable id. Strong matching signals are the normalised phone number and the
+// normalised national ID; the name is only a secondary signal and two people who merely share a name are NEVER merged automatically. A shared
+// phone number (family, an office line) is reported as ambiguous and the cashier chooses: use the existing profile, or create a different person.
+// Profiles are tenant-scoped by construction (the `customers` list is this shop's own synced state), so nothing here can reach another shop.
+
+//@fn custPhoneKey
+function custPhoneKey(raw) {
+            const d = String(raw == null ? '' : raw).replace(/\D/g, '');
+            if (d.length < 9) return '';
+            return normalizeKenyanPhone(d);
+        }
+
+//@fn custIdKey
+function custIdKey(raw) {
+            const k = String(raw == null ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+            return k.length >= 5 ? k : '';
+        }
+
+//@fn custNameKey
+function custNameKey(raw) {
+            return String(raw == null ? '' : raw).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+// "John" and "John Kamau" can be the same person; "Mary Wanjiru" and "John Kamau" cannot. A blank name conflicts with nothing.
+//@fn custNamesCompatible
+function custNamesCompatible(a, b) {
+            const x = custNameKey(a), y = custNameKey(b);
+            if (!x || !y || x === y) return true;
+            const xs = x.split(' '), ys = y.split(' ');
+            const sub = (s, t) => s.every((w) => t.indexOf(w) !== -1);
+            return sub(xs, ys) || sub(ys, xs);
+        }
+
+// A valid Kenyan mobile in any common spelling (0712345678, 712345678, +254712345678, 254 712 345 678, 0112...), or an international number written with a +.
+//@fn custPhoneValid
+function custPhoneValid(raw) {
+            const s = String(raw == null ? '' : raw).trim();
+            if (!s) return false;
+            if (/^254[17]\d{8}$/.test(custPhoneKey(s))) return true;
+            const d = s.replace(/\D/g, '');
+            return s.charAt(0) === '+' && d.length >= 8 && d.length <= 15;
+        }
+
+// The ID number is personal data: lists and exports show it masked; the full number is for the Admin and managers.
+//@fn custMaskId
+function custMaskId(raw) {
+            const s = String(raw == null ? '' : raw).trim();
+            if (!s) return '';
+            if (s.length <= 3) return '•••';
+            return '•'.repeat(Math.min(6, s.length - 3)) + s.slice(-3);
+        }
+
+// Who may do the sensitive things (see full ID numbers, merge profiles, reverse a contract): the Admin, or a staff member marked Manager.
+// Looking at another branch's data is read-only: nothing is merged, issued or cancelled from that view.
+//@fn custReadOnlyView
+function custReadOnlyView() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId && viewedBranchId !== 'self'; } catch (e) { return false; } }
+
+//@fn custIsManager
+function custIsManager() {
+            try {
+                if (typeof isAdminServing === 'function' && isAdminServing()) return true;
+                if (typeof currentServer === 'undefined' || !currentServer) return true;
+                const list = typeof staff !== 'undefined' && Array.isArray(staff) ? staff : [];
+                const me = list.find((s) => s && String(s.id) === String(currentServer.id));
+                return !!(me && me.isManager);
+            } catch (e) { return false; }
+        }
+
+// The shop's record lists this module touches. Every one is optional (the Water app has no contracts, others have no returns).
+//@fn custLists
+function custLists() {
+            return {
+                salesLog: typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : [],
+                bills: typeof bills !== 'undefined' && Array.isArray(bills) ? bills : [],
+                contracts: typeof contracts !== 'undefined' && Array.isArray(contracts) ? contracts : [],
+                debts: typeof debts !== 'undefined' && Array.isArray(debts) ? debts : [],
+                returns: typeof returns !== 'undefined' && Array.isArray(returns) ? returns : [],
+            };
+        }
+
+//@fn custSave
+function custSave(which) {
+            try {
+                const K = { customers: 'pos_customers', salesLog: 'pos_sales_log', bills: 'pos_bills', contracts: 'pos_contracts', debts: 'pos_debts', returns: 'pos_returns' };
+                const L = custLists();
+                if (typeof customers !== 'undefined') L.customers = customers;
+                (which || Object.keys(K)).forEach((n) => {
+                    if (!Array.isArray(L[n]) || !K[n]) return;
+                    if (n === 'contracts' && typeof contracts === 'undefined') return;
+                    safeSetItem(typeof appStoreKey === 'function' ? appStoreKey(K[n]) : K[n], JSON.stringify(L[n]));
+                });
+            } catch (e) { /* kept in memory; the next save writes it */ }
+        }
+
+//@fn custActive
+function custActive() {
+            return (typeof customers !== 'undefined' && Array.isArray(customers) ? customers : []).filter((c) => c && !c._deleted && !c.mergedInto);
+        }
+
+// Follows a merge: an id that was merged into another profile resolves to the survivor. Returns the profile or null.
+//@fn custResolve
+function custResolve(id) {
+            if (id == null || id === '') return null;
+            const list = typeof customers !== 'undefined' && Array.isArray(customers) ? customers : [];
+            let c = list.find((x) => x && String(x.id) === String(id)) || null;
+            for (let hops = 0; c && c.mergedInto && hops < 10; hops++) c = list.find((x) => x && String(x.id) === String(c.mergedInto)) || null;
+            return c && !c._deleted ? c : null;
+        }
+
+// -> { byPhone, byId, byName } (active profiles only). Phone and ID are the strong signals; name is secondary.
+//@fn findCustomerMatches
+function findCustomerMatches(d) {
+            d = d || {};
+            const pk = custPhoneKey(d.phone), ik = custIdKey(d.idNumber), nk = custNameKey(d.name);
+            const byPhone = [], byId = [], byName = [];
+            custActive().forEach((c) => {
+                if (pk && (custPhoneKey(c.phone) === pk || (Array.isArray(c.altPhones) && c.altPhones.some((p) => custPhoneKey(p) === pk)))) byPhone.push(c);
+                if (ik && custIdKey(c.idNumber) === ik) byId.push(c);
+                if (nk && custNameKey(c.name) === nk) byName.push(c);
+            });
+            return { byPhone, byId, byName };
+        }
+
+// Deterministic id for a profile that has a phone (or, failing that, an ID number): two devices that register the same person offline create the SAME
+// id, so the sync merge folds them into one record instead of keeping two. A person created on purpose as "a different person" gets a random id.
+//@fn custStableId
+function custStableId(d, taken) {
+            const pk = custPhoneKey(d && d.phone), ik = custIdKey(d && d.idNumber);
+            const base = pk ? 'c-p' + pk : (ik ? 'c-i' + ik : '');
+            if (!base) return genSaleId();
+            return taken && taken.has(base) ? genSaleId() : base;
+        }
+
+//@fn custLog
+function custLog(c, field, from, to, by) {
+            if (!c) return;
+            if (!Array.isArray(c.history)) c.history = [];
+            c.history.push({ at: new Date().toISOString(), by: by || (typeof activeServerName === 'function' ? activeServerName() : ''), field, from: from == null ? '' : String(from), to: to == null ? '' : String(to) });
+            if (c.history.length > 60) c.history = c.history.slice(-60);
+        }
+
+// Find or create the ONE profile for these details.
+//   d     { name, phone, idNumber, notes }
+//   opts  { customerId }  an existing profile the cashier picked (never creates)
+//         { choice }      'use:<id>' | 'new'  the answer to an earlier "ambiguous" result
+//         { onConflict }  'reuse' = on a shared phone just take the profile that already owns it (the old automatic behaviour, used where nobody is asked)
+//         { update }      authorised correction: overwrite the stored value with a supplied one (logged); otherwise only blanks are filled
+//         { create }      false = never create (look-up only)
+// -> { status: 'matched' | 'created' | 'ambiguous' | 'invalid' | 'none', customer, candidates, reason }
+//@fn upsertCustomer
+function upsertCustomer(d, opts) {
+            d = d || {}; opts = opts || {};
+            const clean = { name: String(d.name == null ? '' : d.name).trim(), phone: String(d.phone == null ? '' : d.phone).trim(), idNumber: String(d.idNumber == null ? '' : d.idNumber).trim(), notes: String(d.notes == null ? '' : d.notes).trim() };
+            if (typeof customers === 'undefined' || !Array.isArray(customers)) return { status: 'invalid', reason: 'no customer list' };
+            if (clean.phone && !custPhoneValid(clean.phone)) return { status: 'invalid', reason: 'That phone number does not look right.' };
+            const now = Date.now();
+            const apply = (c) => {
+                let changed = false;
+                const set = (f, v) => {
+                    if (!v) return;
+                    const cur = c[f] || '';
+                    if (!cur) { c[f] = v; custLog(c, f, '', f === 'idNumber' ? custMaskId(v) : v); changed = true; }
+                    else if (opts.update && String(cur) !== String(v)) {
+                        if (f === 'phone' && custPhoneKey(cur) !== custPhoneKey(v)) { c.altPhones = Array.from(new Set([...(c.altPhones || []), cur])); }
+                        c[f] = v; custLog(c, f, f === 'idNumber' ? custMaskId(cur) : cur, f === 'idNumber' ? custMaskId(v) : v); changed = true;
+                    }
+                };
+                set('name', clean.name); set('phone', clean.phone); set('idNumber', clean.idNumber); set('notes', clean.notes);
+                if (!c.status) c.status = 'active';
+                if (changed) c.updatedAt = now;
+                return changed;
+            };
+            const done = (status, c) => { custSave(['customers']); return { status, customer: c }; };
+
+            if (opts.customerId) {
+                const c = custResolve(opts.customerId);
+                if (!c) return { status: 'invalid', reason: 'That customer no longer exists.' };
+                if (apply(c)) return done('matched', c);
+                return { status: 'matched', customer: c };
+            }
+            if (typeof opts.choice === 'string' && opts.choice.indexOf('use:') === 0) {
+                const c = custResolve(opts.choice.slice(4));
+                if (!c) return { status: 'invalid', reason: 'That customer no longer exists.' };
+                if (apply(c)) return done('matched', c);
+                return { status: 'matched', customer: c };
+            }
+            const hasKey = !!(custPhoneKey(clean.phone) || custIdKey(clean.idNumber));
+            if (opts.choice !== 'new') {
+                const m = findCustomerMatches(clean);
+                const strong = [];
+                m.byId.concat(m.byPhone).forEach((c) => { if (strong.indexOf(c) === -1) strong.push(c); });
+                if (strong.length === 1) {
+                    const c = strong[0];
+                    const idClash = custIdKey(clean.idNumber) && custIdKey(c.idNumber) && custIdKey(clean.idNumber) !== custIdKey(c.idNumber);
+                    // the name is a secondary signal: it only decides when the phone / ID alone cannot (a phone AND an ID that both match is the same person whatever the name)
+                    const both = m.byId.indexOf(c) !== -1 && m.byPhone.indexOf(c) !== -1;
+                    const nameClash = !both && !custNamesCompatible(clean.name, c.name);
+                    if ((idClash || nameClash) && opts.onConflict !== 'reuse') return { status: 'ambiguous', candidates: [c], reason: idClash ? 'This phone number belongs to a customer with a different ID number.' : (m.byId.indexOf(c) !== -1 ? 'This ID number is already saved under a different name.' : 'This phone number is already saved under a different name.') };
+                    if (apply(c)) return done('matched', c);
+                    return { status: 'matched', customer: c };
+                }
+                if (strong.length > 1) {
+                    if (opts.onConflict === 'reuse') { const c = strong[0]; if (apply(c)) return done('matched', c); return { status: 'matched', customer: c }; }
+                    return { status: 'ambiguous', candidates: strong, reason: 'More than one saved customer matches this phone number / ID number.' };
+                }
+                // no phone / ID match: a same-name profile that has neither phone nor ID is probably the same person (they are only now giving a number) - ask, never assume
+                const blanks = m.byName.filter((c) => !custPhoneKey(c.phone) && !custIdKey(c.idNumber));
+                const pool = hasKey ? blanks : m.byName;
+                if (pool.length && opts.onConflict !== 'reuse') return { status: 'ambiguous', candidates: pool, reason: hasKey ? 'A customer with this name is already saved without a phone number.' : 'A customer with this name is already saved.' };
+                if (pool.length && opts.onConflict === 'reuse' && !hasKey) { const c = pool[0]; if (apply(c)) return done('matched', c); return { status: 'matched', customer: c }; }
+            }
+            if (opts.create === false) return { status: 'none' };
+            if (!clean.name && !clean.phone && !clean.idNumber) return { status: 'invalid', reason: 'Enter a name, a phone number or an ID number.' };
+            const taken = new Set(customers.map((c) => String(c && c.id)));
+            const c = { id: opts.choice === 'new' ? genSaleId() : custStableId(clean, taken), name: clean.name, phone: clean.phone, tokens: 0, createdAt: now, updatedAt: now, status: 'active' };
+            if (clean.idNumber) c.idNumber = clean.idNumber;
+            if (clean.notes) c.notes = clean.notes;
+            customers.push(c);
+            return done('created', c);
+        }
+
+// The old automatic path (checkout, bill instalments, store credit, SMS): a phone is needed to have a profile; the profile that owns that phone is reused.
+//@fn custRegister
+function custRegister(phone, name, extra) {
+            const p = String(phone == null ? '' : phone).trim();
+            if (!p || !custPhoneKey(p)) return null;
+            const r = upsertCustomer({ name, phone: p, idNumber: extra && extra.idNumber }, { onConflict: 'reuse' });
+            return r.customer || null;
+        }
+
+// Everything one customer did, newest first: sales, bills, contracts - linked by customerId, plus older records that only carry the phone.
+// Each entry keeps its OWN reference and date; opening a profile never changes any of them.
+//@fn customerTransactions
+function customerTransactions(customer, opts) {
+            opts = opts || {};
+            if (!customer) return { items: [], total: 0 };
+            const id = String(customer.id);
+            const phones = new Set([custPhoneKey(customer.phone)].concat((customer.altPhones || []).map(custPhoneKey)).filter(Boolean));
+            const phoneOf = (r) => [r && r.customerPhone, r && r.mpesaPhone, r && r.phone].map(custPhoneKey).filter(Boolean);
+            const mine = (r) => {
+                if (!r || r._deleted) return false;
+                if (r.customerId != null && r.customerId !== '') return String(r.customerId) === id || (custResolve(r.customerId) && String(custResolve(r.customerId).id) === id);
+                return phoneOf(r).some((p) => phones.has(p));
+            };
+            const out = [];
+            const L = custLists();
+            const billIds = new Set(L.bills.map((b) => b && String(b.id)));
+            L.salesLog.forEach((s) => { if (mine(s) && !(s.billId != null || s.installment || billIds.has(String(s.id)))) out.push({ kind: 'sale', id: s.id, ref: s.refNumber || String(s.id), at: s.timestamp, record: s }); });
+            L.bills.forEach((b) => { if (mine(b)) out.push({ kind: 'bill', id: b.id, ref: b.refNumber || String(b.id), at: b.timestamp, record: b }); });
+            L.contracts.forEach((c) => { if (mine(c)) out.push({ kind: 'contract', id: c.id, ref: c.contractNo || String(c.id), at: c.createdAt, record: c }); });
+            out.sort((a, b) => (new Date(b.at).getTime() || 0) - (new Date(a.at).getTime() || 0));
+            const off = Math.max(0, opts.offset | 0), lim = opts.limit > 0 ? opts.limit | 0 : out.length;
+            return { items: out.slice(off, off + lim), total: out.length, last: out[0] ? out[0].at : null };
+        }
+
+// Groups of active profiles that look like the same person: the same normalised phone number or the same normalised ID number. Nothing is changed here.
+//@fn findDuplicateCustomerGroups
+function findDuplicateCustomerGroups() {
+            const list = custActive();
+            const parent = new Map(list.map((c) => [String(c.id), String(c.id)]));
+            const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+            const join = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+            const seen = { p: new Map(), i: new Map() };
+            list.forEach((c) => {
+                const id = String(c.id);
+                [['p', custPhoneKey(c.phone)], ['i', custIdKey(c.idNumber)]].forEach(([t, k]) => { if (!k) return; if (seen[t].has(k)) join(id, seen[t].get(k)); else seen[t].set(k, id); });
+            });
+            const groups = new Map();
+            list.forEach((c) => { const r = find(String(c.id)); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(c); });
+            return Array.from(groups.values()).filter((g) => g.length > 1).map((g) => ({
+                customers: g,
+                sameName: g.every((c) => custNamesCompatible(c.name, g[0].name)),
+                counts: g.map((c) => ({ id: c.id, n: customerTransactions(c).total })),
+            }));
+        }
+
+// Administrator-controlled merge. The survivor keeps its id; each duplicate becomes a tombstone that points at it (so a device that is still holding the
+// duplicate cannot bring it back), every transaction that pointed at the duplicate is re-pointed at the survivor (the transaction's own id, amounts, items and
+// receipt snapshot are NOT touched), and the merge is written to the survivor's history. Running it again changes nothing.
+//@fn mergeCustomers
+function mergeCustomers(survivorId, dupIds, opts) {
+            opts = opts || {};
+            if (custReadOnlyView()) return { ok: false, error: 'You are viewing another branch - it is read-only.' };
+            if (!custIsManager()) return { ok: false, error: 'Only the Admin or a manager can merge customers.' };
+            const list = typeof customers !== 'undefined' && Array.isArray(customers) ? customers : [];
+            const survivor = list.find((c) => c && String(c.id) === String(survivorId) && !c.mergedInto && !c._deleted);
+            if (!survivor) return { ok: false, error: 'The customer to keep was not found.' };
+            const dups = (Array.isArray(dupIds) ? dupIds : [dupIds]).map((id) => list.find((c) => c && String(c.id) === String(id))).filter((c) => c && c !== survivor);
+            if (!dups.length) return { ok: false, error: 'Nothing to merge.' };
+            const now = Date.now(), by = opts.by || (typeof activeServerName === 'function' ? activeServerName() : '');
+            const moved = { sales: 0, bills: 0, contracts: 0, debts: 0, returns: 0 };
+            const LS = custLists();
+            const repoint = (name, key, fromIds) => {
+                (LS[name] || []).forEach((r) => { if (r && r.customerId != null && fromIds.has(String(r.customerId))) { r.customerId = survivor.id; r.updatedAt = now; moved[key]++; } });
+            };
+            const fromIds = new Set(dups.filter((d) => !d.mergedInto || String(d.mergedInto) === String(survivor.id)).map((d) => String(d.id)));
+            // records that point at a previous merge's tombstone are also followed to the survivor
+            list.forEach((c) => { if (c && c.mergedInto && fromIds.has(String(c.mergedInto))) fromIds.add(String(c.id)); });
+            repoint('salesLog', 'sales', fromIds); repoint('bills', 'bills', fromIds); repoint('contracts', 'contracts', fromIds); repoint('debts', 'debts', fromIds); repoint('returns', 'returns', fromIds);
+            const mergedNow = [];
+            dups.forEach((d) => {
+                if (d.mergedInto && String(d.mergedInto) === String(survivor.id)) return;       // already merged into this survivor: nothing more to do
+                if (d.mergedInto) return;                                                          // merged into somebody else: leave it alone
+                if (!survivor.name && d.name) survivor.name = d.name;
+                if (!survivor.idNumber && d.idNumber) survivor.idNumber = d.idNumber;
+                if (!survivor.phone && d.phone) survivor.phone = d.phone;
+                else if (d.phone && custPhoneKey(d.phone) !== custPhoneKey(survivor.phone)) survivor.altPhones = Array.from(new Set([...(survivor.altPhones || []), d.phone]));
+                if (Array.isArray(d.altPhones)) survivor.altPhones = Array.from(new Set([...(survivor.altPhones || []), ...d.altPhones]));
+                survivor.tokens = Math.round(((survivor.tokens || 0) + (d.tokens || 0)) * 100) / 100;
+                if (d.storeCredit) survivor.storeCredit = Math.round(((survivor.storeCredit || 0) + d.storeCredit) * 100) / 100;
+                mergedNow.push({ id: d.id, name: d.name || '', phone: d.phone || '' });
+                d.mergedPhone = d.phone || ''; d.phone = ''; d.tokens = 0; d.storeCredit = 0;
+                d.mergedInto = survivor.id; d.mergedAt = new Date(now).toISOString(); d.mergedBy = by; d.updatedAt = now;
+            });
+            if (mergedNow.length || moved.sales + moved.bills + moved.contracts + moved.debts + moved.returns > 0) {
+                if (!Array.isArray(survivor.mergeHistory)) survivor.mergeHistory = [];
+                if (mergedNow.length) survivor.mergeHistory.push({ at: new Date(now).toISOString(), by, merged: mergedNow, moved });
+                survivor.updatedAt = now;
+            }
+            custSave();
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ }
+            return { ok: true, survivor, merged: mergedNow, moved };
+        }
+
+// zip 369: delete a customer. The profile is kept as a deleted record (so every other phone also removes it and it cannot come back from an old
+// copy), but it disappears from every list, search and the checkout customer picker. Past sales, bills and statements keep the name and phone they
+// were made with. What the customer still owes is NOT erased: the bills / debts stay where they are.
+//@fn deleteCustomer
+function deleteCustomer(id, opts) {
+            opts = opts || {};
+            if (custReadOnlyView()) return { ok: false, error: 'You are viewing another branch - it is read-only.' };
+            if (!custIsManager()) return { ok: false, error: 'Only the Admin or a manager can delete a customer.' };
+            const list = typeof customers !== 'undefined' && Array.isArray(customers) ? customers : [];
+            const c = list.find((x) => x && String(x.id) === String(id) && !x._deleted);
+            if (!c) return { ok: false, error: 'That customer was not found.' };
+            const now = Date.now(), by = opts.by || (typeof activeServerName === 'function' ? activeServerName() : '');
+            try { custLog(c, 'status', c.status || 'active', 'deleted', by); } catch (e) { /* history is a nicety */ }
+            c._deleted = true; c.status = 'deleted'; c.deletedAt = new Date(now).toISOString(); c.deletedBy = by; c.updatedAt = now;
+            // keep only the tombstone (so the delete syncs and stays deleted); the personal details are wiped from this phone
+            Object.keys(c).forEach((k) => { if (!/^(id|_deleted|status|deletedAt|deletedBy|updatedAt|createdAt|siteId|branchId)$/.test(k)) delete c[k]; });
+            custSave();
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ }
+            return { ok: true, customer: c };
+        }
+
+// zip 328: "undefined", "null", "NaN" or blank must never print as customer information
+//@fn receiptCleanText
+function receiptCleanText(v) {
+            const t = v == null ? '' : String(v).trim();
+            return /^(undefined|null|nan)$/i.test(t) ? '' : t;
+        }
+
+// zip 328: the optional customer lines of a receipt (phone, ID number) - only what the sale actually has, only when the shop leaves them switched on
+//@fn receiptCustomerLines
+function receiptCustomerLines(sale, cols) {
+            const out = [];
+            const phone = receiptCleanText(sale && sale.customerPhone), id = receiptCleanText(sale && sale.customerIdNumber);
+            if (phone && (typeof receiptCustPhoneOn !== 'function' || receiptCustPhoneOn())) out.push(`Phone: ${phone}`);
+            if (id && (typeof receiptCustIdOn !== 'function' || receiptCustIdOn())) out.push(`ID Number: ${id}`);
+            return out;
+        }
+
+// zip 328: the signature area. Built for the paper in use: each line is at most `cols` characters, whatever the roll (a label too long for the width
+// puts its signing line underneath instead of being cut off). A name / ID / phone the sale already has is printed in place of the blank.
+// kind: 'sale' | 'bill' | 'contract' (the contract wording: Recipient ..., Issued By, Staff Signature, Authorized Approval).
+//@fn receiptSignatureLines
+function receiptSignatureLines(sale, cols, kind) {
+            if (typeof receiptSignatureOn !== 'function' || !receiptSignatureOn(kind)) return [];
+            cols = Math.max(16, Number(cols) || 32);
+            const rule = '-'.repeat(cols);
+            const fit = (label, value) => {
+                const head = label + ':';
+                const v = receiptCleanText(value);
+                if (v) { const t = head + ' ' + v; return [t.length <= cols ? t : t.slice(0, cols)]; }
+                const room = cols - head.length - 1;
+                return room >= 8 ? [head + ' ' + '_'.repeat(room)] : [head, '_'.repeat(cols)];
+            };
+            const contract = kind === 'contract';
+            const who = contract ? 'Recipient' : 'Customer';
+            const out = [];
+            out.push(...fit(`${who} Name`, sale && sale.customerName));
+            out.push(...fit(contract ? 'Recipient ID Number' : 'Customer ID', sale && sale.customerIdNumber));
+            out.push(...fit(`${who} Phone`, sale && sale.customerPhone));
+            out.push('');
+            out.push(...fit(`${who} Signature`, ''));
+            out.push(...fit('Date', ''));
+            if (contract) {
+                out.push(rule);
+                out.push(...fit('Issued By', sale && sale.servedBy));
+                out.push('');
+                out.push(...fit('Staff Signature', ''));
+                out.push('');
+                out.push(...fit('Authorized Approval', sale && sale.approvedBy));
+                out.push(...fit('Date', ''));
+            } else if (typeof receiptSignatureStaffOn === 'function' && receiptSignatureStaffOn()) {
+                out.push('');
+                out.push(...fit('Staff Signature', ''));
+            }
+            return out;
+        }
+
+// =====================================================================================================================
+// zip 328: ISSUE ITEMS UNDER CONTRACT. Stock that leaves the shop with a named recipient under an agreement. NOT a sale: nothing here touches
+// salesLog or the revenue reports (a retail contract's unsold items become a sale only when the recipient comes back - that is the existing return
+// flow). One contract record per recipient holds many ISSUES (`visits`); each issue is immutable apart from its status, carries a snapshot of who
+// received it and under which terms, and has its own operation id so the same click / retry / replayed sync can never deduct the stock twice.
+// =====================================================================================================================
+//@fn contractRequirement
+function contractRequirement() {
+            try { return (typeof rxSettings === 'object' && rxSettings && rxSettings.contractReq) || 'either'; } catch (e) { return 'either'; }
+        }
+
+//@fn contractCheckRecipient
+// '' when the recipient has what the shop's policy asks for (Settings > Receipts: name only / +phone / +ID / phone OR ID / phone AND ID), else the message.
+function contractCheckRecipient(r, policy) {
+            r = r || {};
+            const name = receiptCleanText(r.name), phone = receiptCleanText(r.phone), idn = receiptCleanText(r.idNumber);
+            policy = policy || contractRequirement();
+            if (!name) return 'Enter the recipient\'s name.';
+            if (phone && !custPhoneValid(phone)) return 'That phone number does not look right - use a Kenyan number like 0712345678 or +254712345678.';
+            if (idn && !custIdKey(idn)) return 'The ID number looks too short.';
+            if ((policy === 'phone' || policy === 'both') && !phone) return 'A contract needs the recipient\'s phone number.';
+            if ((policy === 'id' || policy === 'both') && !idn) return 'A contract needs the recipient\'s ID number.';
+            if (policy === 'either' && !phone && !idn) return 'A contract needs the recipient\'s phone number or ID number.';
+            return '';
+        }
+
+//@fn contractNextNo
+// CT-<year>-<n>. Two tills issuing offline at the same moment can pick the same number; the issue's id (not its number) is what keeps them apart.
+function contractNextNo() {
+            const y = new Date().getFullYear();
+            let max = 0;
+            (typeof contracts !== 'undefined' && Array.isArray(contracts) ? contracts : []).forEach((c) => (c && c.visits || []).forEach((v) => {
+                const m = /^CT-(\d{4})-(\d+)$/.exec(String(v && v.no || ''));
+                if (m && +m[1] === y) max = Math.max(max, +m[2]);
+            }));
+            return 'CT-' + y + '-' + String(max + 1).padStart(4, '0');
+        }
+
+//@fn contractFindCell
+// The stock cell a contract line comes out of: a product, or one variant of it (found by the variant's code).
+function contractFindCell(line) {
+            const inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : [];
+            const code = line.code != null && line.code !== '' ? String(line.code) : '';
+            const nm = String(line.name || '').trim().toLowerCase();
+            let p = code ? inv.find((x) => x && !x._deleted && String(x.code) === code) : null;
+            if (!p && code) {
+                for (const x of inv) {
+                    const v = x && !x._deleted && Array.isArray(x.variants) ? x.variants.find((y) => y && y.code != null && String(y.code) === code) : null;
+                    if (v) return { product: x, obj: v, code: String(v.code), label: x.name + ' (' + v.name + ')', variant: true };
+                }
+            }
+            if (!p && nm) p = inv.find((x) => x && !x._deleted && isSellableProduct(x) && isStockedProduct(x) && String(x.name || '').trim().toLowerCase() === nm);
+            if (!p) return null;
+            if (p.hasVariants && Array.isArray(p.variants) && p.variants.length) return { error: '"' + p.name + '" has variants - choose the variant to issue.' };
+            return { product: p, obj: p, code: String(p.code), label: p.name, variant: false };
+        }
+
+//@fn contractIssue
+// Validates EVERYTHING first, then changes stock + records in one synchronous step (a failure part-way puts the stock back), so a refused or failed
+// issue leaves nothing behind. spec: { opId, contractId?, type: 'retail'|'wholesale', recipient: {name, phone, idNumber, address}, contractNo?,
+// expectedReturn?, terms?, approvedBy?, issuedBy?, customerId?, choice?, items: [{ code|name, qty, price?, mode?: 'box'|'piece' }] }
+// -> { ok, contract, visit, duplicate? } | { ok: false, error }
+function contractIssue(spec) {
+            const fail = (error) => ({ ok: false, error });
+            spec = spec || {};
+            if (custReadOnlyView()) return fail('You are viewing another branch - it is read-only.');
+            const opId = String(spec.opId || '').trim();
+            if (!opId) return fail('This issue has no operation id.');
+            const list = (typeof contracts !== 'undefined' && Array.isArray(contracts)) ? contracts : null;
+            if (!list) return fail('Contracts are not available here.');
+            for (const c of list) {
+                const v = c && Array.isArray(c.visits) ? c.visits.find((x) => x && x.opId === opId) : null;
+                if (v) return { ok: true, duplicate: true, contract: c, visit: v };         // the same operation again: nothing is deducted a second time
+            }
+            const rec = spec.recipient || {};
+            const bad = contractCheckRecipient(rec);
+            if (bad) return fail(bad);
+            const type = spec.type === 'wholesale' ? 'wholesale' : 'retail';
+            const raw = Array.isArray(spec.items) ? spec.items : [];
+            if (!raw.length) return fail('Add at least one item with a name and quantity.');
+            // ---- the lines: one per (stock cell, unit), duplicates added together ----
+            const lines = new Map();
+            for (const it of raw) {
+                const qty = Number(it && it.qty);
+                if (!it || !(qty > 0) || !isFinite(qty)) return fail('Every item needs a quantity above zero' + (it && it.name ? ' ("' + it.name + '").' : '.'));
+                const cell = contractFindCell(it);
+                if (!cell) return fail('"' + (it.name || it.code) + '" was not found in inventory - add it first from Add New Items.');
+                if (cell.error) return fail(cell.error);
+                if (!cell.variant && !(isSellableProduct(cell.product) && isStockedProduct(cell.product))) return fail('"' + cell.label + '" is not a stocked item that can be issued.');
+                const piece = it.mode === 'piece';
+                if (piece && !cell.obj.dualUnit) return fail('"' + cell.label + '" is not sold in separate pieces.');
+                const key = cell.code + (piece ? '|piece' : '');
+                const p = it.price != null && it.price !== '' ? Number(it.price) : NaN;
+                const shopPrice = piece ? Number(cell.obj.piecePrice) : Number(cell.obj.price);
+                const price = isFinite(p) ? p : (type === 'retail' ? (isFinite(shopPrice) ? shopPrice : 0) : NaN);
+                if (type === 'wholesale' && !(price > 0)) return fail('Please enter a valid price given for "' + cell.label + '".');
+                if (!(price >= 0)) return fail('The price of "' + cell.label + '" is not valid.');
+                const have = lines.get(key);
+                if (have) have.qty = stockRound3(have.qty + qty);
+                else lines.set(key, { cell, piece, qty: stockRound3(qty), price, name: cell.label, unit: piece ? 'pcs' : (cell.obj.unit || 'pcs') });
+            }
+            // ---- stock check on a copy (opening a box for loose pieces is allowed when the box count covers it) ----
+            const sim = new Map();
+            const st = (o) => { if (!sim.has(o)) sim.set(o, { qty: Number(o.qty) || 0, pieceQty: Number(o.pieceQty) || 0, d: { qty: 0, pieceQty: 0 } }); return sim.get(o); };
+            for (const l of lines.values()) {
+                const s = st(l.cell.obj);
+                l.deltas = { qty: 0, pieceQty: 0 };
+                if (l.piece) {
+                    let need = l.qty, boxes = 0;
+                    if (need > s.pieceQty + 1e-9) {
+                        const upb = Number(l.cell.obj.unitsPerBox) || 0;
+                        if (!(upb > 0)) return fail('Only ' + stockRound3(s.pieceQty) + ' loose piece(s) of "' + l.name + '" in stock.');
+                        boxes = Math.ceil((need - s.pieceQty) / upb - 1e-9);
+                        if (boxes > s.qty + 1e-9) return fail('Not enough "' + l.name + '": ' + stockRound3(need) + ' piece(s) asked, only ' + stockRound3(s.pieceQty + s.qty * upb) + ' in stock.');
+                        s.qty = stockRound3(s.qty - boxes); s.pieceQty = stockRound3(s.pieceQty + boxes * upb);
+                        l.deltas.qty -= boxes; l.deltas.pieceQty += boxes * upb;
+                    }
+                    s.pieceQty = stockRound3(s.pieceQty - need); l.deltas.pieceQty -= need;
+                } else {
+                    if (l.qty > s.qty + 1e-9) return fail('Only ' + formatQtyDisplay(s.qty, l.unit) + ' ' + unitLabel(l.unit) + ' of "' + l.name + '" in stock.');
+                    s.qty = stockRound3(s.qty - l.qty); l.deltas.qty -= l.qty;
+                }
+            }
+            // ---- everything checks out: change things, all or nothing ----
+            const before = new Map();
+            sim.forEach((v, o) => before.set(o, { qty: o.qty, pieceQty: o.pieceQty }));
+            const logLen = stockMovementLog.length;
+            const snap = { contractJson: null };
+            let created = null;
+            try {
+                let contract = spec.contractId ? list.find((c) => c && c.id === spec.contractId && c.status !== 'cancelled') : null;
+                if (spec.contractId && !contract) { return fail('That contract was not found or is cancelled.'); }
+                if (contract) snap.contractJson = JSON.stringify(contract);
+                const nowIso = new Date().toISOString();
+                const no = receiptCleanText(spec.contractNo) || contractNextNo();
+                const recipient = { name: receiptCleanText(rec.name), phone: receiptCleanText(rec.phone), idNumber: receiptCleanText(rec.idNumber), address: receiptCleanText(rec.address) };
+                // the one customer profile (found by phone / ID, created only when nobody matches)
+                let customer = null;
+                try {
+                    if (spec.customerId) customer = custResolve(spec.customerId);
+                    if (!customer && (custPhoneKey(recipient.phone) || custIdKey(recipient.idNumber))) {
+                        const r = upsertCustomer({ name: recipient.name, phone: recipient.phone, idNumber: recipient.idNumber }, spec.choice ? { choice: spec.choice } : { onConflict: 'reuse' });
+                        customer = r.customer || null;
+                    }
+                } catch (e) { customer = null; }          // the profile is an extra; the issue goes ahead without it
+                const visit = {
+                    id: 'cv-' + genSaleId(), opId, no, at: nowIso, date: nowIso, status: 'issued', printStatus: 'not_printed', printCount: 0, printedAt: null,
+                    recipient, approvedBy: receiptCleanText(spec.approvedBy), issuedBy: receiptCleanText(spec.issuedBy) || (typeof activeServerName === 'function' ? activeServerName() : ''),
+                    terms: receiptCleanText(spec.terms), expectedReturn: receiptCleanText(spec.expectedReturn), type,
+                    items: [...lines.values()].map((l) => ({ code: l.cell.code, baseCode: l.cell.code, name: l.name, unit: l.unit, qty: l.qty, price: l.price, mode: l.piece ? 'piece' : 'box' })),
+                    stock: [], updatedAt: Date.now(),
+                };
+                visit.total = Math.round(visit.items.reduce((s, l) => s + l.qty * l.price, 0) * 100) / 100;
+                // stock + ledger (one movement per cell and unit, with an id made from the operation so a replay is recognised)
+                sim.forEach((v, o) => { o.qty = stockRound3(v.qty); o.pieceQty = stockRound3(v.pieceQty); });
+                [...lines.values()].forEach((l) => {
+                    ['qty', 'pieceQty'].forEach((field) => {
+                        const d = stockRound3(l.deltas[field]);
+                        if (!d) return;
+                        visit.stock.push({ code: l.cell.code, field, delta: d });
+                        contractLogMove(opId, 'issue', l.cell, field, d, 'Contract ' + no + ' - issued to ' + recipient.name);
+                    });
+                    if (l.cell.variant) l.cell.product.qty = (l.cell.product.variants || []).reduce((sum, v) => sum + (Number(v && v.qty) || 0), 0);
+                });
+                if (!contract) {
+                    contract = { id: genSaleId(), name: recipient.name, phone: recipient.phone, idNumber: recipient.idNumber, address: recipient.address, type, createdAt: nowIso, items: {}, visits: [], status: 'active', contractNo: no };
+                    list.push(contract); created = contract;
+                } else {
+                    contract.phone = contract.phone || recipient.phone; contract.idNumber = contract.idNumber || recipient.idNumber; contract.address = contract.address || recipient.address;
+                }
+                if (customer) contract.customerId = customer.id;
+                contract.visits.push(visit);
+                visit.items.forEach((li) => {
+                    const k = li.mode === 'piece' ? li.code + '#piece' : li.code;
+                    if (!contract.items[k]) contract.items[k] = { code: k, baseCode: li.code, mode: li.mode, name: li.name, unit: li.unit, price: li.price, qtyCarried: 0, qtyReturned: 0, qtySettled: 0 };
+                    const agg = contract.items[k];
+                    agg.qtyCarried = stockRound3(agg.qtyCarried + li.qty);
+                    agg.price = li.price;
+                });
+                contract.updatedAt = Date.now();
+                contractPersist();
+                return { ok: true, contract, visit, customer };
+            } catch (e) {
+                // put everything back exactly as it was
+                before.forEach((v, o) => { o.qty = v.qty; o.pieceQty = v.pieceQty; });
+                stockMovementLog.length = logLen;
+                if (snap.contractJson) { const i = list.findIndex((c) => c && c.id === spec.contractId); if (i >= 0) list[i] = JSON.parse(snap.contractJson); }
+                if (created) { const i = list.indexOf(created); if (i >= 0) list.splice(i, 1); }
+                return fail('Could not issue the items (' + (e && e.message || e) + ') - nothing was changed.');
+            }
+        }
+
+//@fn contractLogMove
+function contractLogMove(opId, tag, cell, field, delta, reason) {
+            if (!delta || typeof stockMovementLog === 'undefined') return;
+            const id = 'ctr:' + opId + ':' + tag + ':' + cell.code + ':' + field;
+            if (stockMovementLog.some((m) => m && m.id === id)) return;
+            stockMovementLog.push({ id, lg: 1, timestamp: new Date().toISOString(), code: cell.code, name: cell.label, delta, type: delta > 0 ? 'added' : 'removed', reason, unit: field === 'pieceQty' ? 'pieceQty' : 'qty', by: typeof activeServerName === 'function' ? activeServerName() : '', contractOp: opId });
+        }
+
+//@fn contractPersist
+function contractPersist() {
+            try { safeSetItem(appStoreKey('pos_inventory'), JSON.stringify(inventory)); } catch (e) { /* the next save writes it */ }
+            try { safeSetItem(appStoreKey('pos_contracts'), JSON.stringify(contracts)); } catch (e) { /* the next save writes it */ }
+            try { safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog)); } catch (e) { /* the next save writes it */ }
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ }
+        }
+
+//@fn contractCancelIssue
+// Cancels ONE issue (Admin / manager): the stock it took goes back exactly as it left, with movements saying so. Refused once any of its items was
+// already returned or sold (then record the rest as a return instead). Cancelling twice does nothing the second time.
+function contractCancelIssue(contractId, visitId, opts) {
+            opts = opts || {};
+            const fail = (error) => ({ ok: false, error });
+            if (custReadOnlyView()) return fail('You are viewing another branch - it is read-only.');
+            if (!custIsManager()) return fail('Only the Admin or a manager can cancel a contract issue.');
+            const contract = (contracts || []).find((c) => c && c.id === contractId);
+            const visit = contract && (contract.visits || []).find((v) => v && v.id === visitId);
+            if (!visit) return fail('That contract issue was not found.');
+            if (visit.status === 'cancelled') return { ok: true, duplicate: true, contract, visit };
+            if (!receiptCleanText(opts.reason)) return fail('Give a reason for cancelling.');
+            // nothing of this issue may have gone back / been sold already
+            for (const li of visit.items || []) {
+                const k = li.mode === 'piece' ? li.code + '#piece' : li.code;
+                const agg = contract.items && contract.items[k];
+                if (!agg) continue;
+                const held = (Number(agg.qtyCarried) || 0) - (Number(agg.qtyReturned) || 0) - (Number(agg.qtySettled) || 0);
+                if (held + 1e-9 < li.qty) return fail('Some items of this issue were already returned or sold - record the rest as a return instead of cancelling.');
+            }
+            const cells = new Map();
+            const inv = Array.isArray(inventory) ? inventory : [];
+            const cellFor = (code) => contractFindCell({ code });
+            for (const s of visit.stock || []) { const c = cellFor(s.code); if (!c || c.error) return fail('An item of this issue no longer exists in inventory, so its stock cannot be put back.'); cells.set(s.code, c); }
+            const nowIso = new Date().toISOString();
+            (visit.stock || []).forEach((s) => {
+                const c = cells.get(s.code);
+                c.obj[s.field] = stockRound3((Number(c.obj[s.field]) || 0) - s.delta);          // delta is negative: this puts it back
+                if (c.variant) c.product.qty = (c.product.variants || []).reduce((sum, v) => sum + (Number(v && v.qty) || 0), 0);
+                contractLogMove(visit.opId, 'cancel', c, s.field, -s.delta, 'Contract ' + visit.no + ' cancelled' + (opts.reason ? ' - ' + opts.reason : ''));
+            });
+            (visit.items || []).forEach((li) => {
+                const k = li.mode === 'piece' ? li.code + '#piece' : li.code;
+                const agg = contract.items && contract.items[k];
+                if (agg) agg.qtyCarried = stockRound3(Math.max(0, (Number(agg.qtyCarried) || 0) - li.qty));
+            });
+            visit.status = 'cancelled'; visit.cancelledAt = nowIso; visit.cancelledBy = typeof activeServerName === 'function' ? activeServerName() : ''; visit.cancelReason = receiptCleanText(opts.reason);
+            visit.updatedAt = Date.now();
+            if (!(contract.visits || []).some((v) => v && v.status !== 'cancelled')) contract.status = 'cancelled';
+            contract.updatedAt = Date.now();
+            contractPersist();
+            return { ok: true, contract, visit };
+        }
+
+//@fn contractAfterReturn
+// Called after the existing "record return" form has run: puts every returned PIECE-unit item back in the loose-piece cell (the form only knows boxes)
+// and writes a stock movement for each returned quantity, so the ledger agrees with the shelf. `before` = { itemKey: qtyReturned } taken before the form ran.
+function contractAfterReturn(contract, before) {
+            if (!contract || !contract.items) return 0;
+            let n = 0;
+            Object.keys(contract.items).forEach((k) => {
+                const it = contract.items[k];
+                const was = Number(before && before[k]) || 0;
+                const back = stockRound3((Number(it.qtyReturned) || 0) - was);
+                if (!(back > 0)) return;
+                const code = it.baseCode != null ? it.baseCode : it.code;
+                const c = contractFindCell({ code });
+                if (!c || c.error) return;
+                const piece = it.mode === 'piece';
+                if (piece) c.obj.pieceQty = stockRound3((Number(c.obj.pieceQty) || 0) + back);       // the form could not find "<code>#piece" and put nothing back
+                contractLogMove('ret-' + contract.id + '-' + stockRound3(Number(it.qtyReturned) || 0), 'return', c, piece ? 'pieceQty' : 'qty', back, 'Returned under contract ' + (contract.contractNo || contract.id));
+                n++;
+            });
+            if (n) contractPersist();
+            return n;
+        }
+
+//@fn contractWrap
+function contractWrap(text, cols) {
+            const out = [];
+            String(text || '').split(/\r?\n/).forEach((para) => {
+                let line = '';
+                para.split(/\s+/).filter(Boolean).forEach((w) => {
+                    while (w.length > cols) { if (line) { out.push(line); line = ''; } out.push(w.slice(0, cols)); w = w.slice(cols); }
+                    if (!line) line = w; else if ((line + ' ' + w).length <= cols) line += ' ' + w; else { out.push(line); line = w; }
+                });
+                if (line) out.push(line);
+            });
+            return out;
+        }
+
+//@fn contractReceiptSale
+// The issue as the receipt builder wants it (receiptKind 'contract': no PAID wording, no payment details, no customer number, no drawer kick).
+function contractReceiptSale(contract, visit) {
+            const r = (visit && visit.recipient) || {};
+            return {
+                id: visit.id, refNumber: visit.no, timestamp: visit.at || visit.date, servedBy: visit.issuedBy || '', receiptKind: 'contract', paymentMethod: 'contract',
+                customerName: r.name || contract.name || '', customerPhone: r.phone || '', customerIdNumber: r.idNumber || '', approvedBy: visit.approvedBy || '',
+                items: (visit.items || []).map((l) => ({ code: l.code, name: l.name, qty: l.qty, price: l.price, unit: l.unit || 'pcs' })),
+                contractMeta: { no: visit.no, type: visit.type || contract.type, address: r.address || contract.address || '', expectedReturn: visit.expectedReturn || '', terms: visit.terms || '', status: visit.status },
+            };
+        }
+
+//@fn contractReceiptHooks
+function contractReceiptHooks() {
+            return {
+                docLabel: (sale) => 'CONTRACT ISSUE NOTE' + (sale.contractMeta && sale.contractMeta.status === 'cancelled' ? ' (CANCELLED)' : ''),
+                totalLabel: () => 'TOTAL VALUE',
+                autoPrint: false,
+                paymentLines: (sale, ctx) => {
+                    const m = sale.contractMeta || {}, cols = ctx.cols, out = [];
+                    out.push('Contract No: ' + m.no);
+                    out.push('Type: ' + (m.type === 'wholesale' ? 'WHOLESALE (balance owed until returned)' : 'RETAIL (unsold items sold at shop price)').slice(0, 200));
+                    if (m.address) contractWrap('Address: ' + m.address, cols).forEach((l) => out.push(l));
+                    if (m.expectedReturn) out.push('Expected return: ' + m.expectedReturn);
+                    out.push('Status: ' + String(m.status || 'issued').toUpperCase());
+                    out.push('NOT A SALE - no payment taken');
+                    if (m.terms) { out.push(ctx.rule); out.push('Terms:'); contractWrap(m.terms, cols).forEach((l) => out.push(l)); }
+                    return out.reduce((a, l) => a.concat(l.length > cols ? contractWrap(l, cols) : [l]), []);
+                },
+                footerNotes: () => 'Goods issued under contract.\nKeep this copy.',
+            };
+        }
+
+//@fn contractReceiptDoc
+function contractReceiptDoc(contract, visit) {
+            return buildReceiptDoc(contractReceiptSale(contract, visit), contractReceiptHooks());
+        }
+
+//@fn contractReceiptA4Html
+// The same issue as a full A4 page (print or "Save as PDF" from the browser's print dialog).
+function contractReceiptA4Html(contract, visit) {
+            const e = (s) => escapeHtml(String(s == null ? '' : s));
+            const sale = contractReceiptSale(contract, visit), m = sale.contractMeta, r = visit.recipient || {};
+            const rows = (visit.items || []).map((l) => '<tr><td>' + e(l.name) + '</td><td style="text-align:right">' + e(formatQtyDisplay(l.qty, l.unit) + unitLabel(l.unit)) + '</td><td style="text-align:right">KES ' + (Number(l.price) || 0).toFixed(2) + '</td><td style="text-align:right">KES ' + ((Number(l.price) || 0) * (Number(l.qty) || 0)).toFixed(2) + '</td></tr>').join('');
+            const box = (label, v) => '<div style="margin:4px 0"><b>' + e(label) + ':</b> ' + (v ? e(v) : '<span style="display:inline-block;border-bottom:1px solid #333;min-width:240px">&nbsp;</span>') + '</div>';
+            const sig = receiptSignatureOn('contract');
+            return '<div style="font-family:Arial,sans-serif;max-width:190mm;margin:0 auto;color:#111">'
+                + '<h2 style="text-align:center;margin:0">' + e((businessName || 'Business POS').toUpperCase()) + '</h2>'
+                + '<h3 style="text-align:center;margin:4px 0 14px">CONTRACT ISSUE NOTE' + (m.status === 'cancelled' ? ' (CANCELLED)' : '') + '</h3>'
+                + '<table style="width:100%;font-size:14px"><tr><td>' + box('Contract No', m.no) + box('Date', new Date(visit.at || visit.date).toLocaleString('en-GB')) + box('Type', m.type === 'wholesale' ? 'Wholesale' : 'Retail') + (m.expectedReturn ? box('Expected return', m.expectedReturn) : '') + '</td>'
+                + '<td>' + box('Recipient', r.name) + (r.phone ? box('Phone', r.phone) : '') + (r.idNumber ? box('ID Number', r.idNumber) : '') + (m.address ? box('Address', m.address) : '') + '</td></tr></table>'
+                + '<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:10px" border="1" cellpadding="6"><thead><tr style="background:#eee"><th style="text-align:left">Item</th><th>Qty</th><th>Price</th><th>Line value</th></tr></thead><tbody>' + rows + '</tbody>'
+                + '<tfoot><tr><td colspan="3" style="text-align:right"><b>TOTAL VALUE</b></td><td style="text-align:right"><b>KES ' + (Number(visit.total) || 0).toFixed(2) + '</b></td></tr></tfoot></table>'
+                + '<p style="font-size:13px;margin-top:10px"><b>NOT A SALE</b> - no payment was taken. ' + (m.type === 'wholesale' ? 'Anything not returned becomes a balance owed.' : 'Items not returned are sold at the shop price when the recipient comes back.') + '</p>'
+                + (m.terms ? '<p style="font-size:13px"><b>Terms:</b> ' + e(m.terms) + '</p>' : '')
+                + (sig ? '<table style="width:100%;margin-top:34px;font-size:14px"><tr><td style="width:50%;vertical-align:top">' + box('Recipient Signature', '') + box('Date', '') + '</td><td style="vertical-align:top">' + box('Issued By', visit.issuedBy) + box('Staff Signature', '') + box('Authorized Approval', visit.approvedBy) + box('Date', '') + '</td></tr></table>' : '')
+                + '</div>';
+        }
+
+//@fn contractPrintIssue
+// Shows (and prints) one issue. kind: 'thermal' (the receipt window, the shop's printer) | 'a4' (a full page). Printing is recorded on the issue
+// SEPARATELY from its status: a printer that is off or an interrupted print never changes whether the items were issued.
+function contractPrintIssue(contractId, visitId, kind) {
+            const contract = (contracts || []).find((c) => c && c.id === contractId);
+            const visit = contract && (contract.visits || []).find((v) => v && v.id === visitId);
+            if (!visit) { showToast('That contract issue was not found.', true); return false; }
+            try {
+                if (kind === 'a4') {
+                    document.getElementById('sales-report-body').innerHTML = contractReceiptA4Html(contract, visit);
+                    lastReportText = contractReceiptDoc(contract, visit).text;
+                    document.getElementById('sales-report-modal').style.display = 'flex';
+                    if (typeof triggerAutoPrintReport === 'function') triggerAutoPrintReport();
+                } else {
+                    renderSharedReceipt(contractReceiptSale(contract, visit), contractReceiptHooks());
+                }
+            } catch (e) { showToast('Could not open the contract document: ' + (e && e.message || e), true); return false; }
+            visit.printCount = (Number(visit.printCount) || 0) + 1; visit.printStatus = 'printed'; visit.printedAt = new Date().toISOString(); visit.updatedAt = Date.now(); contract.updatedAt = Date.now();
+            try { safeSetItem(appStoreKey('pos_contracts'), JSON.stringify(contracts)); if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next save writes it */ }
+            return true;
+        }
+
+//@fn contractOpen
+// The contract's details window: who, what was issued (every issue with its status and print status), reprint (no stock change) and cancel (managers).
+function contractOpen(contractId) {
+            const contract = (contracts || []).find((c) => c && c.id === contractId);
+            if (!contract) { showToast('That contract was not found.', true); return; }
+            const old = document.getElementById('contract-detail-overlay'); if (old) old.remove();
+            const e = (s) => escapeHtml(String(s == null ? '' : s));
+            const mgr = custIsManager();
+            const issues = (contract.visits || []).filter((v) => v && v.id != null).slice().reverse().map((v) => {
+                const cancelled = v.status === 'cancelled';
+                return '<div class="cp-card" style="' + (cancelled ? 'opacity:.7' : '') + '"><h4>' + e(v.no || 'Issue') + ' <span class="cp-chip' + (cancelled ? ' warn' : '') + '">' + (cancelled ? 'Cancelled' : 'Issued') + '</span> <span class="cp-chip">' + (v.printStatus === 'printed' ? 'Printed x' + (v.printCount || 1) : 'Not printed') + '</span></h4>'
+                    + '<div style="font-size:13px">' + e(new Date(v.at || v.date).toLocaleString('en-GB')) + ' · by ' + e(v.issuedBy || '-') + (v.approvedBy ? ' · approved by ' + e(v.approvedBy) : '') + (v.expectedReturn ? ' · return by ' + e(v.expectedReturn) : '') + '</div>'
+                    + '<div style="font-size:13px;margin:6px 0">' + (v.items || []).map((l) => e(l.name) + ' x' + e(formatQtyDisplay(l.qty, l.unit)) + e(unitLabel(l.unit))).join(', ') + ' · value KES ' + (Number(v.total) || 0).toFixed(2) + '</div>'
+                    + (cancelled ? '<div style="font-size:12px;color:#a83228">Cancelled: ' + e(v.cancelReason || '') + '</div>' : '')
+                    + '<div class="cp-actions"><button type="button" class="cp-btn" data-pr="thermal" data-v="' + e(v.id) + '" style="background:#2980b9;color:#fff">Reprint (receipt)</button><button type="button" class="cp-btn" data-pr="a4" data-v="' + e(v.id) + '" style="background:#16a085;color:#fff">Print A4 / PDF</button>'
+                    + (mgr && !cancelled ? '<button type="button" class="cp-btn" data-cx="' + e(v.id) + '" style="background:#c0392b;color:#fff">Cancel issue</button>' : '') + '</div></div>';
+            }).join('') || '<p class="empty-state">No issues recorded.</p>';
+            const ov = document.createElement('div'); ov.className = 'cp-overlay'; ov.id = 'contract-detail-overlay';
+            ov.innerHTML = '<div class="cp-dialog" style="max-width:680px"><h3>📑 ' + e(contract.name) + ' <span class="cp-chip">' + e(contract.contractNo || '') + '</span></h3>'
+                + '<p style="font-size:13px;margin:0 0 8px">' + e(contract.phone || 'no phone') + (contract.idNumber ? ' · ID ' + e(mgr ? contract.idNumber : custMaskId(contract.idNumber)) : '') + (contract.address ? ' · ' + e(contract.address) : '') + ' · ' + (contract.type === 'wholesale' ? 'Wholesale' : 'Retail') + '</p>'
+                + issues + '<div class="cp-actions"><button type="button" class="cp-btn" id="cd-close" style="background:#95a5a6;color:#fff">Close</button></div></div>';
+            document.body.appendChild(ov);
+            ov.querySelector('#cd-close').onclick = () => ov.remove();
+            ov.addEventListener('click', (ev) => {
+                const b = ev.target.closest && ev.target.closest('button'); if (!b) return;
+                if (b.dataset.pr) { ov.remove(); contractPrintIssue(contractId, b.dataset.v, b.dataset.pr); }
+                else if (b.dataset.cx) {
+                    const reason = prompt('Why is this contract issue being cancelled? (the stock goes back to the shelf)');
+                    if (reason == null) return;
+                    const r = contractCancelIssue(contractId, b.dataset.cx, { reason });
+                    if (!r.ok) { showToast(r.error, true); return; }
+                    showToast('Issue cancelled - stock put back.');
+                    try { renderInventoryTable(); renderContractsTab(); } catch (x) { /* tabs not drawn */ }
+                    contractOpen(contractId);
+                }
+            });
+        }
+
+//@fn posInvoiceDocHtml
+// zip 356: ONE invoice look for every module (customer invoice, bill invoice, Aqua invoices, Hotel event / custom-order invoices).
+// A4 / letter page, the shop's logo and details, a clear "Amount due", the payment details in a box and the items in a clean table.
+// model: { title, number, date, due, status ('paid'|'partial'|'unpaid'|'void'), billTo: { name, lines: [] }, meta: [[label, value]],
+//          cols: [{ h, align }], rows: [[cell, ...]] (cells are plain text; a cell may be { t, sub }), totals: [[label, amount, strong]],
+//          due: amount due, notes: [], payLines: [] (defaults to Settings > Receipt payment details), footer }
+function posInvoiceDocHtml(model) {
+            const M = model || {};
+            const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            const kes = (n) => { const v = Number(n) || 0; return (v < 0 ? '− ' : '') + 'KES ' + Math.abs(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+            const S = {};      // the shop's own receipt settings (each app declares them; any may be missing)
+            try { S.biz = typeof businessName !== 'undefined' ? businessName : ''; } catch (e) { S.biz = ''; }
+            try { S.logo = typeof receiptLogoData !== 'undefined' ? receiptLogoData : ''; } catch (e) { S.logo = ''; }
+            try { S.contact = typeof receiptContact !== 'undefined' ? receiptContact : ''; } catch (e) { S.contact = ''; }
+            try { S.email = typeof receiptEmail !== 'undefined' ? receiptEmail : ''; } catch (e) { S.email = ''; }
+            try { S.extra = typeof receiptExtraInfo !== 'undefined' ? receiptExtraInfo : ''; } catch (e) { S.extra = ''; }
+            try { S.footer = typeof receiptFooterNotes !== 'undefined' ? receiptFooterNotes : ''; } catch (e) { S.footer = ''; }
+            const biz = String(M.business || S.biz || 'Business').trim();
+            const logo = (typeof S.logo === 'string' && /^data:image\//.test(S.logo)) ? S.logo : '';
+            const contact = [S.contact, S.email, S.extra].map((x) => String(x || '').trim()).filter(Boolean).join('\n').split('\n').map((x) => x.trim()).filter(Boolean);
+            const pay = Array.isArray(M.payLines) ? M.payLines : (typeof receiptPaymentDetailsList === 'function' ? receiptPaymentDetailsList() : []);
+            const foot = String(M.footer != null ? M.footer : (S.footer || '')).trim();
+            const st = String(M.status || '').toLowerCase();
+            const stLabel = { paid: 'PAID', partial: 'PART PAID', unpaid: 'UNPAID', void: 'VOID', due: 'DUE' }[st] || '';
+            const stCls = { paid: 'ok', partial: 'warn', unpaid: 'bad', void: 'void', due: 'bad' }[st] || 'bad';
+            const cols = Array.isArray(M.cols) && M.cols.length ? M.cols : [{ h: 'Description' }, { h: 'Qty', align: 'right' }, { h: 'Unit price', align: 'right' }, { h: 'Amount', align: 'right' }];
+            const cell = (c, i) => {
+                const al = cols[i] && cols[i].align === 'right' ? ' class="r"' : '';
+                if (c && typeof c === 'object') return '<td' + al + '>' + esc(c.t) + (c.sub ? '<div class="sub">' + esc(c.sub) + '</div>' : '') + '</td>';
+                return '<td' + al + '>' + esc(c) + '</td>';
+            };
+            const rows = (M.rows || []).length ? M.rows.map((r) => '<tr>' + r.map(cell).join('') + '</tr>').join('')
+                : '<tr><td colspan="' + cols.length + '" class="empty">' + esc(M.emptyText || 'No items.') + '</td></tr>';
+            const totals = (M.totals || []).map((t) => '<div class="tl' + (t[2] ? ' strong' : '') + '"><span>' + esc(t[0]) + '</span><b>' + kes(t[1]) + '</b></div>').join('');
+            const meta = [['Invoice no.', M.number], ['Date', M.date], ...(M.dueDate ? [['Due date', M.dueDate]] : []), ...(M.meta || [])].filter((x) => x[1] != null && String(x[1]).trim() !== '');
+            const css = '<style>'
+                + '.pinv{--ink:#0f172a;--mut:#64748b;--line:#e2e8f0;--acc:#0f766e;--acc2:#134e4a;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#fff;max-width:800px;margin:0 auto;border:1px solid var(--line);border-radius:14px;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-size:13px;line-height:1.45;text-align:left}'
+                + '.pinv *{box-sizing:border-box}'
+                + '.pinv-top{position:relative;padding:26px 30px 22px;color:#fff;background-color:var(--acc2);background-image:linear-gradient(135deg,rgba(15,118,110,.95),rgba(19,78,74,.97)),repeating-linear-gradient(45deg,rgba(255,255,255,.06) 0 2px,transparent 2px 9px);display:flex;gap:20px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}'
+                + '.pinv-brand{display:flex;gap:14px;align-items:center;min-width:0}.pinv-brand img{width:64px;height:64px;object-fit:contain;background:#fff;border-radius:12px;padding:5px}'
+                + '.pinv-brand h1{margin:0;font-size:22px;letter-spacing:.3px;color:#fff;line-height:1.2}.pinv-brand .c{font-size:11.5px;opacity:.9;margin-top:3px;white-space:pre-line}'
+                + '.pinv-tt{text-align:right}.pinv-tt .t{font-size:30px;font-weight:800;letter-spacing:4px;line-height:1;color:#fff}.pinv-tt .n{margin-top:6px;font-size:13px;opacity:.95}'
+                + '.pinv-pill{display:inline-block;margin-top:8px;padding:3px 12px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:1px;background:#fff}.pinv-pill.ok{color:#15803d}.pinv-pill.warn{color:#b45309}.pinv-pill.bad{color:#b91c1c}.pinv-pill.void{color:#475569;text-decoration:line-through}'
+                + '.pinv-body{padding:24px 30px 8px}'
+                + '.pinv-grid{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:20px}.pinv-box{flex:1 1 220px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#f8fafc}'
+                + '.pinv-box h4{margin:0 0 6px;font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--acc)}.pinv-box .nm{font-size:15px;font-weight:700}.pinv-box .ln{color:var(--mut);font-size:12px}'
+                + '.pinv-meta{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12.5px}.pinv-meta span{color:var(--mut)}.pinv-meta b{text-align:right}'
+                + '.pinv table{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px;margin:0}.pinv thead{display:table-header-group}.pinv th{background:var(--ink);color:#fff;text-align:left;font-weight:700;padding:9px 10px;font-size:11px;letter-spacing:.6px;text-transform:uppercase}'
+                + '.pinv th:first-child{border-radius:8px 0 0 8px}.pinv th:last-child{border-radius:0 8px 8px 0}.pinv th.r,.pinv td.r{text-align:right;white-space:nowrap}'
+                + '.pinv td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}.pinv tbody tr:nth-child(even) td{background:#f8fafc}.pinv tr{page-break-inside:avoid}.pinv td .sub{color:var(--mut);font-size:11px;margin-top:2px}.pinv td.empty{text-align:center;color:var(--mut);padding:18px}'
+                + '.pinv-sum{display:flex;gap:18px;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;margin:18px 0 6px;page-break-inside:avoid}'
+                + '.pinv-pay{flex:1 1 260px;border:1px dashed #94a3b8;border-radius:10px;padding:12px 14px}.pinv-pay h4{margin:0 0 6px;font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--acc)}.pinv-pay div{font-size:12.5px}'
+                + '.pinv-tot{flex:0 1 300px;min-width:240px}.pinv-tot .tl{display:flex;justify-content:space-between;gap:12px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13px}.pinv-tot .tl span{color:var(--mut)}.pinv-tot .tl.strong{font-size:14px}.pinv-tot .tl.strong span{color:var(--ink);font-weight:700}'
+                + '.pinv-due{margin-top:10px;border-radius:10px;padding:12px 14px;background:var(--acc);color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}.pinv-due span{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;opacity:.9}.pinv-due b{font-size:20px;white-space:nowrap}'
+                + '.pinv-due.zero{background:#15803d}'
+                + '.pinv-notes{margin:14px 0 0;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px}'
+                + '.pinv-foot{margin-top:18px;padding:14px 30px 18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:11.5px;background:#f8fafc}.pinv-foot .ty{color:var(--acc);font-weight:700;font-size:13px}'
+                + '@media print{.pinv{border:0;border-radius:0;max-width:none}.pinv-top{border-radius:0}}'
+                + '</style>';
+            const billTo = M.billTo || {};
+            const due = Number(M.due);
+            return css + '<div class="pinv">'
+                + '<div class="pinv-top"><div class="pinv-brand">' + (logo ? '<img src="' + esc(logo) + '" alt="">' : '') + '<div><h1>' + esc(biz) + '</h1>' + (contact.length ? '<div class="c">' + esc(contact.join('\n')) + '</div>' : '') + '</div></div>'
+                + '<div class="pinv-tt"><div class="t">' + esc(M.title || 'INVOICE') + '</div>' + (M.number ? '<div class="n"># ' + esc(M.number) + '</div>' : '') + (stLabel ? '<span class="pinv-pill ' + stCls + '">' + stLabel + '</span>' : '') + '</div></div>'
+                + '<div class="pinv-body"><div class="pinv-grid">'
+                + '<div class="pinv-box"><h4>Bill to</h4><div class="nm">' + esc(billTo.name || 'Customer') + '</div>' + (billTo.lines || []).filter(Boolean).map((l) => '<div class="ln">' + esc(l) + '</div>').join('') + '</div>'
+                + '<div class="pinv-box"><h4>Details</h4><div class="pinv-meta">' + meta.map((x) => '<span>' + esc(x[0]) + '</span><b>' + esc(x[1]) + '</b>').join('') + '</div></div>'
+                + '</div>'
+                + '<table><thead><tr>' + cols.map((c) => '<th' + (c.align === 'right' ? ' class="r"' : '') + '>' + esc(c.h) + '</th>').join('') + '</tr></thead><tbody>' + rows + '</tbody></table>'
+                + '<div class="pinv-sum"><div class="pinv-pay"><h4>How to pay</h4>' + (pay.length ? pay.map((l) => '<div>' + esc(l) + '</div>').join('') : '<div style="color:#64748b">Pay at the counter, or ask us for M-Pesa / bank details.</div>') + '</div>'
+                + '<div class="pinv-tot">' + totals + (isFinite(due) ? '<div class="pinv-due' + (due <= 0.005 ? ' zero' : '') + '"><span>' + esc(due <= 0.005 ? 'Fully paid' : (M.dueLabel || 'Amount due')) + '</span><b>' + kes(Math.max(0, due)) + '</b></div>' : '') + '</div></div>'
+                + ((M.notes || []).length ? '<div class="pinv-notes">' + M.notes.map(esc).join('<br>') + '</div>' : '')
+                + '</div><div class="pinv-foot"><div>' + (foot ? '<div style="white-space:pre-line">' + esc(foot) + '</div>' : '') + '</div><div style="text-align:right">' + esc(biz) + (M.number ? '<br>' + esc(M.number) : '') + '</div></div>'
+                + '</div>';
+        }
+
+//@fn posInvoiceText
+// The same invoice as plain text, for roll (58 / 80 mm) printers and sharing.
+function posInvoiceText(model, width) {
+            const M = model || {}, W = Math.max(28, Math.min(64, Number(width) || 32));
+            const kes = (n) => (Number(n) || 0).toFixed(2);
+            const pad = (l, r) => { l = String(l); r = String(r); const sp = W - l.length - r.length; return sp >= 1 ? l + ' '.repeat(sp) + r : l + '\n' + ' '.repeat(Math.max(0, W - r.length)) + r; };
+            const rule = '-'.repeat(W), center = (s) => { s = String(s); const p = Math.max(0, Math.floor((W - s.length) / 2)); return ' '.repeat(p) + s; };
+            let biz = ''; try { biz = M.business || (typeof businessName !== 'undefined' ? businessName : ''); } catch (e) { biz = ''; }
+            const out = [center(String(biz || 'Business').toUpperCase()), center(M.title || 'INVOICE'), rule];
+            [['Invoice no', M.number], ['Date', M.date], ['Due', M.dueDate], ...(M.meta || [])].forEach((x) => { if (x[1] != null && String(x[1]).trim() !== '') out.push(pad(x[0] + ':', x[1])); });
+            if (M.billTo && M.billTo.name) { out.push('Bill to: ' + M.billTo.name); (M.billTo.lines || []).filter(Boolean).forEach((l) => out.push('  ' + l)); }
+            out.push(rule);
+            (M.rows || []).forEach((r) => {
+                const first = r[0] && typeof r[0] === 'object' ? r[0].t : r[0];
+                out.push(String(first));
+                const rest = r.slice(1).map((c) => (c && typeof c === 'object' ? c.t : c)).filter((c) => c != null && c !== '');
+                if (rest.length) out.push(pad('  ' + rest.slice(0, -1).join(' x '), rest[rest.length - 1]));
+            });
+            out.push(rule);
+            (M.totals || []).forEach((t) => out.push(pad(t[0], kes(t[1]))));
+            if (isFinite(Number(M.due))) out.push(pad(Number(M.due) <= 0.005 ? 'FULLY PAID' : String(M.dueLabel || 'Amount due').toUpperCase(), 'KES ' + kes(Math.max(0, Number(M.due)))));
+            const pay = Array.isArray(M.payLines) ? M.payLines : (typeof receiptPaymentDetailsList === 'function' ? receiptPaymentDetailsList() : []);
+            if (pay.length) { out.push(rule, 'How to pay:'); pay.forEach((l) => out.push('  ' + l)); }
+            (M.notes || []).forEach((n) => out.push(n));
+            out.push(rule);   // zip 395: no thank-you line
+            return out.join('\n');
+        }
+
+//@fn posInvoiceShow
+// Opens an invoice in the report window (Print / PDF / Share), the same window statements and reports use.
+function posInvoiceShow(model) {
+            const body = document.getElementById('sales-report-body'), modal = document.getElementById('sales-report-modal');
+            const cols = typeof getPaperCols === 'function' ? getPaperCols() : 32;
+            let wide = true; try { wide = typeof receiptPaperMm !== 'function' || receiptPaperMm() > 90; } catch (e) { wide = true; }
+            const text = posInvoiceText(model, cols);
+            try { lastReportText = text; } catch (e) { /* this app keeps no report text */ }
+            if (!body || !modal) { try { showToast('The invoice window is not available here.', true); } catch (e) { /* none */ } return false; }
+            body.innerHTML = wide ? posInvoiceDocHtml(model) : '<pre class="cl-thermal" style="font-family:\'Courier New\',monospace;font-size:' + (typeof receiptFontPtNow === 'function' ? receiptFontPtNow() : 9) + 'pt;line-height:1.25;margin:0;white-space:pre;overflow:hidden;">' + text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])) + '</pre>';
+            modal.style.display = 'flex';
+            if (typeof window.triggerAutoPrintReport === 'function') window.triggerAutoPrintReport();
+            return true;
+        }
+
+//@fn printBillInvoiceA4
+// zip 356: the "📄 Invoice" of a Pay-Later bill (or a wholesale contract's outstanding goods), every module.
+function printBillInvoiceA4(kind, id) {
+            const dd = (t) => { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
+            const qtyTxt = (q, u) => { const n = Number(q) || 0; const s = Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : String(Math.round(n * 1000) / 1000); return s + (u && u !== 'pcs' ? ' ' + u : ''); };
+            const money2 = (n) => (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            if (kind === 'contract') {
+                const c = (typeof contracts !== 'undefined' && Array.isArray(contracts) ? contracts : []).find((x) => x.id === id);
+                if (!c) { showToast('Could not find that contract.', true); return false; }
+                const items = Object.values(c.items || {}).map((it) => ({ it, out: Math.max(0, (it.qtyCarried || 0) - (it.qtyReturned || 0) - (it.qtySettled || 0)) })).filter((x) => x.out > 0.004);
+                const total = items.reduce((s, x) => s + x.out * (Number(x.it.price) || 0), 0);
+                return posInvoiceShow({ number: String(c.id), date: dd(Date.now()), status: total > 0.005 ? 'unpaid' : 'paid', billTo: { name: c.name, lines: [c.phone || ''] }, meta: [['Type', 'Wholesale contract']],
+                    rows: items.map((x) => [{ t: x.it.name, sub: x.it.code ? 'Code ' + x.it.code : '' }, qtyTxt(x.out, x.it.unit), money2(x.it.price), money2(x.out * (Number(x.it.price) || 0))]),
+                    totals: [['Subtotal', total]], due: total, emptyText: 'Nothing outstanding on this contract.' });
+            }
+            const b = (typeof bills !== 'undefined' && Array.isArray(bills) ? bills : []).find((x) => x.id === id);
+            if (!b) { showToast('Could not find that bill.', true); return false; }
+            const items = Array.isArray(b.items) ? b.items : [];
+            const lineSum = items.reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0);
+            const total = typeof billTotalOf === 'function' ? billTotalOf(b) : lineSum + (Number(b.deliveryFee) || 0);
+            const paid = Math.max(0, Number(b.amountPaid) || 0), due = Math.round((total - paid) * 100) / 100;
+            const fee = Math.round((total - lineSum) * 100) / 100;
+            const status = b.voided ? 'void' : due <= 0.005 ? 'paid' : paid > 0.005 ? 'partial' : 'unpaid';
+            const pays = Array.isArray(b.paymentHistory) ? b.paymentHistory.filter((p) => p && !p.voided && Number(p.amount) > 0) : [];
+            const notes = [];
+            if (pays.length) notes.push('Payments received: ' + pays.map((p) => dd(p.timestamp) + ' KES ' + money2(p.amount) + (p.method ? ' (' + String(p.method).toUpperCase() + (p.reference ? ' ' + p.reference : '') + ')' : '')).join(' · '));
+            if (b.notes) notes.push(String(b.notes));
+            const totals = [['Subtotal', lineSum]];
+            if (Math.abs(fee) > 0.005) totals.push([fee > 0 ? 'Delivery / other charges' : 'Discount', fee]);
+            totals.push(['Total', total, true]);
+            if (paid > 0.005) totals.push(['Paid to date', -paid]);
+            return posInvoiceShow({
+                number: b.refNumber || b.id, date: dd(b.timestamp || b.createdAt || Date.now()), dueDate: b.dueDate ? dd(b.dueDate) : '', status,
+                billTo: { name: b.customerName || 'Walk-in customer', lines: [b.customerPhone || b.mpesaPhone || '', b.customerIdNumber ? 'ID ' + b.customerIdNumber : '', b.deliveryAddress || ''] },
+                meta: [['Served by', b.servedBy || '']],
+                rows: items.map((l) => [{ t: l.name || l.code || 'Item', sub: [l.code && l.code !== l.name ? l.code : '', l.variantName || ''].filter(Boolean).join(' · ') }, qtyTxt(l.qty, l.unit), money2(l.price), money2((Number(l.price) || 0) * (Number(l.qty) || 0))]),
+                totals, due, notes,
+            });
+        }

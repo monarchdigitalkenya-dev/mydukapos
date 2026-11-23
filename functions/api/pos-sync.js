@@ -27,18 +27,20 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { DEMO_PASSWORD_HASH, DEMO_PW_ENFORCE_FROM } from './_demo-const.js';
 import { requireValidLicense, updateIndexBusinessName } from './_license.js';
 import { maybeSnapshotBackup } from './_backups.js';
 import { corsHeadersFor } from './_cors.js';
-import { mergeIncomingState, correctClockDrift, MERGE_BY_ID_FIELDS, stripTombstones } from './_merge.js';
+import { mergeIncomingState, correctClockDrift, MERGE_BY_ID_FIELDS, stripTombstones, recordKey } from './_merge.js';
 import {
   readStateRaw, readStateStored, decodeStateText, writeStateText, writeStateFenced, byteLength, sizePolicy, noteOversize, MIB,
   chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse, stateStamp, readStateStamp,
 } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
-import { stampSales } from './_staff-auth.js';
-import { recordPush } from './_ledger.js';
+import { stampSales, readMode, staffTokenOf, verifyToken } from './_staff-auth.js';
+import { guardPush, sanitizeMpesaPush } from './_perm-guard.js';
+import { secEvent, callerIp as callerIpOf } from './_sec-events.js';
+import { recordPush, ledgerReset } from './_ledger.js';
+import { parseResetRequest, wipedState } from './_merge.js';
 import { withRetry, isStorageFull } from './_retry.js';
 import { fenceOpen, fenceWaitVisible, fenceClaim, fenceRelease } from './_write-fence.js';
 
@@ -209,13 +211,26 @@ async function handleGet(context) {
     const got = await shopDbCall(env, clientId, 'state', {
       since: Number(u.searchParams.get('since')) || 0,
       hotDays: hot === 'all' ? 'all' : (Number(hot) || undefined),
+      logsAfter: Number(u.searchParams.get('after')) || 0,          // zip 315: the device's change cursor (see stateText in wildcard-router/shop-store.js)
     });
     if (got.unavailable) return shopDbUnavailable(env, clientId, got.why, cors);
     const res = got.res;
     return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json', ...cors } });
   }
 
-  const stored = await readStateStored(env, stateKey(clientId));
+  let stored = await readStateStored(env, stateKey(clientId));
+  // zip 279: a pull asked for because another device just saved (?fresh=1) must not be answered from a copy older than that save: KV can lag
+  // behind the write fence for a moment. Wait (at most ~1.5 s, never an error) until the copy is at least as new as the last acknowledged write.
+  if (new URL(request.url).searchParams.get('fresh') === '1') {
+    try {
+      const fence = await fenceOpen(env, clientId);
+      const seen = () => Number((stored && stored.meta && stored.meta.ver) || 0);
+      if (fence && fence.kvVer > 0 && seen() < fence.kvVer) {
+        const deadline = Date.now() + 1500;
+        for (let i = 0; Date.now() < deadline && seen() < fence.kvVer; i++) { await sleep(Math.min(60 * 2 ** i, 400)); stored = await readStateStored(env, stateKey(clientId)); }
+      }
+    } catch (e) { /* the copy already read is answered */ }
+  }
 
   // Conditional pull: every open device asks for the state every few seconds,
   // and until now the answer was the WHOLE shop (inventory, photos, every sale)
@@ -274,14 +289,32 @@ async function handlePost(context) {
     return jsonResponse({ error: 'Request body must be a JSON object.' }, 400, cors);
   }
 
-  // zip 262: the shared-demo password (0000) can never become the password of a real shop created from now on (see _demo-const.js)
-  if ((body.pwHash === DEMO_PASSWORD_HASH || body.adminPwHash === DEMO_PASSWORD_HASH) && license.record && Number(license.record.createdAt) >= DEMO_PW_ENFORCE_FROM) {
-    return jsonResponse({ error: 'That password is reserved for the public demos. Choose a different one.', code: 'demo_password_reserved' }, 400, cors);
-  }
+  // zip 326: no password is reserved any more - 0000 is stored like any other password (the old zip 262/322 rule that dropped it is gone).
 
   // WHO MADE EACH SALE (zip 141): check each sale's staff signature and stamp what was found (see _staff-auth.js). Never refuses or
   // drops a sale; if the check itself fails the push goes ahead unstamped (shown as "not checked").
   try { await stampSales(env, clientId, body); } catch (e) { /* never block a sale */ }
+
+  // PERMISSIONS ON THE NEW LISTS (zip 292): when the shop requires staff sessions, a change to cash settings / cashier points, a cash approval,
+  // exemption or correction, a voided cash movement, or a unit written off / damaged / re-identified is kept only if a manager (or the Admin) made it
+  // (see _perm-guard.js). Anything else in the push goes through; a held record is reported back in `held`. Off by default (same switch as every staff action).
+  let permAuth = { enforce: false, claims: null };
+  try {
+    if ((await readMode(env, clientId)) === 'enforce') { const tok = staffTokenOf(request); permAuth = { enforce: true, claims: tok ? await verifyToken(env, clientId, tok) : null }; }
+  } catch (e) { permAuth = { enforce: false, claims: null }; }
+  let heldNow = [];
+
+  // RESET APP (zip 327): the server really forgets the shop. The typed business name is checked here against the stored one; with staff sessions required only
+  // a manager may do it. Nothing else in the push is applied.
+  if (body._wipeApp && typeof body._wipeApp === 'object') return await handleWipeApp(context, { clientId, body, permAuth, cors });
+
+  // RESET EPOCH (zip 327): a deliberate reset of the sales / stock history. With staff sessions required only a manager may send it; anything
+  // else in the push still goes through and the refused reset is reported back in `held`.
+  let resetReq = parseResetRequest(body, Date.now());
+  if (resetReq && permAuth.enforce && !(permAuth.claims && permAuth.claims.mgr)) {
+    delete body._logsReset; resetReq = null;
+    heldNow = heldNow.concat([{ col: '_logsReset', reason: 'manager_only' }]);
+  }
 
   // THE D1 LEDGER (zip 153): every sale / payment / bill / expense / return ... in this push is written to Cloudflare D1 FIRST, one atomic
   // batch per record, idempotent on the record's id. If D1 does not accept it the push is NOT acknowledged (503, "busy"): the till keeps the
@@ -301,6 +334,11 @@ async function handlePost(context) {
     return new Response(JSON.stringify({ error: 'The transaction database did not answer — this device keeps every sale and sends it again in a moment.', code: 'busy', ledger: 'unavailable', retryAfter: 2, detail: led.error }), {
       status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
     });
+  }
+ // zip 327: the D1 ledger is the money record - a reset marks the sales / payments it covers REMOVED / REVERSED (never deleted: the audit trail stays)
+  if (resetReq && resetReq.fields.some((f) => f === 'salesLog' || f === 'bills')) {
+    const lr = await ledgerReset(env, clientId, resetReq);
+    if (!lr.ok) return new Response(JSON.stringify({ error: 'The transaction database did not answer — the reset is kept on this device and sent again in a moment.', code: 'busy', ledger: 'unavailable', retryAfter: 2 }), { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors } });
   }
   // Best-effort marker "this shop has no transaction database yet" (read by the health check). Written at most once every 6 hours per
   // worker instance, never awaited and never allowed to fail a push.
@@ -327,8 +365,9 @@ async function handlePost(context) {
     if (Number(request.headers.get('content-length')) > maxPush) {
       return jsonResponse({ error: 'This push is too large to accept in one go.', code: 'push_too_large' }, 413, cors);
     }
-    let got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now() });
-    if (got.unavailable || got.res.status >= 500) { await sleep(400 + Math.floor(Math.random() * 400)); got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now() }); }   // one quick retry (zip 123)
+    const doAuth = permAuth.enforce ? { enforce: true, claims: permAuth.claims ? { sid: permAuth.claims.sid, name: permAuth.claims.name, mgr: !!permAuth.claims.mgr, perms: permAuth.claims.perms, expired: !!permAuth.claims.expired } : null } : null;
+    let got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now(), auth: doAuth });
+    if (got.unavailable || got.res.status >= 500) { await sleep(400 + Math.floor(Math.random() * 400)); got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now(), auth: doAuth }); }   // one quick retry (zip 123)
     if (got.unavailable) return shopDbUnavailable(env, clientId, got.why, cors);
     const res = got.res;
     const out = await res.json().catch(() => ({}));
@@ -341,7 +380,8 @@ async function handlePost(context) {
         context.waitUntil(room.fetch('https://sync-room/broadcast', { method: 'POST', body: JSON.stringify({ poke: true }) }).catch(() => {}));
       } catch (e) { /* the poll is the fallback */ }
     }
-    return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
+    if (out.held && out.held.length) { try { await secEvent(env, 'permission_held', { route: 'pos-sync', shop: clientId, ip: callerIpOf(request), detail: out.held.map((h) => h.col + ':' + h.reason).slice(0, 3).join('; ').slice(0, 160) + ' by ' + String((permAuth.claims && permAuth.claims.name) || 'no staff session').slice(0, 30) }); } catch (e) { /* log only */ } }
+    return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: out.updatedAt, prev: out.prev, ...(out.held && out.held.length ? { held: out.held } : {}), ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
   }
 
   // Snapshot whatever's currently live (about to be overwritten) into today's
@@ -369,13 +409,18 @@ async function handlePost(context) {
       catch (e) { if (e && e.code === 'fence_busy') return busyResponse(cors, e); throw e; }
     }
     existing = stored ? JSON.parse(stored.text) : {};
+    let incomingG = sanitizeMpesaPush(incomingBody).body;     // zip 340: M-PESA Agent entries that do not balance are dropped whoever sends them
+    if (permAuth.enforce) {
+      const g = guardPush(incomingG, (col, rec) => { const k = recordKey(rec), arr = existing[col]; return k != null && Array.isArray(arr) ? (arr.find((x) => recordKey(x) === k) || null) : null; }, permAuth);
+      incomingG = g.body; heldNow = g.held;
+    }
 
     // Correct for this device's clock drift BEFORE any merge comparison uses
     // its timestamps — see correctClockDrift() above.
     serverNow = Date.now();
     // A device that still holds (and re-sends) history the server already archived must not bring it back — see _state-store.js. Checked on the
     // push as SENT (zip 156): correcting a slow clock first moved an archived record's time past the archive cutoff and it slipped through.
-    const fresh = await dropArchivedIncoming(env, clientId, incomingBody, Number(existing._archiveCutoff) || 0, {
+    const fresh = await dropArchivedIncoming(env, clientId, incomingG, Number(existing._archiveCutoff) || 0, {
       serverNow, lastArchiveAt: Number(existing._lastAutoArchive && existing._lastAutoArchive.at) || 0,
     });
     body = correctClockDrift(fresh, serverNow);
@@ -445,7 +490,7 @@ async function handlePost(context) {
     }
     try {
       const put = () => writeStateText(env, stateKey(clientId), jsonText, {
-        bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt, ver: fenced ? fence.nextVer : undefined,
+        bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt, ver: fenced ? fence.nextVer : undefined, roomNoted: true,
       });
       if (fenced) {
         try { await withRetry(put, { tries: 4, baseMs: 600, maxMs: 1600, env }); }        // the slot is ours: retry the put itself rather than re-claiming
@@ -523,5 +568,45 @@ async function handlePost(context) {
   // The apps only ever read `updatedAt` from this reply, so don't send the whole shop back on every save.
   // (The full record still goes to other devices via the WebSocket broadcast and their next pull.)
   const till = typeof body._till === 'string' && record.tillNumbers ? record.tillNumbers[body._till] || 0 : 0;
-  return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
+  if (heldNow.length) { try { await secEvent(env, 'permission_held', { route: 'pos-sync', shop: clientId, ip: callerIpOf(request), detail: heldNow.map((h) => h.col + ':' + h.reason).slice(0, 3).join('; ').slice(0, 160) + ' by ' + String((permAuth.claims && permAuth.claims.name) || 'no staff session').slice(0, 30) }); } catch (e) { /* log only */ } }
+  return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(heldNow.length ? { held: heldNow } : {}), ...(till ? { till } : {}) }, 200, cors);
+}
+
+
+// zip 327: "Reset app" on the server. Snapshots a backup first, then replaces the shop's record with { businessName, ownerName } plus a floor for every list
+// (so a device that was offline cannot bring the old data back) and marks the D1 ledger's rows REMOVED / REVERSED (never deleted). Both backends.
+async function handleWipeApp(context, { clientId, body, permAuth, cors }) {
+  const { request, env } = context;
+  const w = body._wipeApp;
+  if (permAuth.enforce && !(permAuth.claims && permAuth.claims.mgr)) return jsonResponse({ error: 'Only a manager can reset the app.', code: 'manager_only' }, 403, cors);
+  const id = String(w.id || ('w' + Date.now().toString(36))).slice(0, 64);
+  const ownerName = String(w.ownerName || '').slice(0, 120);
+  const pushMode = await shopMode(env, clientId);
+  if (pushMode === 'migrating') return migratingResponse(cors);
+  const at = Date.now();
+  if (pushMode === 'do') {
+    const got = await shopDbCall(env, clientId, 'wipe', { req: { id, confirm: w.confirm, ownerName }, serverNow: at });
+    if (got.unavailable) return shopDbUnavailable(env, clientId, got.why, cors);
+    const out = await got.res.json().catch(() => ({}));
+    if (!got.res.ok || !out.ok) return jsonResponse({ error: out.error || 'Could not reset.', code: out.code || 'wipe_failed' }, out.code === 'name_mismatch' ? 403 : (got.res.status >= 400 ? got.res.status : 500), cors);
+  } else {
+    await maybeSnapshotBackup(env, clientId);
+    const fence = await fenceOpen(env, clientId);
+    let stored = await readStateRaw(env, stateKey(clientId));
+    if (fence) { try { stored = await fenceWaitVisible(env, fence, () => readStateRaw(env, stateKey(clientId)), stored); } catch (e) { if (e && e.code === 'fence_busy') return busyResponse(cors, e); throw e; } }
+    const existing = stored ? JSON.parse(stored.text) : {};
+    const biz = String(existing.businessName || '').trim();
+    if (!biz || String(w.confirm || '').trim() !== biz) return jsonResponse({ error: 'The business name does not match.', code: 'name_mismatch' }, 403, cors);
+    const record = wipedState(existing, { id, at, ownerName });
+    const jsonText = JSON.stringify(record);
+    let fenced = false;
+    if (fence) {
+      const claim = await fenceClaim(env, fence, stored);
+      if (claim === true) fenced = true; else if (claim === false) return busyResponse(cors, new Error('shop write slot kept changing'));
+    }
+    await writeStateText(env, stateKey(clientId), jsonText, { bytes: byteLength(jsonText), keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer: { ip: request.headers.get('CF-Connecting-IP') || '', cc: '' }, updatedAt: record.updatedAt, ver: fenced ? fence.nextVer : undefined, roomNoted: true });
+  }
+  const lr = await ledgerReset(env, clientId, { id, at, fields: ['salesLog', 'bills'], voided: false });
+  if (env.SYNC_ROOM) { try { const room = env.SYNC_ROOM.get(env.SYNC_ROOM.idFromName(clientId)); context.waitUntil(room.fetch('https://sync-room/broadcast', { method: 'POST', body: JSON.stringify({ poke: true }) }).catch(() => {})); } catch (e) { /* the poll is the fallback */ } }
+  return jsonResponse({ ok: true, wiped: true, id, at, ledger: lr.ok ? (lr.skipped || 'marked') : 'pending' }, 200, cors);
 }

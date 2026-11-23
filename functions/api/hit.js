@@ -3,7 +3,15 @@
 //   POST { path, ref }              -> 204
 //   POST { action:'report' } owner  -> { days: { 'YYYY-MM-DD': { '/': n, ... } } }
 import { requireOwnerAuth } from './_owner-auth.js';
-const OK = new Set(['/', '/offers', '/faq', '/contact', '/terms', '/privacy', '/cookies', '/acceptable-use', '/dashboard.html', '/app.html']);
+const OK = new Set(['/', '/offers', '/faq', '/contact', '/portfolio', '/terms', '/privacy', '/cookies', '/acceptable-use', '/dashboard.html', '/app.html', '/websites', '/shop']);
+// zip 307: a few named steps of the sales journey, counted the same way (a number per day, nothing about the visitor). A click is only a click:
+// 'demo_open' is "opened a demo", never "bought". The server counts the real milestones itself (see countEvent in get-my-link.js).
+export const EVENTS = new Set(['demo_cta', 'demo_open', 'pw_copy', 'pricing_view', 'whatsapp', 'film_play']);
+export async function countEvent(env, name) {
+  if (!env || !env.mydukapos_kv || !/^[a-z_]{3,24}$/.test(String(name || ''))) return;
+  const key = `an:${day()}:#${name}`;
+  try { await env.mydukapos_kv.put(key, String((Number(await env.mydukapos_kv.get(key)) || 0) + 1), { expirationTtl: 400 * 86400 }); } catch (e) { /* best effort */ }
+}
 const day = (t = Date.now()) => new Date(t + 3 * 3600e3).toISOString().slice(0, 10);   // Nairobi day
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -15,6 +23,7 @@ export async function onRequestPost(context) {
     for (const k of l.keys) { const [, d, p] = k.name.split(/:(.*?):(.*)/s).filter((x) => x !== ''); (days[d] = days[d] || {})[p] = Number(await env.mydukapos_kv.get(k.name)) || 0; }
     return new Response(JSON.stringify({ days }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
   }
+  if (b.event != null) { if (EVENTS.has(String(b.event))) await countEvent(env, String(b.event)); return new Response(null, { status: 204 }); }
   let p = String(b.path || '/').split('?')[0].split('#')[0];
   if (p.length > 1) p = p.replace(/\/+$/, '') || '/';
   // zip 185: only the real product pages are counted - any /products/<text> used to create a new KV key per distinct text (unbounded writes from anyone)

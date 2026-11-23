@@ -154,7 +154,7 @@ for (const app of ['index.html', 'hotel/index.html']) {
     assert.ok(order(w.eval('lastReceiptText'), 1), 'a reprint of the first shows the same number, and uses no new one');
     assert.equal(w.eval('salesLog.length'), 2);
     // a Pay Later customer is a customer too
-    w.eval("addToCart('A1'); currentPaymentMethod = 'bill'"); const nameEl = d.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+    w.eval("addToCart('A1'); currentPaymentMethod = 'bill'"); const nameEl = d.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; const phEl = d.getElementById('sms-checkout-phone-input'); if (phEl) phEl.value = '0712345678';
     await w.eval('checkoutCart()');
     assert.ok(order(w.eval('lastReceiptText'), 3), 'a bill is Customer 3');
     // a payment on that bill is not a new customer

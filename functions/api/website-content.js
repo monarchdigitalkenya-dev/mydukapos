@@ -59,19 +59,15 @@ const DEFAULT_CONTENT = {
   // switcher — a hidden product's own detail page (app.html?product=X)
   // still works fine for anyone with a direct link; this only controls
   // discovery surfaces, not whether the page itself exists.
-  visibleProducts: ['shop', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water'],
+  visibleProducts: ['shop', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water', 'carwash'],
   // Extra ways to pay, shown alongside the main M-Pesa number — e.g. a bank
   // transfer written out as text, or a till/QR code as a photo. Empty by
   // default; the M-Pesa number above is the only option until the owner
   // adds more.
   alternatePaymentMethods: [],
-  testimonials: [
-    { quote: 'I used to close my books at midnight trying to figure out where the day\u2019s money went. Now I just open the Daily Sales tab. It has genuinely given me my evenings back.', name: 'Grace Wambui', role: 'Duka owner, Kikuyu' },
-    { quote: 'We lost power for two days during a storm and I panicked \u2014 but the till kept ringing up sales the whole time. Everything synced the moment the lights came back. I didn\u2019t lose a single receipt.', name: 'Peter Otieno', role: 'Hardware shop, Kisumu' },
-    { quote: 'Running two branches used to mean two sets of books and constant phone calls to check stock. Now I see both branches from my own phone, in real time, from home.', name: 'Faith Njeri', role: 'Minimart owner, Nakuru \u2014 2 branches' },
-    { quote: 'My waiters used to argue with guests over the bill. Now the kitchen ticket prints itself the second an order\u2019s taken, and the receipt matches every time. Guests trust us more for it.', name: 'Samuel Kariuki', role: 'Restaurant manager, Thika' },
-    { quote: 'I was paying almost this much every single month for a system that still went down constantly. Paid once for mydukapos over a year ago and it has never asked me for another shilling.', name: 'Dorcas Achieng', role: 'Pharmacy owner, Mombasa' },
-  ],
+  // zip 307: NO built-in testimonials. The five that used to be here were sample text, not known to come from real customers, yet showed on the public
+  // site as if they did. The site now shows only testimonials the owner ticks as genuine (`verified`: a real customer, who agreed to publication).
+  testimonials: [],
 };
 
 async function getContent(env) {
@@ -155,7 +151,7 @@ export async function onRequestPost(context) {
     }
     const testimonials = Array.isArray(body.content.testimonials) ? body.content.testimonials : [];
     const cleanTestimonials = testimonials
-      .map((t) => ({ quote: String(t.quote || '').trim(), name: String(t.name || '').trim(), role: String(t.role || '').trim() }))
+      .map((t) => ({ quote: String(t.quote || '').trim(), name: String(t.name || '').trim(), role: String(t.role || '').trim(), verified: t.verified === true }))
       .filter((t) => t.quote && t.name);
 
     const validKeys = listProducts().map((p) => p.id);

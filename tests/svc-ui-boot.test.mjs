@@ -241,6 +241,9 @@ test('drawer: Overview groups fields, status buttons are the legal transitions, 
 test('switching business type keeps history intact; list, search, status chips, All types', async () => {
   const { w, d, errors, close } = await boot('services/index.html', { wait: 500 });
   try {
+    // zip 361: a car_wash Services shop now sees "Car Wash has its own app" (svc-carwash-moved, tested in zip361-carwash). This test is about the
+    // engine's history mechanics, which still read old car wash jobs, so the notice is switched off here.
+    w.eval('SVC_MOVED_TYPES.length = 0;');
     w.eval("svcSetBusinessType('phone_repair')");
     const a = J(w, `return svcCreateJob({ typeKey: 'phone_repair', values: ${JSON.stringify(VALID.phone_repair)} });`);
     const b = J(w, `return svcCreateJob({ typeKey: 'car_wash', values: ${JSON.stringify(Object.assign({}, VALID.car_wash, { services: SERVICES }))} });`);

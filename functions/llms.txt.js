@@ -12,6 +12,8 @@ ${Object.entries(PRODUCT_PAGES).map(([k, p]) => `- [${p.name}](${o}/products/${k
 
 ## Pages
 - [Home](${o}/): overview and current pricing
+- [Website development](${o}/websites): Monarch Digital Solutions builds modern, mobile-friendly websites for businesses; request a quotation
+- [Portfolio](${o}/portfolio): Samuel Mugwe Kamotho, full-stack software engineer (Monarch Digital Solutions): websites, custom business software, integrations
 - [Offers](${o}/offers): current timed offers
 - [FAQ](${o}/faq)
 - [Contact](${o}/contact)

@@ -20,7 +20,7 @@ const toasts = (w) => (w.eval('window.__toasts') || []).join(' | ');
 async function cash(w, setup) { w.eval(`currentCart = {}; ${setup}; currentPaymentMethod = 'cash'`); set(w, 'cash-tendered-input', 100000); await w.eval('checkoutCart()'); }
 async function billSale(w, setup, upfront, extraSetup = '') {
   w.eval(`currentCart = {}; ${setup}; currentPaymentMethod = 'bill'; ${extraSetup}`);
-  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'bill-upfront-amount-input', upfront);
+  set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', upfront);
   w.eval("billUpfrontMethod = 'cash'");
   await w.eval('checkoutCart()');
 }
@@ -74,7 +74,7 @@ test('M-A: a 1000 bill that cost 600, paid 400 now and 600 later: cost 240 + 360
 test('M-D: a bill of 1000 + 200 delivery fee with 500 paid shows 700 owed (was 500) and is not closed by paying 500', async () => {
   const b = await open([BIG]); const { w } = b;
   w.eval("currentCart = {}; addToCart('B1'); currentPaymentMethod = 'bill'; setOrderType('delivery'); setDeliveryPaymentMode('now')");
-  set(w, 'delivery-address-input', 'Kilimani'); set(w, 'delivery-fee-input', 200); set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'bill-upfront-amount-input', 500);
+  set(w, 'delivery-address-input', 'Kilimani'); set(w, 'delivery-fee-input', 200); set(w, 'bill-customer-name-input', 'Wanjiru'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', 500);
   w.eval("billUpfrontMethod = 'cash'");
   await w.eval('checkoutCart()');
   const bill = bills(w)[0];
@@ -96,7 +96,7 @@ test('M-F: a split of cash -100 + M-Pesa 600 is refused at checkout, in a bill p
   await w.eval('checkoutCart()');
   assert.equal(sales(w).length, 0, 'nothing recorded'); assert.match(toasts(w), /cannot be negative/);
   w.eval("currentCart = {}; addToCart('H1'); currentPaymentMethod = 'bill'; billUpfrontMethod = 'split'");
-  set(w, 'bill-customer-name-input', 'W'); set(w, 'bill-upfront-amount-input', 50);
+  set(w, 'bill-customer-name-input', 'W'); set(w, 'sms-checkout-phone-input', '0712345678'); set(w, 'bill-upfront-amount-input', 50);
   set(w, 'bill-upfront-split-cash-input', -100); set(w, 'bill-upfront-split-mpesa-input', 150); set(w, 'bill-upfront-split-bank-input', 0); set(w, 'bill-upfront-split-card-input', 0);
   await w.eval('checkoutCart()');
   assert.equal(bills(w).length, 0);

@@ -21,9 +21,10 @@
 
 import {
   businessSig, bookingConflict, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
-  CLOCK_DRIFT_MIN_MS, allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeProgressRecord, PROGRESS_FIELDS, mergeLoyaltyFields, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
+  CLOCK_DRIFT_MIN_MS, allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeProgressRecord, PROGRESS_FIELDS, mergeLoyaltyFields, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell, sanitizeEpoch, parseResetRequest, nextEpoch, coveredByEpoch, coveredByRequest, epochFields, wipedState,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
+import { guardPush } from '../functions/api/_perm-guard.js';
 
 const LOGS = new Set(ARCHIVE_LOG_FIELDS);
 const DEFAULT_HOT_DAYS = 120;
@@ -223,10 +224,33 @@ export class ShopStore {
     return false;
   }
 
+  /* ---------- reset app (zip 327) ---------- */
+  // The shop forgets everything but its business / owner name; every by-id list gets a floor so an offline device cannot bring its old data back.
+  // The business name typed by the person is checked HERE, against the stored one.
+  wipe(req, serverNow = Date.now()) {
+    return this.tx(() => {
+      const core = {};
+      for (const [k, v] of Object.entries(this.getCoreText())) { try { core[k] = JSON.parse(v); } catch (e) { /* skip */ } }
+      const biz = String(core.businessName || '').trim();
+      if (!biz || String(req.confirm || '').trim() !== biz) return { ok: false, code: 'name_mismatch', error: 'The business name does not match.' };
+      const w = wipedState(core, { id: String(req.id || ('w' + serverNow)).slice(0, 64), at: serverNow, ownerName: String(req.ownerName || '').slice(0, 120) });
+      this.sql.exec('DELETE FROM records');
+      this.sql.exec('DELETE FROM core');
+      for (const [k, v] of Object.entries(w)) this.setCore(k, v, undefined);
+      return { ok: true, updatedAt: w.updatedAt, wiped: w.wiped };
+    });
+  }
+
   /* ---------- push ---------- */
   // body: the device's payload. Returns { updatedAt }.
-  push(body, serverNow = Date.now(), { preserveUpdatedAt = false, ledger = !preserveUpdatedAt } = {}) {
+  push(body, serverNow = Date.now(), { preserveUpdatedAt = false, ledger = !preserveUpdatedAt, auth = null } = {}) {
     this.guard.pushes++;
+    // zip 292: server-side permission checks on the cash / serial-unit lists (see _perm-guard.js); only when the shop requires staff sessions
+    let held = [];
+    if (auth && auth.enforce) {
+      const g = guardPush(body, (col, rec) => { const k = recordKey(rec); if (k == null) return null; const row = this.getRow(col, k); if (!row || row.del === 1) return null; try { return JSON.parse(row.json); } catch (e) { return null; } }, auth);
+      body = g.body; held = g.held;
+    }
     if (!preserveUpdatedAt) {
       this.noteClockDrift(body, serverNow);
       body = correctClockDrift(body, serverNow);
@@ -235,12 +259,43 @@ export class ShopStore {
       // STOCK LEDGER (see applyStockLedger in _merge.js): note, BEFORE anything is written, which of this push's movements are new
       // and what the touched items look like now — an /import (moving a shop in) is taken as-is and skips this.
       this._ledgerOn = !!ledger;
-      const led = ledger ? this.ledgerBefore(body) : null;
-      const cells = ledger ? this.cellsBefore(body) : null;
       const prev = this.updatedAt() || 0;              // what the shop's record said BEFORE this push (the device uses it to know if it missed anything)
       const coreText = this.getCoreText();
       const existingCore = {};
       for (const [k, v] of Object.entries(coreText)) { try { existingCore[k] = JSON.parse(v); } catch (e) { /* skip */ } }
+
+      // 1b. RESET EPOCH (zip 327, see _merge.js applyResetToState): a deliberate reset removes the listed lists up to `at`, is stored as `logsReset`,
+      //     and from then on records it covers are not accepted back from any device.
+      let epoch = sanitizeEpoch(existingCore.logsReset);
+      const req = parseResetRequest(body, serverNow);
+      if (req && (!epoch || epoch.id !== req.id)) {
+        for (const f of req.fields) {
+          if (!req.voided) this.sql.exec('DELETE FROM records WHERE col = ? AND ((ts > 0 AND ts <= ?) OR (ts = 0 AND upd <= ?))', f, req.at, req.at);
+          else for (const row of this.q('SELECT rk, json FROM records WHERE col = ?', f)) { let r = null; try { r = JSON.parse(row.json); } catch (e) { continue; } if (coveredByRequest(r, req)) this.sql.exec('DELETE FROM records WHERE col = ? AND rk = ?', f, row.rk); }
+        }
+        if (req.rollbackStock) {
+          for (const row of this.q("SELECT rk, json FROM records WHERE col = 'inventory' AND del = 0")) {
+            let p = null; try { p = JSON.parse(row.json); } catch (e) { continue; }
+            if (p && p.openingStock && Number.isFinite(Number(p.openingStock.qty)) && (Number(p.qty) || 0) !== (Number(p.openingStock.qty) || 0)) {
+              p.qty = Number(p.openingStock.qty) || 0; p.updatedAt = Math.max(serverNow, (Number(p.updatedAt) || 0) + 1); p._sv = (Number(p._sv) || 0) + 1; stampLedgerEcho(p);
+              this.sql.exec("UPDATE records SET upd = ?, seq = ?, json = ? WHERE col = 'inventory' AND rk = ?", p.updatedAt, ++this.seq, JSON.stringify(p), row.rk);
+            }
+          }
+        }
+        epoch = nextEpoch(epoch, req);
+        this.setCore('logsReset', epoch, coreText.logsReset);
+      }
+      // what the reset covers is not accepted back - and must not move stock either, so the push is cleaned BEFORE the stock ledger looks at it
+      if (epoch) {
+        let clean = body;
+        for (const f of epochFields(epoch)) {
+          if (Array.isArray(body[f]) && body[f].length) { const keep = body[f].filter((r) => !coveredByEpoch(f, r, epoch)); if (keep.length !== body[f].length) { if (clean === body) clean = { ...body }; clean[f] = keep; } }
+        }
+        body = clean;
+      }
+      const led = ledger ? this.ledgerBefore(body) : null;
+      const cells = ledger ? this.cellsBefore(body) : null;
+
 
       // 1. scalar settings: last write wins, except that a push can never BLANK the protected ones, and a field that carries a
       //    stamp (`_fieldTimes`) is only replaced by an equal-or-newer stamp — the same rule as the single-record backend (_merge.js)
@@ -248,7 +303,7 @@ export class ShopStore {
       const sentTimes = body._fieldTimes || {};
       const times = { ...storedTimes };
       for (const [k, v] of Object.entries(body)) {
-        if (k === 'updatedAt' || k === '_fieldTimes' || k === '_cells' || k === '_till' || k === 'tillNumbers' || k === '_dev' || k === 'deviceRegistry') continue;
+        if (k === 'updatedAt' || k === '_fieldTimes' || k === '_cells' || k === '_till' || k === 'tillNumbers' || k === '_dev' || k === 'deviceRegistry' || k === '_logsReset' || k === 'logsReset' || k === 'wiped' || k === '_wipeApp') continue;
         if (MERGE_BY_ID_FIELDS.includes(k) && Array.isArray(v)) continue;
         // a null / {} / '' where a list belongs never replaces the stored list (same as the single-record backend)
         if (MERGE_BY_ID_FIELDS.includes(k) && this.q('SELECT 1 AS x FROM records WHERE col = ? LIMIT 1', k).length > 0) continue;
@@ -293,7 +348,7 @@ export class ShopStore {
       // record dated ahead): a device asking '?since=<last updatedAt>' would be told 'unchanged' for a change it has not seen. At least prev + 1.
       const updatedAt = preserveUpdatedAt && Number(body.updatedAt) ? Number(body.updatedAt) : Math.max(serverNow, prev + 1);
       this.setCore('updatedAt', updatedAt, coreText.updatedAt);
-      return { updatedAt, prev, ledger: 1, ...(tills.till ? { till: tills.till } : {}) };
+      return { updatedAt, prev, ledger: 1, ...(held.length ? { held } : {}), ...(tills.till ? { till: tills.till } : {}) };
     });
   }
 
@@ -413,19 +468,28 @@ export class ShopStore {
 
   // The whole shop as the apps expect it, except that the big logs only carry their recent "hot window".
   // hotDays = null -> everything.
-  stateText(hotDays) {
+  // zip 315: `logsAfter` = the change number (seq) of the device's last APPLIED pull. With it, the big logs carry their short recent window PLUS every
+  // log record written after that change, whatever its date - so an old sale voided (or an old movement first sent) on another device still arrives,
+  // while a phone no longer downloads 120 days of every log each time anything in the shop changes. A cursor newer than this database (a restored
+  // or replaced database) is not trusted: the default window is sent instead. `_seq` tells the device the cursor to send next time.
+  stateText(hotDays, logsAfter, withSeq) {
     const parts = [];
     for (const [k, v] of Object.entries(this.getCoreText())) parts.push(JSON.stringify(k) + ':' + v);
+    let after = Number(logsAfter) || 0;
+    if (after > this.seq) { after = 0; hotDays = Number(this.env.HOT_DAYS) || DEFAULT_HOT_DAYS; }
     const cutoff = hotDays == null ? null : Date.now() - hotDays * 86400000;
     for (const { col } of this.q('SELECT DISTINCT col FROM records')) {
       const rows = (LOGS.has(col) && cutoff != null)
-        ? this.q('SELECT json FROM records WHERE col = ? AND del = 0 AND (ts = 0 OR ts >= ?) ORDER BY pos', col, cutoff)
+        ? (after > 0
+          ? this.q('SELECT json FROM records WHERE col = ? AND del = 0 AND (ts = 0 OR ts >= ? OR seq > ?) ORDER BY pos', col, cutoff, after)
+          : this.q('SELECT json FROM records WHERE col = ? AND del = 0 AND (ts = 0 OR ts >= ?) ORDER BY pos', col, cutoff))
         : this.q('SELECT json FROM records WHERE col = ? AND del = 0 ORDER BY pos', col);
       parts.push(JSON.stringify(col) + ':[' + rows.map((r) => r.json).join(',') + ']');
     }
     if (!parts.some((x) => x.startsWith('"updatedAt":'))) parts.unshift('"updatedAt":0');
     if (cutoff != null) parts.push('"_hotFrom":' + Math.floor(cutoff));      // the big logs above only start here; older history: /api/history
     parts.push('"_ledger":1');                                                // stock movements are applied once here (see applyStockLedger)
+    if (withSeq) parts.push('"_seq":' + this.seq);                            // zip 315: the change number this answer is complete up to (device pulls only)
     return '{' + parts.join(',') + '}';
   }
 
@@ -551,16 +615,42 @@ export class ShopStore {
     try { body = await request.json(); } catch (e) { /* GET-style calls carry no body */ }
     const text = (s, status = 200) => new Response(s, { status, headers: { 'Content-Type': 'application/json' } });
     const json = (o, status = 200) => text(JSON.stringify(o), status);
+    if (body && typeof body._shop === 'string' && body._shop) this.shopId = body._shop;
+    // zip 306: an operation that can change the shop is followed by "is the shop's version different now?" (one row read). If it is, the shop's
+    // live-sync room is told, so every device asking it "anything new?" over its open connection learns at once - instead of each device
+    // asking this database over HTTP every 30 s. Reads (/state, /history, /have ...) never notify.
+    const writes = path === '/push' || path === '/wipe' || path === '/import' || path === '/book' || path === '/xb-sell';
+    let ua0 = 0;
+    if (writes) { try { ua0 = this.updatedAt(); } catch (e) { ua0 = 0; } }
+    const res = await this.route(path, body, text, json);
+    if (writes) { try { const ua1 = this.updatedAt(); if (ua1 && ua1 !== ua0) this.noteRoom(ua1); } catch (e) { /* devices' backstop pull still catches it */ } }
+    return res;
+  }
+
+  // Tell the shop's live-sync room (SyncRoom, same Worker) the new version. Never awaited by the caller and never fails a write.
+  noteRoom(ver) {
+    try {
+      const room = this.env && this.env.SYNC_ROOM;
+      if (!room || !this.shopId) return;
+      const stub = room.get(room.idFromName(this.shopId));
+      Promise.resolve(stub.fetch('https://sync-room/ver', { method: 'POST', body: JSON.stringify({ ver }) })).catch(() => {});
+    } catch (e) { /* the backstop pull covers it */ }
+  }
+
+  async route(path, body, text, json) {
     try {
       switch (path) {
-        case '/push': return json(this.push(body.body || {}, Number(body.serverNow) || Date.now()));
+        case '/push': return json(this.push(body.body || {}, Number(body.serverNow) || Date.now(), { auth: body.auth || null }));
+        case '/wipe': return json(this.wipe(body.req || {}, Number(body.serverNow) || Date.now()));
         case '/import': return json(this.push(body.state || {}, Date.now(), { preserveUpdatedAt: true }));
         case '/state': {
           const since = Number(body.since) || 0;
           const ua = this.updatedAt();
           if (since > 0 && ua && ua <= since) return json({ unchanged: true, updatedAt: ua });
           const hot = body.hotDays === 'all' ? null : (Number(body.hotDays) || Number(this.env.HOT_DAYS) || DEFAULT_HOT_DAYS);
-          return text(this.stateText(hot));
+          // zip 315: a short window is only ever honoured together with a change cursor (see stateText) - never on its own
+          const after = Number(body.logsAfter) || 0;
+          return text(this.stateText(after > 0 || body.hotDays === 'all' ? hot : Math.max(hot, Number(this.env.HOT_DAYS) || DEFAULT_HOT_DAYS), after, true));
         }
         case '/export': return text(this.stateText(null));
         case '/changes': return text(this.changesText(body.cursor));

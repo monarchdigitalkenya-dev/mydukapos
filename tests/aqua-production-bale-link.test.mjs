@@ -25,7 +25,7 @@ test('quick-produce (submitProduction): a connected bale credits the linked bott
   d.getElementById('production-target-select').innerHTML = '<option value="product:BALE500">x</option>';
   d.getElementById('production-target-select').value = 'product:BALE500';
   d.getElementById('production-qty-input').value = '24';
-  w.eval('submitProduction()');
+  w.eval('submitProduction(); AquaMat.pNoRecipe(true); AquaMat.pGo()');
   assert.equal(w.eval("products.find(p => p.code === 'BTL500').qty"), 24 * 24, 'the bottle received the produced stock (24 bales x 24/bale)');
   assert.equal(w.eval("effectiveBaleQty(products.find(p => p.code === 'BALE500'))"), 24, "the bale's derived qty now correctly shows 24, not 0");
   b.close();
@@ -37,7 +37,7 @@ test('quick-produce (submitProduction): a trackBottles bale updates its own bott
   d.getElementById('production-target-select').innerHTML = '<option value="product:BALETRK">x</option>';
   d.getElementById('production-target-select').value = 'product:BALETRK';
   d.getElementById('production-qty-input').value = '3'; // 3 bales
-  w.eval('submitProduction()');
+  w.eval('submitProduction(); AquaMat.pNoRecipe(true); AquaMat.pGo()');
   assert.equal(w.eval("products.find(p => p.code === 'BALETRK').bottleStock"), 3 * 24, 'bottleStock (the field the UI actually displays for a tracked bale) received the produced bottles');
   b.close();
 });

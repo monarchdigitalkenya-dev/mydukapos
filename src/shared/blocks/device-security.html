@@ -42,8 +42,28 @@
                 var headers = new Headers(init.headers || (typeof input !== 'string' && input.headers) || {});
                 headers.set('X-Device-Id', deviceId());
                 if (token()) headers.set('X-Device-Token', token());
+                // zip 335: a call nobody gave a time limit used to wait for ever on a bad network (a screen stuck on "Sending..."). Give it 25 s
+                // unless the caller set its own signal, or it is a transfer that is legitimately slow (upload / backup / export / import / live socket).
+                var dlTimer = null;
+                try {
+                    var hasSignal = !!init.signal || typeof input !== 'string';
+                    var slowOk = /\/(upload|backup|restore|export|import|download|stream|ws|print-relay|report)/i.test(url);
+                    // zip 396: reading a photo with the AI (Capture List, menus, past sales) can take well over 25 s - those calls get 2 minutes.
+                    var aiCall = /\/api\/ai-/i.test(url), limitMs = aiCall ? 120000 : 25000;
+                    if (!hasSignal && !slowOk && typeof AbortController === 'function') {
+                        var dlCtl = new AbortController();
+                        dlTimer = setTimeout(function () {
+                            // zip 396: say what happened in plain words (it was "signal is aborted without reason")
+                            var why = aiCall ? 'Reading took too long. Check the internet connection and try again.' : 'The server took too long to answer. Check the internet connection and try again.';
+                            var reason; try { reason = new DOMException(why, 'AbortError'); } catch (e) { reason = undefined; }
+                            try { dlCtl.abort(reason); } catch (e) { try { dlCtl.abort(); } catch (e2) { /* already done */ } }
+                        }, limitMs);
+                        init = Object.assign({}, init, { signal: dlCtl.signal });
+                    }
+                } catch (e) { dlTimer = null; }
                 var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
-                return realFetch.apply(this, args).then(function (res) {
+                var settle = function () { if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; } };
+                return realFetch.apply(this, args).then(function (res) { settle();
                     // zip 143: remember how the last API call failed, so a message can say what really happened (see netErrText)
                     try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now(), challenge: String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge' }; } catch (e) { /* cosmetic */ }
                     // zip 147: Cloudflare's security check answered instead of the POS server — that is not "refused" nor "offline"
@@ -57,6 +77,7 @@
                     }
                     return res;
                 }, function (err) {
+                    settle();
                     try { window.__apiLastFail = { kind: err && err.name === 'AbortError' ? 'timeout' : 'network', at: Date.now() }; } catch (e) { /* cosmetic */ }
                     throw err;
                 });
@@ -153,7 +174,41 @@
                 + '<ol id="ds-sync-steps" style="margin:8px 0 0; padding-left:20px; font-size:13px; line-height:1.5;"></ol>'
                 + '<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12px; color:#7f8c8d;">Sync diagnostics (technical — failed sends and retries are listed here, not in the Audit)</summary>'
                 + (diag.length ? '<ul style="margin:6px 0 0; padding-left:18px; font-size:12px; color:#566573;">' + diag.map(function (e) { return '<li>' + esc(new Date(e.at).toLocaleString('en-GB')) + ' — ' + esc(e.kind) + ': ' + esc(e.detail) + '</li>'; }).join('') + '</ul>' : '<p class="settings-hint">Nothing recorded.</p>')
-                + '</details></div>';
+                + '</details></div>'
+                + '<div id="ds-health" style="margin:0 0 12px; padding:10px 12px; border:1px solid #d5dbdb; background:#fbfcfc; border-radius:8px;"><strong>🩺 Sync health</strong><p class="settings-hint" style="margin:4px 0 0;">Loading…</p></div>';
+        }
+        var HEALTH_COLOR = { ok: '#1e8449', syncing: '#2471a3', offline: '#7f8c8d', behind: '#b9770e', attention: '#c0392b', unknown: '#7f8c8d' };
+        function ago(ms) { if (!ms) return 'never'; var m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 2880 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; }
+        function healthRow(d) {
+            var h = d.health || { level: 'unknown', text: '' };
+            var rows = (d.parked || []).slice(0, 8).map(function (p) { return '<li>' + esc(p.col) + ' · ' + esc(String(p.id).slice(0, 24)) + ' — tried ' + p.n + '×, ' + esc(p.cat) + '</li>'; }).join('');
+            return '<tr><td>' + esc(d.name || d.id) + (d.me ? ' <em>(this one)</em>' : '') + '</td>'
+                + '<td style="color:' + (HEALTH_COLOR[h.level] || '#7f8c8d') + '; font-weight:700;">' + esc(h.text) + '</td>'
+                + '<td>' + (d.pending || 0) + ' / ' + (d.dirty || 0) + '</td><td>' + (d.parkedCount || 0) + '</td><td>' + (d.conflicts || 0) + '</td><td>' + ago(d.lastOk) + '</td><td>' + ago(d.at) + '</td></tr>'
+                + (rows ? '<tr><td colspan="7"><ul style="margin:0; padding-left:18px; font-size:12px; color:#566573;">' + rows + '</ul></td></tr>' : '');
+        }
+        async function renderHealth() {
+            var box = document.getElementById('ds-health');
+            if (!box || typeof window.syncHealthFetch !== 'function') return;
+            try { await window.syncHealthUpload(true); } catch (e) { /* ours is shown from local state below */ }
+            var data = null, err = '';
+            try { data = await window.syncHealthFetch(); } catch (e) { err = e.message || String(e); }
+            var me = window.syncHealthReport(), meId = (typeof window.getOrCreateDeviceId === 'function' ? window.getOrCreateDeviceId() : '');
+            var devs = data && data.devices ? data.devices.map(function (d) { return Object.assign({}, d, { me: d.id === meId }); }) : [];
+            if (!devs.some(function (d) { return d.me; })) devs.unshift(Object.assign({ id: meId, name: LS('pos_device_name') || 'This device', me: true, at: Date.now(), health: { level: me.parkedCount ? 'attention' : me.pending ? 'syncing' : 'ok', text: me.parkedCount ? me.parkedCount + ' changes need attention' : me.pending ? me.pending + ' waiting to send' : 'Up to date (local view)' } }, me));
+            box.innerHTML = '<strong>🩺 Sync health</strong>'
+                + '<p class="settings-hint" style="margin:4px 0 8px;">Each device reports its own sync state here (counts and record numbers only). Waiting = sales / changes not yet on the server. Needs attention = the server refused them; they stay safe on the device.</p>'
+                + (err ? '<p class="settings-hint" style="color:#c0392b;">' + esc(err) + '</p>' : '')
+                + '<div class="table-scroll"><table><thead><tr><th>Device</th><th>State</th><th>Waiting (sales / other)</th><th>Needs attention</th><th>Conflicts</th><th>Last good sync</th><th>Reported</th></tr></thead><tbody>' + devs.map(healthRow).join('') + '</tbody></table></div>'
+                + '<button type="button" class="settings-small-btn" data-ds="reconcile" style="margin-top:8px; background:#117864; color:#fff; font-weight:700;">🔁 Retry / Reconcile this device</button>'
+                + '<span id="ds-health-msg" class="settings-hint" style="margin-left:8px;"></span>';
+        }
+        async function runReconcile(btn) {
+            var m = document.getElementById('ds-health-msg');
+            if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+            var r = await window.syncHealthReconcile();
+            if (m) m.textContent = r.left ? r.left + ' still need attention — see the list; nothing was deleted.' : '✓ Everything on this device has been sent and the latest shop data fetched.';
+            await renderHealth();
         }
         async function runSyncDown(btn) {
             if (typeof window.syncToThisDevice !== 'function') return;
@@ -177,9 +232,9 @@
         async function renderPanel() {
             var box = document.getElementById('device-security-body');
             if (!box) return;
-            if (window.posNetOffline && window.posNetOffline()) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
+            if (window.posNetOffline && window.posNetOffline()) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; renderHealth(); return; }
             var data;
-            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
+            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Could not reach the server — try again when online.</p>'; renderHealth(); return; }
             var html = syncBoxHtml() + (data.serverWarning === 'db_outdated' ? '<div style="background:#fdecea; color:#922b21; border:1px solid #e6b0aa; border-radius:8px; padding:10px; margin:0 0 10px; font-size:14px;">⚠️ <strong>This shop\'s server needs an update.</strong> Till numbers, the device list and some stock protections are off until it is updated. Please tell MyDukaPOS support ("the shop database needs deploy:router"). Selling and syncing still work.</div>' : '')
                 + '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong>'
                 + (typeof tillNumber === 'function' && tillNumber() ? ' · till ' + tillNumber() : '') + ' · release ' + esc(window.__APP_RELEASE) + '</p>'
@@ -195,6 +250,7 @@
                     }).join('') + '</tbody></table></div>';
             }
             box.innerHTML = html;
+            renderHealth();
         }
         async function onPanelClick(ev) {
             var b = ev.target.closest('[data-ds]');
@@ -205,6 +261,7 @@
                 var what = b.getAttribute('data-ds');
                 if (what === 'refresh') return renderPanel();
                 if (what === 'syncdown') return runSyncDown(b);
+                if (what === 'reconcile') return runReconcile(b);
                 if (what === 'rename') { var n = window.prompt('Name for this device (e.g. "Till 1 — front counter"):', LS('pos_device_name') || ''); if (n === null) return; LS('pos_device_name', n.trim()); await post({ action: 'rename', name: n.trim() }); return renderPanel(); }
             } catch (e) { say(e.message || String(e), true); }
         }

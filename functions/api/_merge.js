@@ -62,7 +62,11 @@ export const FINAL_TOMBSTONE_FIELDS = ['bills', 'debts', 'suppliers', 'deliveryZ
   // / 'st-<invite token>', an invite being single use), and an edit keeps the id — so a deleted id is never legitimately re-created.
   // DELIBERATELY NOT in this list: `inventory` / `products` (keyed by code, which shops re-use on purpose) and `inventoryCategories` (Hotel POS: its id
   // is built from kind + NAME, 'cat-<kind>-<name>', so deleting "Drinks" and adding "Drinks" again legitimately reuses the id — a newer record must win).
-  'customers', 'staff', 'offers', 'sites', 'deliveryAgents', 'patients', 'resources'];
+  'customers', 'staff', 'offers', 'sites', 'deliveryAgents', 'patients', 'resources',
+  // zip 361: Car Wash & Cleaning app - every record gets a fresh unique id (cwRid / deterministic loyalty and SMS ids) and is never re-created under it
+  'cwCustomers', 'cwVehicles', 'cwJobs', 'cwPayments', 'cwLoyalty', 'cwSms', 'cwComplaints',
+  // zip 394: Car Wash expenses / cash-ups / supplies / supply movements - fresh unique ids, never re-created
+  'cwExpenses', 'cwCashups', 'cwSupplies', 'cwSupplyMoves'];
 
 // A bill only ever moves FORWARD: voided, then closed (settled), then more money paid, then more payments recorded. A till that was slow to
 // sync still holds the bill as it was (open, unpaid); when it pushes it with a newer time it must not put the bill back to that state — that
@@ -112,6 +116,63 @@ export function unionLines(base, other) {
 }
 const paymentsTotal = (h) => money2((Array.isArray(h) ? h : []).reduce((n, p) => n + (Number(p && p.amount) || 0), 0));
 
+// zip 328: two copies of one CONTRACT (stock issued under agreement). Each issue is an immutable visit with its own id: both copies' visits are kept
+// (two devices issuing to the same person at the same time must both survive), a cancelled visit stays cancelled, and the per-item totals are
+// DERIVED from the surviving visits (carried = what the non-cancelled visits issued) instead of trusting either copy's running number. What was
+// returned / settled only ever grows, so it is the larger of the two copies. The rest of the record: the newest copy wins.
+const contractKey = (code, mode) => String(code) + (mode === 'piece' ? '|piece' : '');
+// zip 328: a hospital charge cancelled on one device while another device took the payment. Money taken always wins: a cancel never overwrites a
+// paid / billed charge (the payment history is never lost); every other pair keeps the normal newest-wins rule (a voided sale reopening a charge
+// is newer than the payment and still wins). The losing cancel is kept as a note on the record so the cashier can see it happened.
+export function mergeChargeRecords(stored, incoming) {
+  const settled = (r) => r && (r.status === 'paid' || r.status === 'billed') && r.paidSaleId;
+  const win = (incoming.updatedAt || 0) >= (stored.updatedAt || 0) ? incoming : stored;
+  const lose = win === incoming ? stored : incoming;
+  if (win.status === 'cancelled' && settled(lose)) {
+    return { ...lose, cancelConflict: { reason: win.cancelReason || '', by: win.cancelledBy || '', at: win.cancelledAt || win.updatedAt || 0 }, updatedAt: Math.max(win.updatedAt || 0, lose.updatedAt || 0) };
+  }
+  return win;
+}
+
+export function mergeContractRecords(stored, incoming) {
+  const exTs = Number(stored.updatedAt) || 0, inTs = Number(incoming.updatedAt) || 0;
+  const base = inTs >= exTs ? incoming : stored, other = base === stored ? incoming : stored;
+  const bv = Array.isArray(base.visits) ? base.visits : [], ov = Array.isArray(other.visits) ? other.visits : [];
+  if (!ov.length && !bv.length) return base;
+  const byId = new Map();
+  [...ov, ...bv].forEach((v) => {
+    if (!v || v.id == null) return;
+    const k = String(v.id), had = byId.get(k);
+    if (!had) { byId.set(k, v); return; }
+    if (had.status === 'cancelled' && v.status !== 'cancelled') return;            // a cancelled issue never comes back
+    if (v.status === 'cancelled' && had.status !== 'cancelled') { byId.set(k, v); return; }
+    byId.set(k, (Number(v.updatedAt) || 0) >= (Number(had.updatedAt) || 0) ? v : had);
+  });
+  const noId = (base.visits || []).filter((v) => v && v.id == null);            // visits from before zip 328 have no id: the winning copy's are kept
+  const visits = [...byId.values()].sort((a, b) => String(a.date || a.at || '').localeCompare(String(b.date || b.at || ''))).concat(noId);
+  const items = {};
+  const keep = (src) => Object.entries(src && src.items && typeof src.items === 'object' ? src.items : {}).forEach(([k, it]) => {
+    if (!items[k]) items[k] = { ...it };
+    else {
+      items[k].qtyReturned = Math.max(Number(items[k].qtyReturned) || 0, Number(it.qtyReturned) || 0);
+      items[k].qtySettled = Math.max(Number(items[k].qtySettled) || 0, Number(it.qtySettled) || 0);
+      if (src === base) { const r = items[k].qtyReturned, st = items[k].qtySettled; items[k] = { ...it, qtyReturned: r, qtySettled: st }; }
+      else items[k].qtyCarried = Math.max(Number(items[k].qtyCarried) || 0, Number(it.qtyCarried) || 0);
+    }
+  });
+  keep(other); keep(base);
+  // carried = the non-cancelled visits that carry an id (those are the only ones that can differ between devices); older records keep their figure
+  const idVisits = visits.filter((v) => v && v.id != null);
+  if (idVisits.length) {
+    const derived = {};
+    idVisits.forEach((v) => { if (v.status === 'cancelled') return; (v.items || []).forEach((l) => { const k = contractKey(l.baseCode != null ? l.baseCode : l.code, l.mode); derived[k] = (derived[k] || 0) + (Number(l.qty) || 0); }); });
+    const keyOf = (k, it) => (it.mode === 'piece' && it.baseCode != null ? contractKey(it.baseCode, 'piece') : contractKey(it.code, it.mode));
+    Object.keys(items).forEach((k) => { const dk = keyOf(k, items[k]); if (derived[dk] != null) items[k].qtyCarried = Math.round(derived[dk] * 1000) / 1000; });
+  }
+  const out = { ...base, visits, items, updatedAt: Math.max(exTs, inTs) };
+  if (base.status === 'cancelled' || other.status === 'cancelled') out.status = 'cancelled';
+  return out;
+}
 // Two copies of one bill -> the bill. The winner of the rest of the record is decided exactly as before (more advanced wins whatever the times
 // say; two equally advanced: newest wins). On top of that: payments and lines of both are kept, the amount paid is recomputed from them (never
 // less than either copy said), and the bill is closed when that pays it off — a closed bill stays closed, a voided bill stays voided.
@@ -195,6 +256,11 @@ export const NESTED_MERGE = {
   kegs: { arrays: ['events'], status: { FULL: 0, ACTIVE: 1, DISCONNECTED: 1, EMPTY: 2, CLOSED: 3, SPOILED: 3 }, maps: { usedBy: 'at' } },
   tabs: { arrays: ['orders', 'partPayments'], status: { OPEN: 0, CLOSED: 1, MOVED: 1, VOID: 2 }, maps: { lineStatus: 'at', lineNotes: null } },
   cashShifts: { arrays: ['adjustments'], status: { open: 0, closed: 1 } },
+  // Shop cash sessions (one per cashier point): corrections and conflicts are append-only; open -> closed only moves forward.
+  // The opening / closing counts are IMMUTABLE: the earliest one wins and a competing one is kept in `conflicts` (see mergeNestedRecord).
+  cashSessions: { arrays: ['conflicts', 'corrections'], status: { open: 0, closed: 1 } },
+  // Serialized units: history is append-only; the status is DERIVED from the latest history entry (see mergeNestedRecord) - never a stale copy's status.
+  serialUnits: { arrays: ['history'], status: {} },
   // zip 132: two devices adding images to the same imaging order keep both. No status ranking (a corrected report legitimately
   // goes from "verified" back to "reported"): the newest record decides the rest. For the same image, what is further along
   // wins: removed > uploaded > still uploading.
@@ -210,6 +276,10 @@ export const NESTED_MERGE = {
     better: (a, b) => (((b && b.rev) || 0) > ((a && a.rev) || 0) ? b : (b && b.voidedAt && !(a && a.voidedAt) ? b : a)) },
   // An asset keeps its visit history after the jobs are archived; the rings of two tills are unioned by id (history entries use the job id).
   svcAssets: { arrays: ['history', 'ownerHistory'], status: {}, better: (a, b) => (((b && b.at) || 0) > ((a && a.at) || 0) ? b : a) },
+  // zip 361: Car Wash jobs. Two devices updating the same job keep both status entries, assignments and photos; an assignment taken off a job carries a
+  // higher `rev` and wins. `phase` (3 = collected / delivered, 4 = cancelled) means a closed job is never reopened by a stale copy.
+  cwJobs: { arrays: ['statusHistory', 'assignments', 'photos'], status: {}, rankBy: 'phase',
+    better: (a, b) => (((b && b.rev) || 0) > ((a && a.rev) || 0) ? b : (b && b.removedAt && !(a && a.removedAt) ? b : a)) },
 };
 export function mergeNestedRecord(field, stored, incoming) {
   const spec = NESTED_MERGE[field];
@@ -243,6 +313,45 @@ export function mergeNestedRecord(field, stored, incoming) {
     });
     out[f] = m;
   });
+  if (field === 'serialUnits') {
+    // One record per physical unit. Merge = union of the append-only history; status follows the newest history entry (a stale copy cannot make a
+    // sold unit available again). Two devices that sold the SAME unit offline (two 'sold' entries with different sale refs and no return between)
+    // are never both accepted silently: the unit is flagged `conflict` for the owner to reconcile.
+    const hist = (Array.isArray(out.history) ? out.history.slice() : []).filter(Boolean).sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+    if (hist.length) {
+      out.history = hist; out.status = hist[hist.length - 1].to;
+      let open = null, bad = null;
+      hist.forEach((h) => { if (h.to === 'sold' || h.to === 'reserved') { if (open && open.ref !== h.ref && h.to === 'sold' && open.to === 'sold') bad = [open.ref, h.ref]; open = h; } else if (h.to === 'returned' || h.to === 'in_stock') open = null; });
+      if (bad) { out.conflict = { kind: 'double-sale', saleIds: bad, at: Date.now() }; }
+      else if (out.conflict && out.conflict.kind === 'double-sale' && !out.conflict.resolved) { /* stays flagged until an owner resolves it */ }
+    }
+  }
+  if (field === 'cashSessions') {
+    // One authoritative opening count and one final closing count. Two devices that both opened / closed the same session offline:
+    // the EARLIEST count stands, the later one is preserved as a conflict for the owner to review - never silently dropped, never both valid.
+    const conflicts = Array.isArray(out.conflicts) ? out.conflicts.slice() : [];
+    const note = (kind, rec) => { if (!rec) return; const id = `cf-${kind}-${rec.by || ''}-${rec.at || 0}-${rec.deviceId || ''}`; if (!conflicts.some((c) => c && c.id === id)) conflicts.push({ id, kind, at: rec.at || 0, by: rec.by || '', deviceId: rec.deviceId || '', record: rec }); };
+    const pick = (key) => {
+      const a = stored && stored[key], b = incoming && incoming[key];
+      if (!a || !b) return a || b || null;
+      const same = (a.at === b.at && a.by === b.by && a.deviceId === b.deviceId);
+      if (same) return (Number(b.correctedAt) || 0) > (Number(a.correctedAt) || 0) ? b : a;   // same count: a later CORRECTION of it wins
+      const win = (Number(a.at) || 0) <= (Number(b.at) || 0) ? a : b;
+      note(key === 'opening' ? 'duplicate-opening' : 'duplicate-closing', win === a ? b : a);
+      return win;
+    };
+    out.opening = pick('opening');
+    out.closing = pick('closing');
+    if (out.opening) out.openedAt = out.opening.at;
+    if (out.closing) out.status = 'closed';
+    if (conflicts.length) out.conflicts = conflicts;
+    // a decided approval is never undone by a stale copy
+    const decidedC = (r) => r && r.closing && r.closing.approval && (r.closing.approval.status === 'approved' || r.closing.approval.status === 'rejected');
+    if (out.closing && !(out.closing.approval && (out.closing.approval.status === 'approved' || out.closing.approval.status === 'rejected'))) {
+      const d = [stored, incoming].find((r) => decidedC(r) && r.closing.at === out.closing.at && r.closing.by === out.closing.by);
+      if (d) out.closing = { ...out.closing, approval: d.closing.approval };
+    }
+  }
   if (field === 'cashShifts') {
     const decided = (r) => r && r.approval && (r.approval.status === 'approved' || r.approval.status === 'rejected');
     if (!decided(out) && decided(other)) out.approval = other.approval;
@@ -374,6 +483,8 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
     if (field === 'bills' && existing._deleted !== true && incoming._deleted !== true) {
       merged.set(key, mergeBillRecords(existing, incoming)); continue;
     }
+    if (field === 'patientCharges' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeChargeRecords(existing, incoming)); continue; }
+    if (field === 'contracts' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeContractRecords(existing, incoming)); continue; }
     if (field === 'debts' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeDebtRecords(existing, incoming)); continue; }
     if (field === 'tanks' && existing._deleted !== true && incoming._deleted !== true) {
       const win = (incoming.updatedAt || 0) >= (existing.updatedAt || 0) ? incoming : existing;
@@ -429,6 +540,7 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
 // wholesale replace, same as always); tableStates/roomStates are single
 // keyed objects, not arrays; loyaltyTiers has no per-tier id.
 export const MERGE_BY_ID_FIELDS = [
+  'matMovements', 'productionLog', 'restockLog', 'aquaInvoices',   // zip 348: Aqua invoices merge by id too // zip 333: Aqua raw-material audit trail + production/restock logs merge by id (no whole-array replace)
   'staff', 'pendingInvites', 'inventory', 'products',
   'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
   'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts',
@@ -462,6 +574,12 @@ export const MERGE_BY_ID_FIELDS = [
   'hmisConfig',
   // Hospital cashier shifts (open -> closed -> approval / adjustments). Merged per record so two tills' shifts both survive.
   'cashShifts',
+  // Shop cash management: cashier points, sessions (immutable counts), movements (idempotent by id), tenant settings (one record).
+  'cashPoints', 'cashSessions', 'cashMovements', 'cashConfig',
+  // zip 340: M-PESA Agent ledger (append-only entries, one settings record, day closings). Merged per record by id so two tills' entries both survive.
+  'mpesaAgentTx', 'mpesaAgentCfg', 'mpesaAgentClosings',
+  // Serialized units (one record per physical unit) and import batches (idempotency + report), both merged per record.
+  'serialUnits', 'importBatches',
   // Refund / approval requests (pending -> approved / rejected / cancelled).
   'approvalRequests',
   // Hospital insurers/institutions and their claim lines (claim lifecycle). Per-record merge instead of whole-array replace.
@@ -489,6 +607,10 @@ export const MERGE_BY_ID_FIELDS = [
   // Services engine (SERVICES_ARCHITECTURE.md 3.1): jobs (NESTED_MERGE.svcJobs), vehicles/devices, price catalogue, appointments and per-kind
   // settings records. All merged per record by id. (The legacy serviceJobs / bookings are deliberately NOT here: they stay whole-value.)
   'svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig',
+  // zip 361: Car Wash & Cleaning app. Customers / vehicles / payments / loyalty ledger / SMS log / audit / complaints / config merged per record
+  // (newest updatedAt wins); jobs with NESTED_MERGE.cwJobs (status history, assignments and photos unioned by element id).
+  'cwCustomers', 'cwVehicles', 'cwJobs', 'cwPayments', 'cwLoyalty', 'cwSms', 'cwAudit', 'cwComplaints', 'cwConfig',
+  'cwExpenses', 'cwCashups', 'cwSupplies', 'cwSupplyMoves',   // zip 394
 ];
 
 // --- Quantity reconciliation (fixes the lost-update problem) ---------------
@@ -1017,8 +1139,109 @@ export function noteDevice(reg, deviceId, dev, till) {
   return out;
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// RESET EPOCH (zip 327). ROOT CAUSE of "I pressed Reset and everything came back": a reset only emptied the device's own lists. Records are
+// merged by id and a pull never removes a sale / log record, so the very next sync handed the server's copy back (and a new device got it all).
+// FIX: a deliberate reset is now a DURABLE INSTRUCTION the server keeps - `_logsReset { id, at, fields, rollbackStock }` in a push. The server
+// removes every record of those lists that is not newer than `at`, stores the instruction as `logsReset { id, at, fields, n }` (n counts the
+// resets), and from then on drops any incoming record of those lists older than `at` - so an offline device that still holds old history cannot
+// bring it back. Devices see `logsReset` on their next pull and clear their own old copies (see applyLogsResetLocal in the shared functions).
+// Both backends (this file's mergeIncomingState for the single-record shop, and shop-store.js for the Durable Object shop) use these helpers.
+export const RESET_FIELDS_ALLOWED = ['salesLog', 'bills', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog',
+  'debts', 'cashShifts', 'tabs', 'svcJobs', 'svcAppointments', 'purchases', 'purchaseOrders', 'voidedSales'];
+export function parseResetRequest(incoming, serverNow = Date.now()) {
+  const r = incoming && incoming._logsReset;
+  if (!r || typeof r !== 'object') return null;
+  const id = String(r.id == null ? '' : r.id).slice(0, 64);
+  if (!id) return null;
+  const fields = (Array.isArray(r.fields) ? r.fields : []).filter((f) => RESET_FIELDS_ALLOWED.includes(f));
+  if (!fields.length) return null;
+  let at = Number(r.at);
+  if (!Number.isFinite(at) || at <= 0) at = serverNow;
+  at = Math.min(at, serverNow);                                  // never in the future (that would erase sales made after the reset)
+  at = Math.max(at, serverNow - 3 * 86400000);                   // nor absurdly far back
+  return { id, at, fields: [...new Set(fields)], rollbackStock: r.rollbackStock === true, voided: r.voided === true };
+}
+export function resetTimeOf(r) {
+  if (!r || typeof r !== 'object') return NaN;
+  for (const f of ['timestamp', 'date', 'createdAt', 'openedAt', 'clockIn', 'at', 'updatedAt']) {
+    if (r[f] == null) continue;
+    const t = typeof r[f] === 'number' ? r[f] : Date.parse(r[f]);
+    if (Number.isFinite(t)) return t;
+  }
+  return NaN;
+}
+// The epoch a server keeps: { id, at, fields, voided, floors:{field:at}, n }. `floors` accumulates every FULL reset (a later "delete voided sales" must not
+// lift the block a full reset put on old history); `voided` means the latest reset covers only voided records.
+export function sanitizeEpoch(e) {
+  if (!e || typeof e !== 'object' || !e.id || !Number.isFinite(Number(e.at))) return null;
+  const floors = {};
+  if (e.floors && typeof e.floors === 'object') for (const f of Object.keys(e.floors)) if (MERGE_BY_ID_FIELDS.includes(f) && Number.isFinite(Number(e.floors[f]))) floors[f] = Number(e.floors[f]);
+  return { id: String(e.id), at: Number(e.at), fields: (Array.isArray(e.fields) ? e.fields : []).filter((f) => RESET_FIELDS_ALLOWED.includes(f)), voided: e.voided === true, floors, n: Math.max(1, Number(e.n) || 1) };
+}
+// every list an epoch blocks old records for
+export function epochFields(epoch) { return epoch ? [...new Set([...Object.keys(epoch.floors || {}), ...(epoch.voided ? epoch.fields : [])])] : []; }
+// "Reset app": the server forgets the shop's data. Every by-id list gets a floor at `at` so a device that was offline and still holds the old data cannot put it back.
+export function wipedState(existing, { id, at, ownerName }) {
+  const floors = {}; for (const f of MERGE_BY_ID_FIELDS) floors[f] = at;
+  const prev = sanitizeEpoch(existing && existing.logsReset);
+  return {
+    businessName: existing && existing.businessName || '', ownerName: ownerName || (existing && existing.ownerName) || '',
+    updatedAt: Math.max(at, (Number(existing && existing.updatedAt) || 0) + 1),
+    logsReset: { id, at, fields: [], voided: false, floors, n: (prev ? prev.n : 0) + 1 },
+    wiped: { id, at, n: ((existing && existing.wiped && Number(existing.wiped.n)) || 0) + 1 },
+  };
+}
+export function nextEpoch(prev, req) {
+  const floors = { ...((prev && prev.floors) || {}) };
+  if (!req.voided) for (const f of req.fields) floors[f] = Math.max(Number(floors[f]) || 0, req.at);
+  return { id: req.id, at: req.at, fields: req.fields, voided: !!req.voided, floors, n: (prev ? prev.n : 0) + 1 };
+}
+// Is this record of list `field` covered by the epoch (it must go / must not come back)?
+export function coveredByEpoch(field, rec, epoch) {
+  if (!epoch) return false;
+  const t = resetTimeOf(rec);
+  const fl = epoch.floors && epoch.floors[field];
+  if (fl && (Number.isFinite(t) ? t <= fl : true)) return true;
+  if (epoch.voided && epoch.fields.includes(field) && rec && rec.voided === true && (Number.isFinite(t) ? t <= epoch.at : true)) return true;
+  return false;
+}
+// the request alone (what to remove from the STORED lists right now)
+export function coveredByRequest(rec, req) {
+  const t = resetTimeOf(rec);
+  if (req.voided && !(rec && rec.voided === true)) return false;
+  return Number.isFinite(t) ? t <= req.at : true;
+}
+// Single-record shop: returns { existing, incoming, epoch } with the reset applied (existing is copied, never mutated).
+export function applyResetToState(existing, incoming, serverNow = Date.now()) {
+  let epoch = sanitizeEpoch(existing && existing.logsReset);
+  const req = parseResetRequest(incoming, serverNow);
+  let ex = existing;
+  if (req && (!epoch || epoch.id !== req.id)) {
+    ex = { ...existing };
+    for (const f of req.fields) if (Array.isArray(ex[f])) ex[f] = ex[f].filter((r) => !coveredByRequest(r, req));
+    if (req.rollbackStock && Array.isArray(ex.inventory)) {
+      ex.inventory = ex.inventory.map((p) => { if (!(p && p.openingStock && Number.isFinite(Number(p.openingStock.qty)))) return p; const c = { ...p, qty: Number(p.openingStock.qty) || 0, updatedAt: Math.max(serverNow, (Number(p.updatedAt) || 0) + 1), _sv: (Number(p._sv) || 0) + 1 }; stampLedgerEcho(c); return c; });      // _sq / _sv follow the new figure, or the next pull would be read as an un-itemised stock change
+    }
+    epoch = nextEpoch(epoch, req);
+  }
+  let inc = incoming;
+  if (incoming && (incoming._logsReset !== undefined || incoming.logsReset !== undefined)) { inc = { ...incoming }; delete inc._logsReset; delete inc.logsReset; }
+  if (epoch) {
+    for (const f of epochFields(epoch)) {
+      if (Array.isArray(inc[f]) && inc[f].length) { const keep = inc[f].filter((r) => !coveredByEpoch(f, r, epoch)); if (keep.length !== inc[f].length) { if (inc === incoming) inc = { ...incoming }; inc[f] = keep; } }
+    }
+  }
+  return { existing: ex, incoming: inc, epoch };
+}
+
 export function mergeIncomingState(existing, incoming) {
+  const rs = applyResetToState(existing, incoming);
+  existing = rs.existing; incoming = rs.incoming;
   const merged = { ...existing, ...incoming };
+  if (rs.epoch) merged.logsReset = rs.epoch;
+  if (existing && existing.wiped) merged.wiped = existing.wiped; else delete merged.wiped;      // set by the server only (see wipedState)
   const tills = allocateTill(existing.tillNumbers, incoming._till);
   merged.tillNumbers = tills.map;
   if (!Object.keys(tills.map).length) delete merged.tillNumbers;

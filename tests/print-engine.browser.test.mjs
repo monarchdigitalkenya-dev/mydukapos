@@ -41,6 +41,8 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
         await ctx.addInitScript(([w]) => {
           ['pos_', 'aqua_'].forEach((p) => { localStorage.setItem(p + 'biz_name', 'NILE SPORTS WEAR'); localStorage.setItem(p + 'receipt_contact', '0704472629, 0725533442'); localStorage.setItem(p + 'receipt_extra_info', 'NORWICH UNION\nMAMA NGINA STREET'); });
           localStorage.setItem('pos_receipt_width', w); localStorage.setItem('aqua_receipt_width', w);
+          // zip 253: the barcode under the reference is an opt-in Receipt Setting; this test checks it fits the paper, so it is switched on
+          localStorage.setItem('pos_receipt_show_barcode', 'true'); localStorage.setItem('aqua_receipt_show_barcode', 'true');
         }, [mm]);
         const page = await ctx.newPage();
         await page.goto(`${base}/${app}`);
@@ -64,7 +66,9 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
           const inner = paper.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
           return {
             cols: Number(g.dataset.cols), gridW: g.getBoundingClientRect().width, inner, paperW: paper.width,
-            tallest: Math.max(...rows.map((r) => r.getBoundingClientRect().height)), lh,
+            // the grand total is printed BIG on purpose (.rg-big: 2em, line-height 1.2): such a row is measured against ITS OWN line height
+            tallest: Math.max(...rows.filter((r) => !r.classList.contains('rg-big')).map((r) => r.getBoundingClientRect().height)), lh,
+            bigWrapped: rows.filter((r) => r.classList.contains('rg-big') && r.getBoundingClientRect().height > parseFloat(getComputedStyle(r).lineHeight) * 1.05).map((r) => r.textContent),
             overflow: rows.filter((r) => r.scrollWidth > Math.ceil(g.getBoundingClientRect().width) + 1).map((r) => r.textContent),
             barcodeW: (document.querySelector('.receipt-grid-barcode svg') || { getBoundingClientRect: () => ({ width: 0 }) }).getBoundingClientRect().width,
             page: document.getElementById('print-page-style').textContent,
@@ -89,6 +93,7 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
         assert.ok(m.gridW <= m.inner + 0.5, `${label}: text ${m.gridW}px wider than the printable area ${m.inner}px`);
         assert.ok(m.gridW >= m.inner * 0.97, `${label}: text fills the printable width (${m.gridW} of ${m.inner}px)`);
         assert.ok(m.tallest <= m.lh * 1.05, `${label}: a line wrapped in the browser (row ${m.tallest}px, line ${m.lh}px)`);
+        assert.deepEqual(m.bigWrapped, [], `${label}: a big total line wrapped in the browser`);
         assert.deepEqual(m.overflow, [], `${label}: rows overflowing`);
         assert.ok(m.barcodeW > 0 && m.barcodeW <= m.inner + 0.5, `${label}: barcode inside the printable width (${m.barcodeW}px)`);
         if (process.env.RECEIPT_SHOTS) {

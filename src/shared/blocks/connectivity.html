@@ -244,16 +244,24 @@
             // 'neterr' / 'timeout': no answer to a sync request — find out why, but do not decide from it
             if (!S.checking) check(info || kind);                            // (one check at a time; each request failure may start one)
         }
-        function reportHttp(status, code) {
+        function reportHttp(status, code, res) {
             status = Number(status) || 0;
             if (status >= 200 && status < 400) return report('ok');
             if (status === 401) return;                                              // zip 194: transient / ignorable (old server's device_not_paired, expired staff token): never auth_required
+            // zip 316: during a Cloudflare security check EVERY request gets its 403 challenge page - a sync request answered that way was taken for a
+            // refused licence ("the shop's link is not active"). A challenge is recognised by Cloudflare's header, or by being an HTML page (the POS
+            // server always answers in JSON). A real licence refusal (JSON) is unchanged.
+            if (status === 403 && res) {
+                let html = false;
+                try { html = /text\/html/i.test(String(res.headers.get('content-type') || '')); } catch (e) { html = false; }
+                if (isChallenge(res) || html) return report('challenge', 'Cloudflare security check (' + status + ')');
+            }
             if (status === 403) return report('auth', code || 'licence');
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
             if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
             if (status === 507 || code === 'storage_full') return report('config', 'storage_full');      // zip 186: the server answered: the internet works, but its storage is full (not "busy", not "offline")
             if (status === 408 || status === 425 || status === 429 || status >= 500) return report('busy', status);
-            return report('config', 'http ' + status);
+            return report('config', (code ? code + ' ' : '') + 'http ' + status);      // zip 322: the server's own reason is kept, so the dot / Errors tab can say it
         }
 
         /* ---- the dot: one picture of connectivity + sync, in plain words ---- */
@@ -275,6 +283,7 @@
             if (net === 'auth_required') return S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required;
             if (net === 'config_error' && S.detail === 'storage_full') return 'Connected — the server\'s storage is full, so it cannot save changes right now. Selling works and every sale is kept on this device; it is sent by itself once space is freed (support has been told).';
             if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
+            if (net === 'config_error' && S.detail) return MSG.config_error + ' (' + S.detail + ')';      // zip 322: what the server answered
             return MSG[net] || MSG.checking;
         }
         var origSet = null;
@@ -313,7 +322,8 @@
                 var el = document.getElementById('posnet-offline-pill');
                 var old = document.getElementById('posnet-retry-bar');                  // (an older copy of the page may have left one)
                 if (old && old.parentNode) old.parentNode.removeChild(old);
-                if (!bad) { if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } if (el && el.parentNode) el.parentNode.removeChild(el); return; }
+                // zip 379: no pill on screen at all (the owner wants no status indicators); the work is still saved and synced by itself
+                if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } if (el && el.parentNode) el.parentNode.removeChild(el); return;
                 if (el || retryTimer || !document.body) return;
                 retryTimer = setTimeout(function () {
                     retryTimer = null;
@@ -376,9 +386,73 @@
             } catch (e) { /* optional */ }
         });
 
+        /* ---- stuck on orange (zip 322) ----
+           Orange = "Syncing" or "Sync problem". It is normal for a few seconds. A shop that stays orange for minutes while the device HAS internet
+           used to say nothing anywhere: this manager reported only offline / server-unavailable, never "online but never green". So now, after
+           2.5 minutes of continuous orange in a visible app:
+             * ONE line goes to the Owner Console's Errors tab per cause (grouped, with a count), carrying the evidence that decides the dot
+               (what is queued / failed / backing off / paused, the unsent-work counters, whether a fetch is running, the licence / security state);
+             * the same "send and fetch now" a tap on the dot does is run by itself, at most once every 3 minutes (never when a Cloudflare check
+               needs a page load, never in a hidden tab). Nothing is deleted, nothing is marked sent, the dot is never painted green by this. */
+        var orangeSince = 0, orangeRetryAt = 0, orangeReported = {};
+        function orangeEvidence() {
+            var n = function (v) { return typeof v === 'number' && isFinite(v) ? Math.round(v) : v; };
+            var ls = function (k) { try { return parseInt(localStorage.getItem(k) || '0', 10) || 0; } catch (e) { return 0; } };
+            var now = Date.now(), dead = 0;
+            try { if (typeof window.syncDeadMap === 'function') dead = Object.keys(window.syncDeadMap() || {}).length; } catch (e) { dead = -1; }
+            var seqGap = ls('pos_dirty_seq') - ls('pos_acked_seq');
+            return {
+                net: S.state, netDetail: S.detail, authIssue: S.authIssue, lastSync: S.lastSync, painted: S.painted,
+                orangeForSec: Math.round((now - orangeSince) / 1000),
+                queued: !!window.__pushQueued, inFlight: window.__pushInFlight || 0, failed: window.__pushFailed === true, failKind: window.__pushFailKind || '',
+                fails: window.__pushFails || 0, backoffInSec: Math.max(0, n(Math.round(((window.__pushBackoffUntil || 0) - now) / 1000))), backlog: window.__pushBacklog === true,
+                hardStops: window.__pushHardStops || 0, pausedInSec: Math.max(0, n(Math.round(((window.__pushPausedUntil || 0) - now) / 1000))), tabInactive: !!window.__tabInactive,
+                unsentSeqGap: seqGap, needAttention: dead, pullRunning: !!window.__pullInFlight,
+                pullAgeSec: window.__pullInFlight ? Math.round((now - (window.__pullStartedAt || now)) / 1000) : 0, pullPatienceMs: window.__pullPatienceMs || 0,
+                everPulled: !!window.__pullOkOnce, lastSyncedAt: ls('pos_last_synced_at') || 0, batchScale: window.__pushBatchScale || 1
+            };
+        }
+        function orangeCause(ev) {
+            var why = ev.net !== 'online' ? ev.net
+                : ev.tabInactive ? 'tab taken over by another tab'
+                : ev.pausedInSec > 0 ? 'server storage full (paused)'
+                : ev.failed ? 'send failing (' + (ev.failKind || '?') + ')'
+                : ev.pullRunning && ev.pullAgeSec > 30 ? 'fetch not finishing'
+                : ev.inFlight > 0 ? 'send never settles'
+                : ev.unsentSeqGap > 0 ? 'unsent-work marker never cleared'
+                : ev.backlog ? 'send backlog'
+                : ev.needAttention > 0 ? 'items need attention'
+                : !ev.everPulled ? 'first fetch never completed'
+                : 'unknown';
+            return 'online but orange | ' + why;
+        }
+        function orangeWatch(now) {
+            try {
+                var orange = S.painted === 'syncing' || S.painted === 'error';
+                if (!orange) { orangeSince = 0; return; }
+                if (!orangeSince) { orangeSince = now; return; }
+                if (now - orangeSince < 150000) return;
+                if (document.visibilityState === 'hidden') return;
+                var ev = orangeEvidence();
+                if (typeof window.__reportClientError === 'function') {
+                    var cause = orangeCause(ev);
+                    if (!orangeReported[cause]) {
+                        orangeReported[cause] = 1;
+                        window.__reportClientError('Sync dot stuck orange — ' + cause, JSON.stringify({ evidence: ev, ua: navigator.userAgent, release: window.__APP_RELEASE || '', path: location.pathname, history: S.history.slice(0, 6) }).slice(0, 1400));
+                    }
+                }
+                if (S.state !== 'security_check' && now - orangeRetryAt >= 180000 && typeof window.syncRetryNow === 'function') {
+                    orangeRetryAt = now;
+                    note('orange-retry', 'stuck orange for ' + Math.round((now - orangeSince) / 1000) + ' s: send and fetch now');
+                    Promise.resolve(window.syncRetryNow()).catch(function () { /* the next try is in 3 minutes */ });
+                }
+            } catch (e) { /* the watchdog never breaks the app */ }
+        }
+
         /* ---- when to check ---- */
         function tick() {
             var now = Date.now();
+            orangeWatch(now);
             var gap = now - S.lastTick, slept = gap > 20000;                 // timers paused: the device slept or the app was frozen
             S.lastTick = now;
             if (slept) { note('wake', Math.round(gap / 1000) + ' s'); S.nextAt = 0; }
@@ -410,36 +484,13 @@
             subscribe: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (f) { return f !== fn; }); }; },
             history: function () { return S.history.slice(); },
             diagnostics: function () { return S.diag ? JSON.parse(JSON.stringify(S.diag)) : null; },
+            orangeEvidence: orangeEvidence,
             _state: S,
         };
         // For feature code that only needs "is it worth trying the network?" — false only when the manager has CHECKED there is none.
         window.posNetOffline = function () { return S.state === 'offline'; };
 
-        // zip 145: the service worker downloaded a newer version of the app while this (older) one was open — offer it. (Installed apps
-        // used to stay on the copy they were installed with; see sw.js.)
-        function showUpdateReady() {
-            try {
-                if (document.getElementById('posnet-update-ready')) return;
-                var bar = document.createElement('div');
-                bar.id = 'posnet-update-ready';
-                bar.setAttribute('role', 'status');
-                bar.style.cssText = 'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:100000;background:#2c3e50;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.3);font:14px system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:calc(94vw / var(--pos-z,1));';
-                bar.innerHTML = '<span>A newer version of the app is ready.</span>';
-                var b = document.createElement('button');
-                b.type = 'button'; b.textContent = 'Update now';
-                b.style.cssText = 'background:#27ae60;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;';
-                b.onclick = function () { location.reload(); };
-                bar.appendChild(b);
-                (document.body || document.documentElement).appendChild(bar);
-                // zip 232: shown for 3 seconds only - it must never sit on the screen over the till (the new version still loads on the next open)
-                setTimeout(function () { try { if (bar.parentNode) bar.parentNode.removeChild(bar); } catch (e) { /* gone */ } }, 3000);
-            } catch (e) { /* cosmetic */ }
-        }
-        try {
-            if (navigator.serviceWorker && navigator.serviceWorker.addEventListener) {
-                navigator.serviceWorker.addEventListener('message', function (e) { if (e && e.data && e.data.type === 'app-update-ready') showUpdateReady(); });
-            }
-        } catch (e) { /* no service worker */ }
+        // zip 279: no "newer version" notice any more. The service worker still keeps the app up to date by itself: the new copy is used the next time the app is opened.
 
         function boot() { wrapDot(); check('start'); }
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

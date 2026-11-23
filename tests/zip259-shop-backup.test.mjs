@@ -41,6 +41,14 @@ async function seed(w) {
   await led.recordPush(w.env, a.id, { salesLog: [{ id: 's1', refNumber: 'R1', timestamp: '2026-10-01T08:00:00.000Z', paymentMethod: 'cash', cashAmount: 50, servedBy: 'Ann', items: [{ code: 'A', name: 'Nails', qty: 10, price: 5 }], updatedAt: 1000 }] });
   await led.recordPush(w.env, b.id, { salesLog: [{ id: 'b1', refNumber: 'B1', timestamp: '2026-10-02T09:30:00.000Z', paymentMethod: 'mpesa', mpesaAmount: 900, mpesaReceiptNumber: 'QWE1234567', servedBy: 'Bob', items: [{ code: 'R1', name: 'Room', qty: 1, price: 900 }], updatedAt: 2000 }] });
   const till = await load('functions/api/_till-store.js'); await till.ensureTillSchema(w.env.LEDGER_DB); await till.insertTill(w.env.LEDGER_DB, b.id, { code: 'QAB1', amount: 10, paidAt: 5, name: 'Pat', receivedAt: 6 });
+  // zip 269: a branch group (its keys and its warehouse rows are named by the GROUP id), an e-mail sign-in record behind a recovery pointer, a per-shop Gemini key
+  const rb = await lic.getLicense(w.env, b.id); rb.branchGroupId = 'grpBeta12345'; rb.isMainBranch = true; await lic.saveLicense(w.env, rb);
+  await w.kv.put('store:grpBeta12345', JSON.stringify({ items: ['warehouse'] })); await w.kv.put('receipt-settings:grpBeta12345', JSON.stringify({ footer: 'Group footer' }));
+  await w.kv.put('payment-accounts:grpBeta12345', JSON.stringify({ till: 'TILLSECRET9' }));
+  await led.ensureLedgerSchema(w.env.LEDGER_DB);
+  await w.env.LEDGER_DB.prepare("INSERT INTO store_items (group_id, item_id, code, name, qty, created_at, updated_at) VALUES ('grpBeta12345', 'it1', 'W1', 'Warehouse cement', 40, 1, 2)").run();
+  await w.kv.put('account-recovery-client:' + a.id, 'owner@alpha.example'); await w.kv.put('account-recovery-account:owner@alpha.example', JSON.stringify({ email: 'owner@alpha.example', salt: 'RS', passwordHash: 'RH' }));
+  await w.kv.put('ai-capture-shop-config:' + a.id, JSON.stringify({ geminiApiKeys: ['GEMINI-SECRET-KEY'] }));
   const acct = await load('functions/api/_account.js');
   await acct.saveAccount(w.env, { email: 'alpha@example.com', phone: '0712345678', fullName: 'Alpha Owner', passwordHash: 'HASH', salt: 'SALT', demoClientId: a.id, createdAt: 1, product: 'shop', approvalStatus: 'approved' });
   await w.kv.put('demo-account-session:abc', 'alpha@example.com');
@@ -81,7 +89,9 @@ test('export from deployment A, restore into empty deployment B: shops, links, d
     const shops = lines.filter((l) => l.t === 'shop'); assert.deepEqual(shops.map((s) => s.slug).sort(), ['alpha-hardware', 'beta-hotel']);
     assert.ok(!shops.some((s) => s.id === demo.id), 'demo shops are excluded');
     assert.equal(shops.find((s) => s.id === a.id).record.id, a.id, 'the original c code is in the record');
-    for (const secret of ['SEALED-SECRET', '"k":"secret"', 'QDEMO']) assert.ok(!raw.includes(secret), 'never exported: ' + secret);
+    for (const secret of ['SEALED-SECRET', '"k":"secret"', 'QDEMO', 'GEMINI-SECRET-KEY', 'TILLSECRET9']) assert.ok(!raw.includes(secret), 'never exported without a passphrase: ' + secret);
+    assert.ok(raw.includes('Group footer') && raw.includes('Warehouse cement'), 'the branch group\'s keys and warehouse rows travel');
+    assert.ok(lines.some((l) => l.t === 'recovery' && l.key === 'account-recovery-account:owner@alpha.example' && l.value.includes('RH')), 'the e-mail sign-in record travels');
     const kvKeys = lines.filter((l) => l.t === 'kv').map((l) => l.key); for (const bad of ['gateway-config', 'staff-sess', 'callback-key', 'demo-account-session', 'license:']) assert.ok(!kvKeys.some((k) => k.startsWith(bad)), 'key never exported: ' + bad);
     assert.ok(lines[0].excludedKeyPrefixes['gateway-config:'] === 1, 'the header counts what was left out');
     assert.ok(raw.includes('hashA') && raw.includes('"salt":"SALT"') && raw.includes('"passwordHash":"HASH"'), 'password / PIN hashes are kept so logins survive');
@@ -116,6 +126,14 @@ test('export from deployment A, restore into empty deployment B: shops, links, d
     assert.equal(B.env.LEDGER_DB.query("select count(*) n from till_payments")[0].n, 1);
     const acc = await load('functions/api/_account.js'); const ac = await acc.getAccount(B.env, 'alpha@example.com'); assert.equal(ac.passwordHash, 'HASH'); assert.equal(ac.demoClientId, a.id);
     assert.equal(await B.kv.get('demo-account-session:abc'), null, 'sessions are not restored');
+    // zip 269: branch group, e-mail sign-in, audit history
+    assert.equal(await B.kv.get('receipt-settings:grpBeta12345'), JSON.stringify({ footer: 'Group footer' }), 'group key restored'); assert.equal(await B.kv.get('store:grpBeta12345'), JSON.stringify({ items: ['warehouse'] }));
+    assert.equal(B.env.LEDGER_DB.query("select name, qty from store_items where group_id = 'grpBeta12345'")[0].name, 'Warehouse cement', 'warehouse rows restored');
+    assert.equal(JSON.parse(await B.kv.get('account-recovery-account:owner@alpha.example')).passwordHash, 'RH', 'e-mail sign-in record restored');
+    assert.equal(await B.kv.get('ai-capture-shop-config:' + a.id), null, 'the Gemini key stays behind');
+    const auditA = A.env.LEDGER_DB.query('select id, client_id, rec_id, action from ledger_audit order by id'), auditB = B.env.LEDGER_DB.query('select id, client_id, rec_id, action from ledger_audit order by id');
+    assert.ok(auditA.length > 0, 'the old deployment has audit history'); assert.deepEqual(auditB, auditA, 'audit history identical: no row lost, none invented by the restore');
+    assert.equal(B.env.LEDGER_DB.query("select count(*) n from ledger_meta where k = 'audit_disabled'")[0].n, 0, 'the audit switch is back on after the restore');
     assert.equal(await lic.getLicense(B.env, demo.id), null, 'demo shop not restored');
 
     // ---------------- running the same file again changes nothing (no duplicates), and says the shops already exist
@@ -202,4 +220,51 @@ test('only the platform owner can use the backup endpoint', async () => {
   const g = await m.onRequestGet({}); assert.equal(g.status, 405);
   const ok = await m.onRequestPost({ request: new Request('https://x.pages.dev/api/owner-backup', { method: 'POST', body: JSON.stringify({ op: 'x-schema' }), headers: { Authorization: 'Bearer tok' } }), env: w.env });
   assert.equal(ok.status, 200); assert.match(ok.headers.get('cache-control'), /no-store/);
+});
+
+test('zip 270: pick which shops to download, and skip some shops on restore', { skip, timeout: 240000 }, async () => {
+  const A = await world('A'), B = await world('B'), { a, b } = await seed(A);
+  const browser = await chromium.launch();
+  try {
+    // ---------------- download only Beta Hotel
+    const x = await open(browser, A);
+    await x.page.click('#sb-export'); await x.page.waitForSelector('[data-sb-pick]', { timeout: 30000 });
+    assert.equal(await x.page.locator('[data-sb-pick]').count(), 2, 'the picker lists the permanent shops');
+    assert.match(await x.page.textContent('#sb-pickn'), /2 of 2 shops ticked/);
+    await x.page.uncheck(`[data-sb-pick="${a.id}"]`);
+    assert.match(await x.page.textContent('#sb-pickn'), /1 of 2 shops ticked/);
+    await x.page.uncheck(`[data-sb-pick="${b.id}"]`); assert.equal(await x.page.isDisabled('#sb-go'), true, 'nothing ticked: no download');
+    await x.page.check(`[data-sb-pick="${b.id}"]`);
+    await x.page.uncheck('#sb-secrets'); await x.page.uncheck('#sb-platform');
+    const dlP = x.page.waitForEvent('download', { timeout: 60000 }); dlP.catch(() => {}); await x.page.click('#sb-go');
+    await x.page.waitForSelector('#sb-final .sb-note', { timeout: 60000 });
+    assert.match(await x.page.textContent('#sb-final'), /Complete\./);
+    const dl = await dlP, file = path.join(ROOT, 'tests', '.tmp-backup-pick.mdpbackup.gz'); await dl.saveAs(file);
+    const lines = (await import('node:zlib')).gunzipSync(fs.readFileSync(file)).toString('utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(lines.filter((l) => l.t === 'shop').map((s) => s.slug), ['beta-hotel'], 'only the ticked shop is in the file');
+    assert.equal(lines[0].includes.partial, true); assert.equal(lines.at(-1).complete, true); assert.equal(lines.at(-1).shops, 1);
+
+    // ---------------- a full backup, then restore with one shop unticked
+    const x2 = await open(browser, A);
+    await x2.page.click('#sb-export'); await x2.page.waitForSelector('[data-sb-pick]');
+    await x2.page.uncheck('#sb-secrets'); await x2.page.uncheck('#sb-platform');
+    const dl2P = x2.page.waitForEvent('download', { timeout: 60000 }); dl2P.catch(() => {}); await x2.page.click('#sb-go');
+    await x2.page.waitForSelector('#sb-final .sb-note', { timeout: 60000 });
+    const full = path.join(ROOT, 'tests', '.tmp-backup-pick2.mdpbackup.gz'); await (await dl2P).saveAs(full);
+    const fl = (await import('node:zlib')).gunzipSync(fs.readFileSync(full)).toString('utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(fl.filter((l) => l.t === 'shop').length, 2, 'all ticked = the normal full backup'); assert.equal(fl[0].includes.partial, false);
+
+    const y = await open(browser, B);
+    await y.page.click('#sb-restore'); await y.page.setInputFiles('#sb-file', full); await y.page.waitForSelector('#sb-do', { timeout: 60000 });
+    assert.match(await y.page.textContent('#sb-do'), /Restore 2 shops/);
+    await y.page.uncheck(`[data-sb-inc="${a.id}"]`);
+    assert.match(await y.page.textContent('#sb-do'), /Restore 1 shop$/); assert.match(await y.page.textContent('#sb-incn'), /1 of 2 shops will be restored/);
+    y.page.on('dialog', (d) => d.accept());
+    await y.page.click('#sb-do'); await y.page.waitForSelector('#sb-final table', { timeout: 120000 });
+    const report = await y.page.textContent('#sb-final'); assert.match(report, /All restored shops verified/, report); assert.match(report, /skipped/);
+    const lic = await load('functions/api/_license.js');
+    assert.ok(await B.kv.get('license:' + b.id) || await lic.getClient?.(B.env, b.id), 'the ticked shop is restored');
+    assert.equal(await B.kv.get('license:' + a.id), null, 'the unticked shop is NOT restored');
+    assert.ok(![...B.kv.data.keys()].some((k) => k.includes(a.id)), 'none of the skipped shop\'s records were written');
+  } finally { await browser.close(); for (const f of ['.tmp-backup-pick.mdpbackup.gz', '.tmp-backup-pick2.mdpbackup.gz']) try { fs.unlinkSync(path.join(ROOT, 'tests', f)); } catch (e) { /* none */ } }
 });

@@ -24,7 +24,7 @@
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
-import { tillDb, ensureTillSchema, insertTill, cleanCode, phoneHint } from './_till-store.js';
+import { tillDb, ensureTillSchema, insertTill, cleanCode, phoneHint, parseMoney } from './_till-store.js';
 
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
@@ -36,9 +36,17 @@ function tillPaymentIndexKey(clientId) {
 
 // KCB's own documented acknowledgment shape — different from Daraja's
 // {ResultCode, ResultDesc}, so this can't reuse the same ack() helper.
+// zip 388 (KCB Buni activation review): transactionID must be EXACTLY the transactionReference of the notification KCB sent - same value,
+// same JSON type - on EVERY reply, including the ones where nothing is stored (a test post without this shop's key, an unknown shop, a
+// duplicate). It used to be '' on those replies, which is what KCB's test of /api/kcb-ipn?c=... caught.
+function refOf(data) {
+  if (!data || typeof data !== 'object') return '';
+  const r = data.transactionReference;
+  return r === undefined || r === null ? '' : r;
+}
 function ack(transactionId) {
   return new Response(JSON.stringify({
-    transactionID: transactionId || '',
+    transactionID: transactionId === undefined || transactionId === null ? '' : transactionId,
     statusCode: 0,
     statusMessage: 'Notification received',
   }), {
@@ -50,24 +58,34 @@ function ack(transactionId) {
 export async function onRequestPost(context) {
   const { request, env } = context;
   const clientId = new URL(request.url).searchParams.get('c') || '';
-  if (!clientId) {
-    // No client id in the callback URL — nothing we can attribute this to,
-    // but KCB still needs a valid acknowledgment or it may retry.
-    return ack();
-  }
-
   const data = await readCallbackJson(request);      // zip 185: size-bounded
-  if (!data || typeof data !== 'object') return ack();
+  const ref = refOf(data);                           // echoed back on every reply below, exactly as KCB sent it
+  // zip 388: the last notification KCB posted and the exact reply it got are kept 7 days (kcb-debug-ipn:<shop>) so a sandbox test can be read
+  // back at /api/kcb-debug?c=<shop>&k=<key>. Best effort, never delays or changes the reply.
+  const out = (v) => {
+    const res = ack(v);
+    if (clientId && clientId.length <= 40 && env && env.mydukapos_kv) {
+      const u = new URL(request.url); u.searchParams.delete('k');
+      const rec = JSON.stringify({ at: new Date().toISOString(), url: u.toString(), received: data === undefined ? null : data,
+        reply: { status: 200, body: { transactionID: v === undefined || v === null ? '' : v, statusCode: 0, statusMessage: 'Notification received' } } });
+      const w = env.mydukapos_kv.put('kcb-debug-ipn:' + clientId, rec, { expirationTtl: 7 * 24 * 3600 }).catch(() => {});
+      try { if (context.waitUntil) context.waitUntil(w); } catch (e) { /* best effort */ }
+    }
+    return res;
+  };
+  // No client id in the callback URL — nothing we can attribute this to, but KCB still needs a valid acknowledgment or it may retry.
+  if (!clientId) return out(ref);
+  if (!data || typeof data !== 'object') return out(ref);
 
   const transId = data.transactionReference != null ? String(data.transactionReference) : '';
-  if (!transId || transId.length > 60) return ack();
-  if (!(await shopKnown(env, clientId))) return ack(transId);   // zip 185: not a real shop -> nothing is written
+  if (!transId || transId.length > 60) return out(ref);
+  if (!(await shopKnown(env, clientId))) return out(ref);   // zip 185: not a real shop -> nothing is written
 
   const signed = await checkCallback(env, clientId, 'kcb', request.url);
   const record = {
     transId,
     transTime: data.timestamp || '',
-    amount: parseFloat(data.transactionAmount) || 0,
+    amount: parseMoney(data.transactionAmount),
     phone: data.customerMobileNumber || '',
     customerName: data.customerName || '',
     accountRef: data.customerReference || '',
@@ -89,9 +107,13 @@ export async function onRequestPost(context) {
   // An unsigned post for a shop that has a key is not stored where the till looks for payments: it cannot pre-empt the real one.
   if (!signed.ok) {
     await env.mydukapos_kv.put(`till-payment-rejected:${clientId}:${transId}`, JSON.stringify(record), { expirationTtl: 30 * 24 * 3600 });
-    return ack();
+    return out(ref);
   }
   if (!isRepeat) await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
+  // zip 381: a typed code is looked up UPPER-CASE with letters and digits only (mpesa-verify.js); KCB's reference can differ in case, so a paid
+  // sale showed "no M-Pesa record". A copy is kept under that exact form too.
+  const vcode = String(transId).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (vcode && vcode !== transId) { try { if (!(await env.mydukapos_kv.get(tillPaymentKey(clientId, vcode)))) await env.mydukapos_kv.put(tillPaymentKey(clientId, vcode), JSON.stringify(record), { expirationTtl: 400 * 24 * 3600 }); } catch (e) { /* the record above is kept */ } }
   // zip 259: listed in Sales Counter -> Till Payments too (same narrow D1 row as the Daraja callback; the repeat is ignored)
   try {
     const tdb = tillDb(env);
@@ -111,7 +133,7 @@ export async function onRequestPost(context) {
     // Index update failing shouldn't fail the notification itself.
   }
 
-  return ack(transId);
+  return out(ref);
 }
 
 export async function onRequest() {

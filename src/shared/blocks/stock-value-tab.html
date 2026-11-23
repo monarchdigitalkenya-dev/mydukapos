@@ -1,0 +1,83 @@
+<!-- STOCK VALUE TAB (zip 300) --------------------------------------------------------------------------------------------------------
+     Stock Valuation (and, in the Shop, the Inventory workspace buttons) leave the Inventory list and get their own tab, right after Inventory:
+     "📈 Stock Value & Workspace". The real panels are MOVED (same ids, same code), so the numbers, the workspace and everything that already
+     points at them keep working. The new tab is a normal role (listed in the staff access lists): staff who could open Inventory get it once, and a management
+     password lock on Inventory is copied to it once, and staff who could open Inventory get it once in their roles. Ids: svt-*. -->
+<style id="svt-css">
+#stock-value-tab > .panel { margin-bottom: 16px; }
+#svt-lead { margin: 0 0 14px; padding: 12px 14px; border-radius: 12px; background: linear-gradient(135deg, rgba(39,174,96,.12), rgba(41,128,185,.10)); border: 1px solid rgba(39,174,96,.28); font-size: 13px; }
+#svt-lead b { font-size: 15px; display: block; margin-bottom: 2px; }
+</style>
+<script id="svt-js">
+(function () {
+  'use strict';
+  var ID = 'stock-value-tab', BTN = 'stock-value-tab-btn';
+  function $(id) { return document.getElementById(id); }
+  function ensure() {
+    var inv = $('inventory-list-tab'); if (!inv) return false;
+    var panel = $('stock-valuation-panel');
+    if (!$(ID)) {
+      var d = document.createElement('div'); d.id = ID; d.className = 'tab-content';
+      d.innerHTML = '<div id="svt-lead"><b>📈 Stock value &amp; workspace</b>What your stock is worth today, and the tools to look after it. Your item list stays in the Inventory tab.</div>';
+      inv.parentNode.insertBefore(d, inv.nextSibling);
+    }
+    var tab = $(ID);
+    // the valuation panel moves in once; the workspace panel (Shop) is added by its own script a moment later, so it is moved when it shows up
+    if (panel && panel.parentNode !== tab) tab.appendChild(panel);
+    var ws = $('ip-entry'); if (ws && ws.parentNode !== tab) tab.insertBefore(ws, tab.firstChild.nextSibling);
+    var b = document.querySelector('.tab-link[data-tab="inventory-list-tab"]');
+    if (b && !$(BTN)) {
+      var nb = document.createElement('button');
+      nb.id = BTN; nb.className = 'tab-link'; nb.setAttribute('data-tab', ID);
+      nb.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')");
+      nb.textContent = $('ip-entry') ? '📈 Stock Value & Workspace' : '📈 Stock Valuation';
+      b.parentNode.insertBefore(nb, b.nextSibling);
+      nb.addEventListener('click', function () { setTimeout(draw, 0); });
+    }
+    var nbtn = $(BTN);
+    if (nbtn) {
+      if ($('ip-entry') && nbtn.textContent !== '📈 Stock Value & Workspace') nbtn.textContent = '📈 Stock Value & Workspace';
+      if (b) { var hide = b.style.display === 'none' || b.hidden; var want = hide ? 'none' : ''; if (nbtn.style.display !== want) nbtn.style.display = want; }
+    }
+    return true;
+  }
+  function draw() { try { if (typeof renderStockValuationSummary === 'function') renderStockValuationSummary(); } catch (e) { /* cosmetic */ } }
+  function register() {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === ID; })) {
+        var i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'inventory-list-tab'; });
+        var item = { id: ID, label: '📈 Stock Value & Workspace' };
+        LOCKABLE_TABS.splice(i >= 0 ? i + 1 : LOCKABLE_TABS.length, 0, item);
+        if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === ID; })) ROLE_TABS.push(item);
+      }
+    } catch (e) { /* the tab still works for the admin */ }
+    try {
+      // copy an existing management-password lock on Inventory to this tab, once (the admin can unlock it separately afterwards)
+      if (typeof lockedTabs !== 'undefined' && Array.isArray(lockedTabs) && localStorage.getItem('pos_svt_lock_init') !== '1') {
+        localStorage.setItem('pos_svt_lock_init', '1');
+        if (lockedTabs.indexOf('inventory-list-tab') >= 0 && lockedTabs.indexOf(ID) < 0) { lockedTabs.push(ID); safeSetItem('pos_locked_tabs', JSON.stringify(lockedTabs)); }
+      }
+    } catch (e) { /* ok */ }
+  }
+  // staff who could open Inventory before keep Stock Valuation: the new tab is added to their roles ONCE (flag svtMigrated); later the admin can untick it
+  function migrate() {
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return;
+      var changed = false;
+      staff.forEach(function (m) {
+        if (!m || m.svtMigrated) return;
+        m.svtMigrated = true; changed = true;
+        if (Array.isArray(m.roles) && m.roles.indexOf('inventory-list-tab') >= 0 && m.roles.indexOf(ID) < 0) { m.roles.push(ID); m.updatedAt = Date.now(); }
+      });
+      if (changed) { safeSetItem('pos_staff', JSON.stringify(staff)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  function boot() {
+    var n = 0;
+    migrate();
+    (function tick() { try { if (ensure()) register(); } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 250 : 1000); })();
+    setInterval(function () { try { ensure(); } catch (e) { /* cosmetic */ } }, 3000);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

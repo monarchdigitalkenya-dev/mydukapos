@@ -18,7 +18,26 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { readSettings, enforcementOn, eatDateTime } from './_billing-core.js';
-import { evaluateLicense, resolveLicense, getLicense as getLicenseNoCache, wasPermanentlyDeleted, hostnameFromRequest, subdomainLabel, getRootDomain } from './_license.js';
+import { evaluateLicense, resolveLicense, getLicense as getLicenseNoCache, wasPermanentlyDeleted, hostnameFromRequest, subdomainLabel, getRootDomain, findPermanentSibling, clientLink } from './_license.js';
+import { findSharedDemo, ensureSharedDemo } from './_shared-demos.js';
+
+// zip 281: A SHARED DEMO ADDRESS THAT WAS NEVER PREPARED. The fixed demos (demo-hospital, demo-hotel, ...) were only created when someone pressed
+// "Try Live Demo" on the website or "Create / refresh all demos" in the Owner Console. Opening demo-hospital.mydukapos.store/hospital/?c=demo_hospital
+// directly - a shared link, a bookmark, a fresh database after a move to a new account - therefore answered "link code not recognised". Now an
+// address that names one of the fixed demos prepares that demo on the spot (the same idempotent ensureSharedDemo the website button uses) and answers
+// with it. It can only ever create the fixed demo records (sharedDemo === true) and never touches a real shop: if the demo address already belongs to
+// another shop, ensureSharedDemoRecord refuses and the normal "could not confirm" answer stands.
+export function sharedDemoKeyFor(request, env, clientId) {
+  const pick = (v, sep) => { const m = new RegExp('^demo' + sep + '([a-z]+)$', 'i').exec(String(v || '').trim()); return m && findSharedDemo(m[1]) ? m[1].toLowerCase() : ''; };
+  let c = ''; try { c = new URL(request.url).searchParams.get('c') || ''; } catch (e) { /* none */ }
+  let label = ''; try { label = subdomainLabel(hostnameFromRequest(request, env), getRootDomain(env)); } catch (e) { /* none */ }
+  return pick(c, '_') || pick(clientId, '_') || pick(label, '-');
+}
+async function healSharedDemo(request, env, clientId) {
+  const key = sharedDemoKeyFor(request, env, clientId);
+  if (!key) return null;
+  try { const { record } = await ensureSharedDemo(env, findSharedDemo(key)); return record && record.sharedDemo === true ? record : null; } catch (e) { return null; }
+}
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -39,9 +58,10 @@ export async function onRequestOptions() {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  let clientId, record, result, diag = null, billingSettings = null;
+  let clientId, record, result, diag = null, billingSettings = null, permanentUrl = '';
   try {
     ({ clientId, record } = await resolveLicense(request, env));          // zip 159: one cached lookup, not three KV reads every 30 s per device
+    if (!record) { const demo = await healSharedDemo(request, env, clientId); if (demo) { record = demo; clientId = demo.id; } }   // zip 281
     billingSettings = record && record.type === 'permanent' && record.billing ? await readSettings(env) : null;     // zip 267: only a shop with a subscription record costs the one cached read
     result = evaluateLicense(record, { subscriptions: enforcementOn(billingSettings) });
     // zip 245: "not found" is not "deleted". Say 'deleted' only with proof (a tombstone left when a link was permanently removed);
@@ -59,6 +79,10 @@ export async function onRequestGet(context) {
       if (await wasPermanentlyDeleted(env, new URL(request.url).searchParams.get('c') || clientId || '', label)) result = { ...result, reason: 'deleted' };
       else if (!clientId && !label) result = { ...result, reason: 'no_link' };
     }
+    // zip 269: an expired TRIAL address whose owner already has a permanent shop (same phone / e-mail / name, same app): send them to it instead of asking them to pay again
+    if (result && result.reason === 'expired' && record) {
+      try { const perm = await findPermanentSibling(env, record); if (perm) permanentUrl = clientLink(env, perm, new URL(request.url).origin); } catch (e4) { /* only a convenience: the normal expired answer stands */ }
+    }
   } catch (e) {
     // zip 143: storage briefly failing is "try again", never an answer about the licence (no `valid` field on purpose)
     return new Response(JSON.stringify({ error: 'The licence could not be checked right now — try again in a moment.', code: 'busy' }), {
@@ -71,6 +95,7 @@ export async function onRequestGet(context) {
     valid: result.valid,
     reason: result.reason,
     diag,
+    permanentUrl: permanentUrl || null,        // zip 269: where this person's PERMANENT shop is, when this is an expired trial address of someone who has one
     clientId: record ? record.id : '',
     slug: record ? record.slug || '' : '',
     type: record ? (record.sharedDemo ? 'permanent' : record.type) : null,   // zip 262: a shared demo has no trial clock, caps or upgrade nudges - the app shows its own Demo banner from `sharedDemo`

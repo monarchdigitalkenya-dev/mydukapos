@@ -11,22 +11,25 @@ import { mergeIncomingState, SETTINGS_NEED_STAMP_FIELDS } from '../functions/api
 // zip 158 — "Adjust receipt size": the letter size (points) is CHOSEN, it drives the columns, and a window shows a live sample receipt.
 // Every app is covered; the print engine itself (raster path, relay jobs) is exercised with a fake canvas.
 
-// what the ORIGINAL code (before zip 158, 7 pt = 32 / 48 columns) produced for this sale — the default must stay byte for byte the same
+// what the default (7 pt = 32 / 48 columns) produces for this sale - the default must stay byte for byte the same. Recorded at zip 158;
+// re-recorded at zip 316 after reviewing the printed text line by line: since then the TOTAL is printed big and bold (double size, its own line
+// on a 58 mm roll), deliberately. USB / Bluetooth bytes and relay bytes are still identical to each other.
+// zip 379: byte fingerprints updated on purpose - every receipt now prints DARK (ESC E 1 + ESC G 1 = bold + double-strike)
 const GOLDEN = {
-  'index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
-  'water/index.html@58': { grid: '5be9089d3ddd7da9', bytes: 'f563b727a599dfde', sectioned: 'f563b727a599dfde' },
-  'water/index.html@80': { grid: '02070d3f088f0e3d', bytes: '0d089c741ffb065f', sectioned: '0d089c741ffb065f' },
-  'hotel/index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'hotel/index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
-  'hospital/index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'hospital/index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
-  'production/index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'production/index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
-  'services/index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'services/index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
-  'pharmacy/index.html@58': { grid: '3e710163290483bb', bytes: '1412e40ee5284aed', sectioned: '1412e40ee5284aed' },
-  'pharmacy/index.html@80': { grid: 'c3b3c4b797b36bfb', bytes: '2a25b76efd928052', sectioned: '2a25b76efd928052' },
+  'index.html@58': { grid: '62b8db3e11988ef3', bytes: '4035473dc009bc23', sectioned: 'e8581d7804a61e70' },
+  'index.html@80': { grid: 'd4f470e3f6fb0787', bytes: 'dffaefc8094e772d', sectioned: '51559fd1ca5e161d' },
+  'water/index.html@58': { grid: '3fe1a49f6aedb028', bytes: '990d135e9de96fed', sectioned: '990d135e9de96fed' },
+  'water/index.html@80': { grid: '45dc26ee4d9f2d8f', bytes: '59284f2a92634367', sectioned: '59284f2a92634367' },
+  'hotel/index.html@58': { grid: '62b8db3e11988ef3', bytes: 'e8581d7804a61e70', sectioned: 'e8581d7804a61e70' },
+  'hotel/index.html@80': { grid: 'd4f470e3f6fb0787', bytes: '51559fd1ca5e161d', sectioned: '51559fd1ca5e161d' },
+  'hospital/index.html@58': { grid: '62b8db3e11988ef3', bytes: 'e8581d7804a61e70', sectioned: 'e8581d7804a61e70' },
+  'hospital/index.html@80': { grid: 'd4f470e3f6fb0787', bytes: '51559fd1ca5e161d', sectioned: '51559fd1ca5e161d' },
+  'production/index.html@58': { grid: '62b8db3e11988ef3', bytes: 'e8581d7804a61e70', sectioned: 'e8581d7804a61e70' },
+  'production/index.html@80': { grid: 'd4f470e3f6fb0787', bytes: '51559fd1ca5e161d', sectioned: '51559fd1ca5e161d' },
+  'services/index.html@58': { grid: '62b8db3e11988ef3', bytes: '4035473dc009bc23', sectioned: 'e8581d7804a61e70' },
+  'services/index.html@80': { grid: 'd4f470e3f6fb0787', bytes: 'dffaefc8094e772d', sectioned: '51559fd1ca5e161d' },
+  'pharmacy/index.html@58': { grid: '62b8db3e11988ef3', bytes: 'e8581d7804a61e70', sectioned: 'e8581d7804a61e70' },
+  'pharmacy/index.html@80': { grid: 'd4f470e3f6fb0787', bytes: '51559fd1ca5e161d', sectioned: '51559fd1ca5e161d' },
 };
 const SALE = { id: 'g1', timestamp: new Date('2026-09-26T17:39:36+03:00').getTime(), paymentMethod: 'cash', amountTendered: 5000, change: 1576.5, refNumber: 'R-00012', servedBy: 'Jane', orderType: 'walkin',
   items: [

@@ -69,9 +69,49 @@ function cacheMs(env) {
   return Number.isFinite(n) && n >= 0 ? n : LICENSE_CACHE_MS;
 }
 function remember(map, key, val) { map.delete(key); map.set(key, val); if (map.size > LICENSE_CACHE_MAX) map.delete(map.keys().next().value); }
-function rememberLicense(env, record) { const h = cacheHolder(env); if (h && record && record.id) remember(h.lic, record.id, { at: Date.now(), text: JSON.stringify(record) }); }
-function rememberSlug(env, slug, id) { const h = cacheHolder(env); if (h && slug && id) remember(h.slug, String(slug).toLowerCase(), { at: Date.now(), id }); }
-function forgetLicense(env, id, slug) { const h = cacheHolder(env); if (!h) return; if (id) h.lic.delete(id); if (slug) h.slug.delete(String(slug).toLowerCase()); }
+function rememberLicense(env, record) { const h = cacheHolder(env); if (h && record && record.id) remember(h.lic, record.id, { at: Date.now(), text: JSON.stringify(record) }); if (record && record.id) edgePut(env, 'lic/' + record.id, JSON.stringify(record)); }
+function rememberSlug(env, slug, id) { const h = cacheHolder(env); if (h && slug && id) remember(h.slug, String(slug).toLowerCase(), { at: Date.now(), id }); if (slug && id) edgePut(env, 'slug/' + String(slug).toLowerCase(), id); }
+function forgetLicense(env, id, slug) { const h = cacheHolder(env); if (h) { if (id) h.lic.delete(id); if (slug) h.slug.delete(String(slug).toLowerCase()); } if (id) edgeDelete(env, 'lic/' + id); if (slug) edgeDelete(env, 'slug/' + String(slug).toLowerCase()); }
+
+// ---------- EDGE CACHE (zip 306) ----------
+// The memory cache above lives in ONE Worker instance, so every new instance (they start and stop all the time) read the slug and licence from KV
+// again: ~3 KV reads on the first request of each instance. Cloudflare's Cache API (free, shared by every instance in the same data centre) now
+// sits between the two: memory -> edge cache -> KV. Rules (the same as the memory cache, with a longer window):
+//   * kept for EDGE_CACHE_MS (default 30 s) - inside the ~60 s KV itself takes to spread a change to other locations, so nothing new is introduced;
+//   * every write this code makes puts the NEW value in the edge cache of the data centre that made it (an owner who locks a link sees it at once);
+//   * NOT-FOUND is never kept, and the stale-on-error fallback is still only the memory copy;
+//   * no Cache API (tests, local dev) or any error -> straight to KV, exactly as before. EDGE_CACHE_MS = 0 switches it off.
+const EDGE_CACHE_MS = 30000;
+const EDGE_HOST = 'https://edge-cache.mydukapos.store/v1/';
+function edgeMs(env) {
+  const n = env && env.EDGE_CACHE_MS != null && env.EDGE_CACHE_MS !== '' ? Number(env.EDGE_CACHE_MS) : EDGE_CACHE_MS;
+  return Number.isFinite(n) && n >= 0 ? n : EDGE_CACHE_MS;
+}
+function edgeCache(env) {
+  try { if (edgeMs(env) > 0 && cacheMs(env) > 0 && typeof caches !== 'undefined' && caches && caches.default) return caches.default; } catch (e) { /* no Cache API */ }
+  return null;
+}
+async function edgeGet(env, key) {
+  const c = edgeCache(env); if (!c) return null;
+  try {
+    const r = await c.match(EDGE_HOST + key);
+    if (!r) return null;
+    const at = Number(r.headers.get('x-at')) || 0;
+    if (Date.now() - at > edgeMs(env)) return null;                    // older than the window: ask KV (Cache-Control would expire it too)
+    return await r.text();
+  } catch (e) { return null; }
+}
+function edgePut(env, key, text) {
+  const c = edgeCache(env); if (!c || text == null) return;
+  try {
+    const secs = Math.max(1, Math.ceil(edgeMs(env) / 1000));
+    Promise.resolve(c.put(EDGE_HOST + key, new Response(String(text), { headers: { 'Cache-Control': 'max-age=' + secs, 'x-at': String(Date.now()) } }))).catch(() => {});
+  } catch (e) { /* the memory cache and KV still answer */ }
+}
+function edgeDelete(env, key) {
+  const c = edgeCache(env); if (!c) return;
+  try { Promise.resolve(c.delete(EDGE_HOST + key)).catch(() => {}); } catch (e) { /* expires by itself within the window */ }
+}
 // for tests and tools
 export function clearLicenseCache(env) { const h = cacheHolder(env); if (h) { h.lic.clear(); h.slug.clear(); } }
 
@@ -81,10 +121,15 @@ export async function getLicenseCached(env, clientId) {
   const h = cacheHolder(env), ttl = cacheMs(env), now = Date.now();
   const hit = h && ttl > 0 ? h.lic.get(clientId) : null;
   if (hit && now - hit.at < ttl) return JSON.parse(hit.text);
+  if (ttl > 0) {
+    const edge = await edgeGet(env, 'lic/' + clientId);
+    if (edge) { try { const rec = JSON.parse(edge); if (h) remember(h.lic, clientId, { at: now, text: edge }); return rec; } catch (e) { /* unreadable: KV */ } }
+  }
   let raw;
   try { raw = await withRetry(() => env.mydukapos_kv.get(LICENSE_PREFIX + clientId), { tries: 2, baseMs: 30, env }); }
   catch (e) { if (hit && now - hit.at < LICENSE_STALE_OK_MS) return JSON.parse(hit.text); throw e; }
   if (h) { if (raw && ttl > 0) remember(h.lic, clientId, { at: now, text: raw }); else h.lic.delete(clientId); }
+  if (raw && ttl > 0) edgePut(env, 'lic/' + clientId, raw);
   return raw ? JSON.parse(raw) : null;
 }
 async function slugToIdCached(env, slug) {
@@ -93,10 +138,15 @@ async function slugToIdCached(env, slug) {
   const h = cacheHolder(env), ttl = cacheMs(env), now = Date.now();
   const hit = h && ttl > 0 ? h.slug.get(key) : null;
   if (hit && now - hit.at < ttl) return hit.id;
+  if (ttl > 0) {
+    const edge = await edgeGet(env, 'slug/' + key);
+    if (edge) { if (h) remember(h.slug, key, { at: now, id: edge }); return edge; }
+  }
   let id;
   try { id = await withRetry(() => env.mydukapos_kv.get(SLUG_PREFIX + key), { tries: 2, baseMs: 30, env }); }
   catch (e) { if (hit && now - hit.at < LICENSE_STALE_OK_MS) return hit.id; throw e; }
   if (h) { if (id && ttl > 0) remember(h.slug, key, { at: now, id }); else h.slug.delete(key); }
+  if (id && ttl > 0) edgePut(env, 'slug/' + key, id);
   return id || null;
 }
 
@@ -173,7 +223,7 @@ export const PRODUCTS = {
   pharmacy: { label: 'Pharmacy POS', path: '/pharmacy/' },
   services: { label: 'Services POS (Bookings)', path: '/services/' },
   water: { label: 'Water Refill Station POS (AquaPOS)', path: '/water/' },
-  chama: { label: 'Chama (savings group manager)', path: '/chama/' },
+  carwash: { label: 'Car Wash & Cleaning', path: '/carwash/' },   // zip 361: the standalone Car Wash & Cleaning app (no sales counter)
 };
 const DEFAULT_PRODUCT = 'shop';
 
@@ -261,7 +311,9 @@ export async function chooseSlug(env, wanted) {
   return { ok: true, slug, taken: slug !== base };
 }
 async function pickUniqueSlug(env, label) {
-  const wanted = slugify(label);
+  let wanted = slugify(label);
+  // zip 320: "demo-" addresses belong to the public sample shops only (their storage is reset every hour on the device)
+  if (wanted === 'demo' || wanted.startsWith('demo-')) wanted = 'shop-' + wanted;
   let candidate = wanted;
   let n = 2;
   while (RESERVED_SLUGS.has(candidate) || await slugTaken(env, candidate)) {
@@ -314,6 +366,39 @@ async function readIndex(env) {
   return list.map((entry) => (typeof entry === 'string' ? { id: entry } : entry));
 }
 
+// zip 269: an EXPIRED trial address often belongs to someone who already has a permanent shop - a trial address they typed with a typo (imuru-textiles for
+// limuru-textiles), or a permanent link the owner generated for them separately. Telling that person "your free trial has ended, pay KES 3,000" is wrong: they
+// have already paid. Find their permanent shop by who they are (same phone, e-mail or client name, same app) and return its address so the app can send them
+// there. Several candidates: the one whose address is closest to this one, and only when that is a clear winner. Read-only; used only on an expired trial.
+function editDistance(a, b) {
+  const m = a.length, n = b.length; if (!m || !n) return Math.max(m, n);
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+  return prev[n];
+}
+export async function findPermanentSibling(env, record) {
+  if (!record || record.type === 'permanent') return null;
+  const digits = (v) => String(v || '').replace(/\D/g, '').slice(-9);
+  const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const ph = digits(record.phone), em = norm(record.email), nm = norm(record.clientName);
+  if (ph.length < 9 && !em && nm.length < 4) return null;
+  const list = await readIndex(env);
+  // a phone or e-mail match is identity; a NAME alone (two people can share "John Kamau") only counts when the two addresses are a typo apart (imuru-textiles / limuru-textiles)
+  const mine0 = String(record.slug || '').toLowerCase();
+  const hits = list.filter((x) => x && x.id && x.id !== record.id && x.type === 'permanent' && !x.deleted && !x.locked && x.slug && (x.product || DEFAULT_PRODUCT) === (record.product || DEFAULT_PRODUCT)
+    && ((ph.length >= 9 && digits(x.phone) === ph) || (em && norm(x.email) === em) || (nm.length >= 4 && norm(x.clientName) === nm && editDistance(mine0, String(x.slug).toLowerCase()) <= 2)));
+  if (!hits.length) return null;
+  let best = hits;
+  if (hits.length > 1) {
+    const mine = String(record.slug || '').toLowerCase();
+    const scored = hits.map((x) => ({ x, d: editDistance(mine, String(x.slug).toLowerCase()) })).sort((a, b) => a.d - b.d);
+    if (scored[0].d > 3 || (scored[1] && scored[1].d === scored[0].d)) return null;
+    best = [scored[0].x];
+  }
+  const rec = await getLicenseCached(env, best[0].id);
+  return rec && rec.type === 'permanent' && !rec.deleted && !rec.locked ? rec : null;
+}
+
 function summaryFromRecord(record) {
   return {
     id: record.id,
@@ -346,6 +431,7 @@ function summaryFromRecord(record) {
     revenue: record.revenue || null,
     notice: record.notice ? { at: record.notice.at, ackAt: record.notice.ackAt || null } : null,
     // zip 267: the small part of a shop's subscription the owner's lists need (absent = the shop predates billing = exempt). The full record stays on the licence.
+    svcType: record.svcType || '',   // zip 361: lets the Owner Console find Services links still set to car wash
     billing: record.billing && record.billing.cohort ? { cohort: record.billing.cohort, paidThrough: record.billing.paidThrough || 0, price: record.billing.price || 0, graceDays: record.billing.graceDays, comped: !!record.billing.comped, exempt: !!record.billing.exempt, suspended: !!record.billing.suspended, claim: !!record.billing.claim } : null,
   };
 }
@@ -670,6 +756,7 @@ export function evaluateLicense(record, opts) {
   if (!record) return { valid: false, reason: 'not_found', now };
   if (record.deleted) return { valid: false, reason: 'deleted', record, now };
   if (record.locked) return { valid: false, reason: 'locked', record, now };
+  if (record.branchSuspended) return { valid: false, reason: 'branch_suspended', record, now };      // zip 309: suspended by its own business (Business HQ); nothing is deleted
   if (record.type === 'permanent') {
     // zip 267: a subscribed shop (billing.cohort 'new') whose paid period AND grace have ended is suspended, but only where the caller asked for it (opts.subscriptions =
     // billing is live and enforcement is on). Every other caller, and every shop without a billing record, behaves exactly as before. Nothing is ever deleted by this.

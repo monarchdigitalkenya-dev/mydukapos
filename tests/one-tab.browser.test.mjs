@@ -32,8 +32,8 @@ test('two tabs on one device: the older tab cannot save over a sale; "Use it her
   const srv = await serve(); const base = 'http://127.0.0.1:' + srv.address().port; const browser = await chromium.launch();
   try {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-    await ctx.route('**/api/**', (r) => r.abort());                                 // offline: nothing reaches the server to rescue it
-    await ctx.addInitScript(([h]) => { if (localStorage.getItem('seeded')) return; localStorage.setItem('seeded', '1'); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T');
+    await ctx.route('**/api/**', (r) => r.abort()); await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());   // nothing outside this machine (fonts, connectivity probes): a page whose external stylesheet never answers never fires 'load' on a machine without internet                                 // offline: nothing reaches the server to rescue it
+    await ctx.addInitScript(([h]) => { if (localStorage.getItem('seeded')) return; localStorage.setItem('seeded', '1'); localStorage.setItem('pos_cash_config', JSON.stringify([{ id: 'cfg', enabled: false, updatedAt: 1 }])); localStorage.setItem('pos_round_up', '0');   /* as tests/helpers.mjs: cash float (on by default since zip 292) would ask for an opening count at the first sale */ localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T');
       localStorage.setItem('pos_inventory', JSON.stringify([{ code: 'A', type: 'item', name: 'Alpha', price: 100, wholesalePrice: 50, qty: 50, unit: 'pcs', vatCategory: 'A' }])); }, [H]);
     const open = async (p) => { p = p || await ctx.newPage(); await p.goto(base + '/index.html'); await p.waitForTimeout(1200); await p.evaluate(() => { const l = document.getElementById('login-screen'); if (l) l.style.display = 'none'; window.showToast = () => {}; window.print = () => {}; }); return p; };
     const sell = (p) => p.evaluate(async () => { if (window.__tabInactive) return 'blocked'; addToCart('A'); currentPaymentMethod = 'cash'; document.getElementById('cash-tendered-input').value = '1000'; await checkoutCart(); return 'sold'; });
@@ -59,7 +59,7 @@ test('the customer display is not a second till: it is never stopped and never s
   const srv = await serve(); const base = 'http://127.0.0.1:' + srv.address().port; const browser = await chromium.launch();
   try {
     const ctx = await browser.newContext();
-    await ctx.route('**/api/**', (r) => r.abort());
+    await ctx.route('**/api/**', (r) => r.abort()); await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());   // nothing outside this machine (fonts, connectivity probes): a page whose external stylesheet never answers never fires 'load' on a machine without internet
     const till = await ctx.newPage(); await till.goto(base + '/index.html'); await till.waitForTimeout(800);
     const disp = await ctx.newPage(); await disp.goto(base + '/index.html?display=customer'); await disp.waitForTimeout(800);
     assert.equal(await till.evaluate(() => !!window.__tabInactive), false);

@@ -96,11 +96,15 @@ function queueKey(clientId, deviceId) {
 // comfortably above the frontend's own re-registration interval (20s,
 // see heartbeatDeviceNetwork()) or a perfectly healthy device flickers
 // "offline" for the last few seconds of every cycle.
-const HEARTBEAT_STALE_MS = 30000;
+const HEARTBEAT_STALE_MS = 150000;   // zip 397: tills now heartbeat every 60 s (was 20 s), so 'online' = seen in the last 2.5 minutes
 // A device dropped entirely from the registry (not just shown offline) once
 // it's been silent this long, so a phone that was used once months ago
 // doesn't clutter the discovery list forever.
 const DEVICE_FORGET_MS = 24 * 60 * 60 * 1000;
+// zip 335: "last seen" is only written to storage when the stored value is older than this. A device polling every 4 s used to write the
+// whole registry to KV on EVERY poll (a billed write each, and one-write-per-second-per-key contention between phones). 10 s keeps the
+// online answer exact enough: HEARTBEAT_STALE_MS is 30 s.
+const LASTSEEN_WRITE_MS = 45000;    // zip 397: was 10 s
 // A job nobody's picked up within this window is dropped rather than
 // printed late — a receipt from 5+ minutes ago surprise-printing later
 // would be more confusing than just not printing it.
@@ -129,13 +133,45 @@ function randomToken(len) {
   return s;
 }
 
+// zip 397: the device list and the job queues live in D1 (LEDGER_DB) when it is bound - the same JSON the KV keys held, one row per
+// shop / per device. On KV every heartbeat of every open till was a billed write; D1 carries this traffic for a fraction of the cost.
+// If D1 is not bound (or answers with an error) the KV keys are used exactly as before, so printing never stops.
+let relayTablesReady = false;
+function relayDb(env) { const db = env && (env.LEDGER_DB || env.DB); return db && typeof db.prepare === 'function' ? db : null; }
+async function ensureRelayTables(db) {
+  if (relayTablesReady) return;
+  await db.batch([
+    db.prepare('CREATE TABLE IF NOT EXISTS relay_devices (client_id TEXT NOT NULL PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL) WITHOUT ROWID'),
+    db.prepare('CREATE TABLE IF NOT EXISTS relay_queues (client_id TEXT NOT NULL, device_id TEXT NOT NULL, data TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (client_id, device_id)) WITHOUT ROWID'),
+  ]);
+  relayTablesReady = true;
+}
+async function dbRead(env, sql, args) {
+  const db = relayDb(env); if (!db) return { skip: true };
+  try { await ensureRelayTables(db); const row = await db.prepare(sql).bind(...args).first(); return { row }; } catch (e) { return { skip: true }; }
+}
+async function dbWrite(env, sql, args) {
+  const db = relayDb(env); if (!db) return false;
+  try { await ensureRelayTables(db); await db.prepare(sql).bind(...args).run(); return true; } catch (e) { return false; }
+}
+
 async function getDevices(env, clientId) {
+  const r = await dbRead(env, 'SELECT data FROM relay_devices WHERE client_id = ?', [clientId]);
+  if (!r.skip) {
+    if (r.row) return JSON.parse(r.row.data);
+    // first use on D1: carry over what the KV key held (once), so known devices and their stations are not forgotten
+    const raw = await env.mydukapos_kv.get(devicesKey(clientId));
+    const devices = raw ? JSON.parse(raw) : {};
+    await dbWrite(env, 'INSERT OR IGNORE INTO relay_devices (client_id, data, updated_at) VALUES (?, ?, ?)', [clientId, JSON.stringify(devices), Date.now()]);
+    return devices;
+  }
   const raw = await env.mydukapos_kv.get(devicesKey(clientId));
   return raw ? JSON.parse(raw) : {};
 }
 
 async function saveDevices(env, clientId, devices) {
-  await env.mydukapos_kv.put(devicesKey(clientId), JSON.stringify(devices));
+  const ok = await dbWrite(env, 'INSERT INTO relay_devices (client_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at', [clientId, JSON.stringify(devices), Date.now()]);
+  if (!ok) await env.mydukapos_kv.put(devicesKey(clientId), JSON.stringify(devices));
 }
 
 function pruneStaleDevices(devices) {
@@ -166,12 +202,17 @@ async function getRules(env, clientId) {
 }
 
 async function getQueue(env, clientId, deviceId) {
+  const r = await dbRead(env, 'SELECT data FROM relay_queues WHERE client_id = ? AND device_id = ?', [clientId, deviceId]);
+  if (!r.skip) return r.row ? JSON.parse(r.row.data) : [];
   const raw = await env.mydukapos_kv.get(queueKey(clientId, deviceId));
   return raw ? JSON.parse(raw) : [];
 }
 
 async function saveQueue(env, clientId, deviceId, queue) {
-  await env.mydukapos_kv.put(queueKey(clientId, deviceId), JSON.stringify(queue));
+  const ok = queue.length
+    ? await dbWrite(env, 'INSERT INTO relay_queues (client_id, device_id, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(client_id, device_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at', [clientId, deviceId, JSON.stringify(queue), Date.now()])
+    : await dbWrite(env, 'DELETE FROM relay_queues WHERE client_id = ? AND device_id = ?', [clientId, deviceId]);
+  if (!ok) await env.mydukapos_kv.put(queueKey(clientId, deviceId), JSON.stringify(queue));
 }
 
 async function pushJob(env, clientId, deviceId, job) {
@@ -227,7 +268,19 @@ export async function onRequestPost(context) {
 
   if (body.action === 'registerDevice') {
     if (!body.deviceId) return jsonResponse({ error: 'Missing deviceId.' }, 400);
-    let devices = pruneStaleDevices(await getDevices(env, clientId));
+    const stored = await getDevices(env, clientId);
+    let devices = pruneStaleDevices(stored);
+    const prev = devices[body.deviceId];
+    const next = {
+      name: String(body.name || 'Device').slice(0, 40),
+      station: String(body.station || 'Other').slice(0, 30),
+      printerMode: body.printerMode || 'system',
+      hasPrinter: !!body.hasPrinter,
+      acceptsRelay: !!body.acceptsRelay,
+    };
+    // zip 397: a heartbeat that changes nothing and comes soon after the last one writes nothing
+    const same = prev && ['name', 'station', 'printerMode', 'hasPrinter', 'acceptsRelay'].every((k) => prev[k] === next[k]);
+    if (same && Date.now() - (prev.lastSeen || 0) < LASTSEEN_WRITE_MS && Object.keys(devices).length === Object.keys(stored).length) return jsonResponse({ ok: true });
     devices[body.deviceId] = {
       name: String(body.name || 'Device').slice(0, 40),
       station: String(body.station || 'Other').slice(0, 30),
@@ -241,8 +294,9 @@ export async function onRequestPost(context) {
   }
 
   if (body.action === 'listDevices') {
-    const devices = pruneStaleDevices(await getDevices(env, clientId));
-    await saveDevices(env, clientId, devices);
+    const stored = await getDevices(env, clientId);
+    const devices = pruneStaleDevices(stored);
+    if (Object.keys(devices).length !== Object.keys(stored).length) await saveDevices(env, clientId, devices);
     return jsonResponse({ devices: decorateOnline(devices) });
   }
 
@@ -250,9 +304,12 @@ export async function onRequestPost(context) {
     if (!body.deviceId) return jsonResponse({ error: 'Missing deviceId.' }, 400);
     const devices = await getDevices(env, clientId);
     if (devices[body.deviceId]) {
-      devices[body.deviceId].lastSeen = Date.now();
-      if (typeof body.hasPrinter === 'boolean') devices[body.deviceId].hasPrinter = body.hasPrinter;
-      await saveDevices(env, clientId, devices);
+      const hpChanged = typeof body.hasPrinter === 'boolean' && devices[body.deviceId].hasPrinter !== body.hasPrinter;
+      if (hpChanged || Date.now() - (devices[body.deviceId].lastSeen || 0) >= LASTSEEN_WRITE_MS) {
+        devices[body.deviceId].lastSeen = Date.now();
+        if (typeof body.hasPrinter === 'boolean') devices[body.deviceId].hasPrinter = body.hasPrinter;
+        await saveDevices(env, clientId, devices);
+      }
     }
     return jsonResponse({ ok: true });
   }
@@ -342,17 +399,19 @@ export async function onRequestPost(context) {
       // treated as present, with a printer, accepting jobs, so it keeps
       // surfacing in listDevices/decorateOnline and in submit()'s
       // fallback exactly like the old single-relay device did.
-      devices[deviceId] = {
-        ...(devices[deviceId] || {}),
-        name: devices[deviceId]?.name || 'Aqua POS printer',
-        station: devices[deviceId]?.station || 'Other',
-        printerMode: devices[deviceId]?.printerMode || 'legacy',
-        hasPrinter: true,
-        acceptsRelay: true,
-        lastSeen: Date.now(),
-      };
-      await saveDevices(env, clientId, devices);
-    } else if (devices[deviceId]) {
+      if (!devices[deviceId] || Date.now() - (devices[deviceId].lastSeen || 0) >= LASTSEEN_WRITE_MS) {
+        devices[deviceId] = {
+          ...(devices[deviceId] || {}),
+          name: devices[deviceId]?.name || 'Aqua POS printer',
+          station: devices[deviceId]?.station || 'Other',
+          printerMode: devices[deviceId]?.printerMode || 'legacy',
+          hasPrinter: true,
+          acceptsRelay: true,
+          lastSeen: Date.now(),
+        };
+        await saveDevices(env, clientId, devices);
+      }
+    } else if (devices[deviceId] && Date.now() - (devices[deviceId].lastSeen || 0) >= LASTSEEN_WRITE_MS) {
       devices[deviceId].lastSeen = Date.now();
       await saveDevices(env, clientId, devices);
     }
@@ -365,7 +424,8 @@ export async function onRequestPost(context) {
     const toReturn = claimable.slice(0, 5);
     toReturn.forEach((j) => { j.claimedAt = now; });
 
-    await saveQueue(env, clientId, deviceId, fresh);
+    // zip 335: an empty poll (the common case) changed nothing, so it writes nothing.
+    if (toReturn.length > 0 || fresh.length !== queue.length) await saveQueue(env, clientId, deviceId, fresh);
     return jsonResponse({ jobs: toReturn });
   }
 

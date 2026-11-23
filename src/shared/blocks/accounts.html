@@ -90,7 +90,7 @@
     /* ---------------- building the ledger from the till's records ---------------- */
     function tcList() { return (typeof tradeCredits !== 'undefined' && Array.isArray(tradeCredits)) ? tradeCredits : []; }
     function itemsSum(items) { return (items || []).reduce(function (s, l) { return s + (Number(l.price) || 0) * (Number(l.qty) || 0); }, 0); }
-    function itemsCost(items) { return (items || []).reduce(function (s, l) { if (l.unit === 'payment' || l.isPayment) return s; return s + (Number(l.wholesalePrice) || 0) * (Number(l.qty) || 0); }, 0); }
+    function itemsCost(items) { return (items || []).reduce(function (s, l) { if (l.unit === 'payment' || l.isPayment) return s; return s + (Number(l.wholesalePrice) || 0) * (Number(l.qty) || 0) + (window.SE ? window.SE.lineFix(l) : 0); }, 0); }   // zip 336: + an approved cost correction
     function isCollection(sale) { return !!sale.billId || (sale.items || []).some(function (l) { return l && (l.unit === 'payment' || l.isPayment); }); }
     function split(sale, amount) {
         var c = Number(sale.cashAmount) || 0, m = Number(sale.mpesaAmount) || 0, k = Number(sale.cardAmount) || 0, sum = c + m + k;
@@ -137,17 +137,30 @@
             E(list, 'B:' + b.id, dt, 'bill', 'Pay Later bill — ' + (b.customerName || 'customer') + (b.refNumber ? ' ' + b.refNumber : ''), [['1100', total, 0], ['4000', 0, r2(total - fee)], ['4100', 0, fee], ['5000', cost, 0], ['1200', 0, cost]], { ref: b.refNumber || b.id, customer: b.customerName || '' });
         });
         X.forEach(function (x) {
-            if (!x || x.voided) return; var dt = dayOf(x.timestamp); if (!dt) return; var amt = r2((Number(x.amount) || 0) + (Number(x.transactionCost) || 0)); if (!amt) return;
+            if (!x || x.voided || x.supplierDebtId || x.supplierPay) return;   // a supplier payment is posted once below (Accounts payable / cash)
+            var dt = dayOf(x.timestamp); if (!dt) return; var amt = r2((Number(x.amount) || 0) + (Number(x.transactionCost) || 0)); if (!amt) return;
             var acct = x.category === 'Restock' ? '1200' : expCode(x.category);
             E(list, 'X:' + x.id, dt, 'expense', (x.category || 'Expense') + (x.description ? ' — ' + x.description : ''), [[acct, amt, 0], [cashFor(x.paymentMethod || x.method), 0, amt]]);
         });
         T.forEach(function (t) {
             if (!t || t.voided) return; var dt = dayOf(t.timestamp), amt = r2(t.amount); if (!dt || !amt) return;
+            // zip 319 / 321: the supplier ledger (suppliers block). Restock = stock bought on account; opening = a balance brought forward;
+            // return = stock back to the supplier, owed less; correction = the invoice value changed. Payments are posted once, further down.
+            if (t.direction === 'i_owe' && /^supplier_(restock|opening|return|adjust)$/.test(t.kind || '')) {
+                var who2 = t.partyName || '';
+                if (t.kind === 'supplier_restock') E(list, 'T:' + t.id, dt, 'tradecredit', 'Restock on credit — ' + who2, [['1200', amt, 0], ['2000', 0, amt]], { party: who2 });
+                else if (t.kind === 'supplier_opening') E(list, 'T:' + t.id, dt, 'tradecredit', 'Opening balance owed — ' + who2, [['3050', amt, 0], ['2000', 0, amt]], { party: who2 });
+                else if (t.kind === 'supplier_return' || Number(t.sign) < 0) E(list, 'T:' + t.id, dt, 'tradecredit', (t.kind === 'supplier_return' ? 'Goods returned — ' : 'Supplier correction (owed less) — ') + who2, [['2000', amt, 0], ['1200', 0, amt]], { party: who2 });
+                else E(list, 'T:' + t.id, dt, 'tradecredit', 'Supplier correction (owed more) — ' + who2, [['1200', amt, 0], ['2000', 0, amt]], { party: who2 });
+                return;
+            }
             var owe = t.direction === 'i_owe', name = (owe ? 'Owed to ' : 'Owed by ') + (t.partyName || '') + (t.description ? ' — ' + t.description : '');
             if (owe) E(list, 'T:' + t.id, dt, 'tradecredit', name, [['5100', amt, 0], ['2000', 0, amt]], { party: t.partyName });
             else E(list, 'T:' + t.id, dt, 'tradecredit', name, [['1150', amt, 0], ['4900', 0, amt]], { party: t.partyName });
             if (t.status === 'settled' || t.settledAt) { var sd = dayOf(t.settledAt || t.timestamp); if (owe) E(list, 'T:' + t.id + ':s', sd, 'tradecredit', 'Paid — ' + (t.partyName || ''), [['2000', amt, 0], ['1010', 0, amt]], { party: t.partyName }); else E(list, 'T:' + t.id + ':s', sd, 'tradecredit', 'Received — ' + (t.partyName || ''), [['1010', amt, 0], ['1150', 0, amt]], { party: t.partyName }); }
         });
+        // zip 321: every supplier payment once (each part it paid), Accounts payable / the account it was paid from
+        if (window.SupplierLedger) window.SupplierLedger.allPayments().forEach(function (p) { var pd = dayOf(p.at); if (!pd) return; p.allocations.forEach(function (a) { var pa = r2(a.amount); if (pa) E(list, 'T:' + a.id + ':' + p.id, pd, 'tradecredit', 'Paid supplier' + (p.reference ? ' (' + p.reference + ')' : ''), [['2000', pa, 0], [cashFor(p.method), 0, pa]], { party: (T.filter(function (x) { return x && x.id === a.id; })[0] || {}).partyName || '' }); }); });
         DB.forEach(function (x) {
             if (!x || x.voided) return; var dt = dayOf(x.createdAt || x.timestamp), amt = r2(x.amount); if (!dt || !amt) return;
             E(list, 'D:' + x.id, dt, 'debt', 'Customer debt — ' + (x.customerName || ''), [['1100', amt, 0], ['3050', 0, amt]], { customer: x.customerName || '' });

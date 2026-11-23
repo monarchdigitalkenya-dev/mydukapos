@@ -22,7 +22,7 @@ for (const app of ['index.html', 'hotel/index.html', 'hospital/index.html', 'pha
     a.w.eval("currentPaymentMethod = 'cash'; addToCart('A1'); addToCart('A1'); document.getElementById('cash-tendered-input').value = '100000'");
     await a.w.eval('checkoutCart()');
     a.w.eval("addToCart('A1'); addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-    const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+    const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; const phEl = a.w.document.getElementById('sms-checkout-phone-input'); if (phEl) phEl.value = '0712345678';
     await a.w.eval('checkoutCart()');
     await settled(a);
     a.w.eval("stockTakeSet('A1','qty','40'); stockTakeApplyOne('A1')");                       // counted 40 (the books said 45)

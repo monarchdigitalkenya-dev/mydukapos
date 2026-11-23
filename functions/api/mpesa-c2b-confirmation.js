@@ -15,13 +15,17 @@
 // are saved for this shop, since the registration call needs them.
 //
 // Scoped per client via the `c` query param baked into the URL that was
-// registered — see mpesa-c2b-register.js for how that URL is built.
+// registered — see mpesa-c2b-register.js for how that URL is built. zip 358: the
+// newer path form /api/pcb/<shop>/<key>/c is rewritten into the same shape
+// (functions/api/pcb/[[path]].js); a callback naming no shop is matched by its
+// Till / Store number and HELD for the owner instead of being dropped.
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
-import { tillDb, ensureTillSchema, insertTill, cleanCode, parseTransTime, phoneHint, reconcileC2bWithStk } from './_till-store.js';
+import { tillDb, ensureTillSchema, insertTill, cleanCode, parseTransTime, phoneHint, reconcileC2bWithStk, parseMoney } from './_till-store.js';
+import { logTillEvent, holdTillPayment, shopForShortcode, noteOrphan } from './_till-diag.js';
 
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
@@ -40,19 +44,27 @@ function ack(extra = {}) {
 
 export async function onRequestPost(context) {
   const { request, env } = context;
-  const clientId = new URL(request.url).searchParams.get('c') || '';
-  if (!clientId) {
-    // No client id in the confirmation URL — nothing we can attribute this
-    // to, but Safaricom still needs a 200 or it'll retry indefinitely.
-    return ack();
-  }
+  const u = new URL(request.url);
+  let clientId = u.searchParams.get('c') || '';
+  const via = u.searchParams.get('via') === 'path' ? 'path' : 'query';
 
   const data = await readCallbackJson(request);      // zip 185: size-bounded
   if (!data || typeof data !== 'object') return ack();
 
   const transId = data.TransID != null ? String(data.TransID) : '';
   if (!transId || transId.length > 40) return ack();
-  if (!(await shopKnown(env, clientId))) return ack();   // zip 185: not a real shop -> nothing is written
+  const sc = data.BusinessShortCode != null ? String(data.BusinessShortCode) : '';
+  const brief = { code: cleanCode(transId), amount: parseMoney(data.TransAmount), name: [data.FirstName, data.MiddleName, data.LastName].filter((n) => n && String(n).trim()).join(' ').slice(0, 80), sc, via };
+  // zip 358: no shop id in the address (an old registration, or the query string did not survive). It is no longer dropped without a trace:
+  // the Till / Store / Paybill number in the message is looked up among the numbers shops registered, and the payment is HELD for that shop's owner
+  // (it carries no key, so it is not listed as paid until the owner accepts it). A number nobody registered is kept for the platform owner.
+  let noShopInUrl = false;
+  if (!clientId) {
+    clientId = await shopForShortcode(env, sc);
+    if (!clientId) { await noteOrphan(env, sc, brief); return ack(); }
+    noShopInUrl = true;
+  }
+  if (!(await shopKnown(env, clientId))) { await noteOrphan(env, sc, { ...brief, shop: String(clientId).slice(0, 80) }); return ack(); }   // zip 185: not a real shop -> nothing is written for it
 
   // A customer's registered name arrives as up to three separate fields —
   // joined here into one, skipping any that are genuinely blank (a
@@ -63,9 +75,9 @@ export async function onRequestPost(context) {
     .filter((n) => n && String(n).trim())
     .join(' ');
 
-  const signed = await checkCallback(env, clientId, 'c2b', request.url);
+  const signed = noShopInUrl ? { ok: false } : await checkCallback(env, clientId, 'c2b', request.url);
   const receivedAt = Date.now();
-  const amount = parseFloat(data.TransAmount) || 0;
+  const amount = parseMoney(data.TransAmount);
   // zip 259: only what reconciliation needs. The full callback body (shortcode, org balance, full MSISDN ...) is NOT kept. With Daraja C2B v2 the
   // MSISDN arrives hashed anyway; a plain number (v1) is reduced to a masked hint.
   const record = {
@@ -77,6 +89,12 @@ export async function onRequestPost(context) {
   // An unsigned post for a shop that has a key is not stored where the till looks for payments: it cannot pre-empt the real one.
   if (!signed.ok) {
     await env.mydukapos_kv.put(`till-payment-rejected:${clientId}:${transId}`, JSON.stringify({ transId, amount, receivedAt }), { expirationTtl: 30 * 24 * 3600 });
+    // zip 358: shown in Till health, where the owner can check it against the M-PESA statement / SMS and accept it (then it is listed as usual)
+    if (!signed.limited) {
+      const why = noShopInUrl ? 'held_nokey' : 'held_key';
+      await holdTillPayment(env, clientId, { code: cleanCode(transId), amount, paidAt: parseTransTime(data.TransTime, receivedAt), name: fullName.slice(0, 80), ref: record.accountRef, phoneHint: phoneHint(data.MSISDN), sc, receivedAt, why });
+      await logTillEvent(env, clientId, { ...brief, outcome: why });
+    }
     return ack();
   }
   // IDEMPOTENT on the M-PESA code: Safaricom re-sends the same notification; the first copy is the payment, a repeat changes nothing.
@@ -97,6 +115,8 @@ export async function onRequestPost(context) {
   if (!isRepeat || inD1) { try { if (!(await env.mydukapos_kv.get(kvKey))) await env.mydukapos_kv.put(kvKey, JSON.stringify(record), { expirationTtl: 45 * 24 * 3600 }); } catch (e) { /* the D1 row is the record */ } }
   // zip 153: recorded in the D1 ledger too (idempotent on the transaction id) - money received, awaiting a sale to be attached to
   await recordGatewayTxn(env, clientId, { provider: 'till', txnId: transId, code: transId, amount, phone: phoneHint(data.MSISDN), status: 'RECEIVED', trusted: true });
+
+  await logTillEvent(env, clientId, { ...brief, outcome: isRepeat ? 'repeat' : 'accepted', legacy: !!signed.legacy });
 
   // No D1 (older deployments): keep the small KV index so the panel can still list recent payments.
   if (!inD1) {

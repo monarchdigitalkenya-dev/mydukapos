@@ -1,0 +1,105 @@
+<!-- PRINT ISOLATE -------------------------------------------------------------------------------------------------------------
+     zip 375: "Print" must print the RECEIPT (or report / kitchen slip), never the page on screen.
+     Why it printed the Sales Counter: the app marks the page (body.printing-receipt) and CSS hides everything except the receipt, then calls
+     window.print(). Chrome on Android (and the print dialogs of POS terminals) draw the preview LATER - and again every time the paper size is
+     changed - from the live page, and 'afterprint' fires early, so by then the mark had been removed and the whole screen was printed (12 pages).
+     Fix: when a print mode is active, the receipt is copied into its OWN hidden document and THAT document is printed. What the screen does
+     afterwards cannot change it. Inside the Android / Windows app (MyDukaNative) nothing changes: it has its own printing.
+     Off switch for support: localStorage pos_print_isolate = 0.
+     zip 378: the paper-size buttons ("Paper: 58 mm 80 mm"), the "80 mm paper - N characters a line" note, the close X and the action buttons
+     printed ON the receipt (the hide rule lived only in the Standard layout's CSS, so the Detailed layout and the Android app's page print
+     missed it). They are now hidden for every print, and removed from the copy that is printed. -->
+<style>
+@media print{.device-paper-picker,.device-paper-now,.universal-modal-x,.receipt-actions,.no-print,[data-noprint]{display:none!important}}
+/* zip 379: DARK print on thermal paper (the handheld terminal printed grey, broken letters): every receipt letter bold, pure black, slightly
+   outlined; lines and borders black. Pictures (logo, barcode) are left as they are. */
+@media print{
+  .receipt-paper,.receipt-paper *,#receipt-body,#receipt-body *{color:#000!important;font-weight:800!important;-webkit-text-stroke:.35px #000;text-shadow:none!important;opacity:1!important;filter:none!important}
+  .receipt-paper *,#receipt-body *{border-color:#000!important}
+  .receipt-paper img,#receipt-body img,.receipt-paper svg,#receipt-body svg,.receipt-paper canvas,#receipt-body canvas{-webkit-text-stroke:0}
+}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.PrintIsolate) return;
+  var MODES = [['printing-receipt', 'receipt-modal'], ['printing-kitchen-ticket', 'kitchen-ticket-modal'], ['printing-report', 'sales-report-modal'], ['printing-barcodes', 'barcode-print-sheet'], ['printing-adhoc', 'aqua-pos-print-area'], ['tx-printing', 'tx-print'], ['vx-printing', 'vx-print-host']];   // zip 380: invoices / statements (A4, printed exactly as previewed)
+  var nativePrint = window.print;
+  var frame = null, frameTimer = null;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function off() { try { return localStorage.getItem('pos_print_isolate') === '0'; } catch (e) { return false; } }
+  function target() {
+    var b = document.body;
+    for (var i = 0; i < MODES.length; i++) {
+      if (b.classList.contains(MODES[i][0])) { var el = document.getElementById(MODES[i][1]); if (el && el.parentNode === b) return el; }
+    }
+    return null;
+  }
+  function sheetText(n) {
+    var t = n.textContent || '';
+    if (!t.trim() && n.sheet) { try { t = Array.prototype.map.call(n.sheet.cssRules, function (r) { return r.cssText; }).join('\n'); } catch (e) { /* cross-origin */ } }
+    return t;
+  }
+  function build(el) {
+    var head = '', i, n;
+    for (i = 0; i < document.head.children.length; i++) {
+      n = document.head.children[i];
+      if (n.tagName === 'STYLE') head += '<style>' + sheetText(n).replace(/<\/style/gi, '<\\/style') + '</style>';
+      else if (n.tagName === 'LINK' && /stylesheet/i.test(n.rel)) head += n.outerHTML;
+    }
+    var inner = '';
+    for (i = 0; i < document.body.children.length; i++) {
+      n = document.body.children[i];
+      if (n.tagName === 'STYLE') inner += '<style>' + sheetText(n).replace(/<\/style/gi, '<\\/style') + '</style>';
+    }
+    var clone = el.cloneNode(true), a = el.querySelectorAll('canvas'), b = clone.querySelectorAll('canvas');
+    for (i = 0; i < a.length && i < b.length; i++) {                       // a canvas is not copied by cloning: copy what it shows
+      try { var im = document.createElement('img'); im.src = a[i].toDataURL('image/png'); im.className = a[i].className; im.setAttribute('style', a[i].getAttribute('style') || ''); im.width = a[i].width; im.height = a[i].height; b[i].parentNode.replaceChild(im, b[i]); } catch (e) { /* stays blank */ }
+    }
+    var sc = clone.querySelectorAll('script'); for (i = 0; i < sc.length; i++) sc[i].parentNode.removeChild(sc[i]);
+    // zip 378: screen-only controls never go to paper (paper-size buttons and note, close X, action buttons)
+    var ctl = clone.querySelectorAll('.device-paper-picker,.device-paper-now,.universal-modal-x,.receipt-actions,.no-print,[data-noprint],button');
+    for (i = 0; i < ctl.length; i++) { if (ctl[i].parentNode) ctl[i].parentNode.removeChild(ctl[i]); }
+    inner += clone.outerHTML;
+    var de = document.documentElement;
+    return '<!doctype html><html class="' + esc(de.className) + '"><head><meta charset="utf-8"><base href="' + esc(document.baseURI) + '">' + head + '</head><body class="' + esc(document.body.className) + '" style="' + esc(document.body.getAttribute('style') || '') + '">' + inner + '</body></html>';
+  }
+  function dropFrame() { clearTimeout(frameTimer); try { if (frame && frame.parentNode) frame.parentNode.removeChild(frame); } catch (e) { /* gone */ } frame = null; }
+
+  function run() {
+    var el;
+    try {
+      if (window.MyDukaNative || off() || !document.body || !(el = target())) return nativePrint.call(window);
+      dropFrame();
+      var f = document.createElement('iframe'); f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
+      f.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none';
+      document.body.appendChild(f); frame = f;
+      var w = f.contentWindow, d = f.contentDocument;
+      d.open(); d.write(build(el)); d.close();
+      var parentGot = false, relayed = false;
+      var seen = function (e) { if (e && e.isTrusted) parentGot = true; };
+      window.addEventListener('afterprint', seen);
+      var relay = function () {                                         // the page waits for 'afterprint' (queue, close the preview): tell it, once
+        if (relayed) return; relayed = true; window.removeEventListener('afterprint', seen);
+        if (!parentGot) { try { window.dispatchEvent(new Event('afterprint')); } catch (e) { /* none */ } }
+      };
+      try { w.addEventListener('afterprint', relay); } catch (e) { /* the timer below */ }
+      setTimeout(relay, 20000);
+      frameTimer = setTimeout(dropFrame, 10 * 60000);                   // kept: the dialog can redraw its preview from it until it is closed
+      var t0 = Date.now();
+      (function go() {
+        var pend = 0; try { Array.prototype.forEach.call(d.images, function (im) { if (!im.complete) pend++; }); } catch (e) { /* none */ }
+        if (pend && Date.now() - t0 < 2500) return setTimeout(go, 100);
+        try { PrintIsolate.printWin(w); } catch (e) { try { nativePrint.call(window); } catch (e2) { /* none */ } }
+      })();
+    } catch (e) {
+      try { return nativePrint.call(window); } catch (e2) { /* none */ }
+    }
+  }
+  var PrintIsolate = { printWin: function (w) { w.focus(); w.print(); }, target: target, build: build, frame: function () { return frame; }, drop: dropFrame, run: run };
+  window.PrintIsolate = PrintIsolate;
+  window.print = function () { return run(); };
+})();
+</script>
+<!-- /PRINT ISOLATE -->

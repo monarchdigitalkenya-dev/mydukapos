@@ -20,12 +20,14 @@
 import { loadGatewayConfig } from './_gateway-config.js';
 import { pesapalStatus, applyPesapalStatus, indexPesapalReceipt } from './_pesapal.js';
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { staffGuard } from './_staff-auth.js';
 import { recordGatewayTxn } from './_ledger.js';
 import { noteStkPayment, stkPayerName } from './_till-store.js';
 
+const LAST_QUERY = globalThis.__stkLastQuery || (globalThis.__stkLastQuery = new Map());   // zip 381: provider asked at most every 8 s per prompt
 const FALLBACK_QUERY_AFTER_MS = 15000; // only bother querying the gateway directly after this long
 
 // zip 247: no more `Access-Control-Allow-Origin: *` — only this deployment, the root domain and its subdomains (and localhost) are handed the answer
@@ -62,13 +64,21 @@ function darajaTimestamp(now = Date.now()) {
   return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
 }
 
+// zip 381: the same 50-minute token reuse as mpesa-stkpush.js (shared cache), so status checks do not get the shop's prompts throttled
+const DARAJA_TOKENS = globalThis.__darajaTokens || (globalThis.__darajaTokens = new Map());
+const darajaTokenKey = (cfg) => `${(cfg.mpesaEnv || 'sandbox').toLowerCase()}|${cfg.mpesaConsumerKey}|${cfg.mpesaConsumerSecret}`;
 async function darajaAccessToken(cfg) {
+  const ck = darajaTokenKey(cfg), hit = DARAJA_TOKENS.get(ck);
+  if (hit && hit.until > Date.now()) return hit.token;
   const auth = btoa(`${cfg.mpesaConsumerKey}:${cfg.mpesaConsumerSecret}`);
   const res = await fetch(`${darajaBaseUrl(cfg)}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${auth}` },
   });
   if (!res.ok) throw new Error('OAuth failed');
   const data = await res.json();
+  if (!data || !data.access_token) throw new Error('OAuth failed');
+  const life = Math.max(60, Math.min(3000, (Number(data.expires_in) || 3599) - 600)) * 1000;
+  DARAJA_TOKENS.set(ck, { token: data.access_token, until: Date.now() + life });
   return data.access_token;
 }
 
@@ -94,8 +104,9 @@ async function queryDarajaStatus(checkoutRequestId, cfg) {
       CheckoutRequestID: checkoutRequestId,
     }),
   });
+  if (res.status === 401) DARAJA_TOKENS.delete(darajaTokenKey(cfg));      // zip 381: a token Safaricom no longer accepts is not reused
   if (!res.ok) return null;
-  return res.json();
+  return res.json().catch(() => null);
 }
 
 export async function refreshFromDaraja(record, checkoutRequestId, cfg) {      // exported (zip 263): get-my-link.js uses the same safety-net check
@@ -149,12 +160,20 @@ export async function refreshFromPaywaveExpress(record, checkoutRequestId, cfg) 
   const failed = status.includes('fail') || status.includes('cancel');
 
   if (succeeded) {
+    // zip 273: the amount must be the prompt's amount; otherwise it is not credited and is flagged (see paywave-webhook.js)
+    const reported = data.TransactionAmount === undefined || data.TransactionAmount === null || data.TransactionAmount === '' ? NaN : Number(String(data.TransactionAmount).replace(/[^0-9.\-]/g, ''));   // zip 378: "22,000.00" is 22000, not NaN
+    const expected = Number(record.amount);
+    if (Number.isFinite(reported) && Number.isFinite(expected) && expected > 0 && Math.abs(reported - expected) > 0.5) {
+      return { ...record, status: 'pending', phase: 'needs_review', needsReview: 'amount_mismatch', reportedAmount: reported, reviewAt: Date.now() };
+    }
     return {
       ...record,
+      phase: 'confirmed',
+      ...(data.TransactionReceipt ? {} : { needsReview: 'no_receipt' }),
       status: 'success',
       resultDesc: data.ResultDesc || 'Payment received.',
       receiptNumber: data.TransactionReceipt,
-      amount: data.TransactionAmount ? Number(data.TransactionAmount) : record.amount,
+      amount: Number.isFinite(reported) && reported > 0 ? reported : record.amount,
       transactionDate: data.TransactionDate,
       completedAt: Date.now(),
     };
@@ -225,6 +244,8 @@ export async function onRequestGet(context) {
     return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  const rls = await checkRateLimit(env, 'stkStatus', clientId);        // zip 273: generous (one prompt polls ~40 times); stops a script hammering the provider query
+  if (!rls.ok) return rateLimitResponse('payment status checks', rls, cors);
   // zip 262: simulated demo payment (see mpesa-stkpush.js): pending for 4 seconds, then a clearly fake receipt. Nothing is read or written.
   if (license.record && license.record.sharedDemo && /^DEMO-\d+-\d+$/.test(checkoutRequestId)) {
     const [, ts, amt] = checkoutRequestId.split('-');
@@ -247,7 +268,11 @@ export async function onRequestGet(context) {
   }
 
   // Pesapal has no callback straight to the till, so its result is asked for at once (its IPN, when it arrives first, has already filled the record)
-  if (record.status === 'pending' && (Date.now() - (record.createdAt || 0) > FALLBACK_QUERY_AFTER_MS || (record.provider === 'pesapal' && Date.now() - (record.createdAt || 0) > 3000))) {
+  // zip 381: the till checks every few seconds; the PROVIDER is asked at most once every 8 seconds per prompt (it was asked on every check, and
+  // Safaricom throttles a shop that asks too often - which then also refused that shop's new prompts)
+  if (record.status === 'pending' && (Date.now() - (record.createdAt || 0) > FALLBACK_QUERY_AFTER_MS || (record.provider === 'pesapal' && Date.now() - (record.createdAt || 0) > 3000))
+      && Date.now() - (LAST_QUERY.get(kvKey) || 0) > 8000) {
+    LAST_QUERY.set(kvKey, Date.now()); if (LAST_QUERY.size > 5000) LAST_QUERY.clear();   // kept in memory: never re-written over a result the callback just saved
     try {
       const cfg = await loadGatewayConfig(env, clientId);
       const provider = record.provider || 'daraja'; // records saved before this update default to daraja
@@ -265,7 +290,10 @@ export async function onRequestGet(context) {
           : provider === 'paywave'
             ? await refreshFromPaywaveExpress(record, checkoutRequestId, cfg)
             : await refreshFromDaraja(record, checkoutRequestId, cfg);
-      if (updated) {
+      // zip 381: the callback may have saved the real result (with the M-PESA code) while the provider was being asked - never write over it
+      let fresh = null; try { fresh = JSON.parse((await env.mydukapos_kv.get(kvKey)) || 'null'); } catch (e) { fresh = null; }
+      if (updated && fresh && fresh.status && fresh.status !== 'pending') { record = fresh; }
+      else if (updated) {
         record = updated;
         await env.mydukapos_kv.put(kvKey, JSON.stringify(record));
         if (record.status === 'success') await noteStkPayment(env, clientId, { checkoutId: checkoutRequestId, receipt: record.receiptNumber, amount: record.amount, phone: record.phone, transactionDate: record.transactionDate, provider: record.provider || 'daraja' });   // zip 264
@@ -282,6 +310,15 @@ export async function onRequestGet(context) {
   if (record.status === 'success' && (!payerName || !receiptNumber)) {
     const f = await stkPayerName(env, clientId, { code: receiptNumber, checkoutId: checkoutRequestId });
     payerName = payerName || f.name; receiptNumber = receiptNumber || f.code;
+  }
+  // zip 378: a payment confirmed by the status check (the callback never came) or whose code came from the Till confirmation was NOT indexed
+  // by its M-PESA code, so the sale that carried that code was flagged "no M-Pesa record" / "paid less" although the customer had paid.
+  // It is indexed here too (same record the callback writes), with the amount of the prompt.
+  if (record.status === 'success' && receiptNumber && /^[A-Z0-9]{8,14}$/.test(String(receiptNumber).toUpperCase())) {
+    const rk = `mpesa-receipt:${clientId}:${String(receiptNumber).toUpperCase()}`;
+    try {
+      if (!(await env.mydukapos_kv.get(rk))) await env.mydukapos_kv.put(rk, JSON.stringify({ source: 'stk', amount: Number(record.amount) || 0, phone: record.phone || '', at: Date.now(), checkoutRequestId }), { expirationTtl: 400 * 24 * 3600 });
+    } catch (e) { /* the callback, when it arrives, writes it */ }
   }
   return reply({
     status: record.status,

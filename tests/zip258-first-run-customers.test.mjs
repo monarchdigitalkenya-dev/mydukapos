@@ -114,7 +114,7 @@ test('production/index.html: the profile has no Loyalty tab because Production h
   const b = await boot('production/index.html', { storage: { pos_customers: JSON.stringify(CUSTOMERS) }, wait: 900 }); const { w } = b; quiet(w);
   w.eval("openCustomerProfileModal('c1')");
   const tabs = [...w.document.querySelectorAll('#fr-p-tabs .fr-tab')].map((t) => t.textContent);
-  assert.deepEqual(tabs, ['Overview', 'Transactions', 'Bills & balances', 'Statement']);
+  assert.deepEqual(tabs, ['Overview', 'Transactions', 'Bills & balances', 'Contracts', 'Statement']);
   b.close();
 });
 
@@ -144,7 +144,7 @@ test('index.html: the customer list searches, and the profile shows purchases, b
   assert.match(jane.textContent, /Owes KES 400\.00/);
   jane.click();
   assert.ok(q2('#fr-profile').classList.contains('fr-open'));
-  const tabs = [...d.querySelectorAll('#fr-p-tabs .fr-tab')].map((t) => t.textContent); assert.deepEqual(tabs, ['Overview', 'Transactions', 'Bills & balances', 'Statement', 'Loyalty']);
+  const tabs = [...d.querySelectorAll('#fr-p-tabs .fr-tab')].map((t) => t.textContent); assert.deepEqual(tabs, ['Overview', 'Transactions', 'Bills & balances', 'Contracts', 'Statement', 'Loyalty']);
   assert.match(q2('#fr-p-body').textContent, /KES 600\.00/, 'lifetime spend = 200 + 300 + 100, voided excluded');
   d.getElementById('fr-tab-tx').click();
   const body = q2('#fr-p-body').textContent;

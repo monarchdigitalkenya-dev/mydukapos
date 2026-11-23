@@ -1,0 +1,101 @@
+<!-- LAYOUT FIT (zip 336) ----------------------------------------------------------------------------------------------------------
+     Roomier, tidier tabs in every module. Nothing is removed and nothing changes what a button does - only where things sit and how much room
+     they get:
+       - Restock: the delivery form comes first; the supplier list (set up once) moves below it. The delivery rows get real room (the item name
+         and the numbers no longer squeeze into a few letters) and scroll sideways inside their own box on a small screen.
+       - Inventory (Hospital / Pharmacy): the Expiry horizon is a one-line summary ("12 batches expire within 90 days, 2 expired") that opens on a
+         tap, so the item list is no longer pushed off the screen.
+       - Summary figures (Profits & Expenses, Stock value, Daily sales ...): an even grid, two per row on a phone instead of one narrow card per row.
+       - Long help texts above a tab are smaller; pop-ups never run past the screen.
+       - COMPLETE SALE shows "Completing…" and cannot be pressed again while a sale is being saved (the app already refused a second sale; now the
+         cashier can see it).
+     Classes / ids: lf-*. -->
+<style id="lf-css">
+html body .lf-cards { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)) !important; gap: 10px !important; }
+html body .lf-cards > .summary-card { margin: 0 !important; min-width: 0 !important; width: auto !important; }
+@media (max-width: 600px) { html body .lf-cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; } html body .lf-cards > .summary-card .value { font-size: 17px !important; word-break: break-word; } }
+html body .lf-hint { font-size: 13px !important; line-height: 1.45 !important; color: var(--text-muted, #6b7780) !important; }
+html body #restock-tab .lf-rows-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (min-width: 701px) {
+  html body #restock-tab #restock-rows-table { min-width: 1120px; table-layout: auto; }
+  html body #restock-tab #restock-rows-table th:nth-child(1), html body #restock-tab #restock-rows-table td:nth-child(1) { min-width: 120px; }
+  html body #restock-tab #restock-rows-table th:nth-child(2), html body #restock-tab #restock-rows-table td:nth-child(2) { min-width: 230px; }
+  html body #restock-tab #restock-rows-table td input, html body #restock-tab #restock-rows-table td select { min-width: 84px; }
+}
+html body details.lf-fold { border: 1px solid var(--border-color, #e1e6ea); border-radius: 12px; padding: 8px 12px; margin: 0 0 12px; background: var(--bg-surface, #fff); }
+html body details.lf-fold > summary { cursor: pointer; font-weight: 800; font-size: 14.5px; padding: 4px 0; }
+html body details.lf-fold > summary .lf-sub { font-weight: 600; font-size: 12.5px; color: var(--text-muted, #6b7780); margin-left: 6px; }
+html body details.lf-fold.lf-warn { border-color: #f0c98a; background: #fffaf0; }
+html body .popup-modal-box { max-height: calc(92vh / var(--pos-z, 1)); overflow: auto; }
+html body #main-checkout-btn[data-lf-busy] { opacity: .7; pointer-events: none; }
+</style>
+<script id="lf-js">
+(function () {
+    'use strict';
+    if (window.__lf) return; window.__lf = true;
+    function $(id) { return document.getElementById(id); }
+    function panelByHeading(tab, re) {
+        if (!tab) return null;
+        var hs = tab.querySelectorAll('h3'); for (var i = 0; i < hs.length; i++) { if (re.test(hs[i].textContent || '')) return hs[i].closest ? (hs[i].closest('.panel') || hs[i].parentNode) : hs[i].parentNode; }
+        return null;
+    }
+    function restock() {
+        var tab = $('restock-tab'); if (!tab || tab.__lf) return;
+        var sup = panelByHeading(tab, /Suppliers/), rs = panelByHeading(tab, /Restock/);
+        if (sup && rs && sup !== rs && sup.parentNode === rs.parentNode && (sup.compareDocumentPosition(rs) & Node.DOCUMENT_POSITION_FOLLOWING)) rs.parentNode.insertBefore(sup, rs.nextSibling);
+        var t = $('restock-rows-table');
+        if (t && t.parentNode && !(t.parentNode.classList && (t.parentNode.classList.contains('table-scroll') || t.parentNode.classList.contains('lf-rows-scroll')))) {
+            var w = document.createElement('div'); w.className = 'lf-rows-scroll'; t.parentNode.insertBefore(w, t); w.appendChild(t);
+        }
+        tab.__lf = true;
+    }
+    function expiryFold() {
+        var tab = $('inventory-list-tab'); if (!tab) return;
+        var p = panelByHeading(tab, /Expiry Horizon/i); if (!p || p.__lf) return;
+        var d = document.createElement('details'); d.className = 'lf-fold';
+        var s = document.createElement('summary'); s.innerHTML = '⏳ Expiry horizon <span class="lf-sub"></span>';
+        d.appendChild(s);
+        p.parentNode.insertBefore(d, p); d.appendChild(p);
+        p.__lf = true; d.__lfPanel = p;
+    }
+    function expiryCount() {
+        var d = document.querySelector('details.lf-fold'); if (!d || !d.__lfPanel) return;
+        var rows = d.__lfPanel.querySelectorAll('tbody tr'), exp = 0, soon = 0;
+        Array.prototype.forEach.call(rows, function (r) { var t = r.textContent || ''; if (/expired/i.test(t)) exp++; else if (/days/i.test(t)) soon++; });
+        var sub = d.querySelector('.lf-sub'); if (!sub) return;
+        var txt = rows.length && !(rows.length === 1 && rows[0].querySelector('.empty-state')) ? (soon + exp) + ' expiring within 90 days' + (exp ? ' · ' + exp + ' expired' : '') + ' - tap to see' : 'nothing expiring soon';
+        if (sub.textContent !== txt) sub.textContent = txt;
+        d.classList.toggle('lf-warn', exp > 0);
+    }
+    function cards() {
+        Array.prototype.forEach.call(document.querySelectorAll('.summary-card'), function (c) { var p = c.parentNode; if (p && !p.classList.contains('lf-cards') && p.querySelectorAll(':scope > .summary-card').length >= 2) p.classList.add('lf-cards'); });
+        Array.prototype.forEach.call(document.querySelectorAll('.tab-content > .panel > p:first-of-type'), function (el) { if (!el.classList.contains('lf-hint') && (el.textContent || '').length > 180) el.classList.add('lf-hint'); });
+    }
+    // COMPLETE SALE: visibly busy while the sale is being saved (the app already refuses a second one)
+    function checkoutBusy() {
+        if (typeof window.checkoutCart !== 'function' || window.checkoutCart.__lf) return;
+        var orig = window.checkoutCart;
+        var f = function () {
+            var b = $('main-checkout-btn'), label = b ? b.innerHTML : null, already = !!window.__checkoutBusy || !!(b && b.hasAttribute('data-lf-busy'));   // a tap already shows it (see the click listener below)
+            if (b && !already) { b.setAttribute('data-lf-busy', '1'); b.setAttribute('aria-busy', 'true'); b.innerHTML = '⏳ Completing…'; }
+            var done = function () { if (b && !already) { b.removeAttribute('data-lf-busy'); b.removeAttribute('aria-busy'); if (b.innerHTML === '⏳ Completing…') b.innerHTML = label; } };
+            var r;
+            try { r = orig.apply(this, arguments); } catch (e) { done(); throw e; }
+            if (r && typeof r.then === 'function') return r.then(function (v) { done(); return v; }, function (e) { done(); throw e; });
+            done(); return r;
+        };
+        f.__lf = true; window.checkoutCart = f;
+    }
+    // a tap on the button itself shows it at once, even when another layer wraps checkoutCart and waits before calling it
+    document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('#main-checkout-btn') : null; if (!b || b.hasAttribute('data-lf-busy')) return;
+        var label = b.innerHTML; b.setAttribute('data-lf-busy', '1'); b.setAttribute('aria-busy', 'true'); b.innerHTML = '⏳ Completing…';
+        var t0 = Date.now();
+        var iv = setInterval(function () { if ((window.__checkoutBusy && Date.now() - t0 < 60000) || Date.now() - t0 < 350) return; clearInterval(iv); b.removeAttribute('data-lf-busy'); b.removeAttribute('aria-busy'); if (b.innerHTML === '⏳ Completing…') b.innerHTML = label; }, 120);
+    }, true);
+    function run() { try { restock(); expiryFold(); expiryCount(); cards(); checkoutBusy(); } catch (e) { /* next time */ } }
+    run();
+    document.addEventListener('DOMContentLoaded', run);
+    setInterval(run, 1500);
+})();
+</script>

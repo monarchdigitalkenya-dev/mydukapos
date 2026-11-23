@@ -1,0 +1,103 @@
+<!-- LOGIN FIX (zip 346) ------------------------------------------------------------------------------------------------------------
+     "I reset the password in the Owner Console and it still says Incorrect password."
+     The password is checked against the copy of the hash stored ON THE DEVICE. A reset is written on the server and only reaches a device when
+     it syncs. These cases can end in "Incorrect password" with the right new password typed:
+       1. The device had not synced yet (the app was just opened, or sat in the background: a hidden app only syncs every 5 minutes), so the old
+          hash was still on the device.
+       2. The temporary password was pasted from WhatsApp / SMS / an email with a space or a line break at the end.
+       3. The device's own sync was stuck (unsent work it could not send), and a stuck device skips the pull that carries the reset.
+     What this block does (nothing about how passwords are stored changes):
+       - Before the login / management-password check runs, if the typed password does not match: try it without surrounding spaces, then fetch
+         the server's own copy of the password and try again (this works even when the device's normal sync is stuck). If it matches, it is
+         accepted; if not, the normal "Incorrect password" shows.
+       - The password boxes tell phone keyboards not to capitalise or auto-correct.
+     Ids: none. Pure helpers are in window.__loginFix. -->
+<script id="lfx-js">
+(function () {
+    'use strict';
+    if (window.__loginFix) return;
+    var W = window;
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    function ls(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function sha(v) { try { return Promise.resolve(hashPassword(v)); } catch (e) { return Promise.resolve(''); } }
+    function matches(v, stored) { return sha(v).then(function (h) { return h ? hashMatches(h, stored) : false; }).catch(function () { return false; }); }
+    // what was typed, then without spaces / line breaks / invisible characters around it
+    function candidates(raw) {
+        var s = String(raw), out = [s], t = s.trim(), c = s.replace(/[​-‍﻿]/g, '').trim();
+        if (t !== s) out.push(t);
+        if (c !== t && c !== s) out.push(c);
+        return out;
+    }
+    function firstMatch(cands, stored) {
+        if (!stored) return Promise.resolve(null);
+        return cands.reduce(function (p, v) { return p.then(function (hit) { return hit !== null ? hit : matches(v, stored).then(function (ok) { return ok ? v : null; }); }); }, Promise.resolve(null));
+    }
+    // the server's own copy of the two password hashes, read straight from the server (never applied to the shop's data)
+    function serverHashes(ms) {
+        if (navigator.onLine === false) return Promise.resolve(null);
+        var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        var url = '/api/pos-sync'; try { if (typeof SYNC_URL === 'string') url = SYNC_URL; } catch (e) { /* default */ }
+        try { if (typeof apiUrl === 'function') url = apiUrl(url); } catch (e2) { /* default */ }
+        var get = fetch(url, { method: 'GET', signal: ctl ? ctl.signal : undefined })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) { return d && typeof d === 'object' ? { pw: typeof d.pwHash === 'string' ? d.pwHash : '', adm: typeof d.adminPwHash === 'string' ? d.adminPwHash : '' } : null; })
+            .catch(function () { return null; });
+        return Promise.race([get, sleep(ms || 8000).then(function () { if (ctl) { try { ctl.abort(); } catch (e) { /* done */ } } return null; })]);
+    }
+    // `kind` is 'pw' (login) or 'adm' (management). keys = where this app keeps that hash on the device.
+    // -> the typed form that is correct, or null.  A password that matches only the server's copy is saved on the device so the normal check passes.
+    function resolve(value, keys, kind) {
+        var cands = candidates(value);
+        var local = keys.map(ls).filter(Boolean);
+        W.__lfxReach = true;
+        return local.reduce(function (p, st) { return p.then(function (hit) { return hit !== null ? hit : firstMatch(cands, st); }); }, Promise.resolve(null)).then(function (hit) {
+            if (hit !== null) return hit;
+            return serverHashes(8000).then(function (sv) {
+                W.__lfxReach = !!sv;
+                var st = sv && sv[kind]; if (!st) return null;
+                return firstMatch(cands, st).then(function (h2) {
+                    if (h2 === null) return null;
+                    keys.forEach(function (k) { if (ls(k) !== null || k === keys[0]) { try { if (typeof safeSetItem === 'function') safeSetItem(k, st); else localStorage.setItem(k, st); } catch (e) { /* the normal check shows its own message */ } } });
+                    return h2;
+                });
+            });
+        });
+    }
+    function prep(inputId, keys, kind) {
+        var inp = document.getElementById(inputId); if (!inp || !inp.value) return Promise.resolve();
+        var raw = inp.value;
+        return resolve(raw, keys, kind).then(function (hit) { if (hit !== null && hit !== raw) inp.value = hit; }).catch(function () { /* the normal check runs */ });
+    }
+    // a refusal that says WHY: the phone could not reach the server (it only knows the password it already has), or the server really has a different one
+    function explain(errId) {
+        try {
+            var el = document.getElementById(errId); if (!el || !/incorrect/i.test(el.textContent || '')) return;
+            var base = String(el.textContent).replace(/\s*(No internet|The server)[\s\S]*$/, '');
+            if (navigator.onLine === false || W.__lfxReach === false) el.textContent = base + ' No internet: this phone can only check the password it already has. If the owner just reset it, connect to the internet and try again.';
+            else el.textContent = base + ' The server has a different password. If the owner reset it, ask them to send the new one, or to reset it again.';
+        } catch (e) { /* the normal message stays */ }
+    }
+    function wrap(name, inputId, keys, kind, errId) {
+        var orig = W[name]; if (typeof orig !== 'function' || orig.__lfx) return;
+        var w = function () {
+            var self = this, args = arguments;
+            return prep(inputId, keys, kind).then(function () { return orig.apply(self, args); }).then(function (out) { explain(errId); return out; });
+        };
+        w.__lfx = true; W[name] = w;
+        try { Object.keys(orig).forEach(function (k) { w[k] = orig[k]; }); } catch (e) { /* flags only */ }
+    }
+    function install() {
+        var L = ['pos_pw_hash', 'aqua_pw_hash'], A = ['pos_admin_pw_hash', 'aqua_admin_pw_hash'];
+        wrap('loginSubmit', 'login-password-input', L, 'pw', 'login-error');
+        wrap('submitAdminPassword', 'admin-pw-input', A, 'adm', 'admin-pw-error');
+        ['login-password-input', 'admin-pw-input'].forEach(function (id) {
+            var el = document.getElementById(id); if (!el) return;
+            el.setAttribute('autocapitalize', 'off'); el.setAttribute('autocorrect', 'off'); el.setAttribute('spellcheck', 'false');
+        });
+    }
+    // a slow phone or computer may draw the login screen later: try again a few times (each run only fills in what is missing)
+    function boot() { install(); [400, 1500, 4000, 10000].forEach(function (ms) { setTimeout(install, ms); }); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); }); else setTimeout(boot, 0);
+    W.__loginFix = { candidates: candidates, resolve: resolve, prep: prep, install: install, serverHashes: serverHashes };
+})();
+</script>

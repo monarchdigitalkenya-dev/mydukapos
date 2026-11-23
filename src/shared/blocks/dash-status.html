@@ -1,0 +1,62 @@
+<!-- DASH STATUS (zip 304) -----------------------------------------------------------------------------------------------------------
+     One line at the top of the Dashboard (every POS app) that says, honestly, whether the figures below include everything:
+       online + nothing waiting  -> "All sales on this device are on the server"
+       sales waiting to sync     -> "N sales saved on this device, waiting to reach the server (they are already in the figures, once)"
+       offline / server down     -> "Offline: figures come from this device only"
+     plus a short "What these numbers mean" note (sales = money received, owed = open bills and debts) and a link to Tax & Returns.
+     Reads PosNet (connectivity) and the sales journal; changes nothing. Respects reduced motion. Also: a subtle fade when a page opens. Ids: dst-*. -->
+<style id="dst-css">
+#dst-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45; border: 1px solid #b7e1c4; background: #effaf2; color: #135c2c; }
+#dst-bar.warn { border-color: #f5c26b; background: #fff7e6; color: #6b4a00; }
+#dst-bar.off { border-color: #c9d2dc; background: #f2f5f8; color: #344054; }
+#dst-bar b { font-weight: 800; }
+#dst-bar .dst-sp { flex: 1 1 auto; }
+#dst-bar button { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 999px; padding: 4px 12px; font: inherit; font-weight: 700; cursor: pointer; min-height: 32px; }
+#dst-help { margin: -4px 0 12px; font-size: 12.5px; color: var(--text-muted, #667085); line-height: 1.55; }
+#dst-help summary { cursor: pointer; font-weight: 700; color: var(--dark, #2c3e50); }
+@media (prefers-reduced-motion: no-preference) {
+  .tab-content.active { animation: dstFade .16s ease-out; }
+  @keyframes dstFade { from { opacity: .4; } to { opacity: 1; } }
+}
+</style>
+<script id="dst-js">
+(function () {
+  'use strict';
+  if (window.__dstInit) return; window.__dstInit = true;
+  function $(id) { return document.getElementById(id); }
+  function pending() { try { return typeof window.salesJournalPendingCount === 'function' ? (window.salesJournalPendingCount('salesLog') || 0) : 0; } catch (e) { return 0; } }
+  function state() { try { return window.PosNet ? window.PosNet.state : 'unknown'; } catch (e) { return 'unknown'; } }
+  function draw() {
+    var tab = $('dashboard-tab'); if (!tab) return;
+    var host = tab.querySelector('.panel') || tab;
+    var bar = $('dst-bar');
+    if (!bar) {
+      bar = document.createElement('div'); bar.id = 'dst-bar'; bar.setAttribute('role', 'status');
+      var help = document.createElement('details'); help.id = 'dst-help';
+      help.innerHTML = '<summary>What these numbers mean</summary><div style="margin-top:6px"><b>Sales</b> = money received: paid sales plus payments made on credit bills, VAT included, voided sales left out (the same figure as Daily Sales and Reports). <b>Owed to you</b> = what is still unpaid on open bills and debts; it is not in Sales until it is paid. <b>Gross profit</b> = sales minus the buying price of what was sold. <b>Expenses</b> are the costs you recorded. For VAT figures see Reports → Tax &amp; Returns.</div>';
+      var first = host.firstElementChild && host.firstElementChild.nextElementSibling ? host.firstElementChild.nextElementSibling : null;
+      host.insertBefore(bar, first); host.insertBefore(help, bar.nextSibling);
+      bar.addEventListener('click', function (e) {
+        var b = e.target.closest && e.target.closest('button'); if (!b) return;
+        if (b.getAttribute('data-dst') === 'retry') { try { if (window.PosNet) window.PosNet.retryNow(); if (typeof queuePush === 'function') queuePush(); } catch (x) { /* next tick */ } setTimeout(draw, 1500); }
+        else if (b.getAttribute('data-dst') === 'tax') { var t = document.querySelector('.tab-link[data-tab="tax-tab"]'); if (t) t.click(); }
+      });
+    }
+    var n = pending(), st = state(), cls = '', msg;
+    if (st === 'offline' || st === 'backend_unavailable' || st === 'security_check' || st === 'config_error' || st === 'auth_required') { cls = 'off'; msg = '📴 <b>Offline.</b> Figures come from this device only. ' + (n ? n + ' sale' + (n === 1 ? ' is' : 's are') + ' saved here and will be sent when the connection is back (each counted once).' : 'Sales you make now are saved here and sent later.'); }
+    else if (n > 0) { cls = 'warn'; msg = '🔄 <b>' + n + ' sale' + (n === 1 ? '' : 's') + ' saved on this device, waiting to reach the server.</b> They are already in the figures below, once.'; }
+    else msg = '✅ <b>Up to date.</b> All sales made on this device are on the server.';
+    var tax = document.querySelector('.tab-link[data-tab="tax-tab"]');
+    var html = '<span>' + msg + '</span><span class="dst-sp"></span>' + (n || cls === 'off' ? '<button type="button" data-dst="retry">Try to sync now</button>' : '') + (tax && tax.style.display !== 'none' ? '<button type="button" data-dst="tax">🧾 Tax &amp; Returns</button>' : '');
+    if (bar.className !== cls) bar.className = cls;
+    if (bar.innerHTML !== html) bar.innerHTML = html;
+  }
+  function boot() {
+    try { draw(); } catch (e) { /* cosmetic */ }
+    setInterval(function () { try { var t = $('dashboard-tab'); if (t && t.classList.contains('active')) draw(); } catch (e) { /* cosmetic */ } }, 3000);
+    try { if (window.PosNet && window.PosNet.subscribe) window.PosNet.subscribe(function () { try { draw(); } catch (e) { /* cosmetic */ } }); } catch (e) { /* polling covers it */ }
+  }
+  window.dashStatus = { draw: draw };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); }); else setTimeout(boot, 300);
+})();
+</script>

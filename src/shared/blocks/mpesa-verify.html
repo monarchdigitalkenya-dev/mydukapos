@@ -15,16 +15,33 @@
     // carries that receipt is verified at once instead of showing "not verified" until the background lookup answers.
     var CONF = {};
     try { CONF = JSON.parse(localStorage.getItem('pos_stk_confirmed') || '{}') || {}; } catch (e) { CONF = {}; }
-    window.mpesaNoteConfirmed = function (code, amount) {
-        code = String(code || '').trim().toUpperCase(); if (!code) return;
-        CONF[code] = { amount: Number(amount) || 0, at: Date.now() };
+    // zip 378: also the prompt's own id (checkoutId), so a confirmed STK payment is proof even when Safaricom's callback (and the M-PESA code) never
+    // arrived and the cashier typed the code from the SMS. Kept under '#<checkoutId>' when there is no code yet.
+    window.mpesaNoteConfirmed = function (code, amount, checkoutId) {
+        code = String(code || '').trim().toUpperCase();
+        checkoutId = String(checkoutId || '').trim();
+        if (!code && !checkoutId) return;
+        CONF[code || ('#' + checkoutId)] = { amount: Number(amount) || 0, at: Date.now(), checkoutId: checkoutId || undefined };
         var cut = Date.now() - 3 * 86400000; Object.keys(CONF).forEach(function (k) { if ((CONF[k].at || 0) < cut) delete CONF[k]; });
         try { localStorage.setItem('pos_stk_confirmed', JSON.stringify(CONF)); } catch (e) { /* in-memory still works */ }
         setTimeout(function () { try { window.mpesaVerifyNow(); } catch (e) { /* periodic run */ } }, 1500);
     };
+    // zip 378: whole shillings - M-Pesa cannot be asked for 2,200.40, so a prompt of 2,200 for it is not "paid less" (under one shilling short is fine)
+    function covers(paid, want) { return Number(paid) + 1 > Number(want); }
+    // the confirmed prompt (with no code of its own) that this sale was most likely paid by: same amount, within 20 minutes, not used by another sale
+    function promptFor(s) {
+        var t = Date.parse(s.timestamp) || 0, best = null;
+        Object.keys(CONF).forEach(function (k) {
+            var c = CONF[k];
+            if (k.charAt(0) !== '#' || !c || !c.checkoutId || !covers(c.amount, s.mpesaAmount) || Math.abs((c.at || 0) - t) > 20 * 60000) return;
+            if (list().some(function (o) { return o !== s && o.mpesaCheckoutId === c.checkoutId; })) return;
+            if (!best || Math.abs(c.at - t) < Math.abs(best.at - t)) best = c;
+        });
+        return best;
+    }
     function confirmedLocally(s) {
         var c = CONF[String(s.mpesaReceiptNumber || '').trim().toUpperCase()];
-        if (!c || !(c.amount + 0.5 >= Number(s.mpesaAmount))) return false;
+        if (!c || !covers(c.amount, s.mpesaAmount)) return false;
         if (list().some(function (o) { return o !== s && !o.voided && o.mpesaCheck && o.mpesaCheck.source === 'stk-confirmed' && String(o.mpesaReceiptNumber || '').toUpperCase() === String(s.mpesaReceiptNumber).toUpperCase(); })) return false;   // one STK payment covers one sale
         s.mpesaCheck = { status: 'verified', at: Date.now(), tries: 0, paid: c.amount, source: 'stk-confirmed' };
         s.updatedAt = Date.now();
@@ -34,8 +51,9 @@
     function needs(s) {
         if (!s || s.voided || !(Number(s.mpesaAmount) > 0) || !s.mpesaReceiptNumber) return false;
         var c = s.mpesaCheck;
-        if (c && FINAL[c.status]) return false;
         var t = Date.parse(s.timestamp); if (isFinite(t) && Date.now() - t > 14 * 86400000) return false;   // older sales: not re-checked
+        if (c && c.status === 'amount_mismatch' && !c.r378) return true;   // zip 378: a "paid less" from before this update is checked ONCE more with the corrected rules
+        if (c && FINAL[c.status]) return false;
         return !c || Date.now() - (c.at || 0) > Math.min(6 * 3600000, 60000 * Math.pow(2, Math.min(8, c.tries || 0)));
     }
     window.mpesaVerifyPending = function () { return list().filter(function (s) { return s && !s.voided && Number(s.mpesaAmount) > 0 && s.mpesaReceiptNumber && !(s.mpesaCheck && s.mpesaCheck.status === 'verified'); }); };
@@ -50,13 +68,15 @@
         try {
             for (var i = 0; i < todo.length; i++) {
                 var s = todo[i], res;
-                try { res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/mpesa-verify') : '/api/mpesa-verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: s.mpesaReceiptNumber, amount: Number(s.mpesaAmount) || 0, saleId: s.id }) }); } catch (e) { break; }
+                var known = CONF[String(s.mpesaReceiptNumber || '').trim().toUpperCase()], pr = (known && known.checkoutId) ? known : (s.mpesaCheckoutId ? { checkoutId: s.mpesaCheckoutId } : promptFor(s));
+                if (pr && pr.checkoutId && !s.mpesaCheckoutId) s.mpesaCheckoutId = pr.checkoutId;
+                try { res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/mpesa-verify') : '/api/mpesa-verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: s.mpesaReceiptNumber, amount: Number(s.mpesaAmount) || 0, saleId: s.id, checkoutRequestId: (pr && pr.checkoutId) || undefined }) }); } catch (e) { break; }
                 if (res.status === 404 || res.status === 405) { unsupported = true; break; }
                 if (!res.ok) continue;
                 var d = await res.json().catch(function () { return {}; });
                 if (!d.status) continue;
                 var prev = s.mpesaCheck || {};
-                s.mpesaCheck = { status: d.status, at: Date.now(), tries: (prev.tries || 0) + 1, paid: d.paid != null ? d.paid : d.amount, source: d.source || '', usedBy: d.usedBy || undefined };
+                s.mpesaCheck = { status: d.status, at: Date.now(), tries: (prev.tries || 0) + 1, paid: d.paid != null ? d.paid : d.amount, source: d.source || '', usedBy: d.usedBy || undefined, r378: 1 };
                 s.updatedAt = Date.now();
                 n++;
             }
@@ -77,12 +97,14 @@
         if (!tab) return;
         var el = document.getElementById('mpesa-verify-banner');
         if (!el) { el = document.createElement('div'); el.id = 'mpesa-verify-banner'; el.style.cssText = 'margin:0 0 10px; padding:8px 10px; border-radius:8px; background:#fef5e7; border:1px solid #f0c36d; font-size:13px; display:none;'; tab.insertBefore(el, tab.firstChild); }
-        var bad = window.mpesaVerifyPending().filter(function (s) { var t = Date.parse(s.timestamp); return !isFinite(t) || Date.now() - t < 14 * 86400000; });
+        // zip 378: only REAL problems are shown (paid less, code already used). "No record found yet" / "checking" is not an error - it only means the
+        // Till does not send confirmations here - and it caused panic for payments that were fine.
+        var bad = window.mpesaVerifyPending().filter(function (s) { var t = Date.parse(s.timestamp); return (!isFinite(t) || Date.now() - t < 14 * 86400000) && s.mpesaCheck && (s.mpesaCheck.status === 'amount_mismatch' || s.mpesaCheck.status === 'duplicate'); });
         if (!bad.length) { el.style.display = 'none'; return; }
         el.style.display = '';
         el.textContent = '';
-        var h = document.createElement('strong'); h.textContent = '⚠ ' + bad.length + ' M-Pesa payment' + (bad.length > 1 ? 's' : '') + ' not verified: '; el.appendChild(h);
-        el.appendChild(document.createTextNode(bad.slice(0, 8).map(function (s) { return (s.refNumber || s.id) + ' ' + s.mpesaReceiptNumber + ' — ' + ((s.mpesaCheck && LABEL[s.mpesaCheck.status]) || 'checking…'); }).join(' · ') + (bad.length > 8 ? ' …' : '') + '. A typed code is only proof once M-Pesa confirms it.'));
+        var h = document.createElement('strong'); h.textContent = bad.length + ' M-Pesa payment' + (bad.length > 1 ? 's' : '') + ' to check: '; el.appendChild(h);
+        el.appendChild(document.createTextNode(bad.slice(0, 8).map(function (s) { return (s.refNumber || s.id) + ' ' + s.mpesaReceiptNumber + ' — ' + ((s.mpesaCheck && LABEL[s.mpesaCheck.status]) || 'checking…'); }).join(' · ') + (bad.length > 8 ? ' …' : '') + '.'));
     };
     setTimeout(function () { window.mpesaVerifyNow(); }, 20000);
     setInterval(function () { window.mpesaVerifyNow(); try { window.mpesaVerifyBanner(); } catch (e) { /* cosmetic */ } }, 60000);

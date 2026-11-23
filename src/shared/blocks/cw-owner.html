@@ -1,0 +1,167 @@
+<!-- CW OWNER -----------------------------------------------------------------------------------------
+     Owner Console block "cw-owner" (zip 361). Written ONLY into owner/index.html; never hand-edit it there.
+     The "🚗 Car Wash" tab: the Car Wash & Cleaning application as its own product — every Car Wash business with its status and usage,
+     GENERATE APPLICATION LINK (a new client link for product "carwash", opening /carwash/ on the business's own address), copy / open the link,
+     activate / deactivate (revoke) access, edit the business identity, and move a Services business still set to car wash over to the app.
+     Uses the console's existing endpoints (/api/owner-clients, /api/owner-lock) plus /api/owner-carwash for usage. Plain functions, ES2018 max. -->
+<style>
+#carwash-tab .cwo-wrap{max-width:1180px;margin:0 auto}
+#carwash-tab .cwo-hero{background:linear-gradient(135deg,#0b1d2e,#0e7490 70%,#22d3ee);color:#fff;border-radius:18px;padding:22px 24px;margin-bottom:16px;position:relative;overflow:hidden}
+#carwash-tab .cwo-hero::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 2px,transparent 2px 10px);pointer-events:none}
+#carwash-tab .cwo-hero h2{margin:0 0 6px;color:#fff}
+#carwash-tab .cwo-hero p{margin:0;opacity:.9;max-width:760px}
+#carwash-tab .cwo-grid{display:grid;grid-template-columns:minmax(0,380px) minmax(0,1fr);gap:16px;align-items:start}
+#carwash-tab .cwo-card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px 18px;box-shadow:0 6px 18px rgba(15,23,42,.05)}
+#carwash-tab .cwo-card h3{margin:0 0 12px;font-size:16px}
+#carwash-tab label{display:block;font-size:12.5px;font-weight:650;margin:10px 0 4px;color:#334155}
+#carwash-tab .cwo-btn{border:0;border-radius:10px;padding:9px 14px;font-weight:700;background:#0e7490;color:#fff;cursor:pointer}
+#carwash-tab .cwo-btn.sec{background:#e2e8f0;color:#0f172a}#carwash-tab .cwo-btn.bad{background:#dc2626}#carwash-tab .cwo-btn.ok{background:#16a34a}#carwash-tab .cwo-btn.sm{padding:5px 10px;font-size:12.5px}
+#carwash-tab .cwo-link{display:flex;gap:8px;align-items:center;background:#ecfeff;border:1px solid #a5f3fc;border-radius:10px;padding:10px 12px;margin-top:12px;word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+#carwash-tab table{width:100%;border-collapse:collapse}
+#carwash-tab th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;padding:8px;border-bottom:1px solid #e2e8f0;background:#f8fafc}
+#carwash-tab td{padding:9px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top;font-size:13.5px}
+#carwash-tab .cwo-pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700}
+#carwash-tab .cwo-on{background:#dcfce7;color:#166534}#carwash-tab .cwo-off{background:#fee2e2;color:#991b1b}#carwash-tab .cwo-demo{background:#fef3c7;color:#92400e}
+#carwash-tab .cwo-use{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-top:8px}
+#carwash-tab .cwo-use div{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:7px 9px;font-size:12px;color:#64748b}
+#carwash-tab .cwo-use b{display:block;font-size:16px;color:#0f172a}
+@media (max-width:900px){#carwash-tab .cwo-grid{grid-template-columns:1fr}}
+html[data-theme="dark"] #carwash-tab .cwo-card{background:#1d2a30;border-color:#334155;color:#e2e8f0}
+html[data-theme="dark"] #carwash-tab td,html[data-theme="dark"] #carwash-tab label{color:#e2e8f0}
+</style>
+<script>
+(function () {
+  if (window.__cwoInit) return; window.__cwoInit = true;
+  var ID = 'carwash-tab', BTN = 'carwash-tab-btn', ST = { apps: [], services: [], usage: {}, last: null, busy: false };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function headers() { try { return typeof ownerAuthHeaders === 'function' ? ownerAuthHeaders() : {}; } catch (e) { return {}; } }
+  function staffMode() { try { return typeof consoleStaffMode !== 'undefined' && !!consoleStaffMode; } catch (e) { return false; } }
+  function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* none */ } }
+  function day(t) { return t ? new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'; }
+  function dt(t) { return t ? new Date(t).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'; }
+  function kes(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 }); }
+  function call(url, opts) {
+    return fetch(url, Object.assign({ headers: Object.assign({ 'Content-Type': 'application/json' }, headers()) }, opts || {})).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); }, function () { return { ok: false, status: 0, j: { error: 'Could not reach the server.' } }; });
+  }
+  function ensureTab() {
+    var anchor = $('daily-sales-tab'); if (!anchor) return false;
+    if (!$(ID)) { var d = document.createElement('div'); d.id = ID; d.className = 'tab-content'; anchor.parentNode.insertBefore(d, anchor); }
+    var ref = document.querySelector('.tab-link[data-tab="trash-tab"]');
+    if (ref && !$(BTN)) {
+      var b = document.createElement('button'); b.id = BTN; b.type = 'button'; b.className = 'tab-link'; b.setAttribute('data-tab', ID); b.textContent = '🚗 Car Wash';
+      b.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')");
+      ref.parentNode.insertBefore(b, ref);
+      b.addEventListener('click', function () { setTimeout(function () { if ($(ID).classList.contains('active')) load(); }, 0); });
+    }
+    var mb = $(BTN); if (mb) { var hide = staffMode(); if ((mb.style.display === 'none') !== hide) mb.style.display = hide ? 'none' : ''; }
+    return true;
+  }
+  function shell() {
+    var t = $(ID); if (!t) return null;
+    if (!t.querySelector('.cwo-wrap')) {
+      t.innerHTML = '<div class="cwo-wrap"><div class="cwo-hero"><h2>🚗 Car Wash &amp; Cleaning — application management</h2><p>A standalone application (not part of Services): its own dashboard, customers and vehicles, jobs board, carpets &amp; cleaning, 9 + 1 loyalty, SMS, staff, billing and reports — no sales counter. Each business gets its own link and its own data.</p></div>'
+        + '<div class="cwo-grid"><div class="cwo-card"><h3>➕ Generate application link</h3>'
+        + '<label>Business name <span style="font-weight:400;color:#64748b">(becomes the web address)</span></label><input id="cwo-label" placeholder="e.g. Sparkle Car Wash">'
+        + '<label>Owner / contact name</label><input id="cwo-client" placeholder="e.g. Peter Kamau">'
+        + '<label>Phone</label><input id="cwo-phone" placeholder="07XX XXX XXX">'
+        + '<label>Email</label><input id="cwo-email" type="email">'
+        + '<label>Link type</label><select id="cwo-type"><option value="permanent">Permanent (paid)</option><option value="demo">Demo (expires)</option></select>'
+        + '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="cwo-btn" data-cwo="gen">🔗 GENERATE APPLICATION LINK</button></div>'
+        + '<div id="cwo-new"></div>'
+        + '<p style="font-size:12.5px;color:#64748b;margin:12px 0 0">The link opens the Car Wash sign-in page. The business sets its password on first open; staff then sign in with their PINs. Deactivate below to revoke access at any time.</p>'
+        + '<p style="font-size:12.5px;margin:10px 0 0"><a href="/api/shared-demos?open=carwash" target="_blank" rel="noopener">Open the public Car Wash demo ↗</a></p></div>'
+        + '<div><div class="cwo-card"><h3 style="display:flex;align-items:center;gap:8px">Car Wash businesses <span id="cwo-n" style="font-weight:500;color:#64748b"></span><span style="flex:1"></span><button type="button" class="cwo-btn sm sec" data-cwo="reload">⟳ Refresh</button></h3><div id="cwo-list">Loading…</div></div>'
+        + '<div class="cwo-card" style="margin-top:16px" id="cwo-svc-card"><h3>Services businesses still set to car wash</h3><div id="cwo-svc"></div></div></div></div></div>';
+      t.addEventListener('click', onClick);
+    }
+    return t;
+  }
+  function status(c) {
+    if (c.locked) return '<span class="cwo-pill cwo-off">Deactivated</span>';
+    if (!c.valid) return '<span class="cwo-pill cwo-off">' + esc(c.liveReason || 'Inactive') + '</span>';
+    return '<span class="cwo-pill cwo-on">Active</span>' + (c.type === 'demo' ? ' <span class="cwo-pill cwo-demo">Demo</span>' : '');
+  }
+  function usageHtml(u) {
+    if (!u) return '';
+    if (u.error) return '<div style="color:#dc2626;font-size:12.5px;margin-top:6px">' + esc(u.error) + '</div>';
+    return '<div class="cwo-use">' + [['Jobs today', u.jobsToday], ['Jobs (30 days)', u.jobs30], ['Open jobs', u.open], ['Collected (30 d)', kes(u.collected30)], ['Customers', u.customers], ['Vehicles', u.vehicles], ['Cleaning jobs', u.cleaning], ['SMS sent (30 d)', u.smsSent30], ['Staff', u.staff], ['Active devices', u.devices], ['Last activity', dt(u.lastActivity)]].map(function (x) { return '<div>' + esc(x[0]) + '<b>' + esc(x[1]) + '</b></div>'; }).join('') + '</div>'
+      + (u.migration ? '<div style="font-size:12px;color:#166534;margin-top:6px">Imported from Services: ' + esc(u.migration.jobs) + ' jobs, ' + esc(u.migration.customers) + ' customers</div>' : (u.servicesCarWashJobs ? '<div style="font-size:12px;color:#92400e;margin-top:6px">' + esc(u.servicesCarWashJobs) + ' Services car wash jobs waiting to be imported (happens when the app is next opened)</div>' : ''));
+  }
+  function render() {
+    var list = $('cwo-list'), svc = $('cwo-svc'); if (!list) return;
+    $('cwo-n').textContent = '(' + ST.apps.length + ')';
+    list.innerHTML = ST.apps.length ? '<table><thead><tr><th>Business</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>' + ST.apps.map(function (c) {
+      return '<tr><td><b>' + esc(c.businessName || c.label) + '</b><div style="font-size:12px;color:#64748b">' + esc(c.clientName || '') + (c.phone ? ' · ' + esc(c.phone) : '') + '</div><div class="cwo-link" style="margin-top:6px;padding:6px 8px"><span style="flex:1">' + esc(c.link) + '</span></div><div id="cwo-u-' + esc(c.id) + '">' + usageHtml(ST.usage[c.id]) + '</div></td>'
+        + '<td>' + status(c) + '</td><td style="white-space:nowrap">' + day(c.createdAt) + '</td><td style="white-space:nowrap"><div style="display:flex;flex-direction:column;gap:5px">'
+        + '<button type="button" class="cwo-btn sm" data-cwo="copy" data-link="' + esc(c.link) + '">📋 Copy link</button><a class="cwo-btn sm sec" style="text-align:center;text-decoration:none" href="' + esc(c.link) + '" target="_blank" rel="noopener">↗ Open</a>'
+        + '<button type="button" class="cwo-btn sm sec" data-cwo="usage" data-id="' + esc(c.id) + '">📊 Usage</button><button type="button" class="cwo-btn sm sec" data-cwo="edit" data-id="' + esc(c.id) + '">✏️ Identity</button>'
+        + (c.locked ? '<button type="button" class="cwo-btn sm ok" data-cwo="unlock" data-id="' + esc(c.id) + '">✅ Activate</button>' : '<button type="button" class="cwo-btn sm bad" data-cwo="lock" data-id="' + esc(c.id) + '">⛔ Deactivate / revoke</button>')
+        + '</div></td></tr>';
+    }).join('') + '</tbody></table>' : '<p style="color:#64748b">No Car Wash businesses yet — generate the first link on the left.</p>';
+    if (svc) svc.innerHTML = ST.services.length ? '<p style="font-size:12.5px;color:#64748b;margin:0 0 8px">These Services links were set up as car washes. Moving one keeps its address, password, staff and every record — the Car Wash app imports the jobs, customers and payments the first time it opens.</p><table><tbody>' + ST.services.map(function (c) { return '<tr><td><b>' + esc(c.businessName || c.label) + '</b><div style="font-size:12px;color:#64748b">' + esc(c.link) + '</div></td><td>' + status(c) + '</td><td><button type="button" class="cwo-btn sm" data-cwo="move" data-id="' + esc(c.id) + '">🚗 Move to Car Wash app</button></td></tr>'; }).join('') + '</tbody></table>' : '<p style="color:#64748b;font-size:13px;margin:0">None — no Services link is set to car wash.</p>';
+  }
+  function load() {
+    if (!ensureTab() || !shell() || ST.busy) return;
+    ST.busy = true;
+    call('/api/owner-carwash').then(function (r) {
+      ST.busy = false;
+      if (!r.ok) { $('cwo-list').innerHTML = '<p style="color:#dc2626">' + esc((r.j && r.j.error) || 'Could not load.') + '</p>'; return; }
+      ST.apps = r.j.apps || []; ST.services = r.j.services || []; render();
+    });
+  }
+  function find(id) { return ST.apps.concat(ST.services).filter(function (c) { return c.id === id; })[0] || null; }
+  function copy(text) {
+    function ok() { toast('Link copied.'); }
+    try { navigator.clipboard.writeText(text).then(ok, fallback); } catch (e) { fallback(); }
+    function fallback() { var i = document.createElement('textarea'); i.value = text; document.body.appendChild(i); i.select(); try { document.execCommand('copy'); ok(); } catch (x) { prompt('Copy this link:', text); } i.remove(); }
+  }
+  function onClick(e) {
+    var t = e.target.closest ? e.target.closest('[data-cwo]') : null; if (!t) return;
+    var a = t.getAttribute('data-cwo'), id = t.getAttribute('data-id');
+    if (a === 'reload') { load(); return; }
+    if (a === 'copy') { copy(t.getAttribute('data-link')); return; }
+    if (a === 'gen') {
+      var label = ($('cwo-label').value || '').trim();
+      if (!label) { toast('Type the business name first.', true); return; }
+      t.disabled = true;
+      call('/api/owner-clients', { method: 'POST', body: JSON.stringify({ type: $('cwo-type').value, label: label, product: 'carwash', clientName: ($('cwo-client').value || '').trim(), phone: ($('cwo-phone').value || '').trim(), email: ($('cwo-email').value || '').trim() }) }).then(function (r) {
+        t.disabled = false;
+        if (!r.ok || !r.j.link) { toast((r.j && r.j.error) || 'Could not generate the link.', true); return; }
+        $('cwo-new').innerHTML = '<div class="cwo-link"><span style="flex:1">' + esc(r.j.link) + '</span><button type="button" class="cwo-btn sm" data-cwo="copy" data-link="' + esc(r.j.link) + '">📋 Copy link</button><a class="cwo-btn sm sec" href="' + esc(r.j.link) + '" target="_blank" rel="noopener">↗ Open</a></div>';
+        ['cwo-label', 'cwo-client', 'cwo-phone', 'cwo-email'].forEach(function (k) { $(k).value = ''; });
+        toast('✅ Car Wash link generated and saved.');
+        load();
+      });
+      return;
+    }
+    if (a === 'usage') {
+      var box = $('cwo-u-' + id); if (box) box.innerHTML = '<div style="font-size:12.5px;color:#64748b;margin-top:6px">Reading…</div>';
+      call('/api/owner-carwash?c=' + encodeURIComponent(id)).then(function (r) { ST.usage[id] = r.ok ? r.j.usage : { error: (r.j && r.j.error) || 'Could not read usage.' }; var b = $('cwo-u-' + id); if (b) b.innerHTML = usageHtml(ST.usage[id]); });
+      return;
+    }
+    if (a === 'lock' || a === 'unlock') {
+      var c = find(id); if (!c) return;
+      if (a === 'lock' && !confirm('Deactivate ' + (c.businessName || c.label) + '? Nobody can open the Car Wash app on this link until you activate it again. Nothing is deleted.')) return;
+      call('/api/owner-lock', { method: 'POST', body: JSON.stringify({ action: a, c: id }) }).then(function (r) { toast(r.ok ? (a === 'lock' ? 'Access revoked.' : 'Activated.') : ((r.j && r.j.error) || 'Failed.'), !r.ok); load(); });
+      return;
+    }
+    if (a === 'edit') {
+      var x = find(id); if (!x) return;
+      var nm = prompt('Business name shown in the console (the web address stays the same):', x.label || ''); if (nm === null) return;
+      var cn = prompt('Owner / contact name:', x.clientName || ''); if (cn === null) return;
+      var ph = prompt('Phone:', x.phone || ''); if (ph === null) return;
+      call('/api/owner-lock', { method: 'POST', body: JSON.stringify({ action: 'edit', c: id, label: nm.trim() || x.label, clientName: cn.trim(), phone: ph.trim(), product: 'carwash' }) }).then(function (r) { toast(r.ok ? 'Saved.' : ((r.j && r.j.error) || 'Failed.'), !r.ok); load(); });
+      return;
+    }
+    if (a === 'move') {
+      var s = find(id); if (!s) return;
+      if (!confirm('Move ' + (s.businessName || s.label) + ' to the Car Wash app?\n\nThe same link will open the Car Wash & Cleaning app. Its password, staff and every car wash record stay; the jobs, customers and payments are imported the first time it opens.')) return;
+      call('/api/owner-lock', { method: 'POST', body: JSON.stringify({ action: 'edit', c: id, label: s.label, product: 'carwash' }) }).then(function (r) { toast(r.ok ? 'Moved — the link now opens the Car Wash app.' : ((r.j && r.j.error) || 'Failed.'), !r.ok); load(); });
+    }
+  }
+  function boot() { ensureTab(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+  setInterval(ensureTab, 3000);
+})();
+</script>

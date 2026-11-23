@@ -72,6 +72,16 @@ export async function onRequestPost(context) {
     || statusText.includes('success') || statusText.includes('complet')
     || data.success === true || String(data.success).toLowerCase() === 'true';
 
+  // zip 273: an M-Pesa prompt pays exactly the amount asked, so a "success" for a DIFFERENT amount than this prompt's is not credited: the payment stays
+  // pending and is flagged for the owner to look at. A success with no receipt number is accepted (as before) but flagged the same way.
+  const reported = data.TransactionAmount === undefined || data.TransactionAmount === null || data.TransactionAmount === '' ? NaN : Number(String(data.TransactionAmount).replace(/[^0-9.\-]/g, ''));   // zip 378: "22,000.00" is 22000, not NaN
+  const expected = Number(existing.amount);
+  if (succeeded && Number.isFinite(reported) && Number.isFinite(expected) && expected > 0 && Math.abs(reported - expected) > 0.5) {
+    await env.mydukapos_kv.put(kvKey, JSON.stringify({ ...existing, provider: 'paywave', status: 'pending', phase: 'needs_review', needsReview: 'amount_mismatch', reportedAmount: reported, reviewAt: Date.now() }));
+    return ack();
+  }
+  const noReceipt = succeeded && !(data.TransactionReceipt || data.TransactionID);
+
   await env.mydukapos_kv.put(kvKey, JSON.stringify({
     ...existing,
     provider: 'paywave',
@@ -82,9 +92,14 @@ export async function onRequestPost(context) {
     amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount,
     transactionDate: data.TransactionDate,
     completedAt: succeeded ? Date.now() : existing.completedAt,
+    phase: succeeded ? 'confirmed' : 'failed',
+    ...(noReceipt ? { needsReview: 'no_receipt' } : {}),
   }));
   await recordGatewayTxn(env, clientId, { provider: 'paywave', txnId: checkoutId, code: succeeded ? (data.TransactionReceipt || data.TransactionID) : null,
     amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount, phone: data.Msisdn || existing.phone, status: succeeded ? 'RECEIVED' : 'FAILED' });
+  // zip 381: indexed by its M-PESA code, like Daraja's callback, so the sale carrying that code is verified (it showed "no M-Pesa record")
+  const pwCode = String((succeeded && (data.TransactionReceipt || data.TransactionID)) || '').toUpperCase();
+  if (/^[A-Z0-9]{8,14}$/.test(pwCode)) { try { await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${pwCode}`, JSON.stringify({ source: 'stk', amount: Number.isFinite(reported) && reported > 0 ? reported : (Number(existing.amount) || 0), phone: data.Msisdn || existing.phone || '', at: Date.now(), checkoutRequestId: checkoutId }), { expirationTtl: 400 * 24 * 3600 }); } catch (e) { /* the status check indexes it too */ } }
   if (succeeded) await noteStkPayment(env, clientId, { checkoutId, receipt: data.TransactionReceipt || data.TransactionID, amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount, phone: data.Msisdn || existing.phone, transactionDate: data.TransactionDate, provider: 'paywave' });   // zip 264
 
   return ack();

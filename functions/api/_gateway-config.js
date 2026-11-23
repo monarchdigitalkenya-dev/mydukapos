@@ -79,13 +79,16 @@ export async function loadGatewayConfig(env, clientId) {
     const own = Object.keys(fields).some((k) => stored[k]);
     Object.entries(fields).forEach(([k, envName]) => {
       creds[k] = own ? (stored[k] || '') : (allowEnv ? (env[envName] || '') : '');
+      // zip 378: a key / secret / shortcode / pass key pasted with a space or line break made Safaricom refuse every prompt ("Invalid Access Token",
+      // "Wrong credentials"). Every credential is used exactly as typed, minus the invisible spaces around it.
+      if (typeof creds[k] === 'string') creds[k] = creds[k].replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
     });
   }
   return {
     ...creds,
     secretsUnreadable: !full.ok,
-    mpesaEnv: stored.mpesaEnv || env.MPESA_ENV || 'sandbox',
-    mpesaTransactionType: stored.mpesaTransactionType || env.MPESA_TRANSACTION_TYPE || 'CustomerPayBillOnline',
+    mpesaEnv: String(stored.mpesaEnv || env.MPESA_ENV || 'sandbox').trim().toLowerCase(),
+    mpesaTransactionType: String(stored.mpesaTransactionType || env.MPESA_TRANSACTION_TYPE || 'CustomerPayBillOnline').trim(),
     // KCB Buni — a second way to send the exact same kind of M-Pesa STK
     // Push prompt, through KCB's bank-direct API instead of Safaricom's own
     // Daraja. sharedShortCode defaults true, matching every example in
@@ -94,6 +97,9 @@ export async function loadGatewayConfig(env, clientId) {
     // rather than having their own dedicated Till.
     kcbEnv: stored.kcbEnv || env.KCB_ENV || 'sandbox',
     kcbSharedShortCode: stored.kcbSharedShortCode !== undefined ? stored.kcbSharedShortCode : true,
+    // zip 356: only if KCB gives this account different addresses (Cloudflare env vars); empty = the built-in sandbox / live addresses
+    kcbStkUrl: env.KCB_STK_URL || '',
+    kcbTokenUrl: env.KCB_TOKEN_URL || '',
     // Paywave Express — a hosted aggregator that wraps Daraja for you (see
     // paywavexpress.co.ke/documentation): an API key + the email on the account.
     // zip 210 — Pesapal (hosted checkout) and Co-operative Bank (M-Pesa STK through Co-op's own gateway)
@@ -103,6 +109,7 @@ export async function loadGatewayConfig(env, clientId) {
   };
 }
 
+const PAIRED_SETTINGS = new Set(['mpesaEnv', 'mpesaTransactionType', 'kcbEnv', 'pesapalEnv', 'coopTransactionType']);   // zip 378: wait with held keys
 const FIELD_PROVIDER = {};
 Object.entries(PROVIDER_FIELDS).forEach(([prov, f]) => Object.keys(f).forEach((k) => { FIELD_PROVIDER[k] = prov; }));
 export const providerOfField = (k) => FIELD_PROVIDER[k] || null;
@@ -112,7 +119,9 @@ export function applyPending(stored) {
   const out = { ...stored };
   const p = out._pending;
   delete out._pending;
-  if (p && p.fields && typeof p.fields === 'object') Object.keys(p.fields).forEach((k) => { if (FIELD_PROVIDER[k] && p.fields[k]) out[k] = p.fields[k]; });
+  if (p && p.fields && typeof p.fields === 'object') Object.keys(p.fields).forEach((k) => { if ((FIELD_PROVIDER[k] || PAIRED_SETTINGS.has(k)) && p.fields[k]) out[k] = p.fields[k]; });
+  // zip 378: Daraja keys that arrive this way were typed for the environment saved with them
+  if (p && p.fields && (p.fields.mpesaConsumerKey || p.fields.mpesaConsumerSecret || p.fields.mpesaShortcode || p.fields.mpesaPasskey)) out.mpesaKeysEnv = String(out.mpesaEnv || 'sandbox').toLowerCase();
   return out;
 }
 
@@ -195,6 +204,20 @@ export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
     const replacing = !!stored[key] && (prov !== 'daraja' || darajaKeysLive);   // a value is already there -> this would move the money (sandbox Daraja keys move none)
     if (replacing && cooldownMs > 0) { held[key] = v; heldProviders.add(prov); }
     else { merged[key] = v; delete held[key]; immediate.add(prov); if (prov === 'daraja' && key !== 'mpesaPartyB') darajaCoreSaved = true; }
+  });
+
+  // zip 378: the settings that BELONG to a provider's keys (sandbox/production, Paybill/Till) wait with those keys. They used to apply at once while
+  // the new keys were held for 60 minutes, so for that hour the OLD keys were sent to the NEW environment / type and every prompt failed.
+  const PAIRED = { daraja: ['mpesaEnv', 'mpesaTransactionType'], kcb: ['kcbEnv'], pesapal: ['pesapalEnv'], coop: ['coopTransactionType'] };
+  Object.keys(PAIRED).forEach((prov) => {
+    if (!heldProviders.has(prov)) return;
+    PAIRED[prov].forEach((k) => {
+      const v = updates[k];
+      if (v === undefined || v === '' || stored[k] === v) return;
+      held[k] = v;
+      if (stored[k] === undefined) delete merged[k]; else merged[k] = stored[k];
+      immediate.delete(k);
+    });
   });
 
   if (darajaCoreSaved) merged.mpesaKeysEnv = String(merged.mpesaEnv || (env && env.MPESA_ENV) || 'sandbox').toLowerCase();

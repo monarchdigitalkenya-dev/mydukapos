@@ -1,0 +1,193 @@
+<!-- HOTEL RECEPTION (zip 369) ----------------------------------------------------------------------------------------------------------
+     The front desk in ONE simple tab ("🛎️ Reception"): who is arriving today, who is in the house, who leaves today, a free-room list with a one-tap
+     Check in, and a reservation form with the arrival and departure dates. Nothing new is stored here: every button calls the hotel's own tested
+     functions (openCheckInRoomModal, hospCheckInReservation, openCheckOutRoomModal, hospReserveRoom, hospUiCancelReservation), so rooms, bills,
+     deposits and housekeeping behave exactly as they do from the Hotel and Tables & Rooms tabs. Ids: fd-*. -->
+<style id="fd-css">
+#front-desk-tab .fd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 0 0 14px; }
+#front-desk-tab .fd-card { border: 1px solid var(--border-color, #dfe6e9); border-radius: 12px; padding: 10px 12px; background: var(--bg-surface-alt, #f7f9fa); }
+#front-desk-tab .fd-card b { display: block; font-size: 24px; line-height: 1.1; }
+#front-desk-tab .fd-card span { font-size: 12px; opacity: .75; }
+#front-desk-tab .fd-sec { margin: 16px 0 6px; font-size: 15px; font-weight: 800; }
+#front-desk-tab .fd-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 10px; border: 1px solid var(--border-color, #e3e8ec); border-radius: 10px; margin: 0 0 6px; background: var(--bg-surface, #fff); }
+#front-desk-tab .fd-row .fd-main { flex: 1; min-width: 160px; font-size: 14px; }
+#front-desk-tab .fd-row .fd-main small { display: block; opacity: .7; font-size: 12px; }
+#front-desk-tab .fd-btn { width: auto; margin: 0; padding: 7px 12px; font-size: 13px; font-weight: 700; border-radius: 9px; border: 1px solid var(--border-color, #cfd8de); background: var(--bg-surface, #fff); color: inherit; cursor: pointer; min-height: 38px; }
+#front-desk-tab .fd-btn.fd-go { background: #16a085; border-color: #16a085; color: #fff; }
+#front-desk-tab .fd-btn.fd-out { background: #e67e22; border-color: #e67e22; color: #fff; }
+#front-desk-tab .fd-btn.fd-no { color: #b03a2e; }
+#front-desk-tab .fd-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+#front-desk-tab .fd-form label { font-size: 12px; font-weight: 700; display: flex; flex-direction: column; gap: 3px; }
+#front-desk-tab .fd-form input, #front-desk-tab .fd-form select { min-height: 38px; }
+#front-desk-tab .fd-empty { font-size: 13px; opacity: .7; padding: 6px 2px; }
+#front-desk-tab .fd-pop { animation: fd-pop .25s ease-out; }
+@keyframes fd-pop { from { transform: translateY(4px); opacity: .4; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #front-desk-tab .fd-pop { animation: none; } }
+</style>
+<script id="fd-js">
+(function () {
+  'use strict';
+  var ID = 'front-desk-tab', BTN = 'front-desk-tab-btn', LABEL = '🛎️ Reception';
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function today() { return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+  function plusDay(ymd, n) { return new Date(Date.parse(ymd + 'T12:00:00+03:00') + n * 86400000).toISOString().slice(0, 10); }
+  function dmy(ymd) { return ymd ? ymd.slice(8, 10) + '/' + ymd.slice(5, 7) : ''; }
+  function ready() { try { return typeof rooms !== 'undefined' && Array.isArray(rooms) && typeof roomStayFor === 'function' && typeof facilityBookings !== 'undefined'; } catch (e) { return false; } }
+  function money2(n) { try { return typeof money === 'function' ? money(n) : 'KES ' + Number(n || 0).toFixed(2); } catch (e) { return String(n); } }
+
+  function render() {
+    var host = $(ID); if (!host) return;
+    if (!ready()) { host.innerHTML = '<div class="panel"><p class="fd-empty">Loading the rooms…</p></div>'; return; }
+    var td = today();
+    var stays = rooms.filter(function (r) { return roomStayFor(r); });
+    var free = rooms.filter(function (r) { return !roomStayFor(r); });
+    var bookings = facilityBookings.filter(function (b) { return b && b.kind === 'room' && b.status === 'BOOKED'; }).sort(function (a, b) { return (a.start || 0) - (b.start || 0); });
+    var arriving = bookings.filter(function (b) { return b.arrive <= td; });
+    var coming = bookings.filter(function (b) { return b.arrive > td; });
+    var leaving = stays.filter(function (r) { var s = roomStayFor(r); return s.checkOutDue && s.checkOutDue <= td; });
+    var a = function (x) { return String(x).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;'); };
+
+    var h = '<div class="panel fd-pop"><h3>🛎️ Reception</h3>' +
+      '<div class="fd-cards"><div class="fd-card"><b>' + free.length + '</b><span>Rooms free</span></div><div class="fd-card"><b>' + stays.length + '</b><span>Guests in the house</span></div>' +
+      '<div class="fd-card"><b>' + arriving.length + '</b><span>Arriving today</span></div><div class="fd-card"><b>' + leaving.length + '</b><span>Leaving today</span></div></div>' +
+
+      '<div class="fd-sec">Check a guest in</div>' +
+      (free.length ? '<div class="fd-form"><label>Room<select id="fd-room">' + free.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label>' +
+        '<button type="button" class="fd-btn fd-go" data-fd="checkin">🏨 Check in</button><span class="settings-hint" style="margin:0 0 0 4px;">You choose the date entered on the next screen.</span></div>' : '<p class="fd-empty">Every room has a guest in it.</p>') +
+
+      '<div class="fd-sec">🛬 Arriving today' + (arriving.length ? ' (' + arriving.length + ')' : '') + '</div>' +
+      (arriving.length ? arriving.map(function (b) { return '<div class="fd-row"><div class="fd-main"><strong>' + esc(b.resourceName) + '</strong> · ' + esc(b.customerName) + '<small>' + b.nights + ' night(s) from ' + dmy(b.arrive) + ' to ' + dmy(b.depart) + ' · ' + money2(b.nightlyRate) + '/night' + (b.deposit ? ' · deposit ' + money2(b.deposit) : '') + (b.phone ? ' · ' + esc(b.phone) : '') + '</small></div>' +
+        '<button type="button" class="fd-btn fd-go" data-fd="arrive" data-id="' + esc(b.id) + '">✔ Check in</button><button type="button" class="fd-btn fd-no" data-fd="cancel" data-id="' + esc(b.id) + '">Cancel</button></div>'; }).join('') : '<p class="fd-empty">Nobody is due to arrive.</p>') +
+
+      '<div class="fd-sec">🏠 In the house' + (stays.length ? ' (' + stays.length + ')' : '') + '</div>' +
+      (stays.length ? stays.map(function (r) { var s = roomStayFor(r), nights = 1; try { nights = stayNights(s); } catch (e) { /* 1 */ }
+        return '<div class="fd-row"><div class="fd-main"><strong>' + esc(r) + '</strong> · ' + esc(s.guestName) + '<small>In since ' + esc(String(s.checkInAt || '').slice(0, 10).split('-').reverse().join('/')) + ' · ' + nights + ' night(s) · ' + money2(s.nightlyRate) + '/night' + (s.checkOutDue ? ' · out ' + dmy(s.checkOutDue) : '') + '</small></div>' +
+          '<button type="button" class="fd-btn fd-out" data-fd="checkout" data-room="' + esc(r) + '">🚪 Check out</button></div>'; }).join('') : '<p class="fd-empty">No guest is checked in.</p>') +
+
+      (leaving.length ? '<div class="fd-sec">🚪 Leaving today (' + leaving.length + ')</div><p class="fd-empty">' + leaving.map(function (r) { return esc(r) + ' (' + esc(roomStayFor(r).guestName) + ')'; }).join(', ') + ' - use Check out above.</p>' : '') +
+
+      '<div class="fd-sec">📅 Reserve a room</div>' +
+      '<div class="fd-form"><label>Room<select id="fd-rv-room">' + rooms.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label>' +
+      '<label>Arrives<input type="date" id="fd-rv-arrive" value="' + td + '"></label><label>Leaves<input type="date" id="fd-rv-depart" value="' + plusDay(td, 1) + '"></label>' +
+      '<label>Guest name<input type="text" id="fd-rv-guest" placeholder="e.g. Jane Wanjiru"></label><label>Phone<input type="text" id="fd-rv-phone" placeholder="0712345678"></label>' +
+      '<label>Guests<input type="number" id="fd-rv-people" min="1" value="1" style="max-width:80px"></label><label>Rate per night<input type="number" id="fd-rv-rate" min="0" placeholder="room rate" style="max-width:110px"></label>' +
+      '<label>Deposit<input type="number" id="fd-rv-deposit" min="0" placeholder="0" style="max-width:100px"></label>' +
+      '<button type="button" class="fd-btn fd-go" data-fd="reserve">📅 Reserve</button></div>' +
+
+      '<div class="fd-sec">Coming reservations' + (coming.length ? ' (' + coming.length + ')' : '') + '</div>' +
+      (coming.length ? coming.map(function (b) { return '<div class="fd-row"><div class="fd-main"><strong>' + esc(b.resourceName) + '</strong> · ' + esc(b.customerName) + '<small>' + dmy(b.arrive) + ' to ' + dmy(b.depart) + ' · ' + b.nights + ' night(s)' + (b.deposit ? ' · deposit ' + money2(b.deposit) : '') + '</small></div>' +
+        '<button type="button" class="fd-btn fd-no" data-fd="cancel" data-id="' + esc(b.id) + '">Cancel</button></div>'; }).join('') : '<p class="fd-empty">No reservations coming.</p>') +
+      '<div class="fd-sec">🛏️ Rooms (' + rooms.length + ')</div>' +
+      (rooms.length ? rooms.map(function (r) { var s = roomStayFor(r); return '<div class="fd-row"><div class="fd-main"><strong>' + esc(r) + '</strong><small>' + (s ? 'Guest: ' + esc(s.guestName) : 'Free') + '</small></div>' +
+        '<button type="button" class="fd-btn" data-fd="rename" data-room="' + esc(r) + '">✏️ Rename</button></div>'; }).join('') : '<p class="fd-empty">No rooms yet. Add them in Settings.</p>') +
+
+      '<p class="settings-hint" style="margin-top:14px;">More (housekeeping, service requests, room types and the 14-day room calendar) is in the <a href="#" data-fd="more">Hotel tab</a>.</p></div>';
+    // keep what is being typed in the form when the list refreshes
+    var keep = {}; ['fd-rv-room', 'fd-rv-arrive', 'fd-rv-depart', 'fd-rv-guest', 'fd-rv-phone', 'fd-rv-people', 'fd-rv-rate', 'fd-rv-deposit', 'fd-room'].forEach(function (k) { var e = $(k); if (e) keep[k] = e.value; });
+    var typing = document.activeElement && document.activeElement.id && /^fd-/.test(document.activeElement.id);
+    if (typing) return;
+    host.innerHTML = h;
+    Object.keys(keep).forEach(function (k) { var e = $(k); if (e && keep[k] !== '' && keep[k] != null) { try { e.value = keep[k]; } catch (x) { /* option gone */ } } });
+  }
+
+
+  // ---- rename a room (zip 370): one function moves EVERYTHING that is tied to the room's name ----
+  // Open work follows the room (guest in the house, coming reservations, open bills, open service requests, room type, status).
+  // Finished work (settled receipts, done requests) keeps the name it had that day, as history.
+  function cleanName(x) { return String(x == null ? '' : x).replace(/\s+/g, ' ').trim(); }
+  function renameRoom(oldL, newRaw) {
+    var nn = cleanName(newRaw);
+    if (!oldL || rooms.indexOf(oldL) < 0) return { ok: false, msg: 'That room no longer exists.' };
+    try { if (typeof viewedBranchId !== 'undefined' && viewedBranchId !== 'self') return { ok: false, msg: 'You are only viewing another branch, so you cannot rename its rooms.' }; } catch (e) { /* not a branch view */ }
+    try { if (typeof custIsManager === 'function' && !custIsManager()) return { ok: false, msg: 'Only the owner or a manager can rename rooms.' }; } catch (e) { /* allowed */ }
+    if (!nn) return { ok: false, msg: 'Type the new room name.' };
+    if (nn.length > 40) return { ok: false, msg: 'Keep the name under 40 letters.' };
+    if (nn === oldL) return { ok: false, msg: 'That is already its name.' };
+    var low = nn.toLowerCase();
+    if (rooms.some(function (r) { return r !== oldL && r.toLowerCase() === low; })) return { ok: false, msg: nn + ' is already another room.' };
+    if (typeof tables !== 'undefined' && tables.some(function (t) { return String(t).toLowerCase() === low; })) return { ok: false, msg: nn + ' is already a table name.' };
+    var now = Date.now(), i = rooms.indexOf(oldL);
+    rooms[i] = nn; safeSetItem('pos_rooms', JSON.stringify(rooms));
+    if (roomStates[oldL]) { roomStates[nn] = roomStates[oldL]; roomStates[nn].updatedAt = now; delete roomStates[oldL]; safeSetItem('pos_room_states', JSON.stringify(roomStates)); }
+    if (roomStays[oldL]) { roomStays[nn] = roomStays[oldL]; delete roomStays[oldL]; saveRoomStays(); }
+    var moved = false;
+    facilityBookings.forEach(function (b) { if (b && b.kind === 'room' && (b.resourceId === 'room:' + oldL || b.resourceName === oldL)) { b.resourceId = 'room:' + nn; b.resourceName = nn; b.updatedAt = now; moved = true; } });
+    if (moved) saveFacilityBookings();
+    if (hospConfig && hospConfig.roomTypeOf && hospConfig.roomTypeOf[oldL] !== undefined) { hospConfig.roomTypeOf = Object.assign({}, hospConfig.roomTypeOf); hospConfig.roomTypeOf[nn] = hospConfig.roomTypeOf[oldL]; delete hospConfig.roomTypeOf[oldL]; saveHospConfig(); }
+    var tm = false;
+    tabs.forEach(function (t) { if (t && t.status === 'OPEN') { if (t.label === oldL) { t.label = nn; t.updatedAt = now; tm = true; } if (t.checkoutOf === oldL) { t.checkoutOf = nn; t.updatedAt = now; tm = true; } } });
+    if (tm) saveTabs();
+    var sm = false;
+    serviceRequests.forEach(function (r) { if (r && r.room === oldL && ['DONE', 'CANCELLED'].indexOf(r.status) < 0) { r.room = nn; r.updatedAt = now; sm = true; } });
+    if (sm) saveServiceRequests();
+    try { if (typeof hospQrEnqueue === 'function') hospQrEnqueue({ action: 'rename', kind: 'room', label: oldL, newLabel: nn }); } catch (e) { /* the code is renamed when the shop is next online */ }
+    try { queuePush(); } catch (e) { /* next change sends it */ }
+    try { renderTablesRoomsLists(); renderSalesLocationSelect(); renderOpenTabsList(); } catch (e) { /* cosmetic */ }
+    try { if (typeof renderHotel === 'function') renderHotel(); } catch (e) { /* cosmetic */ }
+    render();
+    return { ok: true, msg: oldL + ' is now ' + nn + '. Its guest, reservations and bills moved with it.', name: nn };
+  }
+  function askRename(oldL) {
+    var v = window.prompt('New name for ' + oldL + ':', oldL);
+    if (v == null) return null;
+    var r = renameRoom(oldL, v);
+    try { showToast(r.msg, !r.ok); } catch (e) { /* cosmetic */ }
+    return r;
+  }
+
+  function onClick(ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-fd]') : null; if (!t) return;
+    var act = t.getAttribute('data-fd'), id = t.getAttribute('data-id'), room = t.getAttribute('data-room');
+    if (act === 'more') { ev.preventDefault(); var b = document.querySelector('.tab-link[data-tab="hotel-tab"]'); if (b) b.click(); return; }
+    if (act === 'checkin') { var r = ($('fd-room') || {}).value; if (r && typeof openCheckInRoomModal === 'function') openCheckInRoomModal(r); return; }
+    if (act === 'rename') { askRename(room); return; }
+    if (act === 'arrive') { if (typeof hospCheckInReservation === 'function') { hospCheckInReservation(id); setTimeout(render, 150); } return; }
+    if (act === 'cancel') { if (typeof hospUiCancelReservation === 'function') { hospUiCancelReservation(id); setTimeout(render, 150); } return; }
+    if (act === 'checkout') { if (typeof openCheckOutRoomModal === 'function') openCheckOutRoomModal(room); return; }
+    if (act === 'reserve') {
+      var g = function (k) { return ($(k) || {}).value; };
+      if (typeof hospReserveRoom !== 'function') return;
+      Promise.resolve(hospReserveRoom({ room: g('fd-rv-room'), arrive: g('fd-rv-arrive'), depart: g('fd-rv-depart'), guest: g('fd-rv-guest'), phone: g('fd-rv-phone'), people: g('fd-rv-people'), rate: g('fd-rv-rate'), deposit: g('fd-rv-deposit') })).then(function (bk) {
+        if (bk) { try { showToast(bk.resourceName + ' reserved for ' + bk.customerName + ': ' + bk.nights + ' night(s).'); } catch (e) { /* cosmetic */ } var af = document.activeElement; if (af && af.blur) af.blur(); render(); }
+      });
+    }
+  }
+
+  function ensure() {
+    var sales = $('sales-tab'), sb = $('sales-tab-btn') || document.querySelector('.tab-link[data-tab="sales-tab"]');
+    if (!sales || !sb) return false;
+    if (!$(ID)) { var d = document.createElement('div'); d.id = ID; d.className = 'tab-content'; sales.parentNode.insertBefore(d, sales.nextSibling); d.addEventListener('click', onClick); }
+    if (!$(BTN)) {
+      var nb = document.createElement('button'); nb.id = BTN; nb.className = 'tab-link'; nb.setAttribute('data-tab', ID); nb.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')");
+      nb.textContent = LABEL; sb.parentNode.insertBefore(nb, sb.nextSibling);
+      nb.addEventListener('click', function () { setTimeout(render, 0); });
+    }
+    return !!$(BTN);
+  }
+  function register() {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === ID; })) {
+        var item = { id: ID, label: LABEL }, i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'hotel-tab'; });
+        LOCKABLE_TABS.splice(i >= 0 ? i : LOCKABLE_TABS.length, 0, item);
+        if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === ID; })) ROLE_TABS.push(item);
+      }
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  // staff who already work the Hotel tab get Reception once in their roles (the admin can untick it later)
+  function migrate() {
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return; var changed = false;
+      staff.forEach(function (m) { if (!m || m.fdMigrated) return; m.fdMigrated = true; changed = true; if (Array.isArray(m.roles) && m.roles.indexOf('hotel-tab') >= 0 && m.roles.indexOf(ID) < 0) { m.roles.push(ID); m.updatedAt = Date.now(); } });
+      if (changed) { safeSetItem('pos_staff', JSON.stringify(staff)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  function boot() {
+    var n = 0;
+    (function tick() { try { if (ensure()) { register(); if (n === 3) migrate(); } } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 300 : 1500); })();
+    setInterval(function () { try { var t = $(ID); if (t && t.classList.contains('active')) render(); } catch (e) { /* next time */ } }, 6000);
+  }
+  window.HotelFD = { __v: 370, render: render, renameRoom: renameRoom, askRename: askRename };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

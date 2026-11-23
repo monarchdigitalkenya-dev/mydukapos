@@ -9,7 +9,7 @@ const load = (f) => import(pathToFileURL(path.join(ROOT, 'functions/api', f)).hr
 async function setup(extra = {}) {
   const kv = makeKV(); seedShop(kv, 'C1', extra);
   kv.data.set('owner-session:tok', { value: '1' });
-  const env = { mydukapos_kv: kv };
+  const env = { mydukapos_kv: kv, OWNER_LEGACY_INCOME_FORMS: '1' };   // zip 304: the old forms are closed in production; these tests cover their stored records
   const lock = async (body) => { const m = await load('owner-lock.js'); const r = await m.onRequestPost({ request: new Request('https://x.pages.dev/api/owner-lock', { method: 'POST', body: JSON.stringify({ c: 'C1', ...body }), headers: { 'content-type': 'application/json', Authorization: 'Bearer tok' } }), env }); return { status: r.status, body: await r.json() }; };
   return { kv, lock };
 }

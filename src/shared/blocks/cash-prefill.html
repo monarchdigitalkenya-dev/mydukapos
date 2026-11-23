@@ -1,0 +1,33 @@
+<!-- CASH PREFILL (zip 319) -------------------------------------------------------------------------------------------------------
+     Settings > "Prefill Cash Tendered" (on by default, this device): Cash Tendered starts as the amount due (and a split's cash box as its cash
+     portion) and follows the total until the cashier types their own amount. Off: the box stays empty for the cashier to type. The change due is
+     worked out from whatever is in the box either way (updateChangeDue in each app reads cashTenderPrefillOn()). -->
+<script>
+(function () {
+    'use strict';
+    var KEY = 'pos_cash_prefill';
+    window.cashTenderPrefillOn = function () { try { return localStorage.getItem(KEY) !== '0'; } catch (e) { return true; } };
+    window.toggleCashTenderPrefill = function (on) {
+        try { if (typeof safeSetItem === 'function') safeSetItem(KEY, on ? '1' : '0'); else localStorage.setItem(KEY, on ? '1' : '0'); } catch (e) { /* this session only */ }
+        try { if (typeof updateChangeDue === 'function') updateChangeDue(); } catch (e) { /* no sale open */ }
+        try { if (typeof showToast === 'function') showToast(on ? 'Cash Tendered will be filled with the amount due.' : 'Cash Tendered will be left empty for you to type.'); } catch (e) { /* no toast */ }
+    };
+    function place() {
+        if (document.getElementById('cash-prefill-toggle')) return true;
+        var drawer = document.getElementById('auto-open-drawer-toggle'), row = drawer && drawer.closest('.settings-row');
+        if (!row || !row.parentElement) return false;
+        var anchor = row.previousElementSibling && /^H[1-6]$/.test(row.previousElementSibling.tagName) ? row.previousElementSibling : row;
+        var wrap = document.createElement('div');
+        wrap.id = 'cash-prefill-setting';
+        wrap.innerHTML = '<h4>💵 Cash Tendered</h4><div class="settings-row" style="flex-direction:column; align-items:stretch; gap:8px;">' +
+            '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:normal;"><input type="checkbox" id="cash-prefill-toggle" style="width:auto;"> <span><b>Prefill Cash Tendered</b> with the amount due (the cashier can still change it)</span></label>' +
+            '<p class="settings-hint" style="margin:0;">Off: the Cash Tendered box stays empty and the cashier types what the customer handed over. This setting is for this device.</p></div>';
+        anchor.parentElement.insertBefore(wrap, anchor);
+        var cb = document.getElementById('cash-prefill-toggle');
+        cb.checked = window.cashTenderPrefillOn();
+        cb.onchange = function () { window.toggleCashTenderPrefill(cb.checked); };
+        return true;
+    }
+    if (!place()) document.addEventListener('DOMContentLoaded', place);
+})();
+</script>

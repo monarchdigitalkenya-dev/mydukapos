@@ -1,0 +1,1012 @@
+<!-- AQUA FLOW (zip 348) ---------------------------------------------------------------------------------------------------------------
+     The simple Aqua screens, built ON TOP of the zip-333 materials engine (window.AquaMat) - nothing in the engine is rewritten.
+       * a material is linked to ITEMS by key "<size ml>:<kind>" (kind = sealed | bale | custom) in material.forItems, e.g. "500:sealed".
+         AquaFlow.syncRecipes() turns those links into the recipe lines the engine already understands, so a product created later is picked up
+         automatically and every other screen (custom bale orders, production history, reversal) keeps working.
+       * Materials tab: one 6-step add/edit form, CSV import / export, and client default bottles.
+       * Production tab: 9 plain steps (what, client, bottle, seal, cap, label, wrapping, water tank, extras). Everything is checked first, then done
+         in one go, and put back if anything fails. Water comes from a production tank (infinite or metered).
+       * Price List & Invoices tab: price list (standard or per client) and invoices that print / share through the existing report window.
+     Pure functions are on window.AquaFlow so tests can drive them without the screens. -->
+<style>
+#aqf-root,#aqf-docs-root,#aqf-ov{--aqf-a:#0b7a5f;--aqf-b:#1e88e5;--aqf-ink:var(--dark,#15282b);--aqf-mut:var(--muted,#6b7a7d);--aqf-line:var(--border-color,#e2ded1);--aqf-bg:var(--bg-surface,#fff);--aqf-alt:var(--bg-surface-alt,#f4f7f6)}
+.aqf-hero{border-radius:16px;padding:14px 16px;margin:0 0 12px;color:#fff;background:linear-gradient(120deg,#0b7a5f,#1e88e5);position:relative;overflow:hidden}
+.aqf-hero:after{content:"";position:absolute;right:-30px;top:-40px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.12)}
+.aqf-hero h3{margin:0;font-size:18px;color:#fff}.aqf-hero p{margin:4px 0 0;font-size:12.5px;opacity:.92;color:#fff}
+.aqf-prog{height:8px;border-radius:99px;background:rgba(255,255,255,.28);margin-top:10px;overflow:hidden}
+.aqf-prog i{display:block;height:100%;width:0;border-radius:99px;background:#fff;transition:width .45s cubic-bezier(.2,.8,.2,1)}
+.aqf-step{border:1px solid var(--aqf-line);border-radius:14px;background:var(--aqf-bg);margin:0 0 10px;padding:12px 12px 12px 56px;position:relative;animation:aqfUp .35s ease both;transition:border-color .25s,box-shadow .25s}
+.aqf-step.done{border-color:#7fcdb5;box-shadow:0 2px 10px rgba(11,122,95,.10)}
+.aqf-step.na{opacity:.55}
+.aqf-n{position:absolute;left:12px;top:12px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:800 14px system-ui,sans-serif;background:var(--aqf-alt);color:var(--aqf-mut);transition:all .3s}
+.aqf-step.done .aqf-n{background:linear-gradient(135deg,#0b7a5f,#27ae80);color:#fff;transform:scale(1.04)}
+.aqf-step h4{margin:0 0 6px;font-size:14.5px;color:var(--aqf-ink)}.aqf-step h4 small{font-weight:600;color:var(--aqf-mut);font-size:12px}
+.aqf-step select,.aqf-step input,#aqf-ov select,#aqf-ov input,#aqf-ov textarea,#aqf-docs-root select,#aqf-docs-root input{width:100%;box-sizing:border-box;min-height:44px;padding:6px 10px;border:1.5px solid var(--aqf-line);border-radius:10px;background:var(--aqf-alt);color:inherit;font:inherit}
+.aqf-step select:focus,.aqf-step input:focus,#aqf-ov input:focus,#aqf-ov select:focus{outline:none;border-color:var(--aqf-a);box-shadow:0 0 0 3px rgba(11,122,95,.15)}
+.aqf-hint{font-size:12px;color:var(--aqf-mut);margin:5px 0 0}.aqf-ok{font-size:12px;color:#1e7e4a;margin:5px 0 0;font-weight:600}.aqf-bad{font-size:12.5px;color:#b03a2e;margin:5px 0 0;font-weight:600}
+.aqf-warn{background:#fff8e1;border:1px solid #ffe69c;color:#7a5c00;border-radius:9px;padding:7px 10px;font-size:12.5px;margin:6px 0}
+.aqf-chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+.aqf-chip{border:1.5px solid var(--aqf-line);background:var(--aqf-alt);color:inherit;border-radius:999px;padding:7px 13px;min-height:38px;font:700 12.5px system-ui,sans-serif;cursor:pointer;transition:transform .12s,background .2s,border-color .2s}
+.aqf-chip:active{transform:scale(.95)}.aqf-chip.on{background:var(--aqf-a);border-color:var(--aqf-a);color:#fff}
+.aqf-more{margin-top:14px;padding-top:10px;border-top:1px dashed #d6dee6;font-size:13px}
+.aqf-two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.aqf-three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.aqf-btn{min-height:42px;padding:0 16px;border-radius:11px;border:1.5px solid var(--aqf-line);background:transparent;color:inherit;font:800 13px system-ui,sans-serif;cursor:pointer;transition:transform .12s,box-shadow .2s}
+.aqf-btn:active{transform:scale(.97)}.aqf-btn.go{background:linear-gradient(120deg,#0b7a5f,#16a085);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(11,122,95,.28)}
+.aqf-btn[disabled]{opacity:.45;cursor:not-allowed;box-shadow:none}.aqf-btn.sm{min-height:34px;padding:0 11px;font-size:12px}
+.aqf-act{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.aqf-tank{display:flex;gap:12px;align-items:center;margin-top:8px}
+.aqf-gauge{width:62px;height:78px;border-radius:12px 12px 16px 16px;border:2.5px solid #5b9bd5;position:relative;overflow:hidden;background:#eef6fc;flex:none}
+.aqf-gauge b{position:absolute;left:0;right:0;bottom:0;height:var(--lvl,0%);background:linear-gradient(#4aa8f0,#1e6fb8);transition:height .8s cubic-bezier(.2,.8,.2,1)}
+.aqf-gauge b:before{content:"";position:absolute;left:-25%;top:-9px;width:150%;height:16px;border-radius:50%;background:rgba(255,255,255,.35);animation:aqfWave 3s linear infinite}
+.aqf-gauge.low b{background:linear-gradient(#f0a84a,#c0701f)}.aqf-gauge.inf b{height:100%}
+.aqf-sum{border-radius:14px;padding:12px;background:var(--aqf-alt);border:1px dashed #9ccfbf;margin:10px 0}
+.aqf-sum table{width:100%;border-collapse:collapse;font-size:12.5px}.aqf-sum td,.aqf-sum th{padding:4px 5px;text-align:left;border-bottom:1px solid var(--aqf-line)}.aqf-sum td.r,.aqf-sum th.r{text-align:right}
+.aqf-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
+.aqf-card{border:1px solid var(--aqf-line);border-radius:12px;padding:10px 12px;margin:0 0 8px;background:var(--aqf-bg)}
+.aqf-pill{display:inline-block;border-radius:999px;padding:1px 9px;font-size:11.5px;font-weight:700;background:#eef3f2;color:#0b5a47}.aqf-pill.bad{background:#fdecea;color:#b03a2e}.aqf-pill.ok{background:#e3f6ec;color:#1e7e4a}.aqf-pill.mid{background:#fff3cd;color:#7a5c00}
+.aqf-rowx{display:grid;grid-template-columns:1fr 90px 36px;gap:6px;margin:5px 0;align-items:center}
+#aqf-ov{position:fixed;inset:0;z-index:100001;display:none;align-items:flex-start;justify-content:center;padding:12px;background:rgba(8,24,26,.62);overflow:auto;backdrop-filter:blur(2px)}
+#aqf-ov.on{display:flex}
+#aqf-ov .aqf-box{width:100%;max-width:680px;background:var(--aqf-bg);color:var(--aqf-ink);border-radius:18px;padding:16px;box-shadow:0 22px 60px rgba(0,0,0,.4);margin:auto;animation:aqfPop .28s cubic-bezier(.2,.9,.3,1.2) both}
+#aqf-ov h3{margin:0 0 2px}#aqf-ov .aqf-sub{margin:0 0 8px;font-size:13px;color:var(--aqf-mut)}#aqf-ov label,#aqf-docs-root label.aqf-l{display:block;font-size:12.5px;font-weight:800;margin:11px 0 4px}
+#aqf-ov .aqf-err{color:#b03a2e;font-size:13px;margin:8px 0 0;min-height:18px;font-weight:600}
+#aqf-ov textarea{min-height:120px;font:12px ui-monospace,monospace}
+#aqf-ov table,#aqf-docs-root table.aqf-t{width:100%;border-collapse:collapse;font-size:12.5px}#aqf-ov td,#aqf-ov th,#aqf-docs-root table.aqf-t td,#aqf-docs-root table.aqf-t th{border-bottom:1px solid var(--aqf-line);padding:5px;text-align:left}
+#aqf-docs-root .aqf-tabs{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap}
+#aqf-docs-root .aqf-sec{font:800 12px system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--aqf-a);margin:14px 0 6px}
+.aqf-matbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;padding:10px;border-radius:14px;background:linear-gradient(120deg,rgba(11,122,95,.09),rgba(30,136,229,.09));border:1px solid var(--aqf-line)}
+@keyframes aqfUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes aqfPop{from{opacity:0;transform:scale(.94) translateY(10px)}to{opacity:1;transform:none}}
+@keyframes aqfWave{from{transform:translateX(0)}to{transform:translateX(25%)}}
+@media(max-width:560px){.aqf-two,.aqf-three{grid-template-columns:1fr}.aqf-step{padding-left:50px}.aqf-n{left:9px;width:30px;height:30px}.aqf-rowx{grid-template-columns:1fr 80px 36px}}
+@media(prefers-reduced-motion:reduce){.aqf-step,#aqf-ov .aqf-box,.aqf-gauge b:before{animation:none!important}.aqf-prog i,.aqf-gauge b{transition:none!important}}
+@media print{#aqf-ov{display:none!important}}
+</style>
+<div id="aqf-ov" role="dialog" aria-modal="true"><div class="aqf-box" id="aqf-box"></div></div>
+<script>
+(function () {
+    'use strict';
+    var AF = {};
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var attr = function (s) { return esc(s).replace(/\\/g, '\\\\'); };
+    var rnd = function (v, d) { var f = Math.pow(10, d == null ? 2 : d), n = Number(v) || 0; return Math.round(n * f + (n < 0 ? -1e-7 : 1e-7)) / f; };
+    var q3 = function (v) { return rnd(v, 3); };
+    var KES = function (v) { return 'KES ' + (Number(v) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var toast = function (m, bad) { try { showToast(m, !!bad); } catch (e) { /* no toast on this screen */ } };
+    var save = function () { try { queuePush(); } catch (e) { /* the app's offline queue */ } };
+    var newId = function (p) { return (p || 'x') + '-' + (typeof genSaleId === 'function' ? genSaleId() : Date.now().toString(36) + Math.random().toString(36).slice(2, 7)); };
+    var mats = function () { return (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials)) ? rawMaterials : []; };
+    var prods = function () { return (typeof products !== 'undefined' && Array.isArray(products)) ? products : []; };
+    var custs = function () { return (typeof customers !== 'undefined' && Array.isArray(customers)) ? customers : []; };
+    var tankList = function () { return (typeof tanks !== 'undefined' && Array.isArray(tanks)) ? tanks : []; };
+    var AMx = function () { return window.AquaMat; };
+    var nowIso = function () { return new Date().toISOString(); };
+    var who = function () { try { return typeof activeServerName === 'function' ? activeServerName() : 'Admin'; } catch (e) { return 'Admin'; } };
+    var siteNow = function () { try { return recordSiteId(); } catch (e) { return null; } };
+    var isLive = function (m) { return !!m && !m.removed && !m._deleted; };
+    var isActive = function (m) { return isLive(m) && m.active !== false; };
+    var siteOf = function (m) { try { return matSiteId(m); } catch (e) { return m && m.siteId; } };
+    var norm = function (s) { return String(s == null ? '' : s).toLowerCase().replace(/[‘’“”'"`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); };
+    var costPiece = function (m) { try { return typeof matPerPiece === 'function' ? matPerPiece(m) : Number(m.unitCost) || 0; } catch (e) { return Number(m && m.unitCost) || 0; } };
+    var stockOf = function (m) { return q3(m && m.stockQty); };
+
+    /* ---------------- sizes, kinds, item keys ---------------- */
+    var STD_SIZES = [500, 1000, 1500, 5000, 10000, 18900, 20000];
+    var KINDS = [['sealed', 'Sealed bottle'], ['bale', 'Normal bale / case'], ['custom', 'Custom bale / case']];
+    var CATS = [['bottle', 'Bottle'], ['cap', 'Cap'], ['seal', 'Seal'], ['label', 'Label / sticker'], ['packaging', 'Wrapping'], ['other', 'Other']];
+    var CAT_ICON = { bottle: '🍼', cap: '🧢', seal: '🔒', label: '🏷️', packaging: '📦', other: '🧩' };
+    function sizeLabel(ml) { ml = Number(ml) || 0; if (ml <= 1500) return ml + 'ml'; return (Math.round(ml / 100) / 10) + 'L'; }
+    function kindLabel(k) { var f = KINDS.filter(function (x) { return x[0] === k; })[0]; return f ? f[1] : k; }
+    function catLabel(c) { var f = CATS.filter(function (x) { return x[0] === c; })[0]; return f ? f[1] : (c || 'Other'); }
+    function itemLabel(key) { var a = String(key).split(':'); return sizeLabel(a[0]) + ' ' + kindLabel(a[1]).toLowerCase(); }
+    function parseSize(s) {
+        s = String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, '');
+        var m = s.match(/^(\d+(?:\.\d+)?)(ml|l[a-z]*)?$/); if (!m) return 0;
+        var n = parseFloat(m[1]), u = m[2];
+        if (!u) return n <= 50 ? Math.round(n * 1000) : Math.round(n);        // "5" = 5 litres, "500" = 500 ml
+        return u === 'ml' ? Math.round(n) : Math.round(n * 1000);
+    }
+    function parseKinds(s) {
+        var out = [], t = String(s || '').toLowerCase();
+        if (!t.trim()) return out;
+        t.split(/[;,|\/&]+|\band\b/).forEach(function (part) {
+            part = part.trim(); if (!part) return;
+            if (part === 'all' || part === 'any') { ['sealed', 'bale', 'custom'].forEach(function (k) { if (out.indexOf(k) < 0) out.push(k); }); return; }
+            var k = /custom|executive|brand/.test(part) ? 'custom' : /bale|case|carton/.test(part) ? 'bale' : /seal|bottle|piece/.test(part) ? 'sealed' : '';
+            if (k && out.indexOf(k) < 0) out.push(k);
+        });
+        return out;
+    }
+    function parseCat(s) {
+        var t = norm(s); if (!t) return '';
+        if (/^(bottle|bottles|preform)/.test(t)) return 'bottle'; if (/^cap/.test(t)) return 'cap'; if (/^seal|security/.test(t)) return 'seal';
+        if (/^(label|sticker)/.test(t)) return 'label'; if (/^(wrap|packag|shrink)/.test(t)) return 'packaging'; if (/^other/.test(t)) return 'other'; return '';
+    }
+    /* the size (in ml) of a product: its own, its bottle's, or read from its name */
+    function sizeOfProduct(p) {
+        if (!p) return 0; var s = Number(p.sizeML) || 0;
+        if (!s && p.linkedBottleCode) { var b = prods().filter(function (x) { return x.code === p.linkedBottleCode; })[0]; s = b ? Number(b.sizeML) || 0 : 0; }
+        if (!s) { var m = String(p.name || '').match(/(\d+(?:\.\d+)?)\s*(ml|l|ltr|ltrs|litre|litres|liter|liters)\b/i); if (m) { var n = parseFloat(m[1]); s = /^ml$/i.test(m[2]) ? n : n * 1000; } }
+        return Math.round(s);
+    }
+    function kindOfProduct(p) {
+        if (!p || p.type === 'service' || p._deleted) return '';
+        if (p.category === 'bottled') return 'sealed';
+        if (p.category === 'bale') return p.baleKind === 'custom' ? 'custom' : 'bale';
+        return '';
+    }
+    function keyOfProduct(p) { var s = sizeOfProduct(p), k = kindOfProduct(p); return (s && k) ? s + ':' + k : ''; }
+    AF.sizeLabel = sizeLabel; AF.itemLabel = itemLabel; AF.parseSize = parseSize; AF.parseKinds = parseKinds; AF.keyOfProduct = keyOfProduct; AF.sizeOfProduct = sizeOfProduct; AF.kindOfProduct = kindOfProduct;
+    function keysOf(m) { return Array.isArray(m && m.forItems) ? m.forItems : []; }
+    function crossKeys(sizes, kinds) { var out = []; sizes.forEach(function (s) { kinds.forEach(function (k) { out.push(s + ':' + k); }); }); return out; }
+    function sizesOfKeys(keys) { var o = []; keys.forEach(function (k) { var s = Number(String(k).split(':')[0]); if (s && o.indexOf(s) < 0) o.push(s); }); return o.sort(function (a, b) { return a - b; }); }
+    function kindsOfKeys(keys) { var o = []; keys.forEach(function (k) { var x = String(k).split(':')[1]; if (x && o.indexOf(x) < 0) o.push(x); }); return KINDS.map(function (k) { return k[0]; }).filter(function (k) { return o.indexOf(k) >= 0; }); }
+    function allSizes() { var o = STD_SIZES.slice(); prods().forEach(function (p) { var s = sizeOfProduct(p); if (s && o.indexOf(s) < 0) o.push(s); }); mats().forEach(function (m) { sizesOfKeys(keysOf(m)).forEach(function (s) { if (o.indexOf(s) < 0) o.push(s); }); }); return o.sort(function (a, b) { return a - b; }); }
+
+    /* ---------------- links -> recipe lines (idempotent) ---------------- */
+    var LINE_RULES = { bottle: { optional: false }, cap: { optional: false }, seal: { optional: true }, label: { optional: true }, packaging: { optional: false, perBale: true }, other: { optional: true } };
+    function syncOne(p) {
+        var key = keyOfProduct(p); if (!key) return false;
+        var kind = key.split(':')[1], changed = false, linked = {}, newModel = {};
+        mats().forEach(function (m) {
+            if (!isLive(m) || !Array.isArray(m.forItems)) return;
+            var cat = m.category || 'other'; newModel[m.id] = cat;
+            if (m.forItems.indexOf(key) >= 0) (linked[cat] = linked[cat] || []).push(m.id);
+        });
+        if (!Array.isArray(p.productionRecipe)) { p.productionRecipe = []; }
+        var cats = Object.keys(linked);
+        p.productionRecipe.forEach(function (r) { if (r && r.lineId && cats.indexOf(r.category) < 0) cats.push(r.category); });
+        cats.forEach(function (cat) {
+            var ln = p.productionRecipe.filter(function (r) { return r && r.lineId && r.category === cat; })[0], want = linked[cat] || [];
+            if (cat === 'bottle' && p.bottleOf && p.bottleMatId) want = [p.bottleMatId];      // zip 365: a bottle's own item uses only that bottle
+            if (!ln) {
+                if (!want.length) return;
+                var rule = LINE_RULES[cat] || LINE_RULES.other, wrapOnly = !!rule.perBale;
+                ln = { lineId: newId('ln'), category: cat, qtyPerUnit: 1, wastePct: 0, optional: !!rule.optional, unit: 'pcs', eligible: [], materialId: '', auto: true };
+                if (kind !== 'sealed' && !wrapOnly) ln.perBottle = true;         // a bale uses one per bottle in it; a wrapper is one per bale
+                p.productionRecipe.push(ln); changed = true;
+            }
+            var before = JSON.stringify(ln.eligible || []);
+            var keep = (cat === 'bottle' && p.bottleOf && p.bottleMatId) ? [] : (Array.isArray(ln.eligible) ? ln.eligible : []).filter(function (id) { return !newModel[id]; });      // legacy varieties stay as they were
+            var next = keep.concat(want.filter(function (id) { return keep.indexOf(id) < 0; }));
+            ln.eligible = next;
+            if (!(Number(ln.qtyPerUnit) > 0) && !ln.variable) { ln.qtyPerUnit = 1; changed = true; }
+            if (!ln.materialId || next.indexOf(ln.materialId) < 0) { var nm = next[0] || ''; if (ln.materialId !== nm) { ln.materialId = nm; changed = true; } }
+            if (!next.length && ln.auto) { p.productionRecipe.splice(p.productionRecipe.indexOf(ln), 1); changed = true; return; }
+            if (before !== JSON.stringify(next)) changed = true;
+        });
+        if (changed) p.updatedAt = Date.now();
+        return changed;
+    }
+    AF.syncRecipes = function () { var n = 0; prods().forEach(function (p) { try { if (syncOne(p)) n++; } catch (e) { /* one odd product must not stop the rest */ } }); if (n) save(); return n; };
+    /* which items have no product yet (materials are linked, the product is not created) */
+    AF.unmatchedKeys = function () {
+        var have = {}; prods().forEach(function (p) { var k = keyOfProduct(p); if (k) have[k] = 1; });
+        var miss = {}; mats().forEach(function (m) { if (isLive(m)) keysOf(m).forEach(function (k) { if (!have[k]) miss[k] = 1; }); });
+        return Object.keys(miss).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10) || (a < b ? -1 : 1); });
+    };
+
+    /* ---------------- overlay ---------------- */
+    function ov(html) { $('aqf-box').innerHTML = html; $('aqf-ov').classList.add('on'); }
+    function closeOv() { $('aqf-ov').classList.remove('on'); $('aqf-box').innerHTML = ''; }
+    AF.close = closeOv;
+
+    /* ================= MATERIAL: 6 simple steps ================= */
+    var MF = null;
+    function chipRow(items, on, fn) { return items.map(function (it) { return '<button type="button" class="aqf-chip' + (on.indexOf(it[0]) >= 0 ? ' on' : '') + '" onclick="AquaFlow.' + fn + '(\'' + attr(it[0]) + '\')">' + (it[2] || '') + esc(it[1]) + '</button>'; }).join(''); }
+    function matChips() {
+        var c1 = $('aqf-m-cats'), c2 = $('aqf-m-sizes'), c3 = $('aqf-m-kinds'), sm = $('aqf-m-summary');
+        if (c1) c1.innerHTML = chipRow(CATS.map(function (c) { return [c[0], c[1], CAT_ICON[c[0]] + ' ']; }), [MF.cat], 'mCat');
+        if (c2) c2.innerHTML = chipRow(allSizes().map(function (s) { return [String(s), sizeLabel(s)]; }), MF.sizes.map(String), 'mSize') + '<button type="button" class="aqf-chip" onclick="AquaFlow.mAllSizes()">All sizes</button>';
+        if (c3) c3.innerHTML = chipRow(KINDS, MF.kinds, 'mKind');
+        if (sm) {
+            var ks = crossKeys(MF.sizes, MF.kinds);
+            sm.innerHTML = ks.length ? '✔ Offered when producing: <b>' + ks.map(itemLabel).map(esc).join(', ') + '</b>' : 'Not linked to anything yet. Pick at least one size and one item type, or leave both empty and link it later.';
+        }
+    }
+    AF.mCat = function (c) { MF.cat = c; matChips(); };
+    AF.mSize = function (s) { s = Number(s); var i = MF.sizes.indexOf(s); if (i >= 0) MF.sizes.splice(i, 1); else MF.sizes.push(s); MF.sizes.sort(function (a, b) { return a - b; }); matChips(); };
+    AF.mKind = function (k) { var i = MF.kinds.indexOf(k); if (i >= 0) MF.kinds.splice(i, 1); else MF.kinds.push(k); matChips(); };
+    AF.mAllSizes = function () { MF.sizes = MF.sizes.length === allSizes().length ? [] : allSizes(); matChips(); };
+    AF.mQty = function () { MF.qTouched = true; AF.mCalc(); };
+    /* a new bag size re-splits the SAME count into bags + loose pieces (it never changes the stock by itself) */
+    AF.mPpb = function () {
+        if (MF.id && !MF.qTouched) { var pb = Number(($('aqf-m-ppb') || {}).value) || 0, st = MF.stock0 || 0, b = $('aqf-m-bags'), l = $('aqf-m-loose'); if (b && l) { if (pb >= 1) { b.value = Math.floor(st / pb + 1e-9); l.value = rnd(st - Math.floor(st / pb + 1e-9) * pb, 3); } else { b.value = ''; l.value = st; } } }
+        AF.mCalc();
+    };
+    AF.mCalc = function () {
+        try {
+            var why = $('aqf-m-why');
+            if (why) { var pb0 = Number(($('aqf-m-ppb') || {}).value) || 0, c0 = (Number(($('aqf-m-bags') || {}).value) || 0) * (pb0 >= 1 ? pb0 : 0) + (Number(($('aqf-m-loose') || {}).value) || 0); why.style.display = Math.abs(rnd(c0, 3) - (MF.stock0 || 0)) > 1e-9 ? '' : 'none'; }
+        } catch (e) { /* hint only */ }
+        var cost = Number(($('aqf-m-cost') || {}).value), cu = ($('aqf-m-cu') || {}).value, ppb = Number(($('aqf-m-ppb') || {}).value), bags = Number(($('aqf-m-bags') || {}).value) || 0, loose = Number(($('aqf-m-loose') || {}).value) || 0;
+        var a = $('aqf-m-calc'), b = $('aqf-m-tot');
+        if (a) a.innerHTML = (cost >= 0 && isFinite(cost) && ($('aqf-m-cost') || {}).value !== '') ? (cu === 'bag' ? (ppb >= 1 ? '= <b>' + KES(cost / ppb) + '</b> for one piece' : '<span style="color:#b03a2e">Type how many pieces are in one bag.</span>') : 'Price of one piece: <b>' + KES(cost) + '</b>') : 'No price yet: you can add it later. Production still works, it just shows no cost.';
+        if (b) b.innerHTML = (bags || loose) ? 'Total in stock: <b>' + (rnd(bags * (ppb || 0) + loose, 3)) + ' pieces</b>' + (bags && !(ppb >= 1) ? ' <span style="color:#b03a2e">(type how many pieces are in a bag)</span>' : '') : '';
+    };
+    AF.openMat = function (id, pre) {
+        var m = id ? mats().filter(function (x) { return x.id === id; })[0] : null, isNew = !m, ks = m ? keysOf(m) : [], bag = !!m && m.buyUnit === 'bag' && Number(m.perBag) >= 1;
+        var bagU = m ? (m.units || []).filter(function (u) { return u && u.name === 'bag'; })[0] : null;
+        MF = { id: id || '', cat: (m && m.category) || (pre && pre.cat) || 'bottle', sizes: sizesOfKeys(ks), kinds: kindsOfKeys(ks) };
+        if (m && !Array.isArray(m.forItems)) {                       // an older material: show where it is already used
+            var olds = AMx() ? AMx().productsFor(m.id) : []; olds.forEach(function (p) { var k = keyOfProduct(p); if (k) { var a = k.split(':'); if (MF.sizes.indexOf(Number(a[0])) < 0) MF.sizes.push(Number(a[0])); if (MF.kinds.indexOf(a[1]) < 0) MF.kinds.push(a[1]); } });
+        }
+        var ppbVal = bag ? Number(m.perBag) : (bagU ? Number(bagU.factor) : '');
+        /* the count as it is now, ready to correct: full bags + loose pieces (or all as pieces when there is no bag size) */
+        var qBags = '', qLoose = '';
+        if (m) { var st = stockOf(m), pb = Number(ppbVal) || 0; if (pb >= 1) { qBags = Math.floor(st / pb + 1e-9); qLoose = rnd(st - qBags * pb, 3); } else qLoose = st; MF.stock0 = st; } else MF.stock0 = 0;
+        MF.qTouched = false;
+        var costVal = m ? (bag ? (Number(m.bagCost) || '') : (Number(m.unitCost) || '')) : '';
+        ov('<h3>' + (isNew ? '➕ Add a material' : '✏️ Edit ' + esc(m.name)) + '</h3><p class="aqf-sub">Six quick steps. Only the name is required.</p>' +
+            '<label>1 · Material name</label><input id="aqf-m-name" value="' + esc(m ? m.name : (pre && pre.name) || '') + '" placeholder="e.g. Grip plain 500ml" autocomplete="off">' +
+            '<label>What is it?</label><div class="aqf-chips" id="aqf-m-cats"></div>' +
+            '<label>2 · Code <small style="font-weight:600;color:var(--aqf-mut)">(optional)</small></label><input id="aqf-m-code" value="' + esc(m && m.sku && !/^MAT-/.test(m.sku) ? m.sku : '') + '" placeholder="leave empty and one is made for you" autocomplete="off">' +
+            '<label>3 · Item it is used for</label><div class="aqf-hint" style="margin:-2px 0 4px">Size (tick one or more)</div><div class="aqf-chips" id="aqf-m-sizes"></div>' +
+            '<div class="aqf-hint" style="margin:6px 0 4px">Item type (tick one or more)</div><div class="aqf-chips" id="aqf-m-kinds"></div><div class="aqf-ok" id="aqf-m-summary"></div>' +
+            '<label>4 · Cost</label><div class="aqf-three"><div><input id="aqf-m-cost" type="number" min="0" step="any" inputmode="decimal" value="' + esc(costVal) + '" placeholder="amount" oninput="AquaFlow.mCalc()"></div>' +
+            '<div><select id="aqf-m-cu" onchange="AquaFlow.mCalc()"><option value="bag"' + (bag || (!m) ? ' selected' : '') + '>per bag / pack</option><option value="piece"' + (m && !bag ? ' selected' : '') + '>per piece</option></select></div>' +
+            '<div><input id="aqf-m-ppb" type="number" min="1" step="any" inputmode="decimal" value="' + esc(ppbVal) + '" placeholder="pieces in one bag" oninput="AquaFlow.mPpb()"></div></div><div class="aqf-hint" id="aqf-m-calc"></div>' +
+            '<label>5 · Quantity available' + (isNew ? '' : ' <small style="font-weight:600;color:var(--aqf-mut)">(now ' + esc(AMx() ? AMx().showQty(m, stockOf(m)) : stockOf(m)) + ')</small>') + '</label>' +
+                '<div class="aqf-two"><div><div class="aqf-hint" style="margin:0 0 3px">Full bags</div><input id="aqf-m-bags" type="number" min="0" step="any" inputmode="decimal" placeholder="full bags" value="' + esc(qBags) + '" oninput="AquaFlow.mQty()"></div><div><div class="aqf-hint" style="margin:0 0 3px">Loose pieces</div><input id="aqf-m-loose" type="number" min="0" step="any" inputmode="decimal" placeholder="loose pieces" value="' + esc(qLoose) + '" oninput="AquaFlow.mQty()"></div></div><div class="aqf-hint" id="aqf-m-tot"></div>' +
+                (isNew ? '' : '<div id="aqf-m-why" style="display:none"><label style="margin-top:6px">Why did the count change?</label><input id="aqf-m-reason" placeholder="e.g. stock count, damaged, found extra" autocomplete="off"><div class="aqf-hint">Saved in the history with your name. To add a new delivery with its cost, use 📦 Restock below.</div></div>') +
+            /* zip 364: everything about a material in this one Edit window - details, count, reorder level, supplier, restock, history, active */
+            '<div class="aqf-two" style="margin-top:4px"><div><label>Reorder level <small style="font-weight:600;color:var(--aqf-mut)">(pieces)</small></label><input id="aqf-m-reorder" type="number" min="0" step="any" inputmode="decimal" value="' + esc(m ? (Number(m.reorderLevel) || '') : '') + '" placeholder="warn when stock is at or below"></div>' +
+            '<div><label>Supplier</label><select id="aqf-m-sup">' + supOpts(m ? m.supplierId : '') + '</select></div></div>' +
+            '<label>Client\'s own bottle? <small style="font-weight:600;color:var(--aqf-mut)">(bottles only: a client\'s branded bottle is counted but not sold at the counter)</small></label><select id="aqf-m-client"><option value="">No - general bottle</option>' + custs().filter(function (c) { return c && !c._deleted && !c.removed && c.name; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }).map(function (c) { return '<option value="' + esc(c.id) + '"' + (m && m.clientId === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+            '<div class="aqf-err" id="aqf-m-err"></div><div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.mSave()">6 · 💾 Save material</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>' +
+            (isNew ? '' : '<div class="aqf-more"><b>More for this material</b><div class="aqf-act" style="margin-top:6px;flex-wrap:wrap"><button class="aqf-btn sm" onclick="AquaFlow.mMore(\'restock\')">📦 Restock (new delivery)</button><button class="aqf-btn sm" onclick="AquaFlow.mMore(\'history\')">📜 History</button><button class="aqf-btn sm" onclick="AquaFlow.mMore(\'toggle\')">' + (m.active === false ? '▶ Activate' : '⏸ Deactivate') + '</button></div></div>'));
+        matChips(); AF.mCalc();
+    };
+    function supOpts(sel) { try { return typeof supplierOptionsHtml === 'function' ? supplierOptionsHtml(sel || '') : '<option value="">—</option>'; } catch (e) { return '<option value="">—</option>'; } }
+    AF.mMore = function (what) {
+        var id = MF.id, A = AMx(); if (!id || !A) return;
+        if (what === 'toggle') { closeOv(); A.toggle(id); var m2 = mats().filter(function (x) { return x.id === id; })[0]; if (m2) AF.openMat(id); return; }
+        closeOv();
+        if (what === 'restock') A.openRestock(id); else if (what === 'history') A.openHistory(id);
+    };
+    AF.saveMaterial = function (o) {
+        // o: { id?, name, code, cat, sizes[], kinds[], cost, costPer: 'bag'|'piece', ppb, bags, loose }  -> { ok, material | error }
+        var A = AMx(); if (!A) return { ok: false, error: 'Materials are not ready yet.' };
+        var name = String(o.name || '').trim(); if (!name) return { ok: false, error: 'Type the material name.' };
+        var cat = o.cat || 'other';
+        if ((o.sizes || []).length && !(o.kinds || []).length) return { ok: false, error: 'You picked a size: also pick the item type (sealed bottle, normal bale/case or custom bale/case).' };
+        if (!(o.sizes || []).length && (o.kinds || []).length) return { ok: false, error: 'You picked an item type: also pick the size.' };
+        var keys = crossKeys(o.sizes || [], o.kinds || []);
+        var hasCost = o.cost !== '' && o.cost != null && isFinite(Number(o.cost)), cost = hasCost ? Number(o.cost) : 0;
+        if (hasCost && cost < 0) return { ok: false, error: 'Cost cannot be negative.' };
+        var ppb = Number(o.ppb) > 0 ? Number(o.ppb) : 0, per = o.costPer === 'piece' ? 'piece' : 'bag';
+        if (hasCost && per === 'bag' && !(ppb >= 1)) return { ok: false, error: 'The cost is per bag, so type how many pieces are in one bag (or change it to "per piece").' };
+        var bags = Number(o.bags) || 0, loose = Number(o.loose) || 0;
+        if (bags < 0 || loose < 0) return { ok: false, error: 'Quantity cannot be negative.' };
+        if (bags > 0 && !(ppb >= 1)) return { ok: false, error: 'You entered bags, so type how many pieces are in one bag.' };
+        var unit = hasCost ? (per === 'bag' ? cost / ppb : cost) : 0, m;
+        var units = function (cur) { var keep = (cur || []).filter(function (u) { return u && u.name !== 'bag'; }); if (ppb >= 1) keep.unshift({ name: 'bag', factor: ppb }); return keep; };
+        if (!o.id) {
+            var base = rnd(bags * ppb + loose, 3);
+            var r = A.createMaterial({ txId: newId('tx'), name: name, category: cat, sku: String(o.code || '').trim(), baseUnit: 'pcs', units: units([]), unitCost: unit, openingQty: base > 0 ? base : 0, openingUnit: '', openingTotalCost: base > 0 ? rnd(base * unit, 4) : undefined });
+            if (!r.ok) return r; m = r.material;
+        } else {
+            m = mats().filter(function (x) { return x.id === o.id; })[0]; if (!m) return { ok: false, error: 'Material not found.' };
+            var code = String(o.code || '').trim();
+            if (code && mats().some(function (x) { return x.id !== m.id && isLive(x) && String(x.sku || '').toLowerCase() === code.toLowerCase(); })) return { ok: false, error: 'The code "' + code + '" is already used by another material.' };
+            var dup = mats().filter(function (x) { return x.id !== m.id && isLive(x) && siteOf(x) === siteOf(m) && norm(x.name) === norm(name) && (x.category || 'other') === cat; })[0];
+            if (dup) return { ok: false, error: 'There is already a ' + catLabel(cat).toLowerCase() + ' called "' + name + '".' };
+            m.name = name; m.category = cat; if (code) m.sku = code; m.needsReview = false; m.units = units(m.units); m.updatedAt = Date.now();
+        }
+        if (hasCost || o.id) { if (hasCost) { m.unitCost = unit; if (per === 'bag') { m.buyUnit = 'bag'; m.perBag = ppb; m.bagCost = cost; } else { m.buyUnit = 'piece'; m.perBag = ppb >= 1 ? ppb : m.perBag; } } }
+        else if (ppb >= 1) { m.perBag = ppb; }
+        m.forItems = keys; m.updatedAt = Date.now();
+        AF.syncRecipes(); save();
+        return { ok: true, material: m };
+    };
+    AF.mSave = function () {
+        var v = function (i) { return ($(i) || {}).value || ''; }, err = $('aqf-m-err');
+        var editing = !!MF.id, newCount = null;
+        if (editing) {
+            /* the count typed in the same window: a correction, kept in the history as an adjustment with the reason */
+            var bg = Number(v('aqf-m-bags')) || 0, ls = Number(v('aqf-m-loose')) || 0, pb = Number(v('aqf-m-ppb')) || 0;
+            if (bg < 0 || ls < 0) { if (err) err.textContent = 'Quantity cannot be negative.'; return; }
+            if (bg > 0 && !(pb >= 1)) { if (err) err.textContent = 'You entered bags, so type how many pieces are in one bag.'; return; }
+            newCount = rnd(bg * (pb >= 1 ? pb : 0) + ls, 3);
+            if (Math.abs(newCount - (MF.stock0 || 0)) < 1e-9) newCount = null;
+            else { try { if (typeof isAdminServing === 'function' && !isAdminServing()) { if (err) err.textContent = 'Only the Admin can change the stock count. Use 📦 Restock for a new delivery.'; return; } } catch (e0) { /* allowed */ } }
+        }
+        var r = AF.saveMaterial({ id: MF.id, name: v('aqf-m-name'), code: v('aqf-m-code'), cat: MF.cat, sizes: MF.sizes.slice(), kinds: MF.kinds.slice(), cost: v('aqf-m-cost'), costPer: v('aqf-m-cu'), ppb: v('aqf-m-ppb'), bags: editing ? '' : v('aqf-m-bags'), loose: editing ? '' : v('aqf-m-loose') });
+        if (!r.ok) { if (err) err.textContent = r.error; return; }
+        var ro = v('aqf-m-reorder'); r.material.reorderLevel = ro === '' ? 0 : Math.max(0, Number(ro) || 0);
+        if ($('aqf-m-sup')) r.material.supplierId = v('aqf-m-sup') || null;
+        if ($('aqf-m-client')) { var cid = v('aqf-m-client') || null, cc = cid ? custs().filter(function (x) { return x.id === cid; })[0] : null; if ((r.material.clientId || null) !== cid) { r.material.clientId = cid; r.material.clientName = cc ? cc.name : null; try { if (window.AquaBottles) window.AquaBottles.refreshBottle(r.material.id); } catch (e1) { /* names follow on the next pass */ } } }
+        r.material.updatedAt = Date.now();
+        if (newCount !== null) {
+            var a = AMx().adjust({ txId: newId('tx'), materialId: r.material.id, newQty: newCount, reason: String(v('aqf-m-reason')).trim() || 'Count corrected in Edit' });
+            if (!a.ok && !a.duplicate) { if (err) err.textContent = 'Details saved, but the count was not changed: ' + a.error; save(); return; }
+        }
+        save();
+        toast('"' + r.material.name + '" saved.'); closeOv(); try { AMx().render(); } catch (e) { /* not on screen */ }
+    };
+
+    /* ================= CSV (materials + client bottles) ================= */
+    AF.parseCsv = function (text) {
+        text = String(text || '').replace(/^﻿/, ''); var rows = [], row = [], cur = '', q = false, i, c;
+        for (i = 0; i < text.length; i++) {
+            c = text[i];
+            if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+            else if (c === '"') q = true;
+            else if (c === ',') { row.push(cur); cur = ''; }
+            else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cur); cur = ''; if (row.some(function (x) { return String(x).trim() !== ''; })) rows.push(row); row = []; }
+            else cur += c;
+        }
+        row.push(cur); if (row.some(function (x) { return String(x).trim() !== ''; })) rows.push(row);
+        return rows;
+    };
+    var csvCell = function (v) { v = String(v == null ? '' : v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var csvLine = function (a) { return a.map(csvCell).join(','); };
+    var HEAD_MAT = ['Material name', 'Code', 'Type', 'Sizes', 'Used for', 'Cost', 'Cost per', 'Pieces per bag', 'Bags in stock', 'Loose pieces in stock'];
+    function headerMap(row, want) {
+        var idx = {}, alias = {
+            name: ['materialname', 'name', 'material'], code: ['code', 'sku', 'materialcode'], type: ['type', 'category', 'what'], sizes: ['sizes', 'size'], usedfor: ['usedfor', 'item', 'items', 'itemassociatedwith', 'associatedwith'],
+            cost: ['cost', 'price', 'costprice'], costper: ['costper', 'per', 'costunit', 'unit'], ppb: ['piecesperbag', 'perbag', 'piecesinbag', 'bagsize'], bags: ['bagsinstock', 'bags', 'qtybags'], loose: ['loosepiecesinstock', 'loose', 'loosepieces', 'qtyloose'],
+            client: ['client', 'customer', 'clientname', 'customername'], bottle: ['bottle', 'bottlename', 'material', 'materialname']
+        };
+        row.forEach(function (h, i) { var k = String(h).toLowerCase().replace(/[^a-z]/g, ''); want.forEach(function (w) { if (idx[w] == null && (alias[w] || [w]).indexOf(k) >= 0) idx[w] = i; }); });
+        return idx;
+    }
+    function siteMats() { var s = siteNow(); return mats().filter(function (m) { return isLive(m) && siteOf(m) === s; }); }
+    AF.csvPlan = function (text) {
+        var rows = AF.parseCsv(text), out = { rows: [], errors: [], warnings: [], newCount: 0, updCount: 0, bad: 0 };
+        if (!rows.length) { out.errors.push('The file is empty.'); return out; }
+        var h = headerMap(rows[0], ['name', 'code', 'type', 'sizes', 'usedfor', 'cost', 'costper', 'ppb', 'bags', 'loose']);
+        if (h.name == null) { out.errors.push('The first row must be the column names, starting with "Material name".'); return out; }
+        var site = siteNow(); if (!site || site === 'both') { out.errors.push('Pick Shop or Production at the top first: materials belong to one site.'); return out; }
+        var seen = {}, g = function (r, k) { return h[k] == null ? '' : String(r[h[k]] == null ? '' : r[h[k]]).trim(); };
+        rows.slice(1).forEach(function (r, i) {
+            var n = i + 2, it = { n: n, name: g(r, 'name'), code: g(r, 'code'), issues: [] };
+            if (!it.name) { return; }
+            it.cat = parseCat(g(r, 'type')); if (!it.cat) it.issues.push('Type must be Bottle, Cap, Seal, Label, Wrapping or Other.');
+            var sz = g(r, 'sizes'), kd = g(r, 'usedfor'), sizes = [];
+            sz.split(/[;,|\/]+/).forEach(function (s) { s = s.trim(); if (!s) return; if (/^all$/i.test(s)) { STD_SIZES.forEach(function (x) { if (sizes.indexOf(x) < 0) sizes.push(x); }); return; } var v = parseSize(s); if (!v) it.issues.push('Size "' + s + '" is not understood (use 500ml, 1000ml, 1500ml, 5L, 10L, 18.9L, 20L).'); else if (sizes.indexOf(v) < 0) sizes.push(v); });
+            var kinds = parseKinds(kd); if (kd && !kinds.length) it.issues.push('"Used for" must say sealed bottle, normal bale, custom bale (or all).');
+            if (sizes.length && !kinds.length) it.issues.push('Sizes are given but "Used for" is empty.'); if (!sizes.length && kinds.length) it.issues.push('"Used for" is given but Sizes is empty.');
+            it.sizes = sizes.sort(function (a, b) { return a - b; }); it.kinds = kinds;
+            var cs = g(r, 'cost'); it.cost = cs === '' ? '' : Number(cs.replace(/,/g, '')); if (cs !== '' && (!isFinite(it.cost) || it.cost < 0)) it.issues.push('Cost "' + cs + '" is not a number.');
+            var cp = g(r, 'costper').toLowerCase(); it.costPer = /^(piece|pc|pcs|each|item|one)/.test(cp) ? 'piece' : /^(bag|pack|box|bundle|roll|carton)/.test(cp) ? 'bag' : cp ? '?' : 'piece';
+            if (it.costPer === '?') it.issues.push('"Cost per" must be piece or bag.');
+            var pp = g(r, 'ppb'); it.ppb = pp === '' ? 0 : Number(pp); if (pp !== '' && !(it.ppb >= 1)) it.issues.push('Pieces per bag must be 1 or more.');
+            if (it.cost !== '' && it.costPer === 'bag' && !(it.ppb >= 1)) it.issues.push('Cost is per bag but "Pieces per bag" is empty.');
+            it.bags = Number(g(r, 'bags')) || 0; it.loose = Number(g(r, 'loose')) || 0;
+            if (it.bags > 0 && !(it.ppb >= 1)) it.issues.push('Bags in stock given but "Pieces per bag" is empty.');
+            var dupKey = norm(it.name) + '|' + it.cat; if (seen[dupKey]) it.issues.push('This material is listed twice (row ' + seen[dupKey] + ').'); else seen[dupKey] = n;
+            var ex = siteMats().filter(function (m) { return norm(m.name) === norm(it.name) && (m.category || 'other') === it.cat; })[0];
+            it.existingId = ex ? ex.id : ''; it.action = ex ? 'update' : 'new';
+            if (it.cost === '') out.warnings.push('Row ' + n + ' (' + it.name + '): no price yet, add it later.');
+            if (it.issues.length) out.bad++; else if (ex) out.updCount++; else out.newCount++;
+            out.rows.push(it);
+        });
+        if (!out.rows.length) out.errors.push('No materials found in the file.');
+        return out;
+    };
+    AF.csvApply = function (plan) {
+        var res = { created: 0, updated: 0, failed: [] };
+        plan.rows.forEach(function (it) {
+            if (it.issues.length) return;
+            var r;
+            if (it.action === 'update') {
+                var cur = mats().filter(function (m) { return m.id === it.existingId; })[0] || {};
+                var keepKeys = (!it.sizes.length && !it.kinds.length) ? keysOf(cur) : null;
+                r = AF.saveMaterial({ id: it.existingId, name: it.name, code: it.code, cat: it.cat, sizes: keepKeys ? sizesOfKeys(keepKeys) : it.sizes, kinds: keepKeys ? kindsOfKeys(keepKeys) : it.kinds, cost: it.cost === '' ? '' : it.cost, costPer: it.costPer, ppb: it.ppb || (cur.perBag || '') });
+                if (r.ok && keepKeys) { r.material.forItems = keepKeys; }
+                if (r.ok) res.updated++;
+            } else {
+                r = AF.saveMaterial({ name: it.name, code: it.code, cat: it.cat, sizes: it.sizes, kinds: it.kinds, cost: it.cost, costPer: it.costPer, ppb: it.ppb, bags: it.bags, loose: it.loose });
+                if (r.ok) res.created++;
+            }
+            if (!r.ok) res.failed.push('Row ' + it.n + ' (' + it.name + '): ' + r.error);
+        });
+        AF.syncRecipes(); save(); return res;
+    };
+    AF.csvExport = function () {
+        var lines = [csvLine(HEAD_MAT)];
+        siteMats().filter(function (m) { return m.active !== false; }).sort(function (a, b) { return String(a.category).localeCompare(String(b.category)) || String(a.name).localeCompare(String(b.name)); }).forEach(function (m) {
+            var ks = keysOf(m), bag = m.buyUnit === 'bag' && Number(m.perBag) >= 1, bagU = (m.units || []).filter(function (u) { return u && u.name === 'bag'; })[0], ppb = bag ? Number(m.perBag) : (bagU ? Number(bagU.factor) : '');
+            var stock = stockOf(m), bags = ppb >= 1 ? Math.floor(stock / ppb + 1e-9) : '', loose = ppb >= 1 ? rnd(stock - bags * ppb, 3) : stock;
+            lines.push(csvLine([m.name, m.sku && !/^MAT-/.test(m.sku) ? m.sku : '', catLabel(m.category), sizesOfKeys(ks).map(sizeLabel).join(';'), kindsOfKeys(ks).map(function (k) { return k === 'sealed' ? 'sealed bottle' : k === 'bale' ? 'normal bale' : 'custom bale'; }).join(';'),
+                bag ? (Number(m.bagCost) || '') : (Number(m.unitCost) || ''), bag ? 'bag' : 'piece', ppb, bags, loose]));
+        });
+        return lines.join('\r\n') + '\r\n';
+    };
+    AF.download = function (name, text) {
+        try { var b = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 800); }
+        catch (e) { toast('Could not start the download on this device.', true); }
+    };
+    AF.exportCsv = function () { AF.download('aqua_materials_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv', AF.csvExport()); };
+    var IMP = null;
+    AF.openImport = function (mode) {
+        IMP = { mode: mode || 'mat', plan: null };
+        var isMat = IMP.mode === 'mat';
+        ov('<h3>' + (isMat ? '⬆️ Import materials from CSV' : '⬆️ Import client bottles from CSV') + '</h3><p class="aqf-sub">' + (isMat ?
+            'Columns: Material name, Code, Type, Sizes, Used for, Cost, Cost per, Pieces per bag, Bags in stock, Loose pieces in stock. A material that already exists is updated (price and links); its stock is never touched.' :
+            'Columns: Client, Size, Bottle. A client who is not saved yet is created. The first bottle listed for a size is that client\'s default.') + '</p>' +
+            '<label>Choose the CSV file</label><input id="aqf-i-file" type="file" accept=".csv,text/csv,text/plain" onchange="AquaFlow.impFile(this)"><label>…or paste the CSV text here</label><textarea id="aqf-i-text" placeholder="paste here" oninput="AquaFlow.impCheck()"></textarea>' +
+            '<div id="aqf-i-out"></div><div class="aqf-err" id="aqf-i-err"></div><div class="aqf-act"><button class="aqf-btn go" id="aqf-i-go" disabled onclick="AquaFlow.impGo()">✅ Import now</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    };
+    AF.impFile = function (inp) { var f = inp.files && inp.files[0]; if (!f) return; var fr = new FileReader(); fr.onload = function () { $('aqf-i-text').value = String(fr.result || ''); AF.impCheck(); }; fr.onerror = function () { $('aqf-i-err').textContent = 'Could not read that file.'; }; fr.readAsText(f); };
+    AF.impCheck = function () {
+        var t = ($('aqf-i-text') || {}).value || '', out = $('aqf-i-out'), go = $('aqf-i-go'); if (!out) return;
+        if (!t.trim()) { out.innerHTML = ''; go.disabled = true; return; }
+        var plan = IMP.mode === 'mat' ? AF.csvPlan(t) : AF.clientCsvPlan(t); IMP.plan = plan;
+        if (plan.errors.length) { out.innerHTML = '<div class="aqf-warn">' + plan.errors.map(esc).join('<br>') + '</div>'; go.disabled = true; return; }
+        var good = plan.rows.filter(function (r) { return !r.issues.length; }).length;
+        out.innerHTML = '<div class="aqf-card"><b>' + good + '</b> row(s) ready' + (IMP.mode === 'mat' ? ' (' + plan.newCount + ' new, ' + plan.updCount + ' to update)' : '') + (plan.bad ? ', <span style="color:#b03a2e"><b>' + plan.bad + '</b> with problems (skipped)</span>' : '') + '</div>' +
+            (plan.bad ? '<div class="aqf-warn">' + plan.rows.filter(function (r) { return r.issues.length; }).map(function (r) { return 'Row ' + r.n + ' (' + esc(r.name || r.client) + '): ' + esc(r.issues.join(' ')); }).join('<br>') + '</div>' : '') +
+            ((plan.warnings || []).length ? '<details><summary class="aqf-hint">' + plan.warnings.length + ' note(s)</summary><div class="aqf-hint">' + plan.warnings.map(esc).join('<br>') + '</div></details>' : '');
+        go.disabled = good === 0;
+    };
+    AF.impGo = function () {
+        var go = $('aqf-i-go'); if (go) go.disabled = true; if (!IMP || !IMP.plan) return;
+        var res = IMP.mode === 'mat' ? AF.csvApply(IMP.plan) : AF.clientCsvApply(IMP.plan), miss = IMP.mode === 'mat' ? AF.unmatchedKeys() : [];
+        ov('<h3>✅ Import finished</h3><div class="aqf-card">' + (IMP.mode === 'mat' ? '<b>' + res.created + '</b> material(s) added, <b>' + res.updated + '</b> updated.' : '<b>' + res.saved + '</b> client bottle(s) saved, <b>' + res.createdClients + '</b> new client(s) created.') + '</div>' +
+            (res.failed.length ? '<div class="aqf-warn"><b>Not imported:</b><br>' + res.failed.map(esc).join('<br>') + '</div>' : '') +
+            (miss.length ? '<div class="aqf-warn">These items are linked to materials but have no product yet: <b>' + miss.map(itemLabel).map(esc).join(', ') + '</b>. Create them in Add New Items and they pick up their materials automatically.</div>' : '') +
+            '<div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.close()">Done</button></div>');
+        try { AMx().render(); } catch (e) { /* not on screen */ } try { AF.renderFlow(); } catch (e2) { /* not on screen */ }
+    };
+
+    /* ================= CLIENT DEFAULT BOTTLES ================= */
+    function prefList(c, size) { var a = c && c.bottlePrefs && c.bottlePrefs[size]; return Array.isArray(a) ? a.slice() : (a ? [a] : []); }
+    AF.prefsOf = prefList;
+    AF.setDefaultBottle = function (clientId, size, matId, makeDefault) {
+        var c = custs().filter(function (x) { return x.id === clientId; })[0]; if (!c || !matId) return false;
+        if (!c.bottlePrefs || typeof c.bottlePrefs !== 'object') c.bottlePrefs = {};
+        var l = prefList(c, size).filter(function (x) { return x !== matId; });
+        if (makeDefault || !l.length) l.unshift(matId); else l.push(matId);
+        c.bottlePrefs[size] = l; c.updatedAt = Date.now(); save(); return true;
+    };
+    function bottleMats(size) { return siteMats().filter(function (m) { return m.category === 'bottle' && m.active !== false && (!size || keysOf(m).some(function (k) { return Number(k.split(':')[0]) === Number(size); })); }); }
+    function findClient(name) { var n = norm(name); return n ? custs().filter(function (c) { return !c._deleted && !c.removed && norm(c.name) === n; })[0] : null; }
+    AF.clientCsvPlan = function (text) {
+        var rows = AF.parseCsv(text), out = { rows: [], errors: [], warnings: [], bad: 0 };
+        if (!rows.length) { out.errors.push('The file is empty.'); return out; }
+        var h = headerMap(rows[0], ['client', 'sizes', 'bottle']); if (h.client == null || h.bottle == null) { out.errors.push('The first row must have the columns: Client, Size, Bottle.'); return out; }
+        rows.slice(1).forEach(function (r, i) {
+            var n = i + 2, g = function (k) { return h[k] == null ? '' : String(r[h[k]] == null ? '' : r[h[k]]).trim(); }, it = { n: n, client: g('client'), bottle: g('bottle'), issues: [] };
+            if (!it.client && !it.bottle) return;
+            if (!it.client) it.issues.push('Client name is empty.');
+            var size = parseSize(g('sizes')), cand = siteMats().filter(function (m) { return m.category === 'bottle'; });
+            var mm = cand.filter(function (m) { return norm(m.name) === norm(it.bottle); })[0] || (size ? cand.filter(function (m) { return norm(m.name) === norm(it.bottle + ' ' + sizeLabel(size)); })[0] : null);
+            if (!mm) it.issues.push('Bottle "' + it.bottle + '" is not in Materials' + (size ? ' (looked for "' + it.bottle + ' ' + sizeLabel(size) + '" too)' : '') + '.');
+            else { it.matId = mm.id; if (!size) { var ss = sizesOfKeys(keysOf(mm)); if (ss.length === 1) size = ss[0]; } }
+            if (!size) it.issues.push('Size is missing and cannot be worked out from the bottle.');
+            it.size = size; it.exists = !!findClient(it.client);
+            if (it.issues.length) out.bad++; out.rows.push(it);
+        });
+        if (!out.rows.length) out.errors.push('No rows found.');
+        return out;
+    };
+    AF.clientCsvApply = function (plan) {
+        var res = { saved: 0, createdClients: 0, failed: [] };
+        plan.rows.forEach(function (it) {
+            if (it.issues.length) return;
+            var c = findClient(it.client);
+            if (!c) { c = { id: newId('c'), name: it.client, phone: '', tokens: 0, createdAt: Date.now() }; custs().push(c); res.createdClients++; }
+            AF.setDefaultBottle(c.id, it.size, it.matId, false); res.saved++;
+        });
+        save(); return res;
+    };
+    AF.exportClientCsv = function () {
+        var lines = [csvLine(['Client', 'Size', 'Bottle'])];
+        custs().forEach(function (c) { if (!c.bottlePrefs) return; Object.keys(c.bottlePrefs).sort(function (a, b) { return a - b; }).forEach(function (s) { prefList(c, s).forEach(function (id) { var m = mats().filter(function (x) { return x.id === id; })[0]; if (m) lines.push(csvLine([c.name, sizeLabel(s), m.name])); }); }); });
+        AF.download('aqua_client_bottles_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv', lines.join('\r\n') + '\r\n');
+    };
+    AF.openClients = function (q) {
+        q = String(q || '').toLowerCase();
+        var list = custs().filter(function (c) { return !c._deleted && !c.removed && (!q || String(c.name || '').toLowerCase().indexOf(q) >= 0); }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }).slice(0, 80);
+        ov('<h3>🧴 Client default bottles</h3><p class="aqf-sub">Clients who always want the same bottle. When you pick them in Production, their bottle is filled in for you (you can still change it).</p>' +
+            '<div class="aqf-act" style="margin:0 0 8px"><button class="aqf-btn sm" onclick="AquaFlow.openImport(\'client\')">⬆️ Import CSV</button><button class="aqf-btn sm" onclick="AquaFlow.exportClientCsv()">⬇️ Download CSV</button></div>' +
+            '<input id="aqf-c-q" placeholder="🔍 Search clients" value="' + esc(q) + '" oninput="AquaFlow.openClients(this.value)">' +
+            (list.length ? list.map(function (c) {
+                var bp = c.bottlePrefs || {}, txt = Object.keys(bp).sort(function (a, b) { return a - b; }).map(function (s) { return '<b>' + sizeLabel(s) + '</b>: ' + prefList(c, s).map(function (id, i) { var m = mats().filter(function (x) { return x.id === id; })[0]; return m ? esc(m.name) + (i === 0 ? '' : ' <span class="aqf-pill">also</span>') : ''; }).join(', '); }).join(' · ');
+                return '<div class="aqf-card" style="margin-top:8px"><b>' + esc(c.name || 'Client') + '</b> <span class="aqf-hint">' + esc(c.phone || '') + '</span><div class="aqf-hint">' + (txt || 'No saved bottle yet') + '</div><div class="aqf-act" style="margin-top:6px"><button class="aqf-btn sm" onclick="AquaFlow.editClient(\'' + attr(c.id) + '\')">✏️ Set bottles</button></div></div>';
+            }).join('') : '<p class="aqf-hint">No clients found. Add them in My Customers, or import the CSV (it creates missing clients).</p>') +
+            '<div class="aqf-act"><button class="aqf-btn" onclick="AquaFlow.close()">Close</button></div>');
+        var inp = $('aqf-c-q'); if (inp && q) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+    };
+    AF.editClient = function (id) {
+        var c = custs().filter(function (x) { return x.id === id; })[0]; if (!c) return;
+        var sizes = allSizes().filter(function (s) { return bottleMats(s).length; });
+        ov('<h3>🧴 ' + esc(c.name) + '</h3><p class="aqf-sub">Pick the default bottle for each size. Add "also used" bottles if they take more than one kind.</p>' + (sizes.length ? sizes.map(function (s) {
+            var cur = prefList(c, s), opts = bottleMats(s);
+            return '<div class="aqf-card"><b>' + sizeLabel(s) + '</b><label style="margin-top:6px">Default bottle</label><select onchange="AquaFlow.cSet(\'' + attr(id) + '\',' + s + ',this.value)"><option value="">— none —</option>' + opts.map(function (m) { return '<option value="' + esc(m.id) + '"' + (cur[0] === m.id ? ' selected' : '') + '>' + esc(m.name) + '</option>'; }).join('') + '</select>' +
+                '<div class="aqf-chips" style="margin-top:6px">' + opts.map(function (m) { var on = cur.indexOf(m.id) > 0; return cur[0] === m.id ? '' : '<button type="button" class="aqf-chip' + (on ? ' on' : '') + '" onclick="AquaFlow.cAlso(\'' + attr(id) + '\',' + s + ',\'' + attr(m.id) + '\')">' + (on ? '✔ ' : '+ ') + esc(m.name) + '</button>'; }).join('') + '</div></div>';
+        }).join('') : '<div class="aqf-warn">No bottles are linked to a size yet. Add bottles in Materials first.</div>') + '<div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.openClients()">Done</button></div>');
+    };
+    AF.cSet = function (id, size, matId) {
+        var c = custs().filter(function (x) { return x.id === id; })[0]; if (!c) return; if (!c.bottlePrefs) c.bottlePrefs = {};
+        var rest = prefList(c, size).filter(function (x) { return x !== matId; });
+        c.bottlePrefs[size] = matId ? [matId].concat(rest) : []; if (!c.bottlePrefs[size].length) delete c.bottlePrefs[size];
+        c.updatedAt = Date.now(); save(); AF.editClient(id);
+    };
+    AF.cAlso = function (id, size, matId) {
+        var c = custs().filter(function (x) { return x.id === id; })[0]; if (!c) return; var l = prefList(c, size), i = l.indexOf(matId);
+        if (i > 0) l.splice(i, 1); else if (i < 0) l.push(matId); if (!c.bottlePrefs) c.bottlePrefs = {}; c.bottlePrefs[size] = l; c.updatedAt = Date.now(); save(); AF.editClient(id);
+    };
+
+    /* ================= PRODUCTION WATER TANK ================= */
+    function prodSiteId() { try { return (typeof activeSiteId !== 'undefined' && activeSiteId !== 'both') ? activeSiteId : null; } catch (e) { return null; } }
+    function siteTankList(site) { return tankList().filter(function (t) { return t && !t.removed && t.siteId === site; }).sort(function (a, b) { return (b.productionOnly ? 1 : 0) - (a.productionOnly ? 1 : 0); }); }
+    function litresPerUnit(p) { var s = sizeOfProduct(p), k = kindOfProduct(p); if (!s) return 0; var per = s / 1000; if (k !== 'sealed') { var bpb = 24; try { bpb = productBottlesPerBale(p); } catch (e) { bpb = p.bottlesPerBale || 24; } per *= bpb; } return per; }
+    AF.litresFor = function (p, qty) { return q3(litresPerUnit(p) * (Number(qty) || 0)); };
+    function tankLog(t, litres, supplier, cost) { t.refillLog = t.refillLog || []; t.refillLog.push({ id: newId('tl'), timestamp: nowIso(), litersAdded: litres, cost: cost || 0, supplier: supplier, servedBy: who() }); }
+    AF.createTank = function (o) {
+        var site = prodSiteId(); if (!site) return { ok: false, error: 'Pick Production at the top first (not "All sites").' };
+        var name = String(o.name || '').trim() || 'Production water tank', inf = !!o.infinite, cap = Number(o.capacity), start = Number(o.start) || 0;
+        if (!inf && !(cap > 0)) return { ok: false, error: 'Type the tank size in litres, or tick "unlimited".' };
+        if (!inf && start > cap) return { ok: false, error: 'The starting water is more than the tank can hold.' };
+        var t = { id: 'tank-' + newId('p'), siteId: site, name: name, capacityLiters: inf ? (cap > 0 ? cap : 100000) : cap, currentVolumeLiters: inf ? (cap > 0 ? cap : 100000) : start, lowStockThresholdLiters: inf ? 0 : Math.round(cap * 0.1), refillLog: [], productionOnly: true, infinite: inf };
+        tankList().push(t); if (!inf && start > 0) tankLog(t, start, 'Opening level', 0); save(); return { ok: true, tank: t };
+    };
+    AF.addWater = function (tankId, litres, cost, supplier) {
+        var t = tankList().filter(function (x) { return x.id === tankId; })[0]; litres = Number(litres);
+        if (!t) return { ok: false, error: 'Tank not found.' }; if (!(litres > 0)) return { ok: false, error: 'Type how many litres were added.' };
+        if (!t.infinite && (t.currentVolumeLiters || 0) + litres > (t.capacityLiters || 0) + 1e-9) return { ok: false, error: 'The tank holds ' + t.capacityLiters + ' L and has ' + q3(t.currentVolumeLiters) + ' L, so ' + litres + ' L more does not fit.' };
+        t.currentVolumeLiters = q3((t.currentVolumeLiters || 0) + litres); tankLog(t, litres, supplier || 'Water added', Number(cost) || 0); save(); return { ok: true };
+    };
+    AF.openNewTank = function () {
+        ov('<h3>🚰 New production water tank</h3><p class="aqf-sub">Used only for making bottles and bales. It never mixes with the water you sell as refills.</p>' +
+            '<label>Tank name</label><input id="aqf-t-name" value="Production water tank">' +
+            '<label class="aqf-chk" style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="checkbox" id="aqf-t-inf" style="width:20px;min-height:20px" onchange="AquaFlow.tInf()"> Unlimited water (borehole / mains, level not tracked)</label>' +
+            '<div id="aqf-t-cap"><div class="aqf-two"><div><label>Tank size (litres)</label><input id="aqf-t-size" type="number" min="1" step="any" inputmode="decimal" placeholder="e.g. 10000"></div><div><label>Water in it now (litres)</label><input id="aqf-t-start" type="number" min="0" step="any" inputmode="decimal" placeholder="0"></div></div></div>' +
+            '<div class="aqf-err" id="aqf-t-err"></div><div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.tSave()">💾 Create tank</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    };
+    AF.tInf = function () { var on = $('aqf-t-inf').checked; $('aqf-t-cap').style.opacity = on ? '.4' : '1'; };
+    AF.tSave = function () {
+        var r = AF.createTank({ name: $('aqf-t-name').value, infinite: $('aqf-t-inf').checked, capacity: $('aqf-t-size').value, start: $('aqf-t-start').value });
+        if (!r.ok) { $('aqf-t-err').textContent = r.error; return; } F.tankId = r.tank.id; toast('Tank created.'); closeOv(); AF.renderFlow();
+    };
+    AF.openAddWater = function (tankId) {
+        var t = tankList().filter(function (x) { return x.id === tankId; })[0]; if (!t) return;
+        ov('<h3>💧 Add water to ' + esc(t.name) + '</h3><p class="aqf-sub">' + (t.infinite ? 'This tank is unlimited: no need to add water.' : 'Now ' + q3(t.currentVolumeLiters) + ' L of ' + t.capacityLiters + ' L.') + '</p>' +
+            '<div class="aqf-two"><div><label>Litres added</label><input id="aqf-w-l" type="number" min="0" step="any" inputmode="decimal"></div><div><label>Cost (KES, optional)</label><input id="aqf-w-c" type="number" min="0" step="any" inputmode="decimal"></div></div><label>From (supplier, optional)</label><input id="aqf-w-s" placeholder="e.g. water bowser">' +
+            '<div class="aqf-err" id="aqf-w-err"></div><div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.wSave(\'' + attr(tankId) + '\')">💾 Add water</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    };
+    AF.wSave = function (id) { var r = AF.addWater(id, $('aqf-w-l').value, $('aqf-w-c').value, $('aqf-w-s').value); if (!r.ok) { $('aqf-w-err').textContent = r.error; return; } toast('Water added.'); closeOv(); AF.renderFlow(); try { renderTankTab(); } catch (e) { /* not on screen */ } };
+
+    /* ================= PRODUCTION: the 9 steps ================= */
+    var F = { code: '', qty: '', clientId: '', picks: {}, tankId: '', extras: [], remember: null, tx: null, notes: '' };
+    var STEP_CATS = ['bottle', 'seal', 'cap', 'label', 'packaging'];
+    function lineFor(p, cat) { return (p.productionRecipe || []).filter(function (r) { return r && r.lineId && r.category === cat; })[0]; }
+    function flowProducts() {
+        return prods().filter(function (p) { var k = kindOfProduct(p); return k && k !== 'custom' && !p.customQuote && !p.bottleOf && keyOfProduct(p); })   /* zip 365: produce the plain item; it goes to the bottle picked */.sort(function (a, b) { return sizeOfProduct(a) - sizeOfProduct(b) || (kindOfProduct(a) < kindOfProduct(b) ? -1 : 1) || String(a.name).localeCompare(String(b.name)); });
+    }
+    function pickMap(p) { var m = {}; STEP_CATS.forEach(function (cat) { if (F.picks[cat] !== undefined) { var ln = lineFor(p, cat); if (ln) m[ln.lineId] = F.picks[cat]; } }); return m; }
+    function clientOf() { return F.clientId ? custs().filter(function (c) { return c.id === F.clientId; })[0] : null; }
+    function preload(p) {                                                // the client's saved bottle, if any (always changeable)
+        var c = clientOf(), size = sizeOfProduct(p); F.picks = {}; F.fromClient = '';
+        if (!c || !p) return;
+        var ln = lineFor(p, 'bottle'); if (!ln) return;
+        var ids = prefList(c, size), pk = ids.filter(function (id) { return (ln.eligible || []).indexOf(id) >= 0 && mats().some(function (m) { return m.id === id && isActive(m); }); })[0];
+        if (pk) { F.picks.bottle = pk; F.fromClient = pk; }
+    }
+    AF.fProduct = function (code) { F.code = code; var p = prods().filter(function (x) { return x.code === code; })[0]; if (p) syncOne(p); preload(p); F.remember = null; AF.renderFlow(); };
+    AF.fQty = function (v) { F.qty = v; AF.renderFlow(); };
+    AF.fClient = function (id) { F.clientId = id; var p = prods().filter(function (x) { return x.code === F.code; })[0]; preload(p); F.remember = null; AF.renderFlow(); };
+    AF.fPick = function (cat, v) { if (v === '__none') delete F.picks[cat]; else F.picks[cat] = v; AF.renderFlow(); };
+    AF.fTank = function (id) { F.tankId = id; AF.renderFlow(); };
+    AF.fRemember = function (on) { F.remember = !!on; };
+    AF.fNotes = function (v) { F.notes = v; };
+    AF.fExtraAdd = function () { F.extras.push({ materialId: '', qty: '' }); AF.renderFlow(); };
+    AF.fExtraSet = function (i, k, v) { if (F.extras[i]) F.extras[i][k] = v; AF.renderFlow(); };
+    AF.fExtraDel = function (i) { F.extras.splice(i, 1); AF.renderFlow(); };
+    AF.fReset = function () { F = { code: F.code, qty: '', clientId: '', picks: {}, tankId: F.tankId, extras: [], remember: null, tx: null, notes: '' }; AF.renderFlow(); };
+
+    function matLineText(m) { return esc(m.name) + ' · ' + esc(AMx() ? AMx().showQty(m, stockOf(m)) : stockOf(m)) + (costPiece(m) > 0 ? ' · ' + KES(costPiece(m)) + '/pc' : ''); }
+    function stepHtml(n, done, title, body, na) { return '<div class="aqf-step' + (done ? ' done' : '') + (na ? ' na' : '') + '" style="animation-delay:' + (n * 40) + 'ms"><div class="aqf-n">' + (done ? '✓' : n) + '</div><h4>' + title + '</h4>' + body + '</div>'; }
+    function catStep(n, cat, title, p, plan, qty) {
+        var ico = CAT_ICON[cat], row = plan && plan.lines.filter(function (l) { return l.category === cat; })[0], need = LINE_RULES[cat] && !LINE_RULES[cat].optional;
+        if (!p) return stepHtml(n, false, ico + ' ' + title, '<div class="aqf-hint">Pick what you are producing first.</div>');
+        if (cat === 'packaging' && kindOfProduct(p) === 'sealed') return stepHtml(n, true, ico + ' ' + title, '<div class="aqf-hint">Not needed: wrapping is only for bales / cases.</div>', true);
+        if (!row) {
+            var must = cat === 'bottle' || cat === 'cap';
+            return stepHtml(n, !must, ico + ' ' + title, (must ? '<div class="aqf-bad">No ' + esc(title.toLowerCase()) + ' is linked to ' + esc(itemLabel(keyOfProduct(p))) + ' yet.</div><div class="aqf-act" style="margin-top:6px"><button class="aqf-btn sm" onclick="AquaFlow.goMaterials()">Open Materials to link one</button></div>' : '<div class="aqf-hint">None linked to ' + esc(itemLabel(keyOfProduct(p))) + ': skipped. (Link one in Materials if you use it.)</div>'));
+        }
+        var ln = lineFor(p, cat), cur = F.picks[cat], opt = !!(ln && ln.optional), sel;
+        if (!row.candidates.length) sel = '<div class="aqf-bad">' + esc(row.error || 'No active material available.') + '</div>';
+        else {
+            sel = '<select onchange="AquaFlow.fPick(\'' + cat + '\',this.value)">' + (cur === undefined && row.candidates.length > 1 ? '<option value="__none">— choose the ' + esc(title.toLowerCase()) + ' used —</option>' : '') + (opt ? '<option value=""' + (cur === '' ? ' selected' : '') + '>— none / not used —</option>' : '') +
+                row.candidates.map(function (m) { return '<option value="' + esc(m.id) + '"' + ((row.material && row.material.id === m.id && cur !== '') ? ' selected' : '') + '>' + matLineText(m).replace(/&amp;/g, '&amp;') + '</option>'; }).join('') + '</select>';
+        }
+        var info = '';
+        if (row.material) info = row.short ? '<div class="aqf-bad">Not enough: need ' + row.need + ', have ' + row.have + ' (short by ' + row.short + ').</div>' : '<div class="aqf-ok">✔ Uses ' + row.need + ' · ' + esc(AMx().showQty(row.material, row.have)) + ' available</div>';
+        else if (row.skipped) info = '<div class="aqf-hint">Skipped.</div>';
+        else if (row.error && row.candidates.length) info = '<div class="aqf-hint">' + esc(row.error) + '</div>';
+        var fromC = cat === 'bottle' && F.fromClient && cur === F.fromClient && clientOf() ? '<div class="aqf-ok">⭐ ' + esc(clientOf().name) + '\'s saved bottle (you can change it)</div>' : '';
+        var done = !!row.material || !!row.skipped || (opt && cur === '');
+        return stepHtml(n, done && !row.error, ico + ' ' + title + (opt ? ' <small>(optional)</small>' : ''), sel + fromC + info);
+    }
+    AF.goMaterials = function () { try { var b = $('materials-tab-btn'); if (b) b.click(); } catch (e) { /* ignore */ } };
+
+    AF.renderFlow = function () {
+        var root = $('aqf-root'); if (!root) return;
+        var A = AMx(), site = prodSiteId(), onProd = false;
+        try { onProd = !!site && currentSite().type === 'production'; } catch (e) { onProd = false; }
+        if (!A) { root.innerHTML = ''; return; }
+        AF.syncRecipes();
+        var plist = flowProducts(), p = prods().filter(function (x) { return x.code === F.code; })[0], qty = Number(F.qty) || 0, plan = null, h = '';
+        if (p && !plist.some(function (x) { return x.code === p.code; })) { p = null; F.code = ''; }
+        if (p) plan = A.plan(p, qty > 0 ? qty : 1, pickMap(p), {});
+        var sealedL = plist.filter(function (x) { return kindOfProduct(x) === 'sealed'; }), baleL = plist.filter(function (x) { return kindOfProduct(x) === 'bale'; });
+        var opt = function (list) { return list.map(function (x) { return '<option value="' + esc(x.code) + '"' + (x.code === F.code ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join(''); };
+        /* 1 */ var s1 = '<select id="aqf-p" onchange="AquaFlow.fProduct(this.value)"><option value="">— choose what you are making —</option>' + (sealedL.length ? '<optgroup label="Sealed bottles">' + opt(sealedL) + '</optgroup>' : '') + (baleL.length ? '<optgroup label="Bales / cases">' + opt(baleL) + '</optgroup>' : '') + '</select>' +
+            '<div class="aqf-two" style="margin-top:8px"><div><input id="aqf-q" type="number" min="0" step="any" inputmode="decimal" placeholder="' + (p && kindOfProduct(p) === 'sealed' ? 'how many bottles?' : 'how many bales / cases?') + '" value="' + esc(F.qty) + '" onchange="AquaFlow.fQty(this.value)"></div><div class="aqf-hint" style="align-self:center">' + (p && qty > 0 ? (kindOfProduct(p) === 'sealed' ? qty + ' bottle(s)' : qty + ' bale(s) = ' + rnd(qty * (function () { try { return productBottlesPerBale(p); } catch (e) { return 24; } })(), 2) + ' bottles') : '') + '</div></div>' +
+            (!plist.length ? '<div class="aqf-warn">No sealed bottle or bale items exist yet. Create them in Add New Items first.</div>' : '') +
+            (p && !sizeOfProduct(p) ? '<div class="aqf-bad">This item has no size. Put the size in its name (e.g. 500ml).</div>' : '');
+        h += stepHtml(1, !!p && qty > 0, '🏭 What are you producing?', s1);
+        /* 2 */ var cl = custs().filter(function (c) { return !c._deleted && !c.removed; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        h += stepHtml(2, !!F.clientId, '👤 Client <small>(optional)</small>', '<select onchange="AquaFlow.fClient(this.value)"><option value="">No client: general stock</option>' + cl.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === F.clientId ? ' selected' : '') + '>' + esc(c.name || 'Client') + '</option>'; }).join('') + '</select>' +
+            '<div class="aqf-hint">If the client has a saved bottle it is filled in below, and you can still change it. <a href="#" onclick="AquaFlow.openClients();return false">Manage client bottles</a></div>');
+        /* 3-7 */
+        h += catStep(3, 'bottle', 'Bottle', p, plan, qty);
+        h += catStep(4, 'seal', 'Seal', p, plan, qty);
+        h += catStep(5, 'cap', 'Cap', p, plan, qty);
+        h += catStep(6, 'label', 'Label', p, plan, qty);
+        h += catStep(7, 'packaging', 'Wrapping', p, plan, qty);
+        /* remember default bottle */
+        var c = clientOf(), bm = plan && plan.lines.filter(function (l) { return l.category === 'bottle'; })[0], rememberHtml = '';
+        if (c && p && bm && bm.material) {
+            var size = sizeOfProduct(p), cur = prefList(c, size), isDef = cur[0] === bm.material.id, chk = F.remember == null ? !cur.length : F.remember;
+            if (!isDef) rememberHtml = '<label class="aqf-hint" style="display:flex;gap:8px;align-items:center;margin:-4px 0 10px 4px"><input type="checkbox" style="width:20px;min-height:20px;flex:none" ' + (chk ? 'checked' : '') + ' onchange="AquaFlow.fRemember(this.checked)"> ' + (cur.length ? 'Make ' + esc(bm.material.name) + ' ' + esc(c.name) + '\'s new default for ' + sizeLabel(size) : 'Save ' + esc(bm.material.name) + ' as ' + esc(c.name) + '\'s default for ' + sizeLabel(size)) + '</label>';
+            if (F.remember == null) F.remember = chk;
+        }
+        h += rememberHtml;
+        /* 8 water */
+        var tk = site ? siteTankList(site) : [], tank = tk.filter(function (t) { return t.id === F.tankId; })[0];
+        if (!tank) { var onlyP = tk.filter(function (t) { return t.productionOnly; }); if (tk.length === 1) tank = tk[0]; else if (onlyP.length === 1) tank = onlyP[0]; if (tank) F.tankId = tank.id; }
+        var litres = p && qty > 0 ? AF.litresFor(p, qty) : 0, w;
+        if (!tk.length) w = '<div class="aqf-warn">No water tank at this site yet.</div>';
+        else {
+            w = '<select onchange="AquaFlow.fTank(this.value)"><option value="">— choose the tank —</option>' + tk.map(function (t) { return '<option value="' + esc(t.id) + '"' + (tank && t.id === tank.id ? ' selected' : '') + '>' + esc(t.name) + (t.productionOnly ? ' (production)' : '') + (t.infinite ? ' · unlimited' : ' · ' + q3(t.currentVolumeLiters) + ' L') + '</option>'; }).join('') + '</select>';
+            if (tank) {
+                var pct = tank.infinite ? 100 : Math.max(0, Math.min(100, (Number(tank.currentVolumeLiters) || 0) / (Number(tank.capacityLiters) || 1) * 100)), low = !tank.infinite && Number(tank.currentVolumeLiters) <= Number(tank.lowStockThresholdLiters || 0), after = tank.infinite ? Infinity : q3(tank.currentVolumeLiters - litres);
+                w += '<div class="aqf-tank"><div class="aqf-gauge' + (tank.infinite ? ' inf' : '') + (low ? ' low' : '') + '" style="--lvl:' + pct + '%"><b></b></div><div><div style="font-size:18px;font-weight:800">' + (tank.infinite ? '∞ unlimited' : q3(tank.currentVolumeLiters) + ' L') + '</div><div class="aqf-hint">' + (tank.infinite ? 'Level is not tracked.' : 'of ' + tank.capacityLiters + ' L' + (low ? ' · <b style="color:#b8651f">running low</b>' : '')) + '</div>' +
+                    (litres > 0 ? (after < 0 ? '<div class="aqf-bad">This run needs ' + litres + ' L: not enough water.</div>' : '<div class="aqf-ok">This run uses ' + litres + ' L' + (tank.infinite ? '' : ' → ' + after + ' L left') + '</div>') : '') + '</div></div>';
+            }
+        }
+        w += '<div class="aqf-act" style="margin-top:8px"><button class="aqf-btn sm" onclick="AquaFlow.openNewTank()">➕ New production tank</button>' + (tank && !tank.infinite ? '<button class="aqf-btn sm" onclick="AquaFlow.openAddWater(\'' + attr(tank.id) + '\')">💧 Add water</button>' : '') + '</div>';
+        h += stepHtml(8, !!tank && (tank.infinite || litres <= 0 || tank.currentVolumeLiters + 1e-9 >= litres) && !!p, '💧 Water <small>' + (litres > 0 ? '· needs ' + litres + ' L' : '') + '</small>', w);
+        /* 9 extras */
+        var allM = siteMats().filter(function (m) { return m.active !== false; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        h += stepHtml(9, F.extras.some(function (e) { return e.materialId && Number(e.qty) > 0; }), '➕ Any other material used <small>(optional)</small>',
+            F.extras.map(function (e, i) { return '<div class="aqf-rowx"><select onchange="AquaFlow.fExtraSet(' + i + ',\'materialId\',this.value)"><option value="">— material —</option>' + allM.map(function (m) { return '<option value="' + esc(m.id) + '"' + (e.materialId === m.id ? ' selected' : '') + '>' + esc(m.name) + ' (' + esc(AMx().showQty(m, stockOf(m))) + ')</option>'; }).join('') + '</select><input type="number" min="0" step="any" inputmode="decimal" placeholder="pcs" value="' + esc(e.qty) + '" onchange="AquaFlow.fExtraSet(' + i + ',\'qty\',this.value)"><button class="aqf-btn sm" onclick="AquaFlow.fExtraDel(' + i + ')" aria-label="Remove">✕</button></div>'; }).join('') +
+            '<button class="aqf-btn sm" onclick="AquaFlow.fExtraAdd()">＋ Add material</button>');
+        /* summary + record */
+        var blockers = AF.blockers(p, qty, plan, tank, litres), total = 0;
+        var exRows = F.extras.filter(function (e) { return e.materialId && Number(e.qty) > 0; });
+        var sumRows = '';
+        if (plan) plan.lines.forEach(function (r) { if (r.material) { total += r.cost; sumRows += '<tr><td>' + esc(r.material.name) + '</td><td class="r">' + r.need + '</td><td class="r">' + KES(r.cost) + '</td></tr>'; } });
+        exRows.forEach(function (e) { var m = mats().filter(function (x) { return x.id === e.materialId; })[0]; if (!m) return; var cst = rnd(costPiece(m) * Number(e.qty), 2); total += cst; sumRows += '<tr><td>' + esc(m.name) + ' <span class="aqf-pill">extra</span></td><td class="r">' + Number(e.qty) + '</td><td class="r">' + KES(cst) + '</td></tr>'; });
+        if (litres > 0) { var wc = rnd(litres * (Number(typeof waterCostPerLiter !== 'undefined' ? waterCostPerLiter : 0) || 0), 2); sumRows += '<tr><td>Water</td><td class="r">' + litres + ' L</td><td class="r">' + (wc ? KES(wc) : '—') + '</td></tr>'; total += wc; }
+        h += '<div class="aqf-sum"><b>Summary</b>' + (sumRows ? '<table><thead><tr><th>Material</th><th class="r">Qty</th><th class="r">Cost</th></tr></thead><tbody>' + sumRows + '</tbody></table><div style="margin-top:6px;font-weight:800">Cost of this run: ' + KES(total) + (qty > 0 ? ' <span class="aqf-hint">(' + KES(total / qty) + ' each)</span>' : '') + '</div>' : '<div class="aqf-hint">Fill in the steps above to see the cost.</div>') + '</div>';
+        h += '<input id="aqf-notes" placeholder="Note (optional)" value="' + esc(F.notes) + '" onchange="AquaFlow.fNotes(this.value)" style="margin:0 0 8px">';
+        h += '<div class="aqf-bad" id="aqf-err" style="min-height:16px">' + (blockers.length && (qty > 0 || F.code) ? esc(blockers[0]) : '') + '</div>';
+        h += '<div class="aqf-act"><button class="aqf-btn go" id="aqf-go" ' + (blockers.length ? 'disabled' : '') + ' onclick="AquaFlow.record()">✅ Record production</button><button class="aqf-btn" onclick="AquaFlow.fReset()">Clear</button></div>';
+        var done = [!!p && qty > 0, true, true, true, true, true, true, !!tank, true].filter(Boolean).length, pctDone = Math.round(((p ? 1 : 0) + (qty > 0 ? 1 : 0) + (plan ? plan.lines.filter(function (l) { return l.material || l.skipped; }).length : 0) + (tank ? 1 : 0)) / (2 + (plan ? plan.lines.length : 3) + 1) * 100);
+        root.innerHTML = '<div class="aqf-hero"><h3>🏭 Produce</h3><p>' + (onProd ? 'Nine simple steps. Nothing changes until you press Record.' : 'You are not on the Production site. Switch to 🏭 Production at the top first.') + '</p><div class="aqf-prog"><i style="width:' + (blockers.length ? Math.min(95, pctDone) : 100) + '%"></i></div></div>' +
+            (onProd ? '' : '<div class="aqf-warn">Production runs are recorded at the Production site. Use the site switch at the top of the screen.</div>') + h;
+    };
+    AF.blockers = function (p, qty, plan, tank, litres) {
+        var b = [];
+        if (!prodSiteId()) { b.push('Pick Production at the top first (not "All sites").'); return b; }
+        try { if (currentSite().type !== 'production') { b.push('You are viewing "' + currentSite().name + '". Switch to 🏭 Production at the top first.'); return b; } } catch (e) { /* fine */ }
+        if (!p) { b.push('Choose what you are producing.'); return b; }
+        if (!(qty > 0)) { b.push('Type how many to produce.'); return b; }
+        if (!sizeOfProduct(p)) { b.push('This item has no size. Put the size in its name (e.g. 500ml).'); return b; }
+        if (plan) {
+            if (plan.noRecipe) { b.push('No materials are linked to ' + itemLabel(keyOfProduct(p)) + '. Open Materials and link a bottle and a cap.'); return b; }
+            ['bottle', 'cap'].forEach(function (cat) { if (!plan.lines.some(function (l) { return l.category === cat; })) b.push('No ' + cat + ' is linked to ' + itemLabel(keyOfProduct(p)) + '. Open Materials and link one.'); });
+            plan.errors.forEach(function (e) { b.push(e); });
+        }
+        if (!tank) b.push('Choose the water tank (or create a production tank).');
+        else if (!tank.infinite && litres > 0 && (Number(tank.currentVolumeLiters) || 0) + 1e-9 < litres) b.push('Not enough water in "' + tank.name + '": need ' + litres + ' L, has ' + q3(tank.currentVolumeLiters) + ' L.');
+        F.extras.forEach(function (e) { if ((e.materialId && !(Number(e.qty) > 0)) || (!e.materialId && Number(e.qty) > 0)) b.push('Finish the "other material" row (material and quantity), or remove it.'); });
+        return b;
+    };
+
+    /* the one place a production run happens (also used by the tests): check everything, change everything, or change nothing */
+    AF.produce = function (o) {
+        var A = AMx(); if (!A) return { ok: false, error: 'Materials are not ready yet.' };
+        if (!o || !o.txId) return { ok: false, error: 'Missing transaction id.' };
+        if (typeof productionLog !== 'undefined' && productionLog.some(function (r) { return r && r.txId === o.txId; })) return { ok: true, duplicate: true };
+        var p = prods().filter(function (x) { return x.code === o.code; })[0]; if (!p) return { ok: false, error: 'Item not found.' };
+        var site = prodSiteId(); if (!site) return { ok: false, error: 'Pick Production at the top first (not "All sites").' };
+        try { if (currentSite().type !== 'production') return { ok: false, error: 'Production runs are recorded at the Production site: switch to 🏭 Production at the top first.' }; } catch (e) { /* fine */ }
+        var qty = Number(o.qty); if (!(qty > 0) || !isFinite(qty)) return { ok: false, error: 'Type how many to produce.' };
+        if (!sizeOfProduct(p)) return { ok: false, error: 'This item has no size. Put the size in its name (e.g. 500ml).' };
+        syncOne(p);
+        var picks = {}; STEP_CATS.forEach(function (cat) { if (o.picks && o.picks[cat] !== undefined) { var ln = lineFor(p, cat); if (ln) picks[ln.lineId] = o.picks[cat]; } });
+        var plan = A.plan(p, qty, picks, {});
+        if (plan.noRecipe) return { ok: false, error: 'No materials are linked to ' + itemLabel(keyOfProduct(p)) + '. Open Materials and link a bottle and a cap.' };
+        var missing = ['bottle', 'cap'].filter(function (cat) { return !plan.lines.some(function (l) { return l.category === cat; }); });
+        if (missing.length) return { ok: false, error: 'No ' + missing[0] + ' is linked to ' + itemLabel(keyOfProduct(p)) + '. Open Materials and link one.' };
+        if (!plan.ok) return { ok: false, error: plan.errors[0], plan: plan };
+        var tank = tankList().filter(function (t) { return t.id === o.tankId && !t.removed && t.siteId === site; })[0]; if (!tank) return { ok: false, error: 'Choose the water tank.' };
+        var litres = AF.litresFor(p, qty);
+        if (!tank.infinite && (Number(tank.currentVolumeLiters) || 0) + 1e-9 < litres) return { ok: false, error: 'Not enough water in "' + tank.name + '": need ' + litres + ' L, has ' + q3(tank.currentVolumeLiters) + ' L.' };
+        var ex = {}, exList = [], used = {};
+        plan.lines.forEach(function (r) { if (r.material) used[r.material.id] = q3((used[r.material.id] || 0) + r.need); });
+        (o.extras || []).forEach(function (e) { var q = Number(e.qty); if (!e.materialId || !(q > 0)) return; ex[e.materialId] = q3((ex[e.materialId] || 0) + q); });
+        for (var id in ex) {
+            var m = mats().filter(function (x) { return x.id === id; })[0];
+            if (!m || !isActive(m) || siteOf(m) !== site) return { ok: false, error: 'An extra material is not available at this site.' };
+            if (stockOf(m) + 1e-9 < q3(ex[id] + (used[id] || 0))) return { ok: false, error: 'Not enough ' + m.name + ': need ' + q3(ex[id] + (used[id] || 0)) + ', have ' + stockOf(m) + '.' };
+            exList.push({ m: m, qty: ex[id] });
+        }
+        var snapStock = exList.map(function (e) { return [e.m, e.m.stockQty]; }), mvLen = matMovements.length, vol = tank.currentVolumeLiters, logLen = (tank.refillLog || []).length;
+        var restore = function () { snapStock.forEach(function (s) { s[0].stockQty = s[1]; }); matMovements.length = mvLen; tank.currentVolumeLiters = vol; if (tank.refillLog) tank.refillLog.length = logLen; };
+        try {
+            if (exList.length) { var map = {}; exList.forEach(function (e) { map[e.m.id] = e.qty; }); var cr = A.consume(map, { txId: o.txId + ':x', note: 'Extra material for ' + qty + ' × ' + p.name, ref: o.txId }); if (!cr.ok) { restore(); return cr; } }
+            if (!tank.infinite && litres > 0) { tank.currentVolumeLiters = q3((Number(tank.currentVolumeLiters) || 0) - litres); tankLog(tank, -litres, 'Used in production: ' + qty + ' × ' + p.name, 0); }
+            var r = A.produce({ txId: o.txId, code: o.code, qty: qty, picks: picks, overrides: {}, notes: o.notes || '', workflow: 'flow' });
+            if (!r.ok) { restore(); return r; }
+            var rec = productionLog.filter(function (x) { return x.id === r.productionId; })[0], c = o.clientId ? custs().filter(function (x) { return x.id === o.clientId; })[0] : null;
+            var exCost = 0;
+            if (rec) {
+                exList.forEach(function (e) { var uc = costPiece(e.m), cst = rnd(uc * e.qty, 2); exCost += cst; rec.componentsUsed.push({ lineId: 'extra-' + e.m.id, materialId: e.m.id, name: e.m.name, category: 'extra', qtyUsed: e.qty, unit: e.m.baseUnit || 'pcs', unitCost: uc, cost: cst }); });
+                var wcost = rnd(litres * (Number(typeof waterCostPerLiter !== 'undefined' ? waterCostPerLiter : 0) || 0), 2);
+                rec.water = { tankId: tank.id, tankName: tank.name, litres: litres, infinite: !!tank.infinite, cost: wcost };
+                rec.extraCost = rnd(exCost, 2); rec.waterCost = wcost; rec.materialCost = rnd((rec.materialCost || 0) + exCost, 2); rec.unitMaterialCost = qty > 0 ? Math.round(rec.materialCost / qty * 10000) / 10000 : 0;
+                if (c) { rec.clientId = c.id; rec.clientName = c.name; }
+                rec.bottleName = ((rec.componentsUsed.filter(function (x) { return x.category === 'bottle'; })[0]) || {}).name || ''; rec.updatedAt = Date.now();
+            }
+            if (c && o.remember) { var bm = plan.lines.filter(function (l) { return l.category === 'bottle'; })[0]; if (bm && bm.material) AF.setDefaultBottle(c.id, sizeOfProduct(p), bm.material.id, true); }
+            save();
+            return { ok: true, productionId: r.productionId, litres: litres, materialCost: rec ? rec.materialCost : r.materialCost };
+        } catch (e2) { restore(); return { ok: false, error: 'Production was cancelled and nothing was changed: ' + (e2 && e2.message || e2) }; }
+    };
+    AF.record = function () {
+        var go = $('aqf-go'); if (go) go.disabled = true; if (!F.tx) F.tx = newId('tx');
+        var r = AF.produce({ txId: F.tx, code: F.code, qty: F.qty, clientId: F.clientId, picks: F.picks, tankId: F.tankId, extras: F.extras, remember: !!F.remember, notes: F.notes });
+        if (!r.ok) { var e = $('aqf-err'); if (e) e.textContent = r.error; if (go) go.disabled = false; return; }
+        var p = prods().filter(function (x) { return x.code === F.code; })[0], q = F.qty;
+        toast(r.duplicate ? 'That production run was already recorded.' : 'Produced ' + q + ' × ' + (p ? p.name : 'item') + (r.litres ? ' · ' + r.litres + ' L of water used' : '') + '.');
+        F = { code: F.code, qty: '', clientId: F.clientId, picks: {}, tankId: F.tankId, extras: [], remember: null, tx: null, notes: '' };
+        if (p) preload(p);
+        ['renderProductionTargetSelect', 'renderRawMaterialsTable', 'renderProductsTable', 'renderAllItemsGrid', 'renderProductionHistoryTable', 'renderFactoryStockTable', 'renderTankTab'].forEach(function (f) { try { window[f](); } catch (e2) { /* not on screen */ } });
+        AF.renderFlow();
+    };
+
+    /* ================= PRICE LIST & INVOICES ================= */
+    var invs = function () { return (typeof aquaInvoices !== 'undefined' && Array.isArray(aquaInvoices)) ? aquaInvoices : []; };
+    var bizName = function () { try { return businessName || 'Aqua'; } catch (e) { return 'Aqua'; } };
+    var bizContact = function () { var a = []; try { if (receiptContact) a.push(receiptContact); } catch (e) { /* none */ } try { if (receiptEmail) a.push(receiptEmail); } catch (e2) { /* none */ } return a.join(' · '); };
+    var DOC = { tab: 'price', client: '', q: '' };
+    function sellables() {
+        var out = [];
+        prods().forEach(function (p) {
+            if (!p || p._deleted || p.removed || p.type === 'service') return;
+            if (p.category !== 'bottled' && p.category !== 'bale' && p.category !== 'accessory') return;
+            try { if (window.AquaBottles && window.AquaBottles.hideOnPriceList(p)) return; } catch (e0) { /* listed */ }
+            out.push({ code: p.code, name: p.name, price: Number(p.price) || 0, group: p.category === 'bottled' ? 'Sealed bottles' : p.category === 'bale' ? (p.baleKind === 'custom' ? 'Custom bales / cases (made to order)' : 'Bales / cases') : 'Dispensers & accessories', custom: p.baleKind === 'custom', quote: !!p.customQuote, tiers: Array.isArray(p.priceTiers) ? p.priceTiers : [], size: sizeOfProduct(p), order: p.category === 'bottled' ? 1 : p.category === 'bale' ? (p.baleKind === 'custom' ? 3 : 2) : 4 });
+        });
+        var seen = {};
+        (typeof refillSizes !== 'undefined' && Array.isArray(refillSizes) ? refillSizes : []).forEach(function (s) { if (!s || s.removed || seen[s.sizeML]) return; seen[s.sizeML] = 1; out.push({ code: 'refill:' + s.id, name: (s.label || sizeLabel(s.sizeML)) + ' water refill', price: Number(s.price) || 0, group: 'Refills', size: s.sizeML, tiers: [], order: 0 }); });
+        return out.sort(function (a, b) { return a.order - b.order || a.size - b.size || String(a.name).localeCompare(String(b.name)); });
+    }
+    function clientPrice(c, code) { var v = c && c.aquaPrices && c.aquaPrices[code]; return v != null && v !== '' && isFinite(Number(v)) ? Number(v) : null; }
+    AF.priceFor = function (item, client, qty) {
+        var cp = clientPrice(client, item.code); if (cp != null) return cp;
+        var base = item.price; (item.tiers || []).slice().sort(function (a, b) { return b.minQty - a.minQty; }).some(function (t) { if (qty >= t.minQty) { base = t.price; return true; } return false; }); return base;
+    };
+    AF.sellables = sellables;
+    AF.setClientPrice = function (clientId, code, v) {
+        var c = custs().filter(function (x) { return x.id === clientId; })[0]; if (!c) return false;
+        if (!c.aquaPrices || typeof c.aquaPrices !== 'object') c.aquaPrices = {};
+        if (v === '' || v == null) delete c.aquaPrices[code]; else if (isFinite(Number(v)) && Number(v) >= 0) c.aquaPrices[code] = Number(v); else return false;
+        c.updatedAt = Date.now(); save(); return true;
+    };
+    function showDoc(html, text) { try { document.getElementById('sales-report-body').innerHTML = html; lastReportText = text; document.getElementById('sales-report-modal').style.display = 'flex'; } catch (e) { toast('Could not open the print window on this screen.', true); } }
+    var docCss = '<style>.aqd{font-family:system-ui,sans-serif;color:#15282b;font-size:13px}.aqd h2{margin:0;font-size:20px}.aqd .m{color:#6b7a7d;font-size:12px}.aqd table{width:100%;border-collapse:collapse;margin-top:10px}.aqd th{background:#0b7a5f;color:#fff;text-align:left;padding:6px 8px;font-size:12px}.aqd td{padding:6px 8px;border-bottom:1px solid #e2ded1}.aqd .r{text-align:right}.aqd .g td{background:#eef6f2;font-weight:800;color:#0b5a47}.aqd .t td{font-weight:800;border-top:2px solid #0b7a5f}.aqd .bx{border:1px solid #e2ded1;border-radius:8px;padding:8px 10px;margin-top:10px}</style>';
+    function head(title, right) { return '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start"><div><h2>' + esc(bizName()) + '</h2><div class="m">' + esc(bizContact()) + '</div></div><div style="text-align:right"><h2 style="color:#0b7a5f">' + esc(title) + '</h2>' + right + '</div></div>'; }
+    AF.priceListDoc = function (clientId) {
+        var c = clientId ? custs().filter(function (x) { return x.id === clientId; })[0] : null, items = sellables().filter(function (i) { return !i.quote; }), g = '', rows = '', text = [bizName().toUpperCase(), 'PRICE LIST' + (c ? ' - ' + c.name : ''), new Date().toLocaleDateString('en-GB'), ''];
+        items.forEach(function (i) {
+            if (i.group !== g) { g = i.group; rows += '<tr class="g"><td colspan="2">' + esc(g) + '</td></tr>'; text.push('', g.toUpperCase()); }
+            var p = AF.priceFor(i, c, 1), sp = clientPrice(c, i.code) != null, tiers = (i.tiers || []).length ? '<div class="m">' + i.tiers.slice().sort(function (a, b) { return a.minQty - b.minQty; }).map(function (t) { return t.minQty + '+ : ' + KES(t.price); }).join(' · ') + '</div>' : '';
+            rows += '<tr><td>' + esc(i.name) + (i.custom ? ' <span class="m">(from)</span>' : '') + (sp ? ' <span class="m">· your price</span>' : '') + tiers + '</td><td class="r">' + KES(p) + '</td></tr>'; text.push(i.name + (i.custom ? ' (from)' : '') + ': ' + KES(p));
+        });
+        return { html: docCss + '<div class="aqd">' + head('PRICE LIST', '<div class="m">' + new Date().toLocaleDateString('en-GB') + '</div>' + (c ? '<div><b>Prepared for ' + esc(c.name) + '</b></div>' : '')) + '<table><thead><tr><th>Item</th><th class="r">Price</th></tr></thead><tbody>' + (rows || '<tr><td colspan="2">No items yet.</td></tr>') + '</tbody></table><p class="m" style="margin-top:12px">Prices are in Kenya shillings and may change without notice.</p></div>', text: text.join('\n') };
+    };
+    AF.nextInvoiceNo = function () {
+        var d = new Date().toISOString().slice(0, 10).replace(/-/g, ''), n = invs().filter(function (i) { return i && String(i.no).indexOf('INV-' + d) === 0; }).length + 1, no;
+        do { no = 'INV-' + d + '-' + String(n++).padStart(3, '0'); } while (invs().some(function (i) { return i && i.no === no; }));
+        return no;
+    };
+    function invTotals(lines, discount, delivery) {
+        var sub = 0; lines.forEach(function (l) { l.total = rnd((Number(l.qty) || 0) * (Number(l.price) || 0), 2); sub += l.total; });
+        var d = Math.min(Math.max(Number(discount) || 0, 0), sub), dv = Math.max(Number(delivery) || 0, 0);
+        return { subtotal: rnd(sub, 2), discount: rnd(d, 2), delivery: rnd(dv, 2), total: rnd(sub - d + dv, 2) };
+    }
+    function invStatus(i) { if (i.status === 'void') return 'void'; var paid = Number(i.paid) || 0; return paid + 0.005 >= i.total ? 'paid' : paid > 0 ? 'part' : 'unpaid'; }
+    AF.saveInvoice = function (o) {
+        // o: { id?, clientId, name, phone, lines:[{code,qty,price}], discount, delivery, paid, dueDays, notes, date? }
+        var items = sellables(), lines = [];
+        (o.lines || []).forEach(function (l) { var it = items.filter(function (x) { return x.code === l.code; })[0]; var q = Number(l.qty); if (!it || !(q > 0)) return; var pr = Number(l.price); if (!isFinite(pr) || pr < 0) pr = it.price; lines.push({ code: it.code, name: it.name, qty: q, price: pr, total: 0 }); });
+        if (!lines.length) return { ok: false, error: 'Add at least one item with a quantity.' };
+        var c = o.clientId ? custs().filter(function (x) { return x.id === o.clientId; })[0] : null, name = String((c && c.name) || o.name || '').trim();
+        if (!name) return { ok: false, error: 'Pick a client or type the customer name.' };
+        var t = invTotals(lines, o.discount, o.delivery), paid = Math.max(0, Number(o.paid) || 0);
+        if (paid > t.total + 0.005) return { ok: false, error: 'The amount paid is more than the invoice total.' };
+        var inv = o.id ? invs().filter(function (x) { return x.id === o.id; })[0] : null;
+        if (o.id && !inv) return { ok: false, error: 'Invoice not found.' };
+        if (inv && inv.status === 'void') return { ok: false, error: 'A voided invoice cannot be changed.' };
+        var rec = inv || { id: newId('inv'), no: AF.nextInvoiceNo(), date: nowIso(), createdBy: who(), siteId: siteNow() };
+        var due = new Date(rec.date); due.setDate(due.getDate() + (Number(o.dueDays) >= 0 ? Number(o.dueDays) : 0));
+        Object.assign(rec, { clientId: c ? c.id : '', clientName: name, clientPhone: (c && c.phone) || String(o.phone || '').trim(), lines: lines, subtotal: t.subtotal, discount: t.discount, delivery: t.delivery, total: t.total, paid: rnd(paid, 2), dueDate: due.toISOString(), notes: String(o.notes || '').trim(), updatedAt: Date.now() });
+        rec.status = invStatus(rec);
+        if (!inv) invs().push(rec); save(); return { ok: true, invoice: rec };
+    };
+    AF.invoiceDoc = function (inv) {
+        var rows = inv.lines.map(function (l) { return '<tr><td>' + esc(l.name) + '</td><td class="r">' + l.qty + '</td><td class="r">' + KES(l.price) + '</td><td class="r">' + KES(l.total) + '</td></tr>'; }).join(''), bal = rnd(inv.total - (inv.paid || 0), 2), pay = '';
+        try { if (typeof billPaymentDetails !== 'undefined' && billPaymentDetails && typeof billPaymentDetails === 'string') pay = '<div class="bx"><b>How to pay</b><div style="white-space:pre-line">' + esc(billPaymentDetails) + '</div></div>'; } catch (e) { /* none */ }
+        var st = invStatus(inv), html2 = '';
+        if (typeof posInvoiceDocHtml === 'function') {      /* zip 356: the shared invoice look (same as every module) */
+            var f2 = function (n) { return (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+            var d2 = function (t) { var d = new Date(t); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
+            var tot = [['Subtotal', inv.subtotal]];
+            if (inv.discount) tot.push(['Discount', -inv.discount]);
+            if (inv.delivery) tot.push(['Delivery', inv.delivery]);
+            tot.push(['Total', inv.total, true]);
+            if (inv.paid) tot.push(['Paid', -inv.paid]);
+            var payL = []; try { if (typeof billPaymentDetails === 'string' && billPaymentDetails) payL = billPaymentDetails.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); } catch (e) { payL = []; }
+            var model = { business: bizName(), number: inv.no, date: d2(inv.date), dueDate: inv.dueDate ? d2(inv.dueDate) : '', status: st === 'void' ? 'void' : st === 'paid' ? 'paid' : (inv.paid ? 'partial' : 'unpaid'),
+                billTo: { name: inv.clientName, lines: [inv.clientPhone || ''] }, meta: [['Prepared by', inv.createdBy || '']],
+                rows: inv.lines.map(function (l) { return [l.name, String(l.qty), f2(l.price), f2(l.total)]; }), totals: tot, due: bal,
+                notes: inv.notes ? [inv.notes] : [], payLines: payL.length ? payL : undefined };
+            html2 = posInvoiceDocHtml(model);
+        }
+        var html = docCss + '<div class="aqd">' + head('INVOICE', '<div><b>' + esc(inv.no) + '</b></div><div class="m">Date ' + new Date(inv.date).toLocaleDateString('en-GB') + '</div><div class="m">Due ' + new Date(inv.dueDate).toLocaleDateString('en-GB') + '</div>') +
+            '<div class="bx"><div class="m">Bill to</div><b>' + esc(inv.clientName) + '</b>' + (inv.clientPhone ? '<div class="m">' + esc(inv.clientPhone) + '</div>' : '') + '</div>' +
+            '<table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Total</th></tr></thead><tbody>' + rows +
+            '<tr><td colspan="3" class="r">Subtotal</td><td class="r">' + KES(inv.subtotal) + '</td></tr>' + (inv.discount ? '<tr><td colspan="3" class="r">Discount</td><td class="r">- ' + KES(inv.discount) + '</td></tr>' : '') + (inv.delivery ? '<tr><td colspan="3" class="r">Delivery</td><td class="r">' + KES(inv.delivery) + '</td></tr>' : '') +
+            '<tr class="t"><td colspan="3" class="r">TOTAL</td><td class="r">' + KES(inv.total) + '</td></tr>' + (inv.paid ? '<tr><td colspan="3" class="r">Paid</td><td class="r">' + KES(inv.paid) + '</td></tr>' : '') + '<tr class="t"><td colspan="3" class="r">' + (st === 'paid' ? 'PAID IN FULL' : 'BALANCE DUE') + '</td><td class="r">' + KES(bal) + '</td></tr></tbody></table>' +
+            (inv.notes ? '<div class="bx"><b>Notes</b><div style="white-space:pre-line">' + esc(inv.notes) + '</div></div>' : '') + pay + '<p class="m" style="margin-top:12px">Thank you for your business.</p></div>';
+        if (html2) html = html2;      /* the text (roll printers / sharing) stays exactly as before */
+        var text = [bizName().toUpperCase(), 'INVOICE ' + inv.no, 'Date: ' + new Date(inv.date).toLocaleDateString('en-GB'), 'Bill to: ' + inv.clientName, ''].concat(inv.lines.map(function (l) { return l.name + ' x' + l.qty + ' @ ' + KES(l.price) + ' = ' + KES(l.total); }), [''], ['Subtotal: ' + KES(inv.subtotal)], inv.discount ? ['Discount: -' + KES(inv.discount)] : [], inv.delivery ? ['Delivery: ' + KES(inv.delivery)] : [], ['TOTAL: ' + KES(inv.total)], inv.paid ? ['Paid: ' + KES(inv.paid)] : [], ['Balance: ' + KES(bal)]);
+        return { html: html, text: text.join('\n') };
+    };
+    AF.viewInvoice = function (id) { var inv = invs().filter(function (x) { return x.id === id; })[0]; if (!inv) return; var d = AF.invoiceDoc(inv); showDoc(d.html, d.text); };
+    AF.printPriceList = function () { var d = AF.priceListDoc(DOC.client); showDoc(d.html, d.text); };
+    AF.recordPayment = function (id, amount) {
+        var inv = invs().filter(function (x) { return x.id === id; })[0]; amount = Number(amount); if (!inv || inv.status === 'void') return { ok: false, error: 'Invoice not found.' };
+        if (!(amount > 0)) return { ok: false, error: 'Type the amount received.' }; if ((inv.paid || 0) + amount > inv.total + 0.005) return { ok: false, error: 'That is more than the balance (' + KES(inv.total - (inv.paid || 0)) + ').' };
+        inv.paid = rnd((inv.paid || 0) + amount, 2); inv.status = invStatus(inv); inv.updatedAt = Date.now(); save(); return { ok: true, invoice: inv };
+    };
+    AF.voidInvoice = function (id, reason) {
+        var inv = invs().filter(function (x) { return x.id === id; })[0]; if (!inv) return { ok: false, error: 'Invoice not found.' }; if (!String(reason || '').trim()) return { ok: false, error: 'Type a reason.' };
+        inv.status = 'void'; inv.voidReason = String(reason).trim(); inv.voidedBy = who(); inv.updatedAt = Date.now(); save(); return { ok: true };
+    };
+
+    var IV = null;
+    function ivLineHtml(l, i) {
+        var items = sellables();
+        return '<div class="aqf-card" style="padding:8px"><select onchange="AquaFlow.ivLine(' + i + ',\'code\',this.value)"><option value="">— item —</option>' + items.map(function (x) { return '<option value="' + esc(x.code) + '"' + (x.code === l.code ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select>' +
+            '<div class="aqf-three" style="margin-top:6px"><input type="number" min="0" step="any" inputmode="decimal" placeholder="qty" value="' + esc(l.qty) + '" onchange="AquaFlow.ivLine(' + i + ',\'qty\',this.value)"><input type="number" min="0" step="any" inputmode="decimal" placeholder="price" value="' + esc(l.price) + '" onchange="AquaFlow.ivLine(' + i + ',\'price\',this.value)"><button class="aqf-btn sm" onclick="AquaFlow.ivDel(' + i + ')">✕ Remove</button></div>' +
+            '<div class="aqf-hint">Line total <b>' + KES((Number(l.qty) || 0) * (Number(l.price) || 0)) + '</b></div></div>';
+    }
+    function ivDraw() {
+        var cl = custs().filter(function (c) { return !c._deleted && !c.removed; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }), t = invTotals(IV.lines.map(function (l) { return { qty: l.qty, price: l.price }; }), IV.discount, IV.delivery);
+        ov('<h3>' + (IV.id ? '✏️ Edit invoice' : '🧾 New invoice') + '</h3><p class="aqf-sub">Client, items, then save. You can print or share it straight after.</p>' +
+            '<label>Client</label><select onchange="AquaFlow.ivSet(\'clientId\',this.value,true)"><option value="">Walk-in / type a name below</option>' + cl.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === IV.clientId ? ' selected' : '') + '>' + esc(c.name || 'Client') + '</option>'; }).join('') + '</select>' +
+            (IV.clientId ? '' : '<div class="aqf-two"><div><input placeholder="customer name" value="' + esc(IV.name) + '" onchange="AquaFlow.ivSet(\'name\',this.value)"></div><div><input placeholder="phone (optional)" value="' + esc(IV.phone) + '" onchange="AquaFlow.ivSet(\'phone\',this.value)"></div></div>') +
+            '<label>Items</label>' + IV.lines.map(ivLineHtml).join('') + '<button class="aqf-btn sm" onclick="AquaFlow.ivAdd()">＋ Add item</button>' +
+            '<div class="aqf-two"><div><label>Discount (KES)</label><input type="number" min="0" step="any" inputmode="decimal" value="' + esc(IV.discount) + '" onchange="AquaFlow.ivSet(\'discount\',this.value,true)"></div><div><label>Delivery (KES)</label><input type="number" min="0" step="any" inputmode="decimal" value="' + esc(IV.delivery) + '" onchange="AquaFlow.ivSet(\'delivery\',this.value,true)"></div></div>' +
+            '<div class="aqf-two"><div><label>Paid so far (KES)</label><input type="number" min="0" step="any" inputmode="decimal" value="' + esc(IV.paid) + '" onchange="AquaFlow.ivSet(\'paid\',this.value,true)"></div><div><label>Due in (days)</label><input type="number" min="0" step="1" inputmode="numeric" value="' + esc(IV.dueDays) + '" onchange="AquaFlow.ivSet(\'dueDays\',this.value)"></div></div>' +
+            '<label>Notes (optional)</label><input value="' + esc(IV.notes) + '" onchange="AquaFlow.ivSet(\'notes\',this.value)">' +
+            '<div class="aqf-sum" style="margin-top:12px">Subtotal ' + KES(t.subtotal) + (t.discount ? ' · Discount -' + KES(t.discount) : '') + (t.delivery ? ' · Delivery ' + KES(t.delivery) : '') + '<div style="font-size:18px;font-weight:800;margin-top:4px">Total ' + KES(t.total) + '</div></div>' +
+            '<div class="aqf-err" id="aqf-iv-err"></div><div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.ivSave()">💾 Save invoice</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    }
+    AF.openInvoice = function (id) {
+        var inv = id ? invs().filter(function (x) { return x.id === id; })[0] : null;
+        IV = inv ? { id: inv.id, clientId: inv.clientId || '', name: inv.clientName, phone: inv.clientPhone || '', lines: inv.lines.map(function (l) { return { code: l.code, qty: l.qty, price: l.price, manual: true }; }), discount: inv.discount || '', delivery: inv.delivery || '', paid: inv.paid || '', dueDays: Math.max(0, Math.round((new Date(inv.dueDate) - new Date(inv.date)) / 86400000)), notes: inv.notes || '' }
+            : { id: '', clientId: DOC.client || '', name: '', phone: '', lines: [{ code: '', qty: '', price: '', manual: false }], discount: '', delivery: '', paid: '', dueDays: 7, notes: '' };
+        ivDraw();
+    };
+    function ivReprice() { var c = IV.clientId ? custs().filter(function (x) { return x.id === IV.clientId; })[0] : null, items = sellables(); IV.lines.forEach(function (l) { if (l.manual) return; var it = items.filter(function (x) { return x.code === l.code; })[0]; if (it) l.price = AF.priceFor(it, c, Number(l.qty) || 1); }); }
+    AF.ivSet = function (k, v, redraw) { IV[k] = v; if (k === 'clientId') ivReprice(); if (redraw) ivDraw(); };
+    AF.ivLine = function (i, k, v) { var l = IV.lines[i]; if (!l) return; l[k] = v; if (k === 'price') l.manual = true; if (k === 'code') l.manual = false; ivReprice(); ivDraw(); };
+    AF.ivAdd = function () { IV.lines.push({ code: '', qty: '', price: '', manual: false }); ivDraw(); };
+    AF.ivDel = function (i) { IV.lines.splice(i, 1); if (!IV.lines.length) IV.lines.push({ code: '', qty: '', price: '', manual: false }); ivDraw(); };
+    AF.ivSave = function () {
+        var r = AF.saveInvoice({ id: IV.id, clientId: IV.clientId, name: IV.name, phone: IV.phone, lines: IV.lines, discount: IV.discount, delivery: IV.delivery, paid: IV.paid, dueDays: IV.dueDays, notes: IV.notes });
+        if (!r.ok) { var e = $('aqf-iv-err'); if (e) e.textContent = r.error; return; }
+        toast('Invoice ' + r.invoice.no + ' saved.'); closeOv(); AF.renderDocs(); AF.viewInvoice(r.invoice.id);
+    };
+    AF.openPay = function (id) {
+        var inv = invs().filter(function (x) { return x.id === id; })[0]; if (!inv) return;
+        ov('<h3>💵 Payment for ' + esc(inv.no) + '</h3><p class="aqf-sub">Balance now ' + KES(inv.total - (inv.paid || 0)) + '</p><label>Amount received (KES)</label><input id="aqf-pay-a" type="number" min="0" step="any" inputmode="decimal" value="' + rnd(inv.total - (inv.paid || 0), 2) + '"><div class="aqf-err" id="aqf-pay-err"></div>' +
+            '<div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.paySave(\'' + attr(id) + '\')">💾 Record payment</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    };
+    AF.paySave = function (id) { var r = AF.recordPayment(id, $('aqf-pay-a').value); if (!r.ok) { $('aqf-pay-err').textContent = r.error; return; } toast('Payment recorded.'); closeOv(); AF.renderDocs(); };
+    AF.openVoid = function (id) {
+        ov('<h3>🚫 Void invoice</h3><p class="aqf-sub">A voided invoice stays in the list (marked void) so numbers are never reused.</p><label>Reason</label><input id="aqf-v-r" placeholder="e.g. wrong client"><div class="aqf-err" id="aqf-v-err"></div>' +
+            '<div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.voidSave(\'' + attr(id) + '\')">Void it</button><button class="aqf-btn" onclick="AquaFlow.close()">Cancel</button></div>');
+    };
+    AF.voidSave = function (id) { var r = AF.voidInvoice(id, $('aqf-v-r').value); if (!r.ok) { $('aqf-v-err').textContent = r.error; return; } toast('Invoice voided.'); closeOv(); AF.renderDocs(); };
+    AF.dSet = function (k, v) { DOC[k] = v; AF.renderDocs(); };
+    AF.cPrice = function (code, v) { if (!DOC.client) return; if (!AF.setClientPrice(DOC.client, code, v)) toast('Type a price of 0 or more, or leave it empty for the standard price.', true); AF.renderDocs(); };
+    AF.copyText = function (which) {
+        var t = which === 'price' ? AF.priceListDoc(DOC.client).text : '';
+        try { navigator.clipboard.writeText(t).then(function () { toast('Copied. Paste it into WhatsApp.'); }, function () { toast('Could not copy on this device.', true); }); } catch (e) { toast('Could not copy on this device.', true); }
+    };
+    AF.shareInvoice = function (id) { var inv = invs().filter(function (x) { return x.id === id; })[0]; if (!inv) return; var t = AF.invoiceDoc(inv).text; try { navigator.clipboard.writeText(t).then(function () { toast('Invoice text copied. Paste it into WhatsApp.'); }, function () { toast('Could not copy on this device.', true); }); } catch (e) { toast('Could not copy on this device.', true); } };
+    AF.renderDocs = function () {
+        var root = $('aqf-docs-root'); if (!root) return;
+        var h = '<div class="aqf-hero"><h3>🧾 Price List &amp; Invoices</h3><p>Print a price list for any client, or make an invoice in a minute.</p></div><div class="aqf-tabs"><button class="aqf-chip' + (DOC.tab === 'price' ? ' on' : '') + '" onclick="AquaFlow.dSet(\'tab\',\'price\')">💲 Price list</button><button class="aqf-chip' + (DOC.tab === 'inv' ? ' on' : '') + '" onclick="AquaFlow.dSet(\'tab\',\'inv\')">🧾 Invoices (' + invs().filter(function (i) { return i && i.status !== 'void'; }).length + ')</button></div>';
+        var cl = custs().filter(function (c) { return !c._deleted && !c.removed; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        if (DOC.tab === 'price') {
+            var c = DOC.client ? cl.filter(function (x) { return x.id === DOC.client; })[0] : null, g = '';
+            h += '<label class="aqf-l">Price list for</label><select onchange="AquaFlow.dSet(\'client\',this.value)"><option value="">Standard prices (everyone)</option>' + cl.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === DOC.client ? ' selected' : '') + '>' + esc(x.name || 'Client') + '</option>'; }).join('') + '</select>' +
+                '<div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.printPriceList()">🖨️ Print / save as PDF</button><button class="aqf-btn" onclick="AquaFlow.copyText(\'price\')">📋 Copy for WhatsApp</button></div>' + (c ? '<div class="aqf-hint">Type a special price for ' + esc(c.name) + ' below. Leave it empty to use the standard price.</div>' : '');
+            h += '<table class="aqf-t" style="margin-top:8px"><thead><tr><th>Item</th><th style="text-align:right">Standard</th>' + (c ? '<th style="width:120px">' + esc(c.name) + '</th>' : '') + '</tr></thead><tbody>';
+            sellables().forEach(function (i) {
+                if (i.group !== g) { g = i.group; h += '<tr><td colspan="' + (c ? 3 : 2) + '" style="background:var(--aqf-alt);font-weight:800;color:#0b5a47">' + esc(g) + '</td></tr>'; }
+                var cp = c ? clientPrice(c, i.code) : null;
+                h += '<tr><td>' + esc(i.name) + (i.quote ? ' <span class="aqf-pill mid">price on request</span>' : '') + '</td><td style="text-align:right">' + (i.quote ? '—' : KES(i.price)) + '</td>' + (c ? '<td><input type="number" min="0" step="any" inputmode="decimal" style="min-height:36px" placeholder="standard" value="' + (cp != null ? cp : '') + '" onchange="AquaFlow.cPrice(\'' + attr(i.code) + '\',this.value)"></td>' : '') + '</tr>';
+            });
+            h += '</tbody></table>';
+        } else {
+            var list = invs().filter(function (i) { return i && (!DOC.q || (i.no + ' ' + i.clientName).toLowerCase().indexOf(DOC.q.toLowerCase()) >= 0); }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); }).slice(0, 100);
+            h += '<div class="aqf-bar"><button class="aqf-btn go" onclick="AquaFlow.openInvoice()">➕ New invoice</button><input style="flex:1;min-width:160px" placeholder="🔍 Search number or client" value="' + esc(DOC.q) + '" onchange="AquaFlow.dSet(\'q\',this.value)"></div>';
+            h += list.length ? list.map(function (i) {
+                var st = invStatus(i), bal = rnd(i.total - (i.paid || 0), 2), id = attr(i.id);
+                return '<div class="aqf-card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>' + esc(i.no) + '</b><span class="aqf-pill ' + (st === 'paid' ? 'ok' : st === 'void' ? 'bad' : 'mid') + '">' + (st === 'part' ? 'part paid' : st) + '</span></div><div>' + esc(i.clientName) + ' <span class="aqf-hint">· ' + new Date(i.date).toLocaleDateString('en-GB') + '</span></div><div>Total <b>' + KES(i.total) + '</b>' + (st !== 'paid' && st !== 'void' ? ' · balance <b>' + KES(bal) + '</b>' : '') + '</div>' +
+                    '<div class="aqf-act" style="margin-top:6px"><button class="aqf-btn sm" onclick="AquaFlow.viewInvoice(\'' + id + '\')">🖨️ View / print</button><button class="aqf-btn sm" onclick="AquaFlow.shareInvoice(\'' + id + '\')">📋 Copy</button>' + (st !== 'void' ? '<button class="aqf-btn sm" onclick="AquaFlow.openInvoice(\'' + id + '\')">✏️ Edit</button>' : '') + (st === 'unpaid' || st === 'part' ? '<button class="aqf-btn sm" onclick="AquaFlow.openPay(\'' + id + '\')">💵 Payment</button>' : '') + (st !== 'void' ? '<button class="aqf-btn sm" onclick="AquaFlow.openVoid(\'' + id + '\')">🚫 Void</button>' : '') + '</div></div>';
+            }).join('') : '<p class="aqf-hint">No invoices yet. Press "New invoice".</p>';
+        }
+        root.innerHTML = h;
+    };
+
+    /* ================= wiring into the existing screens ================= */
+    function matBarHtml() {
+        var miss = AF.unmatchedKeys();
+        return '<div class="aqf-matbar"><b style="font-size:13px">Quick tools</b><button class="aqf-btn sm" onclick="AquaFlow.openImport(\'mat\')">⬆️ Import CSV</button><button class="aqf-btn sm" onclick="AquaFlow.exportCsv()">⬇️ Download CSV</button><button class="aqf-btn sm" onclick="AquaFlow.openClients()">🧴 Client bottles</button>' +
+            (miss.length ? '<div class="aqf-hint" style="flex-basis:100%;margin:0">ℹ️ Linked but no product yet: ' + miss.slice(0, 6).map(itemLabel).map(esc).join(', ') + (miss.length > 6 ? ' +' + (miss.length - 6) + ' more' : '') + '. They connect automatically once you create those items.</div>' : '') + '</div>';
+    }
+    var wired = false;
+    function wire() {
+        if (wired) return;
+        try {
+            var A = AMx(); if (!A || typeof rawMaterials === 'undefined' || typeof renderProductionTab !== 'function') return;
+            var pk = A.cats.filter(function (c) { return c[0] === 'packaging'; })[0]; if (pk) pk[1] = 'Wrapping';
+            A.openEdit = function (id) { AF.openMat(id); };
+            A.openAssoc = function (id) { AF.openMat(id); };
+            var oRecipe = A.openRecipe;
+            A.openRecipe = function (code) {
+                var p = prods().filter(function (x) { return x.code === code; })[0];
+                if (p && keyOfProduct(p)) { ov('<h3>🧩 Materials are linked from the Materials tab</h3><p class="aqf-sub">For ' + esc(p.name) + ', the bottle, cap, seal, label and wrapping come from the materials that are ticked for <b>' + esc(itemLabel(keyOfProduct(p))) + '</b>. Open a material and tick this item to add it; untick to remove it.</p><div class="aqf-act"><button class="aqf-btn go" onclick="AquaFlow.close();AquaFlow.goMaterials()">Open Materials</button><button class="aqf-btn" onclick="AquaFlow.close()">Close</button></div>'); return; }
+                return oRecipe.apply(this, arguments);
+            };
+            var oPlan = A.plan;
+            A.plan = function (p) { try { if (p) syncOne(p); } catch (e) { /* plan on what is there */ } return oPlan.apply(this, arguments); };
+            ['renderPickers', 'openProduce'].forEach(function (fn) { var o = A[fn]; A[fn] = function () { try { AF.syncRecipes(); } catch (e) { /* ok */ } return o.apply(this, arguments); }; });
+            var oRev = A.reverseProduction;
+            A.reverseProduction = function (prodId) {
+                var r0 = (typeof productionLog !== 'undefined' ? productionLog : []).filter(function (x) { return x && x.id === prodId; })[0], had = !!(r0 && r0.reversedBy);
+                var res = oRev.apply(this, arguments);
+                if (res && res.ok && !res.duplicate && !had && r0 && r0.water && !r0.water.restored) {
+                    var t = tankList().filter(function (x) { return x.id === r0.water.tankId; })[0];
+                    if (t && !t.infinite && r0.water.litres > 0) { t.currentVolumeLiters = q3((Number(t.currentVolumeLiters) || 0) + r0.water.litres); tankLog(t, r0.water.litres, 'Production reversed: water returned', 0); }
+                    r0.water.restored = true; r0.updatedAt = Date.now(); save();
+                }
+                return res;
+            };
+            var oRender = A.render;
+            A.render = function () { oRender.apply(this, arguments); var root = $('aqm-root'); if (root) root.insertAdjacentHTML('afterbegin', matBarHtml()); };
+            window.renderProductionTab = renderProductionTab = (function (o) { return function () { try { o.apply(this, arguments); } catch (e) { /* keep going */ } AF.renderFlow(); }; })(renderProductionTab);
+            wired = true; AF.syncRecipes(); try { A.render(); } catch (e2) { /* ok */ } AF.renderFlow(); AF.renderDocs();
+        } catch (e) { /* retried */ }
+    }
+    window.AquaFlow = AF;
+    wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 600); setTimeout(wire, 2200); });
+    document.addEventListener('click', function (e) { if (e.target && e.target.id === 'aqf-ov') closeOv(); });
+})();
+</script>

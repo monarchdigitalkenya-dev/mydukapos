@@ -13,6 +13,7 @@
 //   -> { status: 'not_found' }                            no record (yet): the till may not send confirmations, or it is still coming
 // Same licence and paired-device rules as every staff action.
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { corsHeadersFor } from './_cors.js';
 import { deviceGuard } from './_device-auth.js';
 import { staffGuard } from './_staff-auth.js';
@@ -30,6 +31,8 @@ export async function onRequestPost(context) {
   const reply = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors } });
   const license = await requireValidLicense(request, env);
   if (!license.valid) return reply({ error: 'This link is not active.' }, 403);
+  const rlv = await checkRateLimit(env, 'mpesaCheck', license.clientId);      // zip 273: a code-guessing brake, per shop
+  if (!rlv.ok) return rateLimitResponse('M-Pesa code checks', rlv, cors);
   const denied = await deviceGuard(request, env, license.clientId, cors);
   if (denied) return denied;
   const sg = await staffGuard(request, env, license.clientId, null, cors);     // zip 141: a signed-in staff member, when required
@@ -45,9 +48,16 @@ export async function onRequestPost(context) {
   const stk = await kv.get(`mpesa-receipt:${c}:${code}`);
   if (stk) { rec = JSON.parse(stk); source = 'stk'; }
   else { const till = await kv.get(`till-payment:${c}:${code}`); if (till) { rec = JSON.parse(till); source = 'till'; } }
+  // zip 378: the sale came from an STK prompt this shop sent and Safaricom confirmed (callback or status check) - that prompt IS the proof,
+  // even when its M-PESA code was never indexed (the callback did not arrive)
+  const checkoutId = String((body && body.checkoutRequestId) || '').slice(0, 100);
+  if (!rec && checkoutId) {
+    try { const tx = JSON.parse((await kv.get(`mpesa-tx:${c}:${checkoutId}`)) || 'null'); if (tx && tx.status === 'success') { rec = { amount: Number(tx.amount) || 0, phone: tx.phone || '' }; source = 'stk'; } } catch (e) { /* not found */ }
+  }
   if (!rec || rec.trusted === false) return reply({ status: 'not_found' });   // zip 143: an unsigned confirmation is never proof
   const paid = Number(rec.amount) || 0;
-  if (paid + 0.5 < amount) return reply({ status: 'amount_mismatch', paid, source });
+  // zip 378: M-Pesa moves whole shillings (a prompt for 1,499.60 is sent as 1,500; 2,200.40 as 2,200) - less than one shilling short is NOT "paid less"
+  if (paid + 1 <= amount) return reply({ status: 'amount_mismatch', paid, source });
   const usedKey = `mpesa-used:${c}:${code}`;
   // zip 185: claim the code ATOMICALLY in D1 (PRIMARY KEY (client_id, code) + INSERT OR IGNORE, then read back the owner), so two tills
   // verifying the same code at the same instant cannot both win (the old KV get-then-put had no compare-and-set). Falls back to the KV

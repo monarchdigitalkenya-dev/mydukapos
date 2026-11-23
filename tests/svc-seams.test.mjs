@@ -83,7 +83,7 @@ function tmpRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-seams-'));
   const cp = (rel) => { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.copyFileSync(path.join(ROOT, rel), path.join(dir, rel)); };
   ['package.json', 'tools/lib.mjs', 'tools/sync-shared.mjs', 'src/shared/functions.js', ...fs.readdirSync(path.join(ROOT, 'src/shared/blocks')).filter((f) => f.endsWith('.html')).map((f) => 'src/shared/blocks/' + f),
-    ...fs.readdirSync(path.join(ROOT, 'src/shared/blocks/guide-data')).map((f) => 'src/shared/blocks/guide-data/' + f), ...APPS, 'owner/index.html'].forEach(cp);
+    ...fs.readdirSync(path.join(ROOT, 'src/shared/blocks/guide-data')).map((f) => 'src/shared/blocks/guide-data/' + f), ...APPS, 'carwash/index.html', 'owner/index.html'].forEach(cp);   // zip 361: carwash/ is a module of tools/lib.mjs too
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
   const run = (...args) => spawnSync(process.execPath, ['tools/sync-shared.mjs', ...args], { cwd: dir, encoding: 'utf8' });
   const snap = () => Object.fromEntries([...APPS, 'owner/index.html'].map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]));

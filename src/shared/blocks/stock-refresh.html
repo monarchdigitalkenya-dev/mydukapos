@@ -1,0 +1,90 @@
+<!-- STOCK REFRESH (zip 368) -------------------------------------------------------------------------------------------------------------
+     THE PROBLEM: the same phone showed different stock numbers for Admin and for a staff login. Stock is owned by the server; this phone only
+     holds a copy. A phone that has changes it could not send yet (a slow line, a refused push, a full storage) deliberately does NOT take the
+     server's copy (that would wipe its own unsent work) - and until now it did not even ASK, so its stock numbers stayed old for as long as it was
+     stuck. Logging out of Admin and into a staff account does not change that copy, so the numbers on the grid looked "wrong" until the phone
+     happened to send its backlog.
+     THE FIX: the phone now asks the server for the stock figures (quantities only - nothing else it holds is replaced, no unsent edit can be
+     lost; its own unsent movements are laid on top of the server's number exactly like a normal pull does) at these moments:
+       - whenever the login changes (Admin <-> staff, staff <-> staff),
+       - when the Sales Counter is opened or the app comes back to the front (at most every 2 minutes),
+       - every minute while the phone is stuck with unsent work,
+       - when someone presses "Refresh stock".
+     zip 379: NOTHING is shown on screen (the "Stock confirmed by the server ... ago" bar was removed); the refreshes above happen silently.
+     It uses the shared stockMergeWhileStuck (functions.js) and a "since = just before my last pull" request, which is what a normal pull sends, so
+     the server's answer is the same small one. Ids: psr-*. -->
+<style id="psr-css">
+/* zip 379: no stock status bar on screen any more (the stock is still refreshed from the server, silently) */
+#psr-bar{display:none!important}
+</style>
+<script id="psr-js">
+(function () {
+  'use strict';
+  var S = { last: 0, lastTry: 0, busy: false, who: null, ok: true, changed: 0, stuckSince: 0 };
+  function $(id) { return document.getElementById(id); }
+  function who() { try { return typeof activeServerName === 'function' ? String(activeServerName() || '') : ''; } catch (e) { return ''; } }
+  function stuck() { try { return typeof hasUnsyncedWork === 'function' && !!hasUnsyncedWork(); } catch (e) { return false; } }
+  function offline() { try { return typeof window.posNetOffline === 'function' && !!window.posNetOffline(); } catch (e) { return false; } }
+  function key(k) { try { return typeof appStoreKey === 'function' ? appStoreKey(k) : k; } catch (e) { return k; } }
+  function ago(t) { if (!t) return 'not yet'; var s = Math.round((Date.now() - t) / 1000); return s < 10 ? 'just now' : s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
+
+  // Ask the server for its figures and take ONLY the quantities. Never throws. Returns how many figures changed (or -1 when it could not ask).
+  function refresh(reason, opts) {
+    opts = opts || {};
+    if (S.busy) return Promise.resolve(-1);
+    if (!opts.force && Date.now() - S.lastTry < (opts.minGap || 20000)) return Promise.resolve(-1);
+    if (offline() && !opts.force) return Promise.resolve(-1);
+    S.busy = true; S.lastTry = Date.now(); paint();
+    var since = 0, cursor = 0;
+    try { since = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10) || 0; cursor = Number(localStorage.getItem(key('pos_log_cursor'))) || 0; } catch (e) { /* ask for the whole copy */ }
+    // "since" just BEFORE what this phone already has: the server answers with its copy (the small kind a normal pull gets) instead of "unchanged"
+    var qs = ['fresh=1'];
+    if (since > 1) qs.unshift('since=' + (since - 1));
+    if (since > 1 && cursor > 0) qs.push('hot=3&after=' + cursor);
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null, timer = ctl ? setTimeout(function () { ctl.abort(); }, 25000) : null;
+    return fetch(apiUrl(SYNC_URL + '?' + qs.join('&')), { method: 'GET', signal: ctl ? ctl.signal : undefined }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function (data) {
+      var n = 0;
+      if (data && Array.isArray(data.inventory)) {
+        n = (typeof stockMergeWhileStuck === 'function') ? stockMergeWhileStuck(data) : 0;
+        if (!n && !stuck()) { try { if (typeof pullFreshAfterPoke === 'function') pullFreshAfterPoke(); } catch (e) { /* the normal poll runs anyway */ } }
+        S.last = Date.now(); S.ok = true; S.changed = n;
+      } else if (data && data.unchanged) { S.last = Date.now(); S.ok = true; S.changed = 0; }
+      return n;
+    }).catch(function () { S.ok = false; return -1; }).then(function (n) {
+      if (timer) clearTimeout(timer);
+      S.busy = false; paint();
+      try { if (n > 0 && typeof renderItemImageGrid === 'function') renderItemImageGrid(); } catch (e) { /* the next draw shows it */ }
+      return n;
+    });
+  }
+
+  // zip 379: no bar, no text, no button on the Sales Counter - only the silent refreshes. An old bar left on the page is removed.
+  function bar() { var old = $('psr-bar'); if (old && old.parentNode) old.parentNode.removeChild(old); return null; }
+  function paint() { bar(); }
+  function salesOpen() { var t = $('sales-tab'); return !!(t && t.classList.contains('active') && (t.offsetParent !== null || typeof t.offsetParent === 'undefined')); }
+
+  function boot() {
+    var n = 0;
+    (function tick() { try { bar(); paint(); } catch (e) { /* retried */ } if (++n < 30) setTimeout(tick, n < 10 ? 500 : 2000); })();
+    setTimeout(function () { refresh('start', { minGap: 0 }); }, 4000);
+    setInterval(function () {
+      try {
+        var w = who();
+        if (S.who !== null && w !== S.who) { S.who = w; refresh('login', { minGap: 3000 }); }      // Admin <-> staff, staff <-> staff
+        S.who = w;
+        var st = stuck(); if (st && !S.stuckSince) S.stuckSince = Date.now(); if (!st) S.stuckSince = 0;
+        if (st && Date.now() - S.stuckSince > 20000) refresh('stuck', { minGap: 60000 });          // a stuck phone never takes the server's copy by itself: ask for the figures
+        if (salesOpen() && Date.now() - S.last > 120000) refresh('counter', { minGap: 120000 });
+        paint();
+      } catch (e) { /* next tick */ }
+    }, 2000);
+    document.addEventListener('visibilitychange', function () { try { if (document.visibilityState === 'visible') refresh('visible', { minGap: 120000 }); } catch (e) { /* ok */ } });
+    var tab = $('sales-tab-btn'); if (tab) tab.addEventListener('click', function () { setTimeout(function () { refresh('counter', { minGap: 120000 }); }, 50); });
+  }
+  window.PSR = { __v: 368, refresh: refresh, state: S };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

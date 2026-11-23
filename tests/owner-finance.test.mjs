@@ -30,14 +30,14 @@ const openRecord = async (b, agreed, paid, method) => {
   await b.w.eval('submitRevenue()');
 };
 
-test('the toggle exists only under PERMANENT links, starts Off, and shows a recorded link as On and locked', async () => {
+test('zip 304: the per-link 💰 switch and Quote & Payments are replaced by ONE "Record a payment" (no second copy of the same money)', async () => {
   const calls = []; const b = await owner(calls);
+  await new Promise((r) => setTimeout(r, 1200));
   b.w.eval(`window.__h = revenueToggleHtml(${JSON.stringify(CLIENT)}, 'Acme')`);
-  assert.match(b.w.__h, /type="checkbox"/); assert.doesNotMatch(b.w.__h, /checked/);
-  b.w.eval(`window.__d = revenueToggleHtml(${JSON.stringify({ ...CLIENT, type: 'demo' })}, 'Acme')`);
-  assert.equal(b.w.__d, '', 'nothing for a demo link');
-  b.w.eval(`window.__r = revenueToggleHtml(${JSON.stringify({ ...CLIENT, revenue: { at: Date.now(), agreed: 3000, paid: 2000, method: 'mpesa' } })}, 'Acme')`);
-  assert.match(b.w.__r, /checked disabled/); assert.match(b.w.__r, /agreed KES 3,000, paid KES 2,000/); assert.match(b.w.__r, /KES 1,000 on the/);
+  assert.equal(b.w.__h, '', 'the switch is gone');
+  b.w.eval(`clientDetailCurrentGroup = { key: 'acme', type: 'permanent', records: [${JSON.stringify(CLIENT)}] }; window.__g = groupIncomeHtml('acme', 'Acme Ltd')`);
+  assert.match(b.w.__g, /Record a payment/); assert.doesNotMatch(b.w.__g, /group-income-agreed-input/);
+  assert.ok(b.d.getElementById('money-tab') && b.d.getElementById('money-tab-btn'), 'the Money tab exists');
   b.close();
 });
 
@@ -130,12 +130,19 @@ test('Remind admin sends the message to that link and the bill remembers when', 
   b.close();
 });
 
-test('making a link permanent (either way) adds NOTHING to sales or bills and no longer asks for an amount', async () => {
+test('making a link permanent (either way) adds NOTHING to the old sales book or bills, never asks for an amount, and says paid or free', async () => {
   const calls = []; const b = await owner(calls);
-  b.w.eval("window.confirm = () => true; window.prompt = () => { throw new Error('must not ask for an amount'); }");
+  await new Promise((r) => setTimeout(r, 1200));
+  let answer = true;
+  b.w.eval("window.__asked = []; window.prompt = (q) => { window.__asked.push(q); if (/amount/i.test(q)) throw new Error('must not ask for an amount'); return ''; }");
+  b.w.confirm = () => answer;
+  await b.w.eval("requestMakePermanent('C9', 'Acme Ltd', 'shop')");
+  answer = false; b.w.confirm = (q) => (/FREE/.test(q) ? true : false);
   await b.w.eval("requestMakePermanent('C9', 'Acme Ltd', 'shop')");
   await b.w.eval("confirmDemoUpgrade('C9', 'Acme Ltd', 'shop')");
-  assert.equal(calls.filter((c) => c.url.includes('owner-confirm')).length, 2, 'the link is made permanent');
+  const conf = calls.filter((c) => c.url.includes('owner-confirm'));
+  assert.equal(conf.length, 3, 'the link is made permanent');
+  assert.equal(conf[0].body.complimentary, undefined, 'paid'); assert.equal(conf[1].body.complimentary, true, 'given free');
   assert.equal(b.w.eval('salesLog.length'), 0); assert.equal(b.w.eval('bills.length'), 0);
   b.close();
 });

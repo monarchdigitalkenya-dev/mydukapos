@@ -1,0 +1,744 @@
+<!-- BUSINESS HQ ----------------------------------------------------------------------------------------------------------------------------------
+         zip 309. ONE place for the owner to run the whole business: Branches (profile, code, manager, suspend / activate, add a branch), Staff across
+         branches (one person, several branches: add a branch, move permanently, a temporary posting that ends by itself, end, deactivate everywhere),
+         HQ administrators (explicit permissions, all or some branches) and the HQ audit trail.
+           * Every action is checked on the SERVER (functions/api/org.js), never only here: the owner signs in with the main branch's management
+             password, an HQ administrator with their own PIN. The session lives in this tab only (sessionStorage) and ends after 8 hours, when the
+             password / PIN changes, or the moment the owner removes the access.
+           * Needs the internet (the business-wide records are on the server). Selling, sign-in and everything else in the till keep working offline.
+           * Opened from the Staff tab ("🏢 Business HQ") and from the branch switcher. Nothing here changes any sale or payment.
+         zip 310: Dashboard (sales today / 7 days per branch, low stock, transfers waiting), Stock (stores per branch, receive, count, move between a
+         store and the shop floor), Transfers between branches (request, approve, dispatch, receive with damaged / missing, settle, reverse a move),
+         Reports (sales, stock, transfers, staff; one branch or consolidated; CSV) and Roles (templates and custom roles given per person per branch).
+         Stock changes go through the branch's own stock ledger on the server, once each, so a retry or two people pressing at once never double it.
+         zip 311: simpler. Tabs Overview / Stock / Transfers / Staff / Branches / Reports / More (roles, administrators, audit, approvals). Stock is ONE
+         list per branch: each item shows its shop-floor and store quantities with Move, Send to branch and + Store right on it (a Main store is made
+         for the branch). Sending goes out at once (approvals are off unless the owner turns them on). Every dialog keeps its title and ✕ at the top
+         and its buttons at the bottom. The Staff-tab button no longer disappears. -->
+<style>
+    /* zip 311 look: ink header, quiet paper background, one green for "do it", amber for low stock, brick for stop. Quantities in tabular figures:
+       the stock rail (shop floor | stores, with Move right on the item) is the one strong element; everything else stays plain. */
+    #bhq { --hq-ink: #15233b; --hq-paper: var(--bg-body, #f3f5f2); --hq-card: var(--bg-surface, #ffffff); --hq-line: var(--border-color, #dbe1da);
+           --hq-text: var(--dark, #1c2633); --hq-muted: #5d6877; --hq-go: #17795a; --hq-go-soft: #e3f2ec; --hq-warn: #a8640a; --hq-warn-soft: #fbf0dc;
+           --hq-stop: #b0362c; --hq-stop-soft: #fbe6e3; --hq-info-soft: #e7edf8;
+           position: fixed; inset: 0; z-index: 2147483000; display: none; background: var(--hq-paper); color: var(--hq-text); overflow: auto; font-family: inherit; font-size: 15px; line-height: 1.45; }
+    #bhq.open { display: block; }
+    #bhq * { box-sizing: border-box; }
+    #bhq .bhq-top { position: sticky; top: 0; z-index: 2; background: var(--hq-ink); color: #fff; }
+    #bhq .bhq-bar { display: flex; align-items: center; gap: 10px; max-width: 1180px; margin: 0 auto; padding: 10px 16px; }
+    #bhq .bhq-bar h2 { margin: 0; font-size: 17px; font-weight: 800; flex: 1 1 auto; letter-spacing: -.01em; }
+    #bhq .bhq-who { font-size: 13px; opacity: .78; }
+    #bhq .bhq-x { border: 1px solid rgba(255,255,255,.3); background: transparent; color: #fff; border-radius: 10px; min-height: 40px; padding: 0 14px; font-weight: 700; cursor: pointer; font: inherit; font-weight: 700; }
+    #bhq .bhq-x:hover { background: rgba(255,255,255,.08); }
+    #bhq .bhq-tabs { display: flex; gap: 2px; max-width: 1180px; margin: 0 auto; padding: 0 10px; overflow-x: auto; scrollbar-width: none; }
+    #bhq .bhq-tabs::-webkit-scrollbar { display: none; }
+    #bhq .bhq-tabs button { border: 0; background: transparent; color: rgba(255,255,255,.72); padding: 10px 12px 12px; font: inherit; font-weight: 700; font-size: 14px; cursor: pointer; white-space: nowrap; border-bottom: 3px solid transparent; min-height: 44px; }
+    #bhq .bhq-tabs button.on { color: #fff; border-bottom-color: #4cc79a; }
+    #bhq .bhq-body { padding: 16px 16px 48px; max-width: 1180px; margin: 0 auto; }
+    #bhq .bhq-card { background: var(--hq-card); border: 1px solid var(--hq-line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+    #bhq .bhq-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    #bhq .bhq-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #bhq .bhq-sp { flex: 1 1 auto; min-width: 0; }
+    #bhq h3 { margin: 0 0 6px; font-size: 17px; letter-spacing: -.01em; }
+    #bhq .bhq-sub { font-size: 13px; color: var(--hq-muted); line-height: 1.45; }
+    #bhq .bhq-tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: var(--hq-info-soft); color: #23488f; white-space: nowrap; }
+    #bhq .bhq-tag.main { background: var(--hq-warn-soft); color: var(--hq-warn); } #bhq .bhq-tag.off { background: var(--hq-stop-soft); color: var(--hq-stop); } #bhq .bhq-tag.ok { background: var(--hq-go-soft); color: var(--hq-go); } #bhq .bhq-tag.tmp { background: #f1e8fb; color: #6b2fa3; }
+    #bhq .bhq-btn { border: 1px solid var(--hq-line); background: var(--hq-card); color: inherit; border-radius: 10px; padding: 0 14px; min-height: 40px; font: inherit; font-weight: 700; font-size: 14px; cursor: pointer; }
+    #bhq .bhq-btn:hover { border-color: #b8c2b7; }
+    #bhq .bhq-btn.pri { background: var(--hq-go); border-color: var(--hq-go); color: #fff; } #bhq .bhq-btn.pri:hover { filter: brightness(1.07); }
+    #bhq .bhq-btn.bad { color: var(--hq-stop); border-color: #efc1bb; }
+    #bhq .bhq-btn.sm { min-height: 34px; padding: 0 10px; font-size: 13px; }
+    #bhq .bhq-btn:disabled { opacity: .5; cursor: default; }
+    #bhq .bhq-link { border: 0; background: none; color: var(--hq-go); font: inherit; font-weight: 700; cursor: pointer; padding: 6px 0; text-decoration: underline; text-underline-offset: 3px; }
+    #bhq input, #bhq select, #bhq textarea { width: 100%; min-height: 44px; border: 1px solid var(--hq-line); border-radius: 10px; padding: 8px 12px; font: inherit; background: var(--hq-card); color: inherit; }
+    #bhq label.bhq-l { display: block; font-size: 13px; font-weight: 700; margin: 12px 0 5px; }
+    #bhq .bhq-msg { margin: 10px 0 0; font-size: 14px; min-height: 0; } #bhq .bhq-msg:empty { display: none; } #bhq .bhq-msg.err { color: var(--hq-stop); } #bhq .bhq-msg.ok { color: var(--hq-go); }
+    #bhq table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    #bhq th, #bhq td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--hq-line); vertical-align: top; }
+    #bhq th { font-size: 12.5px; font-weight: 700; color: var(--hq-muted); }
+    #bhq .num { font-variant-numeric: tabular-nums; }
+    #bhq .bhq-chip { display: inline-flex; gap: 4px; align-items: center; margin: 2px 4px 2px 0; padding: 3px 8px; border-radius: 8px; background: var(--hq-paper); font-size: 13px; }
+    #bhq .bhq-chip.gone { opacity: .45; text-decoration: line-through; }
+    /* dialogs: the title and the close button stay at the top, the main buttons stay at the bottom - nothing to scroll for */
+    #bhq .bhq-modal { position: fixed; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(21,35,59,.55); }
+    #bhq .bhq-sheet { width: min(560px, 100%); max-height: min(calc(92vh / var(--pos-z,1)), 860px); display: flex; flex-direction: column; background: var(--hq-card); border-radius: 16px; overflow: hidden; box-shadow: 0 24px 60px rgba(21,35,59,.28); }
+    #bhq .bhq-mhead { display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 18px; border-bottom: 1px solid var(--hq-line); }
+    #bhq .bhq-mhead h3 { margin: 0; flex: 1 1 auto; font-size: 17px; }
+    #bhq .bhq-mx { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--hq-line); background: var(--hq-card); color: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
+    #bhq .bhq-mx:hover { background: var(--hq-paper); }
+    #bhq .bhq-mbody { padding: 4px 18px 0; overflow: auto; flex: 1 1 auto; }
+    #bhq .bhq-mbody .bhq-acts { position: sticky; bottom: 0; background: var(--hq-card); padding: 12px 0 16px; margin-top: 12px; border-top: 1px solid var(--hq-line); }
+    #bhq .bhq-mbody > :last-child:not(.bhq-acts) { margin-bottom: 16px; }
+    #bhq .bhq-perms label { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; font-size: 14px; } #bhq .bhq-perms input { width: auto; min-height: 0; margin-top: 3px; }
+    #bhq .bhq-radio label { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--hq-line); border-radius: 10px; margin: 6px 0; cursor: pointer; }
+    #bhq .bhq-radio label:has(input:checked) { border-color: var(--hq-go); background: var(--hq-go-soft); }
+    #bhq .bhq-radio input { width: auto; min-height: 0; margin-top: 3px; }
+    /* overview */
+    #bhq .bhq-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    #bhq .bhq-kpi { margin: 0; padding: 14px 16px; }
+    #bhq .bhq-kv { font-size: 26px; font-weight: 800; margin: 2px 0 0; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+    #bhq .bhq-kpi.warn .bhq-kv { color: var(--hq-warn); }
+    #bhq .bhq-kpi button.bhq-link { padding: 2px 0 0; font-size: 13px; }
+    /* the stock rail: one row per item, its quantity at each place, the move right there */
+    #bhq .bhq-tools { display: grid; grid-template-columns: minmax(180px, 260px) 1fr auto; gap: 10px; align-items: end; }
+    #bhq .bhq-items { background: var(--hq-card); border: 1px solid var(--hq-line); border-radius: 12px; overflow: hidden; }
+    #bhq .bhq-item { display: grid; grid-template-columns: minmax(160px, 1.3fr) minmax(0, 2fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--hq-line); }
+    #bhq .bhq-item:first-child { border-top: 0; }
+    #bhq .bhq-item .nm { font-weight: 700; }
+    #bhq .bhq-rail { display: flex; gap: 6px; flex-wrap: wrap; }
+    #bhq .bhq-place { display: inline-flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 9px; background: var(--hq-paper); border: 1px solid transparent; }
+    #bhq .bhq-place .pl { font-size: 12.5px; color: var(--hq-muted); }
+    #bhq .bhq-place .q { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #bhq .bhq-place.floor { background: var(--hq-go-soft); } #bhq .bhq-place.low { background: var(--hq-warn-soft); } #bhq .bhq-place.low .q { color: var(--hq-warn); }
+    #bhq .bhq-place.zero .q { color: var(--hq-muted); font-weight: 600; }
+    #bhq .bhq-item .acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    #bhq .bhq-qty { display: grid; grid-template-columns: 52px 1fr 52px; gap: 6px; }
+    #bhq .bhq-qty button { min-height: 52px; border-radius: 10px; border: 1px solid var(--hq-line); background: var(--hq-card); font-size: 22px; font-weight: 700; cursor: pointer; color: inherit; }
+    #bhq .bhq-qty input { min-height: 52px; text-align: center; font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #bhq .bhq-fromto { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: end; }
+    #bhq .bhq-swap { min-height: 44px; width: 44px; border-radius: 10px; border: 1px solid var(--hq-line); background: var(--hq-card); cursor: pointer; font-size: 18px; color: inherit; }
+    #bhq .bhq-seg { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 12px; }
+    #bhq .bhq-seg button { border: 1px solid var(--hq-line); background: var(--hq-card); color: inherit; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13.5px; font-weight: 700; cursor: pointer; min-height: 36px; }
+    #bhq .bhq-seg button.on { background: var(--hq-ink); border-color: var(--hq-ink); color: #fff; }
+    #bhq .bhq-empty { padding: 28px 16px; text-align: center; color: var(--hq-muted); }
+    #bhq .bhq-more { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+    #bhq .bhq-more button { text-align: left; border: 1px solid var(--hq-line); background: var(--hq-card); border-radius: 12px; padding: 14px 16px; font: inherit; cursor: pointer; color: inherit; }
+    #bhq .bhq-more button b { display: block; font-size: 15.5px; margin-bottom: 2px; }
+    #bhq .bhq-more button:hover { border-color: var(--hq-go); }
+    #bhq .bhq-back { margin: 0 0 12px; }
+    #bhq :is(button, a, input, select, textarea):focus-visible { outline: 3px solid #4cc79a; outline-offset: 2px; }
+    .bhq-open-btn { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 0 16px; min-height: 44px; border-radius: 10px; border: 0; background: #15233b; color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
+    @media (prefers-reduced-motion: no-preference) { #bhq .bhq-sheet { animation: bhqIn .16s ease-out; } @keyframes bhqIn { from { transform: translateY(10px); opacity: 0; } } }
+    @media (max-width: 760px) {
+      #bhq .bhq-item { grid-template-columns: 1fr; gap: 8px; }
+      #bhq .bhq-item .acts { justify-content: flex-start; }
+      #bhq .bhq-tools { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      #bhq .bhq-hide-sm { display: none; }
+      #bhq .bhq-modal { padding: 0; align-items: flex-end; }
+      #bhq .bhq-sheet { width: 100%; max-height: calc(94vh / var(--pos-z,1)); border-radius: 16px 16px 0 0; }
+      #bhq table, #bhq tbody, #bhq tr, #bhq td { display: block; } #bhq thead { display: none; }
+      #bhq tr { border: 1px solid var(--hq-line); border-radius: 12px; margin-bottom: 10px; padding: 6px; } #bhq td { border: 0; padding: 4px 6px; }
+      #bhq td[data-l]::before { content: attr(data-l) ': '; font-weight: 700; font-size: 12px; color: var(--hq-muted); }
+      #bhq .bhq-who { display: none; }
+    }
+</style>
+<script>
+(function () {
+    'use strict';
+    var TOKEN_KEY = 'bhq_token', tab = 'dash', data = { who: null, branches: [], people: null, admins: null, audit: null, perms: {} }, root = null;
+    function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function tok() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return window.__bhqTok || ''; } }
+    function setTok(t) { try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); } catch (e) { window.__bhqTok = t || ''; } }
+    function api(body) {
+        var url = (typeof apiUrl === 'function') ? apiUrl('/api/org') : '/api/org';
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Token': tok() }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; if (r.status === 401 && j.code === 'hq_signin') { setTok(''); } return j; }); })
+            .catch(function () { return { __status: 0, error: 'No connection. Business HQ needs the internet; the till keeps working offline.' }; });
+    }
+    function isAdminNow() { try { return typeof isAdminServing === 'function' ? !!isAdminServing() : true; } catch (e) { return true; } }   // zip 325: HQ is for the Admin only
+    function sha(s) { return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s))).then(function (d) { return Array.from(new Uint8Array(d)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join(''); }); }
+    function when(t) { try { return new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch (e) { return String(t); } }
+    function can(p) { return !!data.who && (data.who.kind === 'owner' || (data.who.perms || []).indexOf(p) >= 0); }
+    function bname(cid) { var b = data.branches.filter(function (x) { return x.clientId === cid; })[0]; return b ? (b.name + (b.code ? ' · ' + b.code : '')) : cid; }
+    var ACTIONS = { 'hq.signin': 'Signed in to HQ', 'branch.profile': 'Branch profile created', 'branch.edit': 'Branch edited', 'branch.suspend': 'Branch suspended', 'branch.activate': 'Branch activated',
+        'staff.assign.additional': 'Added to another branch', 'staff.assign.permanent': 'Moved to another branch', 'staff.assign.temporary': 'Temporary posting', 'staff.temporary.expired': 'Temporary posting ended',
+        'staff.end': 'Assignment ended', 'staff.deactivate': 'Deactivated', 'staff.reactivate': 'Reactivated', 'person.edit': 'Details edited', 'person.add': 'Added to HQ', 'admin.add': 'Made HQ administrator', 'admin.edit': 'HQ administrator changed', 'admin.remove': 'HQ access removed',
+        'location.create': 'Store added', 'location.receive': 'Stock received into a store', 'location.count': 'Store counted', 'move.create': 'Stock moved inside a branch', 'move.reverse': 'Move reversed',
+        'transfer.create': 'Transfer requested', 'transfer.approve': 'Transfer approved', 'transfer.reject': 'Transfer rejected', 'settings.transfers': 'Approval rules changed',
+        'report.view': 'Report viewed', 'role.create': 'Role created', 'role.edit': 'Role changed', 'role.archive': 'Role archived', 'staff.role': 'Role given at a branch' };
+
+    function ensure() {
+        if (root) return root;
+        root = document.createElement('div'); root.id = 'bhq'; root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', 'Business HQ');
+        document.body.appendChild(root);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && root.classList.contains('open')) { var m = root.querySelector('.bhq-modal'); if (m) m.remove(); else close(); } });
+        return root;
+    }
+    function close() { if (root) root.classList.remove('open'); document.body.style.overflow = ''; }
+    window.openBusinessHQ = function () {
+        if (!isAdminNow()) { try { if (typeof showToast === 'function') showToast('Business HQ is for the Admin only.', true); } catch (e) { /* ok */ } return; }
+        ensure(); root.classList.add('open'); document.body.style.overflow = 'hidden';
+        if (!tok()) return autoSignIn();
+        load();
+    };
+    var SUBS = { roles: 1, admins: 1, audit: 1, rules: 1 };
+    function frame(inner) {
+        var stockish = can('inventory.manage') || can('transfers.approve') || can('reports.view');
+        var tabs = [['dash', 'Overview'], ['stock', 'Stock'], ['xfers', 'Transfers'], ['staff', 'Staff'], ['branches', 'Branches'], ['reports', 'Reports'], ['more', 'More']].filter(function (t) {
+            return t[0] === 'dash' || t[0] === 'branches' || t[0] === 'more' || ((t[0] === 'stock' || t[0] === 'xfers') && stockish) || (t[0] === 'reports' && can('reports.view')) || (t[0] === 'staff' && (can('staff.manage') || can('staff.assign')));
+        });
+        var cur = SUBS[tab] ? 'more' : tab;
+        if (data.who && !tabs.some(function (t) { return t[0] === cur; })) { tab = 'dash'; cur = 'dash'; }
+        root.innerHTML = '<div class="bhq-top"><div class="bhq-bar"><h2>🏢 Business HQ</h2>' + (data.who ? '<span class="bhq-who">' + esc(data.who.kind === 'owner' ? 'Owner' : data.who.name) + '</span><button type="button" class="bhq-x" data-a="signout">Sign out</button>' : '') +
+            '<button type="button" class="bhq-x" data-a="close" aria-label="Close Business HQ">✕ Close</button></div>' +
+            (data.who ? '<nav class="bhq-tabs" role="tablist">' + tabs.map(function (t) { return '<button type="button" role="tab" aria-selected="' + (cur === t[0]) + '" class="' + (cur === t[0] ? 'on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</nav>' : '') + '</div>' +
+            '<div class="bhq-body">' + (SUBS[tab] ? '<button type="button" class="bhq-btn sm bhq-back" data-tab="more">‹ More</button>' : '') + inner + '</div>';
+        root.querySelector('[data-a="close"]').onclick = close;
+        var so = root.querySelector('[data-a="signout"]'); if (so) so.onclick = function () { setTok(''); data.who = null; close(); };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-tab]'), function (b) { b.onclick = function () { tab = b.getAttribute('data-tab'); paint(); }; });
+    }
+    // zip 325: no password. The Admin who is signed in on the till opens HQ directly; the server re-checks (main branch, and a live Admin session when staff sessions are required).
+    function autoSignIn() {
+        data.who = null; frame('<p class="bhq-sub">Opening Business HQ…</p>');
+        api({ action: 'login', auto: true }).then(function (j) { if (j.token) { setTok(j.token); load(); } else paintLogin(j.error || 'Could not open Business HQ.'); });
+    }
+    function paintLogin(msg) {
+        data.who = null;
+        frame('<div class="bhq-card" style="max-width:520px;margin:20px auto"><h3>Business HQ</h3><p class="bhq-sub">' + (isAdminNow() ? 'Branches, staff across branches and the HQ audit trail for the whole business. Needs the internet.' : 'Business HQ is for the Admin only.') + '</p>' +
+            (msg ? '<p class="bhq-msg err" role="alert">' + esc(msg) + '</p>' : '') +
+            (isAdminNow() ? '<div class="bhq-row" style="margin-top:12px"><button class="bhq-btn pri" type="button" id="bhq-retry">Try again</button></div>' : '') + '</div>');
+        var rb = document.getElementById('bhq-retry'); if (rb) rb.onclick = autoSignIn;
+    }
+    function load() {
+        frame('<p class="bhq-sub">Loading…</p>');
+        api({ action: 'overview' }).then(function (j) {
+            if (!j.who) return paintLogin(j.__status === 401 || j.__status === 403 ? (j.error || '') : (j.error || 'Could not open Business HQ.'));
+            data.who = j.who; data.branches = j.branches || []; data.perms = j.perms || {}; data.people = null; data.admins = null; data.audit = null; data.dash = null; data.locs = null; data.xfers = null; data.roles = null; data.items = null; data.xset = null;
+            paint();
+        });
+    }
+    function paint() {
+        if (tab === 'staff' && !data.people) { frame('<p class="bhq-sub">Loading staff…</p>'); return api({ action: 'staff.list' }).then(function (j) { data.people = j.people || []; if (j.error) data.peopleErr = j.error; paint(); }); }
+        if (tab === 'admins' && !data.admins) { frame('<p class="bhq-sub">Loading…</p>'); return api({ action: 'admin.list' }).then(function (j) { data.admins = j.admins || []; if (!data.people && can('staff.manage')) return api({ action: 'staff.list' }).then(function (k) { data.people = k.people || []; paint(); }); paint(); }); }
+        if (tab === 'audit' && !data.audit) { frame('<p class="bhq-sub">Loading…</p>'); return api({ action: 'audit.list' }).then(function (j) { data.audit = j.audit || []; paint(); }); }
+        if (tab === 'staff') return paintStaff();
+        if (tab === 'admins') return paintAdmins();
+        if (tab === 'audit') return paintAudit();
+        if (tab === 'dash') return paintDash();
+        if (tab === 'stock') return paintStock();
+        if (tab === 'xfers') return paintXfers();
+        if (tab === 'reports') return paintReports();
+        if (tab === 'roles') return paintRoles();
+        if (tab === 'more') return paintMore();
+        if (tab === 'rules') return paintRules();
+        if (tab === 'branches') return paintBranches();
+        return paintDash();
+    }
+
+    /* ---------------- branches ---------------- */
+    function paintBranches() {
+        var bs = data.branches, active = bs.filter(function (b) { return b.status !== 'suspended'; }).length;
+        var h = '<div class="bhq-row" style="margin-bottom:10px"><div class="bhq-sp"><h3 style="margin:0">' + bs.length + ' branch' + (bs.length === 1 ? '' : 'es') + ' · ' + active + ' active</h3><p class="bhq-sub" style="margin:2px 0 0">' + bs.reduce(function (n, b) { return n + (b.staffCount || 0); }, 0) + ' staff in total</p></div>' +
+            (can('branches.manage') ? '<button type="button" class="bhq-btn pri" data-a="add">＋ Add a branch</button>' : '') + '</div><div class="bhq-grid">';
+        bs.forEach(function (b) {
+            h += '<div class="bhq-card"><div class="bhq-row"><h3 class="bhq-sp">' + esc(b.name) + '</h3>' + (b.code ? '<span class="bhq-tag">' + esc(b.code) + '</span>' : '') + (b.isMain ? '<span class="bhq-tag main">Main</span>' : '') +
+                '<span class="bhq-tag ' + (b.status === 'suspended' ? 'off' : 'ok') + '">' + (b.status === 'suspended' ? 'Suspended' : 'Active') + '</span></div>' +
+                '<p class="bhq-sub">' + (b.staffCount || 0) + ' staff' + (b.location ? ' · ' + esc(b.location) : '') + (b.phone ? ' · ' + esc(b.phone) : '') + (b.slug ? '<br>' + esc(b.slug) : '') + (!b.hasProfile ? '<br><b>Give this branch a code and name (Edit).</b>' : '') + '</p>' +
+                '<div class="bhq-row" style="margin-top:8px">' + (can('branches.manage') ? '<button type="button" class="bhq-btn" data-edit="' + esc(b.clientId) + '">Edit</button>' + (b.isMain ? '' : '<button type="button" class="bhq-btn ' + (b.status === 'suspended' ? '' : 'bad') + '" data-status="' + esc(b.clientId) + '">' + (b.status === 'suspended' ? 'Activate' : 'Suspend') + '</button>') : '') +
+                '<button type="button" class="bhq-btn" data-staff="' + esc(b.clientId) + '">Staff</button>' + (typeof window.branchSwitcherUrl === 'function' && window.branchSwitcherUrl(b) ? '<a class="bhq-btn" style="display:inline-flex;align-items:center;text-decoration:none" href="' + esc(window.branchSwitcherUrl(b)) + '">Open ↗</a>' : '') + '</div></div>';
+        });
+        frame(h + '</div><p class="bhq-sub">Each branch is its own shop with its own stock, sales and devices. Suspending a branch pauses it; nothing is deleted.</p>');
+        var add = root.querySelector('[data-a="add"]'); if (add) add.onclick = addBranch;
+        Array.prototype.forEach.call(root.querySelectorAll('[data-edit]'), function (x) { x.onclick = function () { editBranch(x.getAttribute('data-edit')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-status]'), function (x) { x.onclick = function () { branchStatus(x.getAttribute('data-status')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-staff]'), function (x) { x.onclick = function () { tab = 'staff'; data.staffBranch = x.getAttribute('data-staff'); paint(); }; });
+    }
+    // zip 311: every dialog has its title and an ✕ at the top, and its main buttons (the .bhq-acts row) pinned at the bottom - no scrolling to close.
+    // The html's first <h3> becomes the title; the last button row becomes the pinned actions.
+    function modal(html, onReady) {
+        var title = 'Business HQ', mm = /^\s*<h3[^>]*>([\s\S]*?)<\/h3>/.exec(html);
+        if (mm) { title = mm[1]; html = html.slice(mm[0].length); }
+        var m = document.createElement('div'); m.className = 'bhq-modal';
+        m.innerHTML = '<div class="bhq-sheet" role="dialog" aria-modal="true"><div class="bhq-mhead"><h3>' + title + '</h3><button type="button" class="bhq-mx" data-mx aria-label="Close">✕</button></div><div class="bhq-mbody">' + html + '</div></div>';
+        var body = m.querySelector('.bhq-mbody');
+        var acts = body.querySelector('form > .bhq-row:last-child') || body.querySelector(':scope > .bhq-row:last-child');
+        if (acts && acts.querySelector('button')) acts.classList.add('bhq-acts');
+        m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
+        root.appendChild(m);
+        var done = function () { m.remove(); };
+        m.querySelector('[data-mx]').onclick = function () { var x = m.querySelector('[data-x]'); if (x && x.onclick) x.onclick(); else done(); };
+        onReady(m, done);
+        var f = body.querySelector('input:not([type=hidden]):not([type=radio]):not([type=checkbox]),select,textarea'); if (f && innerWidth > 640) setTimeout(function () { try { f.focus(); } catch (e) { /* ok */ } }, 30);
+    }
+    function formMsg(m, text, ok) { var el = m.querySelector('.bhq-msg'); el.className = 'bhq-msg ' + (ok ? 'ok' : 'err'); el.textContent = text; }
+    function addBranch() {
+        modal('<h3>Add a branch</h3><p class="bhq-sub">A new branch is its own shop under this business, with its own stock, sales and devices. Its staff start empty: add people to it from Staff.</p>' +
+            '<form><label class="bhq-l" for="bhq-nb-name">Branch name</label><input id="bhq-nb-name" required maxlength="80" placeholder="e.g. Westlands">' +
+            '<label class="bhq-l" for="bhq-nb-code">Short code</label><input id="bhq-nb-code" required maxlength="12" placeholder="e.g. WLD" style="text-transform:uppercase">' +
+            '<label class="bhq-l" for="bhq-nb-why">Note (optional)</label><input id="bhq-nb-why" maxlength="200">' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Create branch</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) {
+                e.preventDefault(); var name = m.querySelector('#bhq-nb-name').value.trim(), code = m.querySelector('#bhq-nb-code').value.trim();
+                if (data.branches.some(function (b) { return (b.code || '').toLowerCase() === code.toLowerCase() || b.name.toLowerCase() === name.toLowerCase(); })) return formMsg(m, 'A branch with that name or code already exists.');
+                formMsg(m, 'Creating…', true);
+                api({ action: 'branch.create', name: name, code: code, reason: m.querySelector('#bhq-nb-why').value }).then(function (j) { if (j.ok) { done(); load(); } else formMsg(m, j.error || 'Could not create the branch.'); });
+            };
+        });
+    }
+    function editBranch(cid) {
+        var b = data.branches.filter(function (x) { return x.clientId === cid; })[0] || {};
+        var mgrOpts = '<option value="">No manager set</option>';
+        (data.people || []).forEach(function (p) { if (p.branches.some(function (x) { return x.clientId === cid && x.active; })) mgrOpts += '<option value="' + esc(p.personId) + '"' + (p.personId === b.managerPersonId ? ' selected' : '') + '>' + esc(p.name) + '</option>'; });
+        modal('<h3>Edit ' + esc(b.name) + '</h3><form>' +
+            '<label class="bhq-l" for="bhq-b-name">Name</label><input id="bhq-b-name" required maxlength="80" value="' + esc(b.name) + '">' +
+            '<label class="bhq-l" for="bhq-b-code">Code (unique in the business)</label><input id="bhq-b-code" required maxlength="12" style="text-transform:uppercase" value="' + esc(b.code || '') + '">' +
+            '<label class="bhq-l" for="bhq-b-mgr">Branch manager</label><select id="bhq-b-mgr">' + mgrOpts + '</select>' + (data.people ? '' : '<p class="bhq-sub">Open Staff once to choose a manager.</p>') +
+            '<label class="bhq-l" for="bhq-b-loc">Location</label><input id="bhq-b-loc" maxlength="160" value="' + esc(b.location || '') + '">' +
+            '<div class="bhq-row"><div class="bhq-sp"><label class="bhq-l" for="bhq-b-ph">Phone</label><input id="bhq-b-ph" maxlength="30" value="' + esc(b.phone || '') + '"></div><div class="bhq-sp"><label class="bhq-l" for="bhq-b-em">Email</label><input id="bhq-b-em" type="email" maxlength="120" value="' + esc(b.email || '') + '"></div></div>' +
+            '<label class="bhq-l" for="bhq-b-notes">Notes (opening hours, etc.)</label><textarea id="bhq-b-notes" rows="2" maxlength="160">' + esc(b.notes || '') + '</textarea>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Save</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) {
+                e.preventDefault(); formMsg(m, 'Saving…', true);
+                api({ action: 'branch.save', clientId: cid, name: m.querySelector('#bhq-b-name').value, code: m.querySelector('#bhq-b-code').value, managerPersonId: m.querySelector('#bhq-b-mgr').value || null, location: m.querySelector('#bhq-b-loc').value, phone: m.querySelector('#bhq-b-ph').value, email: m.querySelector('#bhq-b-em').value, notes: m.querySelector('#bhq-b-notes').value })
+                    .then(function (j) { if (j.ok) { done(); load(); } else formMsg(m, j.error || 'Could not save.'); });
+            };
+        });
+    }
+    function branchStatus(cid) {
+        var b = data.branches.filter(function (x) { return x.clientId === cid; })[0] || {}, suspend = b.status !== 'suspended';
+        modal('<h3>' + (suspend ? 'Suspend ' : 'Activate ') + esc(b.name) + '?</h3><p class="bhq-sub">' + (suspend ? 'Its tills stop working until you activate it again. Nothing is deleted: its sales, stock, staff and history are kept.' : 'Its tills start working again; anything waiting on its devices is sent.') + '</p>' +
+            '<form><label class="bhq-l" for="bhq-s-why">Reason' + (suspend ? '' : ' (optional)') + '</label><input id="bhq-s-why" maxlength="200"' + (suspend ? ' required' : '') + '><p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn ' + (suspend ? 'bad' : 'pri') + '" type="submit">' + (suspend ? 'Suspend branch' : 'Activate branch') + '</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); api({ action: 'branch.status', clientId: cid, status: suspend ? 'suspended' : 'active', reason: m.querySelector('#bhq-s-why').value }).then(function (j) { if (j.ok) { done(); load(); } else formMsg(m, j.error || 'Could not change it.'); }); };
+        });
+    }
+
+    /* ---------------- staff ---------------- */
+    function paintStaff() {
+        var q = (data.staffQ || '').toLowerCase(), fb = data.staffBranch || '', fs = data.staffStatus || '';
+        var list = (data.people || []).filter(function (p) {
+            if (q && (p.name + ' ' + (p.employeeNo || '') + ' ' + (p.phone || '')).toLowerCase().indexOf(q) < 0) return false;
+            if (fb && !p.branches.some(function (b) { return b.clientId === fb && b.active; })) return false;
+            if (fs && p.status !== fs) return false;
+            return true;
+        });
+        var h = '<div class="bhq-card"><div class="bhq-row"><div class="bhq-sp" style="min-width:200px"><label class="bhq-l" for="bhq-q">Search name, employee number or phone</label><input id="bhq-q" value="' + esc(data.staffQ || '') + '"></div>' +
+            '<div style="min-width:160px"><label class="bhq-l" for="bhq-fb">Branch</label><select id="bhq-fb"><option value="">All branches</option>' + data.branches.map(function (b) { return '<option value="' + esc(b.clientId) + '"' + (fb === b.clientId ? ' selected' : '') + '>' + esc(bname(b.clientId)) + '</option>'; }).join('') + '</select></div>' +
+            '<div style="min-width:140px"><label class="bhq-l" for="bhq-fs">Status</label><select id="bhq-fs"><option value="">Any</option><option value="active"' + (fs === 'active' ? ' selected' : '') + '>Active</option><option value="deactivated"' + (fs === 'deactivated' ? ' selected' : '') + '>Deactivated</option><option value="inactive"' + (fs === 'inactive' ? ' selected' : '') + '>No branch now</option></select></div></div>' +
+            '<p class="bhq-sub" style="margin:8px 0 0">' + list.length + ' of ' + (data.people || []).length + ' people. New staff are added in their branch\'s Staff tab (their PIN is set there); here you place them across branches.</p></div>';
+        h += '<div class="bhq-card" style="padding:4px 8px"><table><thead><tr><th>Person</th><th>Branches</th><th class="bhq-hide-sm">Status</th><th></th></tr></thead><tbody>';
+        list.forEach(function (p) {
+            h += '<tr><td><b>' + esc(p.name) + '</b>' + (p.employeeNo ? '<br><span class="bhq-sub">No. ' + esc(p.employeeNo) + '</span>' : '') + (p.hqAdmin ? '<br><span class="bhq-tag">HQ administrator</span>' : '') + '</td><td>' +
+                p.branches.map(function (b) { return '<span class="bhq-chip' + (b.active ? '' : ' gone') + '" title="' + esc(b.roles.length ? b.roles.length + ' screens' : 'no screens set') + '">' + esc(bname(b.clientId)) + (b.isManager && b.active ? ' · manager' : '') + (b.kind === 'temporary' && b.active ? ' <span class="bhq-tag tmp">until ' + esc(when(b.endsAt)) + '</span>' : '') + '</span>'; }).join('') +
+                '</td><td class="bhq-hide-sm">' + (p.status === 'deactivated' ? '<span class="bhq-tag off">Deactivated</span>' : p.status === 'inactive' ? '<span class="bhq-tag off">No branch</span>' : '<span class="bhq-tag ok">Active</span>') + '</td><td style="white-space:nowrap">' +
+                (can('staff.assign') && p.status !== 'deactivated' ? '<button type="button" class="bhq-btn" data-move="' + esc(p.personId) + '">Assign / move</button> ' : '') +
+                (can('staff.manage') ? '<button type="button" class="bhq-btn" data-more="' + esc(p.personId) + '">More</button>' : '') + '</td></tr>';
+        });
+        frame(h + '</tbody></table>' + (list.length ? '' : '<p class="bhq-sub" style="padding:10px">Nobody matches.</p>') + '</div>');
+        var qi = root.querySelector('#bhq-q'); qi.oninput = function () { data.staffQ = qi.value; var pos = qi.selectionStart; paintStaff(); var n = root.querySelector('#bhq-q'); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { /* ok */ } };
+        root.querySelector('#bhq-fb').onchange = function (e) { data.staffBranch = e.target.value; paintStaff(); };
+        root.querySelector('#bhq-fs').onchange = function (e) { data.staffStatus = e.target.value; paintStaff(); };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-move]'), function (x) { x.onclick = function () { assign(x.getAttribute('data-move')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-more]'), function (x) { x.onclick = function () { more(x.getAttribute('data-more')); }; });
+    }
+    function person(pid) { return (data.people || []).filter(function (p) { return p.personId === pid; })[0]; }
+    function assign(pid) {
+        var p = person(pid), at = p.branches.filter(function (b) { return b.active; }), not = data.branches.filter(function (b) { return b.status !== 'suspended' && !at.some(function (x) { return x.clientId === b.clientId; }); });
+        if (!at.length) return modal('<h3>' + esc(p.name) + '</h3><p class="bhq-sub">This person is not at any branch right now. Add them again from a branch\'s Staff tab, then place them here.</p><div class="bhq-row"><button class="bhq-btn" data-x>Close</button></div>', function (m, done) { m.querySelector('[data-x]').onclick = done; });
+        if (!not.length) return modal('<h3>' + esc(p.name) + '</h3><p class="bhq-sub">Already at every active branch.</p><div class="bhq-row"><button class="bhq-btn" data-x>Close</button></div>', function (m, done) { m.querySelector('[data-x]').onclick = done; });
+        var tomorrow = new Date(Date.now() + 7 * 86400000); var dv = tomorrow.toISOString().slice(0, 16);
+        modal('<h3>Assign ' + esc(p.name) + '</h3><p class="bhq-sub">Works at: ' + at.map(function (b) { return esc(bname(b.clientId)); }).join(', ') + '. The same person and PIN are used: no second account is made, and their past sales stay with the branch where they made them.</p><form>' +
+            '<label class="bhq-l" for="bhq-a-from">From (their current branch, whose screens they keep)</label><select id="bhq-a-from">' + at.map(function (b) { return '<option value="' + esc(b.clientId) + '">' + esc(bname(b.clientId)) + '</option>'; }).join('') + '</select>' +
+            '<label class="bhq-l" for="bhq-a-to">To</label><select id="bhq-a-to">' + not.map(function (b) { return '<option value="' + esc(b.clientId) + '">' + esc(bname(b.clientId)) + '</option>'; }).join('') + '</select>' +
+            '<div class="bhq-radio" role="radiogroup" aria-label="Kind of assignment"><label><input type="radio" name="bhq-k" value="additional" checked><span><b>Also works there</b><br><span class="bhq-sub">Keeps the current branch and adds this one.</span></span></label>' +
+            '<label><input type="radio" name="bhq-k" value="permanent"><span><b>Move permanently</b><br><span class="bhq-sub">Leaves the current branch and works only at the new one.</span></span></label>' +
+            '<label><input type="radio" name="bhq-k" value="temporary"><span><b>Temporary posting</b><br><span class="bhq-sub">Works there until the date below, then that access ends by itself.</span></span></label></div>' +
+            '<div id="bhq-a-endw" hidden><label class="bhq-l" for="bhq-a-end">Until</label><input id="bhq-a-end" type="datetime-local" value="' + dv + '"></div>' +
+            '<label class="bhq-l"><input type="checkbox" id="bhq-a-mgr" style="width:auto;min-height:0"> Branch manager at the new branch</label>' +
+            '<label class="bhq-l" for="bhq-a-why">Reason</label><input id="bhq-a-why" maxlength="200" placeholder="e.g. covering weekends">' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Confirm</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            Array.prototype.forEach.call(m.querySelectorAll('[name="bhq-k"]'), function (r) { r.onchange = function () { m.querySelector('#bhq-a-endw').hidden = m.querySelector('[name="bhq-k"]:checked').value !== 'temporary'; }; });
+            m.querySelector('form').onsubmit = function (e) {
+                e.preventDefault(); var kind = m.querySelector('[name="bhq-k"]:checked').value, endsAt = kind === 'temporary' ? new Date(m.querySelector('#bhq-a-end').value).getTime() : 0;
+                if (kind === 'temporary' && !(endsAt > Date.now())) return formMsg(m, 'Choose an end date in the future.');
+                formMsg(m, 'Saving…', true);
+                api({ action: 'staff.assign', personId: pid, fromClientId: m.querySelector('#bhq-a-from').value, toClientId: m.querySelector('#bhq-a-to').value, kind: kind, endsAt: endsAt, isManager: m.querySelector('#bhq-a-mgr').checked, reason: m.querySelector('#bhq-a-why').value })
+                    .then(function (j) { if (j.ok) { done(); data.people = null; data.audit = null; if (j.partial) alert(j.partial); load(); tab = 'staff'; } else formMsg(m, j.error || 'Could not save.'); });
+            };
+        });
+    }
+    function more(pid) {
+        var p = person(pid), at = p.branches.filter(function (b) { return b.active; });
+        modal('<h3>' + esc(p.name) + '</h3><form id="bhq-pe"><div class="bhq-row"><div class="bhq-sp"><label class="bhq-l" for="bhq-p-name">Name</label><input id="bhq-p-name" maxlength="80" value="' + esc(p.name) + '"></div><div class="bhq-sp"><label class="bhq-l" for="bhq-p-no">Employee number</label><input id="bhq-p-no" maxlength="30" value="' + esc(p.employeeNo || '') + '"></div></div>' +
+            '<label class="bhq-l" for="bhq-p-ph">Phone</label><input id="bhq-p-ph" maxlength="20" value="' + esc(p.phone || '') + '"><div class="bhq-row" style="margin-top:10px"><button class="bhq-btn pri" type="submit">Save details</button>' + (can('staff.manage') && at.length ? '<button class="bhq-btn" type="button" data-role>🎭 Role at a branch</button>' : '') + '</div></form>' +
+            (can('staff.assign') && at.length ? '<h3 style="margin-top:16px">End at a branch</h3>' + at.map(function (b) { return '<div class="bhq-row" style="margin:6px 0"><span class="bhq-sp">' + esc(bname(b.clientId)) + '</span><button type="button" class="bhq-btn bad" data-end="' + esc(b.clientId) + '">End here</button></div>'; }).join('') : '') +
+            '<h3 style="margin-top:16px">' + (p.status === 'deactivated' ? 'Reactivate' : 'Deactivate') + '</h3><p class="bhq-sub">' + (p.status === 'deactivated' ? 'Lets them be placed at a branch again.' : 'Removes them from every branch at once and ends their sessions and any HQ access. Their past sales, shifts and payroll stay as they are.') + '</p>' +
+            '<label class="bhq-l" for="bhq-p-why">Reason</label><input id="bhq-p-why" maxlength="200"><p class="bhq-msg" role="alert"></p><div class="bhq-row"><button type="button" class="bhq-btn ' + (p.status === 'deactivated' ? 'pri' : 'bad') + '" data-deact>' + (p.status === 'deactivated' ? 'Reactivate' : 'Deactivate everywhere') + '</button><button class="bhq-btn" type="button" data-x>Close</button></div>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            var after = function (j) { if (j.ok) { done(); data.people = null; data.audit = null; paint(); } else formMsg(m, j.error || (j.failed && j.failed.length ? 'Some branches did not answer; try again.' : 'Could not save.')); };
+            var gr = m.querySelector('[data-role]'); if (gr) gr.onclick = function () { done(); giveRole(pid); };
+            m.querySelector('#bhq-pe').onsubmit = function (e) { e.preventDefault(); api({ action: 'staff.edit', personId: pid, name: m.querySelector('#bhq-p-name').value, employeeNo: m.querySelector('#bhq-p-no').value, phone: m.querySelector('#bhq-p-ph').value }).then(after); };
+            Array.prototype.forEach.call(m.querySelectorAll('[data-end]'), function (x) { x.onclick = function () { if (!confirm('End ' + p.name + '\'s access at ' + bname(x.getAttribute('data-end')) + '?')) return; api({ action: 'staff.end', personId: pid, clientId: x.getAttribute('data-end'), reason: m.querySelector('#bhq-p-why').value || 'ended at HQ' }).then(after); }; });
+            m.querySelector('[data-deact]').onclick = function () { var why = m.querySelector('#bhq-p-why').value.trim(); if (p.status !== 'deactivated' && !why) return formMsg(m, 'Give a reason.'); api({ action: p.status === 'deactivated' ? 'staff.reactivate' : 'staff.deactivate', personId: pid, reason: why }).then(after); };
+        });
+    }
+
+    /* ---------------- administrators ---------------- */
+    function paintAdmins() {
+        var owner = data.who.kind === 'owner';
+        var h = '<div class="bhq-card"><h3>HQ administrators</h3><p class="bhq-sub">People who can help run the business from HQ, with only the permissions and branches you give them. They sign in with their own PIN. Only the owner can add or change them; an administrator can never give themselves more.</p>' + (owner ? '<button type="button" class="bhq-btn pri" data-a="addadm" style="margin-top:8px">＋ Add an administrator</button>' : '') + '</div>';
+        h += '<div class="bhq-card" style="padding:4px 8px"><table><thead><tr><th>Person</th><th>Permissions</th><th class="bhq-hide-sm">Branches</th><th></th></tr></thead><tbody>' + (data.admins || []).map(function (a) {
+            return '<tr><td><b>' + esc(a.name) + '</b><br><span class="bhq-tag ' + (a.status === 'active' ? 'ok' : 'off') + '">' + (a.status === 'active' ? 'Active' : 'Removed') + '</span></td><td>' + a.perms.map(function (p) { return '<span class="bhq-chip">' + esc(data.perms[p] || p) + '</span>'; }).join('') + '</td><td class="bhq-hide-sm">' + (a.branches.indexOf('*') >= 0 ? 'All branches' : a.branches.map(function (c) { return esc(bname(c)); }).join(', ')) + '</td><td>' +
+                (owner ? '<button type="button" class="bhq-btn" data-edadm="' + esc(a.personId) + '">Edit</button> ' + (a.status === 'active' ? '<button type="button" class="bhq-btn bad" data-rmadm="' + esc(a.adminId) + '">Remove</button>' : '') : '') + '</td></tr>';
+        }).join('') + '</tbody></table>' + ((data.admins || []).length ? '' : '<p class="bhq-sub" style="padding:10px">No administrators yet. Only you (the owner) can use HQ.</p>') + '</div>';
+        frame(h);
+        var ad = root.querySelector('[data-a="addadm"]'); if (ad) ad.onclick = function () { adminForm(null); };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-edadm]'), function (x) { x.onclick = function () { adminForm(x.getAttribute('data-edadm')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-rmadm]'), function (x) { x.onclick = function () { if (!confirm('Remove this person\'s HQ access? It ends at once.')) return; api({ action: 'admin.remove', adminId: x.getAttribute('data-rmadm') }).then(function () { data.admins = null; data.audit = null; paint(); }); }; });
+    }
+    function adminForm(pid) {
+        var cur = (data.admins || []).filter(function (a) { return a.personId === pid; })[0];
+        var ppl = (data.people || []).filter(function (p) { return p.status !== 'deactivated' && p.branches.some(function (b) { return b.active; }); });
+        modal('<h3>' + (cur ? 'Change ' + esc(cur.name) : 'Add an HQ administrator') + '</h3><form>' +
+            '<label class="bhq-l" for="bhq-ad-p">Person</label><select id="bhq-ad-p"' + (cur ? ' disabled' : '') + '>' + ppl.map(function (p) { return '<option value="' + esc(p.personId) + '"' + (p.personId === pid ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</select>' +
+            '<label class="bhq-l" for="bhq-ad-h">Signs in at (their home branch)</label><select id="bhq-ad-h"></select>' +
+            '<div class="bhq-perms"><label class="bhq-l">Permissions</label>' + Object.keys(data.perms).map(function (k) { return '<label><input type="checkbox" value="' + esc(k) + '"' + (cur && cur.perms.indexOf(k) >= 0 ? ' checked' : '') + '> ' + esc(data.perms[k]) + '</label>'; }).join('') + '</div>' +
+            '<div class="bhq-perms"><label class="bhq-l">Branches</label><label><input type="checkbox" value="*" data-allb' + (!cur || cur.branches.indexOf('*') >= 0 ? ' checked' : '') + '> All branches</label>' + data.branches.map(function (b) { return '<label><input type="checkbox" data-br value="' + esc(b.clientId) + '"' + (cur && cur.branches.indexOf(b.clientId) >= 0 ? ' checked' : '') + '> ' + esc(bname(b.clientId)) + '</label>'; }).join('') + '</div>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Save</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            var ps = m.querySelector('#bhq-ad-p'), hs = m.querySelector('#bhq-ad-h');
+            var fillHome = function () { var p = person(ps.value) || { branches: [] }; hs.innerHTML = p.branches.filter(function (b) { return b.active; }).map(function (b) { return '<option value="' + esc(b.clientId) + '">' + esc(bname(b.clientId)) + '</option>'; }).join(''); };
+            ps.onchange = fillHome; fillHome();
+            m.querySelector('form').onsubmit = function (e) {
+                e.preventDefault();
+                var perms = Array.prototype.map.call(m.querySelectorAll('.bhq-perms input[type=checkbox]:not([data-allb]):not([data-br]):checked'), function (x) { return x.value; });
+                var all = m.querySelector('[data-allb]').checked, brs = Array.prototype.map.call(m.querySelectorAll('[data-br]:checked'), function (x) { return x.value; });
+                if (!perms.length) return formMsg(m, 'Choose at least one permission.');
+                if (!all && !brs.length) return formMsg(m, 'Choose the branches, or All branches.');
+                api({ action: 'admin.save', personId: ps.value, homeClientId: hs.value, perms: perms, branches: all ? ['*'] : brs }).then(function (j) { if (j.ok) { done(); data.admins = null; data.audit = null; data.people = null; paint(); } else formMsg(m, j.error || 'Could not save.'); });
+            };
+        });
+    }
+
+    /* ---------------- audit ---------------- */
+    function paintAudit() {
+        var who = function (t) { if (!t) return ''; var p = t.split(':'); if (p[0] === 'branch') return esc(bname(p[1])); if (p[0] === 'person') { var pp = person(p[1]); return esc(pp ? pp.name : p[1]); } return esc(t); };
+        frame('<div class="bhq-card" style="padding:4px 8px"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th class="bhq-hide-sm">Details</th></tr></thead><tbody>' + (data.audit || []).map(function (a) {
+            var d = a.after && (a.after.branch || a.after.status) ? (a.before && a.before.branch ? esc(bname(a.before.branch)) + ' → ' : '') + (a.after.branch ? esc(bname(a.after.branch)) : esc(a.after.status)) : '';
+            return '<tr><td>' + esc(when(a.at)) + '</td><td>' + esc(a.actor) + '</td><td><b>' + esc(ACTIONS[a.action] || a.action) + '</b><br><span class="bhq-sub">' + who(a.target) + '</span></td><td class="bhq-hide-sm">' + d + (a.reason ? '<br><span class="bhq-sub">“' + esc(a.reason) + '”</span>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table>' + ((data.audit || []).length ? '' : '<p class="bhq-sub" style="padding:10px">Nothing yet.</p>') + '</div><p class="bhq-sub">The audit trail cannot be edited or deleted by anyone.</p>');
+    }
+
+    /* ================= zip 310/311: overview, stock, transfers, reports, roles ================= */
+    function money(v) { if (v === null || v === undefined) return '—'; var n = Number(v) || 0; return 'KES ' + n.toLocaleString('en-KE', { maximumFractionDigits: 0 }); }
+    function qty(v) { var n = Number(v) || 0; return String(Math.round(n * 1000) / 1000); }
+    function placeName(cid, loc) { return bname(cid) + ' · ' + (loc === 'floor' ? 'Shop floor' : ((data.locs || []).filter(function (l) { return l.location_id === loc; })[0] || { name: 'Store' }).name); }
+    function rid() { return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+    var XS = { pending: ['Waiting for approval', 'tmp'], approved: ['Ready to send', ''], dispatching: ['Sending', ''], in_transit: ['On the way', ''], partial: ['Partly received', 'main'], discrepancy: ['Damaged / missing', 'off'], completed: ['Received', 'ok'], rejected: ['Rejected', 'off'], cancelled: ['Cancelled', 'off'] };
+    function xtag(s) { var t = XS[s] || [s, '']; return '<span class="bhq-tag ' + t[1] + '">' + esc(t[0]) + '</span>'; }
+    function tile(label, value, sub, warn, go) { return '<div class="bhq-card bhq-kpi' + (warn ? ' warn' : '') + '"><div class="bhq-sub">' + esc(label) + '</div><div class="bhq-kv">' + value + '</div>' + (sub ? '<div class="bhq-sub">' + sub + '</div>' : '') + (go ? '<button type="button" class="bhq-link" data-tab="' + go[0] + '">' + esc(go[1]) + '</button>' : '') + '</div>'; }
+    function loadLocs() { return api({ action: 'inv.locations' }).then(function (j) { data.locs = j.locations || []; return data.locs; }); }
+    function bOpts(sel, skip) { return data.branches.filter(function (b) { return b.status !== 'suspended' && b.clientId !== skip; }).map(function (b) { return '<option value="' + esc(b.clientId) + '"' + (b.clientId === sel ? ' selected' : '') + '>' + esc(bname(b.clientId)) + '</option>'; }).join(''); }
+    function qtyBox(id, val, max) { return '<div class="bhq-qty"><button type="button" data-qm="' + id + '" aria-label="Less">−</button><input id="' + id + '" type="number" inputmode="decimal" min="0" step="any" value="' + esc(val) + '"' + (max != null ? ' data-max="' + esc(max) + '"' : '') + '><button type="button" data-qp="' + id + '" aria-label="More">+</button></div>'; }
+    function wireQty(m) { Array.prototype.forEach.call(m.querySelectorAll('[data-qm],[data-qp]'), function (b) { b.onclick = function () { var i = m.querySelector('#' + (b.getAttribute('data-qm') || b.getAttribute('data-qp'))), v = Number(i.value) || 0, mx = i.getAttribute('data-max'); v = b.hasAttribute('data-qp') ? v + 1 : Math.max(0, v - 1); if (mx != null && mx !== '' && v > Number(mx)) v = Number(mx); i.value = v; i.dispatchEvent(new Event('input')); }; }); }
+
+    /* ---------------- overview ---------------- */
+    function paintDash() {
+        if (!data.dash) { frame('<p class="bhq-sub">Loading…</p>'); return api({ action: 'hq.dashboard' }).then(function (j) { data.dash = j.dashboard || { error: j.error || 'Could not load the overview.' }; paint(); }); }
+        var d = data.dash; if (d.error) return frame('<div class="bhq-card"><p class="bhq-msg err">' + esc(d.error) + '</p></div>');
+        var t = d.transfers || {}, coming = (t.inTransit || 0) + (t.partial || 0);
+        var h = '<div class="bhq-row" style="margin-bottom:10px"><h3 class="bhq-sp" style="margin:0">Today</h3><button type="button" class="bhq-btn sm" data-a="dref">↻ Refresh</button></div><div class="bhq-kpis">' +
+            (d.sales ? tile('Sales today, all branches', money(d.sales.today), 'Last 7 days ' + money(d.sales.week)) : '') +
+            tile('Items running low', String(d.lowStock), 'at or below their reorder level', d.lowStock > 0, d.lowStock > 0 ? ['stock', 'See them in Stock'] : null) +
+            tile('Stock on the way', String(coming), coming ? 'waiting to be received' : 'nothing on the road', false, coming ? ['xfers', 'Open transfers'] : null) +
+            (t.pending ? tile('Waiting for approval', String(t.pending), '', true, ['xfers', 'Review']) : '') +
+            (t.discrepancy ? tile('Damaged or missing', String(t.discrepancy), 'transfers to settle', true, ['xfers', 'Settle']) : '') +
+            tile('Staff', String(d.staff), d.branches.active + ' active branch' + (d.branches.active === 1 ? '' : 'es')) + '</div>';
+        h += '<div class="bhq-card" style="padding:4px 10px"><table><thead><tr><th>Branch</th>' + (d.sales ? '<th>Sales today</th><th class="bhq-hide-sm">Last 7 days</th>' : '') + '<th>Staff</th><th>Stock</th></tr></thead><tbody>' + (d.byBranch || []).map(function (b) {
+            return '<tr><td><b>' + esc(b.name) + '</b>' + (b.code ? ' <span class="bhq-tag">' + esc(b.code) + '</span>' : '') + (b.status === 'suspended' ? ' <span class="bhq-tag off">Suspended</span>' : '') + (b.error ? '<br><span class="bhq-sub">Could not read this branch right now</span>' : '') + '</td>' +
+                (d.sales ? '<td data-l="Sales today" class="num">' + money(b.todaySales) + ' <span class="bhq-sub">· ' + (b.todayCount || 0) + ' sales</span></td><td class="bhq-hide-sm num">' + money(b.weekSales) + '</td>' : '') +
+                '<td data-l="Staff" class="num">' + (b.staff || 0) + '</td><td data-l="Stock">' + (b.low ? '<button type="button" class="bhq-link" data-lowb="' + esc(b.clientId) + '">' + b.low + ' low' + (b.out ? ', ' + b.out + ' out' : '') + '</button>' : '<span class="bhq-tag ok">All good</span>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+        h += '<div class="bhq-grid"><div class="bhq-card"><h3>Latest stock moves</h3>' + ((d.recentMovements || []).length ? d.recentMovements.slice(0, 8).map(function (m) { return '<div class="bhq-row" style="margin:6px 0"><b class="num" style="min-width:52px;color:' + (m.qty > 0 ? 'var(--hq-go)' : 'var(--hq-stop)') + '">' + (m.qty > 0 ? '+' : '') + esc(qty(m.qty)) + '</b><span class="bhq-sp">' + esc(m.name || m.code) + '<br><span class="bhq-sub">' + esc(bname(m.client_id)) + ', ' + esc(m.location_id === 'floor' ? 'shop floor' : 'store') + ' · ' + esc(when(m.at)) + '</span></span></div>'; }).join('') : '<p class="bhq-sub">No stock moved yet. Open Stock to move items between the store and the shop floor, or send them to another branch.</p>') + '</div>' +
+            (d.recentAudit && d.recentAudit.length ? '<div class="bhq-card"><h3>Latest activity</h3>' + d.recentAudit.slice(0, 8).map(function (a) { return '<div style="margin:6px 0">' + esc(ACTIONS[a.action] || a.action) + '<br><span class="bhq-sub">' + esc(a.actor) + ' · ' + esc(when(a.at)) + '</span></div>'; }).join('') + '</div>' : '') + '</div>';
+        frame(h);
+        root.querySelector('[data-a="dref"]').onclick = function () { data.dash = null; paint(); };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-lowb]'), function (x) { x.onclick = function () { data.stockBranch = x.getAttribute('data-lowb'); data.stockLow = true; tab = 'stock'; paint(); }; });
+    }
+
+    /* ---------------- stock: every item with its shop-floor and store quantities, moved right from the item ---------------- */
+    function paintStock() {
+        var cand = data.branches.filter(function (b) { return b.status !== 'suspended'; });
+        var cid = data.stockBranch && cand.some(function (b) { return b.clientId === data.stockBranch; }) ? data.stockBranch : (cand[0] || {}).clientId;
+        if (!cid) return frame('<div class="bhq-card bhq-empty">No active branches.</div>');
+        if (!data.items || data.items.cid !== cid) { frame('<p class="bhq-sub">Loading stock…</p>'); return api({ action: 'inv.items', clientId: cid }).then(function (j) { data.items = { cid: cid, list: j.items || [], locs: j.locations || [], error: j.ok ? (j.floorOk === false ? 'This branch’s till stock could not be read right now.' : '') : (j.error || 'Could not load stock.') }; data.stockBranch = cid; paint(); }); }
+        var I = data.items, inv = can('inventory.manage'), q = String(data.stockQ || '').toLowerCase(), other = cand.length > 1;
+        var list = I.list.filter(function (i) { return (!q || (i.name + ' ' + i.code).toLowerCase().indexOf(q) >= 0) && (!data.stockLow || i.low); });
+        var h = '<div class="bhq-tools" style="margin-bottom:12px"><div><label class="bhq-l" for="bhq-sb" style="margin-top:0">Branch</label><select id="bhq-sb">' + bOpts(cid) + '</select></div>' +
+            '<div><label class="bhq-l" for="bhq-sq" style="margin-top:0">Find an item</label><input id="bhq-sq" type="search" placeholder="Name or code" value="' + esc(data.stockQ || '') + '"></div>' +
+            '<div class="bhq-row">' + (inv ? '<button type="button" class="bhq-btn" data-a="addloc">+ Add a store</button>' : '') + '</div></div>' +
+            '<div class="bhq-seg" role="group" aria-label="Show"><button type="button" data-low="0" class="' + (data.stockLow ? '' : 'on') + '">All items · ' + I.list.length + '</button><button type="button" data-low="1" class="' + (data.stockLow ? 'on' : '') + '">Running low · ' + I.list.filter(function (i) { return i.low; }).length + '</button></div>' +
+            (I.error ? '<p class="bhq-msg err">' + esc(I.error) + '</p>' : '');
+        h += '<div class="bhq-items">' + (list.length ? list.slice(0, 300).map(function (i) {
+            var places = '<span class="bhq-place floor' + (i.low ? ' low' : '') + (i.floor === 0 ? ' zero' : '') + '"><span class="pl">Shop floor</span><span class="q">' + (i.floor == null ? '—' : esc(qty(i.floor))) + '</span></span>' +
+                I.locs.map(function (l) { var v = i.at[l.location_id] || 0; return '<span class="bhq-place' + (v ? '' : ' zero') + '"><span class="pl">' + esc(l.name) + '</span><span class="q">' + esc(qty(v)) + '</span></span>'; }).join('');
+            return '<div class="bhq-item"><div><div class="nm">' + esc(i.name) + '</div><div class="bhq-sub">' + esc(i.code) + (i.unit ? ' · ' + esc(i.unit) : '') + (i.low ? ' · <b style="color:var(--hq-warn)">low</b>' : '') + '</div></div><div class="bhq-rail">' + places + '</div>' +
+                (inv ? '<div class="acts"><button type="button" class="bhq-btn sm pri" data-mv="' + esc(i.code) + '">Move</button>' + (other ? '<button type="button" class="bhq-btn sm" data-snd="' + esc(i.code) + '">Send to branch</button>' : '') + '<button type="button" class="bhq-btn sm" data-add="' + esc(i.code) + '">+ Store</button></div>' : '<div></div>') + '</div>';
+        }).join('') + (list.length > 300 ? '<div class="bhq-empty">Showing 300 of ' + list.length + '. Search to find the rest.</div>' : '') : '<div class="bhq-empty">' + (q || data.stockLow ? 'No items match.' : 'No items at this branch yet. Items are added in the till.') + '</div>') + '</div>';
+        h += '<p class="bhq-sub" style="margin-top:10px">The shop floor is what the till sells. Moving between the store and the shop floor never changes the branch total.</p>';
+        frame(h);
+        root.querySelector('#bhq-sb').onchange = function (e) { data.stockBranch = e.target.value; data.items = null; paint(); };
+        var sq = root.querySelector('#bhq-sq'); sq.oninput = function () { data.stockQ = sq.value; var p = sq.selectionStart; paintStock(); var n = root.querySelector('#bhq-sq'); n.focus(); try { n.setSelectionRange(p, p); } catch (e) { /* ok */ } };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-low]'), function (b) { b.onclick = function () { data.stockLow = b.getAttribute('data-low') === '1'; paintStock(); }; });
+        var al = root.querySelector('[data-a="addloc"]'); if (al) al.onclick = function () { addLoc(cid); };
+        var item = function (code) { return I.list.filter(function (x) { return x.code === code; })[0]; };
+        Array.prototype.forEach.call(root.querySelectorAll('[data-mv]'), function (b) { b.onclick = function () { moveItem(cid, item(b.getAttribute('data-mv'))); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-snd]'), function (b) { b.onclick = function () { sendItem(cid, item(b.getAttribute('data-snd'))); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-add]'), function (b) { b.onclick = function () { addToStore(cid, item(b.getAttribute('data-add'))); }; });
+    }
+    function places(cid, it) { var I = data.items; return [{ id: 'floor', name: 'Shop floor', q: it.floor || 0 }].concat(I.locs.map(function (l) { return { id: l.location_id, name: l.name, q: it.at[l.location_id] || 0 }; })); }
+    function pOpts(list, sel) { return list.map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.name) + ' (' + esc(qty(p.q)) + ')</option>'; }).join(''); }
+    function afterStock() { data.items = null; data.dash = null; data.xfers = null; data.locs = null; }
+    function moveItem(cid, it) {
+        var P = places(cid, it), store = P.filter(function (p) { return p.id !== 'floor'; })[0];
+        if (!store) return addLoc(cid);
+        var from = store.q > 0 ? store.id : 'floor', to = from === 'floor' ? store.id : 'floor';
+        modal('<h3>Move ' + esc(it.name) + '</h3><form><div class="bhq-fromto"><div><label class="bhq-l" for="bhq-mf">From</label><select id="bhq-mf">' + pOpts(P, from) + '</select></div><button type="button" class="bhq-swap" data-swap aria-label="Swap from and to">⇄</button><div><label class="bhq-l" for="bhq-mt">To</label><select id="bhq-mt">' + pOpts(P, to) + '</select></div></div>' +
+            '<label class="bhq-l" for="bhq-mq">How many <span class="bhq-sub" data-av></span></label>' + qtyBox('bhq-mq', '', null) +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Move</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done; wireQty(m);
+            var f = m.querySelector('#bhq-mf'), t = m.querySelector('#bhq-mt'), qi = m.querySelector('#bhq-mq');
+            var sync = function () { var p = P.filter(function (x) { return x.id === f.value; })[0]; qi.setAttribute('data-max', p.q); m.querySelector('[data-av]').textContent = '(' + qty(p.q) + ' ' + (it.unit || '') + ' there)'; };
+            f.onchange = sync; sync();
+            m.querySelector('[data-swap]').onclick = function () { var a = f.value; f.value = t.value; t.value = a; sync(); };
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); var n = Number(qi.value), p = P.filter(function (x) { return x.id === f.value; })[0];
+                if (f.value === t.value) return formMsg(m, 'Choose two different places.');
+                if (!(n > 0)) return formMsg(m, 'Enter how many to move.');
+                if (n > p.q + 1e-9) return formMsg(m, 'Only ' + qty(p.q) + ' ' + (it.unit || '') + ' in ' + p.name + '.');
+                formMsg(m, 'Moving…', true);
+                api({ action: 'inv.move', clientId: cid, fromLoc: f.value, toLoc: t.value, lines: [{ code: it.code, qty: n }] }).then(function (j) { if (j.ok) { done(); afterStock(); paint(); if (j.status === 'pending') alert('Saved. It will move once approved.'); } else formMsg(m, j.error || 'Could not move it.'); }); };
+        });
+    }
+    function sendItem(cid, it) {
+        var P = places(cid, it), from = it.floor > 0 ? 'floor' : ((P.filter(function (p) { return p.q > 0; })[0]) || P[0]).id;
+        modal('<h3>Send ' + esc(it.name) + ' to another branch</h3><form><label class="bhq-l" for="bhq-sf">Take it from</label><select id="bhq-sf">' + pOpts(P, from) + '</select>' +
+            '<label class="bhq-l" for="bhq-st">Send to</label><select id="bhq-st">' + bOpts(null, cid) + '</select>' +
+            '<label class="bhq-l" for="bhq-sl">Put it in</label><select id="bhq-sl"><option value="floor">Shop floor</option></select>' +
+            '<label class="bhq-l" for="bhq-sq2">How many <span class="bhq-sub" data-av></span></label>' + qtyBox('bhq-sq2', '', null) +
+            '<p class="bhq-sub" style="margin-top:10px">It leaves this branch now and shows as on the way until the other branch confirms it arrived.</p>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Send</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done; wireQty(m);
+            var f = m.querySelector('#bhq-sf'), to = m.querySelector('#bhq-st'), tl = m.querySelector('#bhq-sl'), qi = m.querySelector('#bhq-sq2');
+            var sync = function () { var p = P.filter(function (x) { return x.id === f.value; })[0]; qi.setAttribute('data-max', p.q); m.querySelector('[data-av]').textContent = '(' + qty(p.q) + ' ' + (it.unit || '') + ' there)'; };
+            var dest = function () { (data.locs ? Promise.resolve(data.locs) : loadLocs()).then(function (ls) { tl.innerHTML = '<option value="floor">Shop floor</option>' + ls.filter(function (l) { return l.client_id === to.value && l.status === 'active'; }).map(function (l) { return '<option value="' + esc(l.location_id) + '">' + esc(l.name) + '</option>'; }).join(''); }); };
+            f.onchange = sync; to.onchange = dest; sync(); dest();
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); var n = Number(qi.value), p = P.filter(function (x) { return x.id === f.value; })[0];
+                if (!to.value) return formMsg(m, 'Choose a branch.');
+                if (!(n > 0)) return formMsg(m, 'Enter how many to send.');
+                if (n > p.q + 1e-9) return formMsg(m, 'Only ' + qty(p.q) + ' ' + (it.unit || '') + ' in ' + p.name + '.');
+                formMsg(m, 'Sending…', true);
+                api({ action: 'xfer.create', send: true, fromClient: cid, fromLoc: f.value, toClient: to.value, toLoc: tl.value, lines: [{ code: it.code, qty: n }] }).then(function (j) {
+                    if (j.ok) { done(); afterStock(); paint(); if (j.status === 'pending') alert(j.ref + ' is waiting for approval (Transfers).'); }
+                    else formMsg(m, j.error || 'Could not send it.'); }); };
+        });
+    }
+    function addToStore(cid, it) {
+        var I = data.items, key = rid();
+        if (!I.locs.length) return addLoc(cid);
+        modal('<h3>' + esc(it.name) + ' in a store</h3><form><label class="bhq-l" for="bhq-al">Store</label><select id="bhq-al">' + I.locs.map(function (l) { return '<option value="' + esc(l.location_id) + '">' + esc(l.name) + ' (' + esc(qty(it.at[l.location_id] || 0)) + ')</option>'; }).join('') + '</select>' +
+            '<div class="bhq-radio" role="radiogroup" aria-label="What to record"><label><input type="radio" name="bhq-ak" value="add" checked><span><b>Add new stock</b><br><span class="bhq-sub">A delivery to the store, or what was there when you started.</span></span></label><label><input type="radio" name="bhq-ak" value="count"><span><b>Set the counted amount</b><br><span class="bhq-sub">After counting the store. The difference is recorded.</span></span></label></div>' +
+            '<label class="bhq-l" for="bhq-aq">Quantity</label>' + qtyBox('bhq-aq', '', null) +
+            '<label class="bhq-l" for="bhq-aw">Note</label><input id="bhq-aw" maxlength="200" value="Delivery to store">' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Save</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done; wireQty(m);
+            Array.prototype.forEach.call(m.querySelectorAll('[name="bhq-ak"]'), function (r) { r.onchange = function () { var w = m.querySelector('#bhq-aw'); if (/^(Delivery to store|Store count)$/.test(w.value)) w.value = r.value === 'count' ? 'Store count' : 'Delivery to store'; }; });
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); var count = m.querySelector('[name="bhq-ak"]:checked').value === 'count', n = Number(m.querySelector('#bhq-aq').value);
+                if (!(n > 0) && !(count && n === 0 && m.querySelector('#bhq-aq').value !== '')) return formMsg(m, 'Enter the quantity.');
+                formMsg(m, 'Saving…', true);
+                api({ action: count ? 'inv.adjust' : 'inv.receive', clientId: cid, locId: m.querySelector('#bhq-al').value, key: key, reason: m.querySelector('#bhq-aw').value || (count ? 'Store count' : 'Delivery to store'), lines: [{ code: it.code, qty: n, name: it.name, unit: it.unit }] })
+                    .then(function (j) { if (j.ok) { done(); afterStock(); paint(); } else formMsg(m, j.error || 'Could not save.'); }); };
+        });
+    }
+    function addLoc(cid) {
+        modal('<h3>Add a store at ' + esc(bname(cid)) + '</h3><form><label class="bhq-l" for="bhq-ln">Name</label><input id="bhq-ln" maxlength="60" required placeholder="e.g. Main store, Kitchen store">' +
+            '<label class="bhq-l" for="bhq-lk">Kind</label><select id="bhq-lk"><option value="store">Store</option><option value="warehouse">Warehouse</option><option value="kitchen">Kitchen store</option><option value="bar">Bar store</option><option value="pharmacy">Pharmacy store</option><option value="other">Other</option></select>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Add store</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); api({ action: 'inv.location.create', clientId: cid, name: m.querySelector('#bhq-ln').value, kind: m.querySelector('#bhq-lk').value }).then(function (j) { if (j.ok) { done(); afterStock(); paint(); } else formMsg(m, j.error || 'Could not add it.'); }); };
+        });
+    }
+
+    /* ---------------- transfers ---------------- */
+    var OPEN = ['pending', 'approved', 'dispatching', 'in_transit', 'partial', 'discrepancy'];
+    function paintXfers() {
+        if (!data.xfers) { frame('<p class="bhq-sub">Loading transfers…</p>'); return Promise.all([api({ action: 'xfer.list' }), data.locs ? data.locs : loadLocs()]).then(function (r) { data.xfers = r[0].transfers || []; paint(); }); }
+        var X = data.xfers.filter(function (x) { return !x.internal; });
+        var groups = [['todo', 'To do', function (x) { return OPEN.indexOf(x.status) >= 0; }], ['done', 'Received', function (x) { return x.status === 'completed'; }], ['all', 'All', function () { return true; }]];
+        var f = data.xf && groups.some(function (g) { return g[0] === data.xf; }) ? data.xf : 'todo', g = groups.filter(function (x) { return x[0] === f; })[0], list = X.filter(g[2]);
+        var h = '<div class="bhq-row" style="margin-bottom:6px"><div class="bhq-sp"><h3 style="margin:0">Transfers between branches</h3><p class="bhq-sub" style="margin:2px 0 0">To send stock, open Stock and press Send to branch on the item.</p></div><button type="button" class="bhq-btn sm" data-tab="stock">Open Stock</button></div>' +
+            '<div class="bhq-seg">' + groups.map(function (x) { return '<button type="button" class="' + (f === x[0] ? 'on' : '') + '" data-xf="' + x[0] + '">' + x[1] + ' · ' + X.filter(x[2]).length + '</button>'; }).join('') + '</div>';
+        h += '<div class="bhq-items">' + (list.length ? list.map(function (x) {
+            var act = x.status === 'pending' ? 'Review' : (x.status === 'approved' || x.status === 'dispatching') ? 'Send' : (x.status === 'in_transit' || x.status === 'partial') ? 'Receive' : x.status === 'discrepancy' ? 'Settle' : 'View';
+            return '<div class="bhq-item"><div><div class="nm">' + esc(x.ref) + '</div><div class="bhq-sub">' + esc(when(x.requested_at)) + '</div></div><div><div>' + esc(placeName(x.from_client, x.from_loc)) + '</div><div class="bhq-sub">to ' + esc(placeName(x.to_client, x.to_loc)) + ' · ' + ((x.lines || {}).n || 0) + ' item' + (((x.lines || {}).n || 0) === 1 ? '' : 's') + '</div></div>' +
+                '<div class="acts">' + xtag(x.status) + '<button type="button" class="bhq-btn sm' + (act === 'View' ? '' : ' pri') + '" data-x2="' + esc(x.xfer_id) + '">' + act + '</button></div></div>';
+        }).join('') : '<div class="bhq-empty">' + (f === 'todo' ? 'Nothing waiting. Stock you send shows here until it is received.' : 'Nothing here yet.') + '</div>') + '</div>';
+        frame(h);
+        Array.prototype.forEach.call(root.querySelectorAll('[data-xf]'), function (b) { b.onclick = function () { data.xf = b.getAttribute('data-xf'); paintXfers(); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-x2]'), function (x) { x.onclick = function () { openXfer(x.getAttribute('data-x2')); }; });
+    }
+    function openXfer(id) {
+        modal('<h3>Transfer</h3><div data-b><p class="bhq-sub">Loading…</p></div>', function (m, done) {
+            var receipt = rid(), close2 = function () { done(); paint(); };
+            m.querySelector('[data-mx]').onclick = close2;
+            var reload = function () { afterStock(); api({ action: 'xfer.get', xferId: id }).then(draw); };
+            var draw = function (j) {
+                var B = m.querySelector('[data-b]');
+                if (!j.transfer) { B.innerHTML = '<p class="bhq-msg err">' + esc(j.error || 'Not found.') + '</p>'; return; }
+                var x = j.transfer, L = j.lines, st = x.status, inv = can('inventory.manage'), appr = can('transfers.approve');
+                m.querySelector('.bhq-mhead h3').innerHTML = esc(x.ref) + ' ' + xtag(st);
+                var short = L.filter(function (l) { return (l.qty_damaged + l.qty_missing) > 0 && !l.resolution; });
+                var recv = (st === 'in_transit' || st === 'partial') && inv, disp = (st === 'approved' || st === 'dispatching') && inv, fix = short.length && appr && (st === 'discrepancy' || st === 'partial');
+                var h = '<p style="margin:10px 0 4px"><b>From</b> ' + esc(placeName(x.from_client, x.from_loc)) + '<br><b>To</b> ' + esc(placeName(x.to_client, x.to_loc)) + '</p>' + (x.notes ? '<p class="bhq-sub">“' + esc(x.notes) + '”</p>' : '') + (x.reject_reason ? '<p class="bhq-sub">' + esc(x.reject_reason) + '</p>' : '');
+                h += '<table style="margin-top:6px"><thead><tr><th>Item</th><th>Sent</th><th>Received</th>' + (recv ? '<th>Arrived now</th>' : '') + '</tr></thead><tbody>' + L.map(function (l) {
+                    var probs = (l.qty_damaged ? qty(l.qty_damaged) + ' damaged ' : '') + (l.qty_missing ? qty(l.qty_missing) + ' missing' : '');
+                    return '<tr><td><b>' + esc(l.name) + '</b>' + (probs ? '<br><span class="bhq-sub" style="color:var(--hq-stop)">' + esc(probs) + '</span>' : '') + (l.resolution ? '<br><span class="bhq-sub">Settled: ' + esc(l.resolution.replace(/_/g, ' ')) + '</span>' : '') + '</td><td data-l="Sent" class="num">' + esc(qty(st === 'pending' || st === 'approved' ? l.qty_req : l.qty_disp)) + ' ' + esc(l.unit) + '</td><td data-l="Received" class="num">' + esc(qty(l.qty_recv)) + '</td>' +
+                        (recv ? '<td data-l="Arrived now">' + (l.in_transit > 0 ? '<input type="number" min="0" step="any" class="num" data-rr="' + esc(l.line_id) + '" data-max="' + esc(l.in_transit) + '" value="' + esc(qty(l.in_transit)) + '" style="max-width:120px"><div data-prob="' + esc(l.line_id) + '" hidden style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;max-width:240px"><label class="bhq-sub">Damaged<input type="number" min="0" step="any" data-rd="' + esc(l.line_id) + '" placeholder="0"></label><label class="bhq-sub">Missing<input type="number" min="0" step="any" data-rm="' + esc(l.line_id) + '" placeholder="0"></label></div>' : '<span class="bhq-sub">done</span>') + '</td>' : '') + '</tr>';
+                }).join('') + '</tbody></table>';
+                if (recv) h += '<button type="button" class="bhq-link" data-probs>Something damaged or missing?</button>';
+                if (fix) h += '<h3 style="margin-top:14px;font-size:15px">Settle what was damaged or missing</h3>' + short.map(function (l) { return '<div style="margin:8px 0"><b>' + esc(l.name) + '</b> · ' + esc(qty(l.qty_damaged + l.qty_missing)) + '<select data-rs="' + esc(l.line_id) + '" style="margin-top:6px"><option value="write_off">Write it off (a loss)</option><option value="return_to_source">It went back to the sender</option><option value="found_at_destination">Found it here after all</option></select><input data-rn="' + esc(l.line_id) + '" maxlength="160" placeholder="Short note, e.g. bag torn" style="margin-top:6px"></div>'; }).join('');
+                if (st === 'pending' && appr) h += '<label class="bhq-l" for="bhq-xr">Note (needed to reject)</label><input id="bhq-xr" maxlength="200">';
+                h += '<details style="margin-top:12px"><summary class="bhq-sub" style="cursor:pointer">History</summary>' + j.events.map(function (e) { return '<div class="bhq-sub" style="margin:4px 0">' + esc(e.action.replace(/_/g, ' ')) + ' · ' + esc(e.actor || '') + ' · ' + esc(when(e.at)) + '</div>'; }).join('') + '</details>';
+                h += '<p class="bhq-msg" role="alert"></p><div class="bhq-row bhq-acts">' +
+                    (recv ? '<button class="bhq-btn pri" data-do="receive">Confirm received</button>' : '') + (disp ? '<button class="bhq-btn pri" data-do="dispatch">Send now</button>' : '') +
+                    (st === 'pending' && appr ? '<button class="bhq-btn pri" data-do="approve">Approve and send</button><button class="bhq-btn bad" data-do="reject">Reject</button>' : '') +
+                    (fix ? '<button class="bhq-btn pri" data-do="resolve">Settle</button>' : '') +
+                    ((st === 'pending' || st === 'approved') && (inv || appr) ? '<button class="bhq-btn bad" data-do="cancel">Cancel transfer</button>' : '') +
+                    '<button class="bhq-btn" type="button" data-x>Close</button></div>';
+                B.innerHTML = h;
+                m.querySelector('[data-x]').onclick = close2;
+                var pb = m.querySelector('[data-probs]'); if (pb) pb.onclick = function () { Array.prototype.forEach.call(m.querySelectorAll('[data-prob]'), function (d) { d.hidden = false; }); pb.remove(); };
+                var why = function () { var r = m.querySelector('#bhq-xr'); return r ? r.value : ''; };
+                var go = function (body, msg, then) { formMsg(m, msg || 'Saving…', true); Array.prototype.forEach.call(m.querySelectorAll('[data-do]'), function (b) { b.disabled = true; }); api(body).then(function (r) { if (r.ok) { if (body.action === 'xfer.receive') receipt = rid(); if (then) return then(); reload(); } else { formMsg(m, r.error || 'Could not do that.'); Array.prototype.forEach.call(m.querySelectorAll('[data-do]'), function (b) { b.disabled = false; }); } }); };
+                Array.prototype.forEach.call(m.querySelectorAll('[data-do]'), function (b) { b.onclick = function () { var a = b.getAttribute('data-do');
+                    if (a === 'approve') return go({ action: 'xfer.approve', xferId: id, reason: why() }, 'Approving…', function () { if (inv) go({ action: 'xfer.dispatch', xferId: id }, 'Sending…'); else reload(); });
+                    if (a === 'reject') { if (!why().trim()) return formMsg(m, 'Write why you are rejecting it.'); return go({ action: 'xfer.reject', xferId: id, reason: why() }); }
+                    if (a === 'cancel') { if (!confirm('Cancel ' + x.ref + '? Nothing has left yet.')) return; return go({ action: 'xfer.cancel', xferId: id, reason: 'cancelled' }); }
+                    if (a === 'dispatch') return go({ action: 'xfer.dispatch', xferId: id }, 'Sending…');
+                    if (a === 'receive') { var lines = Array.prototype.map.call(m.querySelectorAll('[data-rr]'), function (i) { var lid = i.getAttribute('data-rr'); return { lineId: lid, received: Number(i.value) || 0, damaged: Number((m.querySelector('[data-rd="' + lid + '"]') || {}).value) || 0, missing: Number((m.querySelector('[data-rm="' + lid + '"]') || {}).value) || 0 }; });
+                        return go({ action: 'xfer.receive', xferId: id, receiptId: receipt, lines: lines }, 'Adding the stock here…'); }
+                    if (a === 'resolve') { var rl = Array.prototype.map.call(m.querySelectorAll('[data-rs]'), function (s) { var lid = s.getAttribute('data-rs'); return { lineId: lid, resolution: s.value, note: ((m.querySelector('[data-rn="' + lid + '"]') || {}).value || '').trim() }; });
+                        if (rl.some(function (l) { return !l.note; })) return formMsg(m, 'Add a short note for each item.'); return go({ action: 'xfer.resolve', xferId: id, lines: rl }); }
+                }; });
+            };
+            api({ action: 'xfer.get', xferId: id }).then(function (j) { (data.locs ? Promise.resolve() : loadLocs()).then(function () { draw(j); }); });
+        });
+    }
+
+    /* ---------------- More: roles, administrators, audit, transfer approvals ---------------- */
+    function paintMore() {
+        var items = [['roles', 'Roles', 'Ready-made roles (cashier, store keeper…) to give a person at a branch.', can('staff.manage')], ['admins', 'HQ administrators', 'People who help you run HQ, with only the rights you give.', can('admins.view')],
+            ['audit', 'Audit trail', 'Every change made in HQ, who made it and why.', can('audit.view')], ['rules', 'Transfer approvals', 'Off by default. Turn on if transfers should be approved first.', data.who.kind === 'owner']].filter(function (x) { return x[3]; });
+        frame('<div class="bhq-more">' + items.map(function (x) { return '<button type="button" data-tab="' + x[0] + '"><b>' + esc(x[1]) + '</b><span class="bhq-sub">' + esc(x[2]) + '</span></button>'; }).join('') + '</div>');
+    }
+    function paintRules() {
+        if (!data.xset) { frame('<p class="bhq-sub">Loading…</p>'); return api({ action: 'inv.settings' }).then(function (j) { data.xset = j.settings || {}; paint(); }); }
+        var s = data.xset;
+        frame('<div class="bhq-card" style="max-width:620px"><h3>Transfer approvals</h3><p class="bhq-sub">When someone sends stock to another branch:</p><form id="bhq-rules"><div class="bhq-radio" role="radiogroup" aria-label="Approval">' +
+            [['never', 'It goes out at once', 'Simplest. Recommended for most businesses.'], ['above', 'It needs approval above a value', 'Small transfers go at once; bigger ones wait for you.'], ['always', 'Every transfer needs approval', 'Nothing leaves until approved.']].map(function (o) { return '<label><input type="radio" name="bhq-am" value="' + o[0] + '"' + ((s.approval_mode || 'never') === o[0] ? ' checked' : '') + '><span><b>' + esc(o[1]) + '</b><br><span class="bhq-sub">' + esc(o[2]) + '</span></span></label>'; }).join('') + '</div>' +
+            '<div data-th' + (s.approval_mode === 'above' ? '' : ' hidden') + '><label class="bhq-l" for="bhq-at">Value at cost (KES)</label><input id="bhq-at" type="number" min="0" value="' + esc(s.approval_threshold || 0) + '"></div>' +
+            '<label class="bhq-l" style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input type="checkbox" id="bhq-ai" style="width:auto;min-height:0;margin-top:3px"' + (s.independent_approval !== false ? ' checked' : '') + '> The person who sends it cannot approve it (you always can)</label>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row" style="margin-top:12px"><button class="bhq-btn pri" type="submit">Save</button></div></form></div>');
+        var f = root.querySelector('#bhq-rules');
+        Array.prototype.forEach.call(f.querySelectorAll('[name="bhq-am"]'), function (r) { r.onchange = function () { f.querySelector('[data-th]').hidden = r.value !== 'above'; }; });
+        f.onsubmit = function (e) { e.preventDefault(); var el = f.querySelector('.bhq-msg'); api({ action: 'inv.settings', save: { approval_mode: f.querySelector('[name="bhq-am"]:checked').value, approval_threshold: Number(f.querySelector('#bhq-at').value) || 0, independent_approval: f.querySelector('#bhq-ai').checked, internal_approval: false } }).then(function (j) { el.className = 'bhq-msg ' + (j.ok ? 'ok' : 'err'); el.textContent = j.ok ? 'Saved.' : (j.error || 'Could not save.'); if (j.ok) data.xset = j.settings; }); };
+    }
+
+    /* ---------------- reports ---------------- */
+    function paintReports() {
+        var r = data.rep || {}, d = new Date(), to = r.to || d.toISOString().slice(0, 10), from = r.from || new Date(d.getTime() - 29 * 86400000).toISOString().slice(0, 10);
+        var h = '<div class="bhq-card"><form id="bhq-rf"><div class="bhq-row"><div style="min-width:150px" class="bhq-sp"><label class="bhq-l" for="bhq-rt">Report</label><select id="bhq-rt">' + [['report.sales', 'Sales by day and branch'], ['report.stock', 'Stock by branch and place'], ['report.transfers', 'Transfers and discrepancies'], ['report.staff', 'Staff by branch']].map(function (o) { return '<option value="' + o[0] + '"' + (r.type === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
+            '<div style="min-width:150px" class="bhq-sp"><label class="bhq-l" for="bhq-rb">Branches</label><select id="bhq-rb"><option value="all">All (consolidated)</option>' + data.branches.map(function (b) { return '<option value="' + esc(b.clientId) + '"' + (r.clientId === b.clientId ? ' selected' : '') + '>' + esc(bname(b.clientId)) + '</option>'; }).join('') + '</select></div>' +
+            '<div><label class="bhq-l" for="bhq-r1">From</label><input id="bhq-r1" type="date" value="' + esc(from) + '"></div><div><label class="bhq-l" for="bhq-r2">To</label><input id="bhq-r2" type="date" value="' + esc(to) + '"></div></div>' +
+            '<div class="bhq-row" style="margin-top:10px"><button class="bhq-btn pri" type="submit">Show</button><button class="bhq-btn" type="button" data-a="csv">⬇ Download CSV</button></div><p class="bhq-msg" role="alert"></p></form></div><div id="bhq-rout">' + (r.html || '') + '</div>';
+        frame(h);
+        var f = root.querySelector('#bhq-rf');
+        var q = function (csv) { var body = { action: f.querySelector('#bhq-rt').value, clientId: f.querySelector('#bhq-rb').value, from: f.querySelector('#bhq-r1').value, to: f.querySelector('#bhq-r2').value }; data.rep = { type: body.action, clientId: body.clientId, from: body.from, to: body.to }; if (csv) body.format = 'csv'; return body; };
+        var msg = function (t, ok) { var e = f.querySelector('.bhq-msg'); e.className = 'bhq-msg ' + (ok ? 'ok' : 'err'); e.textContent = t; };
+        f.onsubmit = function (e) { e.preventDefault(); msg('Loading…', true); api(q(false)).then(function (j) { if (!j.ok) return msg(j.error || 'Could not load it.'); msg('');
+            var t = j.totals || {}, sum = j.head[0] === 'Date' ? 'Total ' + money(t.total) + ' · ' + (t.n || 0) + ' sales · gross profit ' + money((t.total || 0) - (t.cost || 0)) : t.value != null ? 'Value at cost ' + money(t.value) + ' · ' + (t.low || 0) + ' low · ' + (t.out || 0) + ' out' : t.transfers != null ? t.transfers + ' transfers · ' + t.discrepancies + ' with discrepancies' : (t.people || 0) + ' people';
+            var html = '<div class="bhq-card"><h3>' + esc(j.scope) + ' · ' + esc(j.from) + ' to ' + esc(j.to) + '</h3><p class="bhq-sub">' + sum + (j.rows.length >= 5000 ? ' · first 5,000 lines shown; the CSV has them all' : '') + '</p>' +
+                (t.perBranch && t.perBranch.length > 1 ? '<p class="bhq-sub">' + t.perBranch.map(function (p) { return esc(p.branch) + ': ' + money(p.total); }).join(' · ') + '</p>' : '') + '</div>' +
+                '<div class="bhq-card" style="padding:4px 8px;overflow-x:auto"><table><thead><tr>' + j.head.map(function (x) { return '<th>' + esc(x) + '</th>'; }).join('') + '</tr></thead><tbody>' + j.rows.slice(0, 500).map(function (row) { return '<tr>' + row.map(function (c) { return '<td>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>' + (j.rows.length > 500 ? '<p class="bhq-sub" style="padding:8px">' + j.rows.length + ' lines: the first 500 are shown. Download the CSV for all.</p>' : '') + (j.rows.length ? '' : '<p class="bhq-sub" style="padding:8px">Nothing in this period.</p>') + '</div>';
+            data.rep.html = html; root.querySelector('#bhq-rout').innerHTML = html; }); };
+        f.querySelector('[data-a="csv"]').onclick = function () { msg('Preparing…', true); var body = q(true); api(body).then(function (j) { if (!j.csv) return msg(j.error || 'Could not prepare it.');
+            var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + j.csv], { type: 'text/csv;charset=utf-8' })); a.download = body.action.replace('report.', '') + '-' + (body.clientId === 'all' ? 'all-branches' : bname(body.clientId).replace(/[^\w]+/g, '-')) + '-' + body.from + '-to-' + body.to + '.csv';
+            document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000); msg('Downloaded.', true); }); };
+    }
+
+    /* ---------------- roles ---------------- */
+    function appTabs() { var t = []; try { if (typeof ROLE_TABS !== 'undefined') t = ROLE_TABS; else if (typeof LOCKABLE_TABS !== 'undefined') t = LOCKABLE_TABS; } catch (e) { t = []; } return (t || []).filter(function (x) { return x && x.id && x.id !== 'staff-tab'; }); }
+    function paintRoles() {
+        if (!data.roles) { frame('<p class="bhq-sub">Loading roles…</p>'); return api({ action: 'role.list' }).then(function (j) { data.roles = j.roles || []; data.templates = j.templates || []; paint(); }); }
+        var man = can('staff.manage'), tabs = appTabs(), lab = function (id) { var x = tabs.filter(function (t) { return t.id === id; })[0]; return x ? x.label : id; };
+        var h = '<div class="bhq-card"><h3>Roles</h3><p class="bhq-sub">A role is a set of screens (and, for a manager, the manager rights) you give a person <b>at one branch</b>. The same person can have a different role at another branch. Give a role from Staff → ⋯ More.</p>' +
+            (man ? '<div class="bhq-row" style="margin-top:8px">' + data.templates.map(function (t) { return '<button type="button" class="bhq-btn" data-tpl="' + esc(t.key) + '" title="' + esc(t.about) + '">＋ ' + esc(t.name) + '</button>'; }).join('') + '<button type="button" class="bhq-btn pri" data-tpl="">＋ Custom role</button></div>' : '') + '</div>';
+        h += '<div class="bhq-grid">' + data.roles.map(function (r) { return '<div class="bhq-card"><div class="bhq-row"><h3 class="bhq-sp">' + esc(r.name) + '</h3>' + (r.isManager ? '<span class="bhq-tag main">Manager</span>' : '') + '</div><p class="bhq-sub">' + esc(r.about || '') + '</p><div>' + r.tabs.map(function (t) { return '<span class="bhq-chip">' + esc(lab(t)) + '</span>'; }).join('') + '</div>' +
+            (man ? '<div class="bhq-row" style="margin-top:8px"><button type="button" class="bhq-btn" data-red="' + esc(r.roleId) + '">Edit</button><button type="button" class="bhq-btn bad" data-rarc="' + esc(r.roleId) + '">Archive</button></div>' : '') + '</div>'; }).join('') + '</div>' + (data.roles.length ? '' : '<p class="bhq-sub">No roles yet. Start from a template above.</p>');
+        frame(h);
+        Array.prototype.forEach.call(root.querySelectorAll('[data-tpl]'), function (b) { b.onclick = function () { roleForm(null, b.getAttribute('data-tpl')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-red]'), function (b) { b.onclick = function () { roleForm(b.getAttribute('data-red')); }; });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-rarc]'), function (b) { b.onclick = function () { if (!confirm('Archive this role? People who have it keep their screens until you change them.')) return; api({ action: 'role.archive', roleId: b.getAttribute('data-rarc') }).then(function () { data.roles = null; paint(); }); }; });
+    }
+    function roleForm(roleId, tplKey) {
+        var r = (data.roles || []).filter(function (x) { return x.roleId === roleId; })[0], tpl = (data.templates || []).filter(function (t) { return t.key === tplKey; })[0], tabs = appTabs();
+        var pre = r ? r.tabs : tpl ? tabs.filter(function (t) { return new RegExp(tpl.match).test(t.id) && !(tpl.not && new RegExp(tpl.not).test(t.id)); }).map(function (t) { return t.id; }) : [];
+        modal('<h3>' + (r ? 'Edit ' + esc(r.name) : tpl ? 'New role: ' + esc(tpl.name) : 'New custom role') + '</h3><form><label class="bhq-l" for="bhq-rn">Name</label><input id="bhq-rn" maxlength="40" required value="' + esc(r ? r.name : tpl ? tpl.name : '') + '">' +
+            '<label class="bhq-l" for="bhq-ra">Description</label><input id="bhq-ra" maxlength="160" value="' + esc(r ? r.about : tpl ? tpl.about : '') + '">' +
+            '<label class="bhq-l"><input type="checkbox" id="bhq-rm" style="width:auto;min-height:0"' + ((r ? r.isManager : tpl && tpl.isManager) ? ' checked' : '') + '> Branch manager rights</label>' +
+            '<div class="bhq-perms"><label class="bhq-l">Screens</label>' + (tabs.length ? tabs.map(function (t) { return '<label><input type="checkbox" value="' + esc(t.id) + '"' + (pre.indexOf(t.id) >= 0 ? ' checked' : '') + '> ' + esc(t.label) + '</label>'; }).join('') : '<p class="bhq-sub">Open HQ from the app to choose screens.</p>') + '</div>' +
+            '<p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Save role</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); var t = Array.prototype.map.call(m.querySelectorAll('.bhq-perms input:checked'), function (x) { return x.value; }); if (!t.length) return formMsg(m, 'Choose at least one screen.');
+                api({ action: 'role.save', roleId: roleId || undefined, name: m.querySelector('#bhq-rn').value, about: m.querySelector('#bhq-ra').value, isManager: m.querySelector('#bhq-rm').checked, tabs: t, template: tplKey || (r && r.template) || null }).then(function (j) { if (j.ok) { done(); data.roles = null; paint(); } else formMsg(m, j.error || 'Could not save.'); }); };
+        });
+    }
+    function giveRole(pid) {
+        var p = person(pid), at = p.branches.filter(function (b) { return b.active; });
+        var go = function () { modal('<h3>Role for ' + esc(p.name) + '</h3><form><label class="bhq-l" for="bhq-gb">At branch</label><select id="bhq-gb">' + at.map(function (b) { return '<option value="' + esc(b.clientId) + '">' + esc(bname(b.clientId)) + '</option>'; }).join('') + '</select>' +
+            '<label class="bhq-l" for="bhq-gr">Role</label><select id="bhq-gr">' + (data.roles || []).map(function (r) { return '<option value="' + esc(r.roleId) + '">' + esc(r.name) + (r.isManager ? ' (manager)' : '') + '</option>'; }).join('') + '</select>' +
+            '<label class="bhq-l" for="bhq-gw">Reason</label><input id="bhq-gw" maxlength="200"><p class="bhq-msg" role="alert"></p><div class="bhq-row"><button class="bhq-btn pri" type="submit">Give role</button><button class="bhq-btn" type="button" data-x>Cancel</button></div></form>', function (m, done) {
+            m.querySelector('[data-x]').onclick = done;
+            m.querySelector('form').onsubmit = function (e) { e.preventDefault(); if (!(data.roles || []).length) return formMsg(m, 'Create a role first (Roles tab).'); api({ action: 'staff.role', personId: pid, clientId: m.querySelector('#bhq-gb').value, roleId: m.querySelector('#bhq-gr').value, reason: m.querySelector('#bhq-gw').value }).then(function (j) { if (j.ok) { done(); data.people = null; data.audit = null; paint(); } else formMsg(m, j.error || 'Could not save.'); }); };
+        }); };
+        if (data.roles) go(); else api({ action: 'role.list' }).then(function (j) { data.roles = j.roles || []; data.templates = j.templates || []; go(); });
+    }
+
+    /* ---------------- entry points: the Staff tab and the branch switcher ---------------- */
+    // zip 311: the button stays put. It used to follow "is the Admin serving right now" every 2.5 s, so it vanished whenever a staff member was
+    // checked in on the device, and it vanished when the Staff tab redrew itself. Anyone who can open the Staff tab sees it (HQ asks for the owner's
+    // password or an administrator's PIN anyway), and it is put back the moment the tab redraws.
+    function placeButton() {
+        var st = document.getElementById('staff-tab'); if (!st) return;
+        if (!isAdminNow()) { var ob = document.getElementById('bhq-open'); if (ob) ob.remove(); return; }   // zip 325: only the Admin sees it
+        if (st.querySelector('#bhq-open')) return;
+        var b = document.getElementById('bhq-open');
+        if (!b) { b = document.createElement('button'); b.type = 'button'; b.id = 'bhq-open'; b.className = 'bhq-open-btn'; b.innerHTML = '🏢 Business HQ <span style="font-weight:500;opacity:.8">stock across branches, transfers, reports</span>'; b.onclick = function () { window.openBusinessHQ(); }; }
+        st.insertBefore(b, st.firstChild);
+    }
+    function watchStaffTab() {
+        var st = document.getElementById('staff-tab'); if (!st) return false;
+        placeButton();
+        try { new MutationObserver(function () { if (!st.querySelector('#bhq-open')) placeButton(); }).observe(st, { childList: true }); } catch (e) { /* the timer below */ }
+        return true;
+    }
+    if (!watchStaffTab()) document.addEventListener('DOMContentLoaded', watchStaffTab);
+    // zip 313: a permanent "Business HQ" line in the side menu, just above the signed-in person - always there, on every page, whoever is
+    // signed in on the till (HQ itself asks for the owner's password or an administrator's PIN). The side menu redraws its list often and can be
+    // rebuilt when the window is resized, so this line sits OUTSIDE the list and is put back the moment it is missing.
+    function placeSideEntry() {
+        var a = document.getElementById('snav'); if (!a) return;
+        if (!isAdminNow()) { var os = document.getElementById('bhq-snav'); if (os) os.remove(); return; }   // zip 325: only the Admin sees it
+        if (a.querySelector('#bhq-snav')) return;
+        var foot = a.querySelector('.sn-foot'); if (!foot) return;
+        var d = document.createElement('div'); d.id = 'bhq-snav'; d.style.cssText = 'flex:0 0 auto;padding:6px 10px;border-top:1px solid var(--border-color,#e1e6ea);';
+        d.innerHTML = '<button type="button" class="sn-item" title="Business HQ"><span class="sn-ic">🏢</span><span class="sn-tx">Business HQ</span></button>';
+        d.querySelector('button').onclick = function () { try { if (document.body.classList.contains('snav-open')) document.body.classList.remove('snav-open'); } catch (e) { /* ok */ } window.openBusinessHQ(); };
+        a.insertBefore(d, foot);
+    }
+    placeSideEntry();
+    setInterval(function () { placeButton(); placeSideEntry(); }, 1500);
+    try { new MutationObserver(function () { if (!document.getElementById('bhq-snav')) placeSideEntry(); }).observe(document.body, { childList: true }); } catch (e) { /* the timer */ }
+    // the branch switcher's menu gets a "Business HQ" line
+    document.addEventListener('click', function () { setTimeout(function () {
+        var menu = document.getElementById('branch-menu'); if (!menu || !menu.classList.contains('open') || menu.querySelector('[data-bhq]') || !isAdminNow()) return;
+        var btn = document.createElement('button'); btn.type = 'button'; btn.setAttribute('data-bhq', '1'); btn.innerHTML = '<span class="bm-tick"></span><span>🏢 Business HQ<span class="bm-sub">Dashboard, transfers, reports, staff</span></span>';
+        btn.onclick = function () { menu.classList.remove('open'); window.openBusinessHQ(); };
+        menu.appendChild(btn);
+    }, 0); }, true);
+})();
+</script>

@@ -237,7 +237,7 @@ test('P8: branches — every branch has its own staff register and payroll; one 
   assert.equal((await call(env, 'C2', a1, { action: 'employee.list' })).status, 401, 'a token of one branch is useless in another');
 });
 
-test('P9: documents — only real PDF / photo / Word files within the size limit; replace, archive and delete are audited', async () => {
+test('P9: documents — only real PDF files (zip 328) within the size limit; replace, archive and delete are audited', async () => {
   const { env, admin } = await shop();
   const e = await emp(env, admin);
   const up = (extra) => call(env, 'C1', admin, { action: 'doc.upload', empId: e.emp_id, title: 'Cert', category: 'certificate', ...extra });
@@ -248,8 +248,9 @@ test('P9: documents — only real PDF / photo / Word files within the size limit
   const ok = (await up({ dataUrl: PDF, expiryDate: '2026-10-20' })).body;
   assert.equal((await call(env, 'C1', admin, { action: 'dashboard' })).body.expiring.length, 1, 'expiring soon shows on the dashboard');
   const jpg = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3]).toString('base64');
-  assert.equal((await call(env, 'C1', admin, { action: 'doc.replace', docId: ok.docId, dataUrl: jpg, fileName: 'new.jpg' })).body.ok, true);
-  assert.equal((await call(env, 'C1', admin, { action: 'doc.file', docId: ok.docId })).res.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await call(env, 'C1', admin, { action: 'doc.replace', docId: ok.docId, dataUrl: jpg, fileName: 'new.jpg' })).body.code, 'bad_file', 'photos are no longer accepted');
+  assert.equal((await call(env, 'C1', admin, { action: 'doc.replace', docId: ok.docId, dataUrl: PDF, fileName: 'new.pdf' })).body.ok, true);
+  assert.equal((await call(env, 'C1', admin, { action: 'doc.file', docId: ok.docId })).res.headers.get('content-type'), 'application/pdf');
   assert.equal((await call(env, 'C1', admin, { action: 'doc.archive', docId: ok.docId })).body.ok, true);
   assert.equal((await call(env, 'C1', admin, { action: 'doc.list', empId: e.emp_id })).body.documents[0].status, 'archived');
   assert.equal((await call(env, 'C1', admin, { action: 'doc.delete', docId: ok.docId })).body.ok, true);

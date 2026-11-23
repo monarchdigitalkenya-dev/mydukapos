@@ -102,6 +102,14 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
   }
 
+  // zip 304: money is recorded in ONE place now (Owner Console -> Money & Billing -> Money, /api/owner-money). The two old hand-entry forms each pushed a
+  // second copy of the same payment into the sales book; they are closed so an old cached console cannot add more duplicates. Their existing records are
+  // kept (the reconciliation reads them).
+  // OWNER_LEGACY_INCOME_FORMS=1 re-opens them (only for the old records' own tests, or an emergency) - never needed by the console.
+  if ((body.action === 'recordGroupIncome' || body.action === 'recordRevenue') && String(context.env.OWNER_LEGACY_INCOME_FORMS || '') !== '1') {
+    return jsonResponse({ error: 'Money is now recorded in one place: open Money & Billing → Money → Record a payment. (Reload the console if you still see the old form.)', moved: 'owner-money' }, 410);
+  }
+
   if (body.action === 'recordGroupIncome') {
     // c is any one client id belonging to this person's group — used only
     // as a light sanity check that this is a real link the owner can see,

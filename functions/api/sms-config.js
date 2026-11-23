@@ -13,6 +13,7 @@
 //                        same underlying gateway platform as Celcom, just
 //                        a different reseller/domain)
 //   'talksasa'        — API key + Sender ID (TalkSasa REST v3)
+//   'onfon'           — Access Key + API Key + Client ID + Sender ID (Onfon Media REST, zip 327; see _onfon.js)
 //
 // Existing shops saved before `provider` existed have no value here,
 // which is treated as 'africastalking' everywhere it's read (see
@@ -32,10 +33,10 @@ import { notifyPayChange } from './_pay-alert.js';
 // zip 247 — CHANGING THE SMS ACCOUNT (its keys) needs the same typed Admin password / manager PIN as the payment keys (X-Pay-Proof, checked on the
 // server) and tells the owner; templates and the thank-you switch stay as free as before. A shop that requires staff sessions also needs a manager
 // session. The CORS answer is the shop's own origin only (the apps call the API on their own origin, so nothing else ever needed `*`).
-const SMS_CREDENTIAL_FIELDS = ['atUsername', 'atApiKey', 'mobitechApiKey', 'mobitechSenderName', 'celcomApiKey', 'celcomPartnerId', 'celcomShortcode', 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', 'talksasaApiKey', 'talksasaSenderId'];
+const SMS_CREDENTIAL_FIELDS = ['onfonAccessKey', 'onfonApiKey', 'onfonClientId', 'onfonSenderId', 'atUsername', 'atApiKey', 'mobitechApiKey', 'mobitechSenderName', 'celcomApiKey', 'celcomPartnerId', 'celcomShortcode', 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', 'talksasaApiKey', 'talksasaSenderId'];
 const CORS_OPTS = { methods: 'GET, POST, OPTIONS', headers: 'Content-Type, X-Device-Id, X-Device-Token, X-Staff-Token, X-Pay-Proof' };
 
-const VALID_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
+const VALID_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa', 'onfon'];
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -71,6 +72,7 @@ export async function onRequestGet(context) {
     celcom: !!(config.celcomApiKey && config.celcomPartnerId && config.celcomShortcode),
     advanta: !!(config.advantaApiKey && config.advantaPartnerId && config.advantaShortcode),
     talksasa: !!(config.talksasaApiKey && config.talksasaSenderId),
+    onfon: !!(config.onfonAccessKey && config.onfonApiKey && config.onfonClientId && config.onfonSenderId),
   };
   const configured = configuredByProvider[provider];
 
@@ -82,6 +84,7 @@ export async function onRequestGet(context) {
     celcom: config.celcomShortcode || null,
     advanta: config.advantaShortcode || null,
     talksasa: config.talksasaSenderId || null,
+    onfon: config.onfonSenderId || null,
   };
 
   return jsonResponse({
@@ -89,6 +92,8 @@ export async function onRequestGet(context) {
     provider,
     username: usernameByProvider[provider],
     senderName: config.mobitechSenderName || null,
+    // zip 327: Onfon - which parts are saved, never the secrets themselves (the Client ID and Sender ID are identifiers, not secrets)
+    onfon: { hasAccessKey: !!config.onfonAccessKey, hasApiKey: !!config.onfonApiKey, clientId: config.onfonClientId || '', senderId: config.onfonSenderId || '', enabled: config.onfonEnabled !== false },
     autoThankYouEnabled: !!config.autoThankYouEnabled,
     thankYouTemplate: config.thankYouTemplate || null,
     hireConfirmationTemplate: config.hireConfirmationTemplate || null,
@@ -151,6 +156,11 @@ export async function onRequestPost(context) {
   const advantaShortcode = str(body.advantaShortcode, existing.advantaShortcode);
   const talksasaApiKey = str(body.talksasaApiKey, existing.talksasaApiKey);
   const talksasaSenderId = str(body.talksasaSenderId, existing.talksasaSenderId);
+  const onfonAccessKey = str(body.onfonAccessKey, existing.onfonAccessKey);
+  const onfonApiKey = str(body.onfonApiKey, existing.onfonApiKey);
+  const onfonClientId = str(body.onfonClientId, existing.onfonClientId);
+  const onfonSenderId = str(body.onfonSenderId, existing.onfonSenderId);
+  const onfonEnabled = typeof body.onfonEnabled === 'boolean' ? body.onfonEnabled : existing.onfonEnabled !== false;
   const autoThankYouEnabled = typeof body.autoThankYouEnabled === 'boolean' ? body.autoThankYouEnabled : !!existing.autoThankYouEnabled;
   const thankYouTemplate = str(body.thankYouTemplate, existing.thankYouTemplate);
   const hireConfirmationTemplate = str(body.hireConfirmationTemplate, existing.hireConfirmationTemplate);
@@ -169,6 +179,11 @@ export async function onRequestPost(context) {
     advantaShortcode: advantaShortcode || '',
     talksasaApiKey: talksasaApiKey || '',
     talksasaSenderId: talksasaSenderId || '',
+    onfonAccessKey: onfonAccessKey || '',
+    onfonApiKey: onfonApiKey || '',
+    onfonClientId: onfonClientId || '',
+    onfonSenderId: onfonSenderId || '',
+    onfonEnabled,
     autoThankYouEnabled,
     thankYouTemplate: thankYouTemplate || '',
     hireConfirmationTemplate: hireConfirmationTemplate || '',

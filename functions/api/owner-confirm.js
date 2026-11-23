@@ -14,8 +14,8 @@
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { getLicense, saveLicense, getGroupMainRecord } from './_license.js';
-import { migrateShopToDatabase } from './_migrate.js';
-import { buildQuote, completePurchase, applyAddon, claimRef } from './_billing.js';
+import { applyPermanentUpgrade } from './_upgrade.js';
+import { buildQuote, applyAddon, claimRef } from './_billing.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -75,46 +75,30 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: 'Confirm the base KES 3,000 upgrade before confirming a branch add-on.' }, 400);
     }
     // zip 267: pressed twice (a double-click or a retry after a timeout) it is the same confirmation: one extra branch, once. The claim marker is per shop and per 15 seconds.
-    const once = await claimRef(context.env, `addon-confirm:${record.id}:${Math.floor(Date.now() / 15000)}`, { kind: 'addon-confirm', clientId: record.id, amount: 0 });
+    const onceRef = `addon-confirm:${record.id}:${Math.floor(Date.now() / 15000)}`;
+    const once = await claimRef(context.env, onceRef, { kind: 'addon-confirm', clientId: record.id, amount: 0 });
     if (!once.first) return jsonResponse({ client: record });
-    record.branchAllowance = (record.branchAllowance || 0) + 1;
-    record.branchAddonClaimed = false;
-    await saveLicense(context.env, record);
-    // a subscribed shop's branch allowance is the billing add-on (price from Owner Console -> Billing); a shop that predates billing is unchanged
-    const mainRec = record.branchGroupId && !record.isMainBranch ? await getGroupMainRecord(context.env, record) : record;
-    if (mainRec && mainRec.billing && mainRec.billing.cohort === 'new') {
-      const quote = await buildQuote(context.env, { kind: 'extraBranch', record: mainRec });
-      await applyAddon(context.env, mainRec, { ref: `addon:claim:${mainRec.id}:${Math.floor(Date.now() / 15000)}`, quote, method: 'owner-confirmed' });
+    try {
+      record.branchAllowance = (record.branchAllowance || 0) + 1;
+      record.branchAddonClaimed = false;
+      await saveLicense(context.env, record);
+      // a subscribed shop's branch allowance is the billing add-on (price from Owner Console -> Billing); a shop that predates billing is unchanged
+      const mainRec = record.branchGroupId && !record.isMainBranch ? await getGroupMainRecord(context.env, record) : record;
+      if (mainRec && mainRec.billing && mainRec.billing.cohort === 'new') {
+        const quote = await buildQuote(context.env, { kind: 'extraBranch', record: mainRec });
+        await applyAddon(context.env, mainRec, { ref: `addon:claim:${mainRec.id}:${Math.floor(Date.now() / 15000)}`, quote, method: 'owner-confirmed' });
+      }
+    } catch (e) {
+      // zip 269: a storage hiccup must not leave the "already confirmed" marker behind - the owner's retry would be told "done" with nothing applied
+      try { await context.env.mydukapos_kv.delete('bill-ref:' + onceRef); if (once.evtKey) await context.env.mydukapos_kv.delete(once.evtKey); } catch (e2) { /* the retry then waits out the 15 seconds */ }
+      throw e;
     }
     return jsonResponse({ client: record });
   }
 
-  // Default action: confirm the base KES 3,000 permanent upgrade. Base tier
-  // covers 1 primary shop instance + 1 branch, so branchAllowance starts at
-  // 1 here — never overwritten if this record was somehow already
-  // permanent with a higher allowance (e.g. re-running confirm by mistake
-  // shouldn't claw back add-ons already granted).
-  const wasPermanent = record.type === 'permanent';                     // zip 267: only a REAL upgrade starts billing; re-confirming a shop that was already permanent never subscribes it
-  if (!wasPermanent) {
-    // billing first (the licence still reads "demo" until the next save): if this fails nothing has changed and the retry starts clean; if the save below fails the retry finds the
-    // billing already written (the payment marker makes it a no-op) and finishes the upgrade. A shop can therefore never end up permanent AND free by accident.
-    const quote = await buildQuote(context.env, { kind: 'link', product: record.product });
-    await completePurchase(context.env, record, { purchase: { id: 'upgrade:' + record.id }, quote, method: 'owner-confirmed', amount: quote.total });
-  }
-  record.type = 'permanent';
-  record.expiresAt = null;
-  record.locked = false;
-  record.confirmedAt = Date.now();
-  record.branchAllowance = record.branchAllowance || 1;
-  await saveLicense(context.env, record);
-
-  // Becoming permanent = moving into its own database, with all the data the demo already has (verified; the old record is kept as a
-  // rollback copy). Done after the reply so the owner is not kept waiting; if it fails the shop simply stays a single record and the
-  // owner can use "Move to database" in the Storage tab.
-  if (context.env.SHOP_STORE) {
-    const move = migrateShopToDatabase(context.env, record.id).catch(() => {});
-    if (typeof context.waitUntil === 'function') context.waitUntil(move); else await move;
-  }
+  // Default action: confirm the base permanent upgrade (zip 286: the work itself lives in _upgrade.js, shared with the shop's own M-Pesa prompt).
+  // zip 304: "Make permanent" for a free / test / internal link says so (complimentary: no KES 3,000 sale is recorded); "Confirm payment" is a paid sale.
+  await applyPermanentUpgrade(context.env, record, { method: body.complimentary === true ? 'complimentary' : 'owner-confirmed', receipt: String(body.receipt || '').slice(0, 40), waitUntil: context.waitUntil ? context.waitUntil.bind(context) : null });
 
   return jsonResponse({ client: record });
 }

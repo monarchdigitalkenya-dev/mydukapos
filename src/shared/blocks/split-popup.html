@@ -1,0 +1,183 @@
+<!-- SPLIT POPUP (zip 300) ----------------------------------------------------------------------------------------------------------
+     Split payment at the Sales Counter opens as a popup instead of squeezing Cash / M-Pesa / Card / Cash-tendered / M-Pesa phone boxes into the cart card (where
+     they sat on top of each other and pushed the cart down to one and a half rows).
+       - The popup holds the REAL panels: #split-payment-panel (Cash, M-Pesa, Card, balance line, cash tendered, change due) and #mpesa-prompt-panel (phone, Send
+         Prompt, status, payer name, transaction code) - same ids, same handlers, same maths. They are only moved into the popup while Split is the chosen method
+         and moved back (M-Pesa panel) when it is not. Nothing is added to the sale.
+       - Done (or the x, Esc, a tap outside) closes the popup; Split stays chosen. In the cart a one-line summary button shows what is allocated, whether it
+         matches the total, and re-opens the popup ("Edit").
+       - On a phone it is a bottom sheet. Classes / ids: sp-*. -->
+<style id="sp-css">
+#sp-modal { position: fixed; inset: 0; z-index: 100001; display: none; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(15, 23, 32, .55); }
+#sp-modal.open { display: flex; }
+#sp-modal .sp-card { display: flex; flex-direction: column; width: min(580px, 100%); max-height: calc(calc(100vh / var(--pos-z,1)) - 32px); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 16px; box-shadow: 0 24px 60px rgba(0, 0, 0, .35); overflow: hidden; }
+#sp-modal .sp-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--border-color, #e5e9ec); }
+#sp-modal .sp-title { flex: 1 1 auto; font-size: 17px; font-weight: 800; }
+#sp-modal .sp-total { flex: 0 0 auto; padding: 5px 12px; border-radius: 999px; background: var(--tint-success-bg, #e8f8ef); color: var(--success, #1e8449); font-size: 14px; font-weight: 800; white-space: nowrap; }
+#sp-modal .sp-x { flex: 0 0 auto; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: var(--bg-surface-alt, #f1f4f6); color: inherit; font-size: 16px; cursor: pointer; }
+#sp-modal .sp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 18px 8px; }
+#sp-modal .sp-sec { margin: 0 0 14px; }
+#sp-modal .sp-mp-h { margin: 4px 0 8px; font-size: 13px; font-weight: 800; color: var(--muted, #6b7a86); }
+#sp-modal .sp-foot { padding: 10px 18px 14px; border-top: 1px solid var(--border-color, #e5e9ec); }
+#sp-modal .sp-done { display: block; width: 100%; height: 48px; min-height: 0; margin: 0; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent, #0e7c6b); color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; }
+/* every other Cash / M-Pesa / Card split row (bill settle, past sale, exchange, delivery): boxes wrap instead of sitting on top of each other */
+.split-amounts-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.split-amounts-row > .form-group { flex: 1 1 140px; min-width: 0; }
+.split-amounts-row input { min-width: 0; width: 100%; box-sizing: border-box; }
+/* the real split panel, laid out fluidly */
+html body #sp-modal #split-payment-panel { display: block !important; margin: 0 0 14px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+html body #sp-modal .split-amounts-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+html body #sp-modal .split-amounts-row .form-group { margin: 0; min-width: 0; }
+html body #sp-modal .split-amounts-row .form-group label, html body #sp-modal #split-payment-panel > label { display: block; margin: 0 0 4px; font-size: 12.5px; font-weight: 700; line-height: 1.25; white-space: normal; }
+html body #sp-modal #split-payment-panel > label { margin-top: 12px; }
+html body #sp-modal #split-payment-panel input, html body #sp-modal #mpesa-prompt-panel input { box-sizing: border-box; width: 100%; height: 44px; min-height: 0; margin: 0; padding: 0 12px; font-size: 16px; border-radius: 10px; }
+html body #sp-modal #split-payment-panel .split-balance-line { margin: 12px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 13.5px; line-height: 1.3; min-height: 0; background: var(--bg-surface-alt, #f1f4f6); }
+html body #sp-modal #split-payment-panel .split-balance-line.ok { background: var(--tint-success-bg, #e8f8ef); }
+html body #sp-modal #split-payment-panel .split-balance-line.bad { background: var(--tint-danger-bg, #fdecea); }
+html body #sp-modal #split-payment-panel .split-balance-line:empty { display: none; }
+html body #sp-modal #split-payment-panel .change-due-line { margin: 6px 0 0; min-height: 0; font-size: 13.5px; }
+html body #sp-modal #split-payment-panel .change-due-line:empty { display: none; }
+/* the real M-Pesa panel, two columns */
+html body #sp-modal #mpesa-prompt-panel { display: none; margin: 0; padding: 12px; border-radius: 12px; }
+html body #sp-modal #mpesa-prompt-panel.show { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 10px; align-items: end; }
+html body #sp-modal #mpesa-prompt-panel > * { margin: 0 !important; min-width: 0; grid-column: auto; grid-row: auto; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-status-line, html body #sp-modal #mpesa-prompt-panel > p { grid-column: 1 / -1; min-height: 0; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-status-line:empty { display: none; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-phone-input { grid-column: 1; grid-row: 1; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-send-btn { grid-column: 2; grid-row: 1; width: 100%; height: 44px; min-height: 0; padding: 0 10px; border-radius: 10px; font-size: 14px; white-space: normal; line-height: 1.1; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-status-line { grid-row: 2; }
+html body #sp-modal #mpesa-prompt-panel > label { font-size: 12.5px; font-weight: 700; align-self: end; }
+html body #sp-modal #mpesa-prompt-panel > label:has(+ #mpesa-payer-name-input) { grid-column: 1; grid-row: 3; }
+html body #sp-modal #mpesa-prompt-panel > label:has(+ #mpesa-code-input) { grid-column: 2; grid-row: 3; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-payer-name-input { grid-column: 1; grid-row: 4; }
+html body #sp-modal #mpesa-prompt-panel > #mpesa-code-input { grid-column: 2; grid-row: 4; }
+html body #sp-modal #mpesa-prompt-panel > p { grid-row: 5; }
+html body #sp-modal #mpesa-prompt-panel > p { font-size: 11.5px; line-height: 1.35; opacity: .85; }
+/* the one-line summary left in the cart */
+.sp-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; width: 100%; box-sizing: border-box; min-height: 44px; margin: 0; padding: 8px 12px; border: 1.5px solid #8e44ad; border-radius: 12px; background: var(--bg-surface-alt, #f6f1fa); color: var(--dark, #2c3e50); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.sp-summary[hidden] { display: none; }
+.sp-summary.bad { border-color: var(--danger, #c0392b); }
+.sp-summary.ok { border-color: var(--success, #27ae60); }
+.sp-summary .sp-s-t { font-weight: 800; }
+.sp-summary .sp-s-v { flex: 1 1 auto; min-width: 0; }
+.sp-summary .sp-s-ok { font-weight: 800; color: var(--success, #1e8449); }
+.sp-summary.bad .sp-s-ok { color: var(--danger, #c0392b); }
+.sp-summary .sp-s-m { flex: 1 1 100%; font-size: 12px; opacity: .85; }
+.sp-summary .sp-s-e { flex: 0 0 auto; padding: 3px 10px; border-radius: 8px; background: #8e44ad; color: #fff; font-weight: 800; }
+@media (max-width: 700px) {
+  #sp-modal { align-items: flex-end; padding: 0; }
+  #sp-modal .sp-card { width: 100%; max-height: calc(92vh / var(--pos-z,1)); border-radius: 18px 18px 0 0; }
+  html body #sp-modal #mpesa-prompt-panel.show { grid-template-columns: minmax(0, 1fr); }
+  html body #sp-modal #mpesa-prompt-panel > * { grid-column: 1 !important; grid-row: auto !important; }
+}
+</style>
+<script id="sp-js">
+(function () {
+  'use strict';
+  if (window.__spPopup) return; window.__spPopup = true;
+  var $ = function (id) { return document.getElementById(id); };
+  var panel = null, mp = null, modal = null, sum = null, slotMp = null, mpHome = null, built = false, active = false, lastFocus = null;
+  function num(id) { var e = $(id); return e ? (parseFloat(e.value) || 0) : 0; }
+  function money(n) { return 'KES ' + (Math.round(n * 100) / 100).toFixed(2); }
+  var MQ = '(min-width: 701px)';
+  function desk() { try { return window.matchMedia ? window.matchMedia(MQ).matches : true; } catch (e) { return true; } }   // on a phone the cart sheet has its own payment steps (zip 200): left alone
+  function total() { try { return typeof cartTotal === 'function' ? Number(cartTotal()) || 0 : 0; } catch (e) { return 0; } }
+
+  function build() {
+    if (built) return true;
+    panel = $('split-payment-panel'); mp = $('mpesa-prompt-panel');
+    if (!panel || !panel.parentNode) return false;
+    modal = document.createElement('div'); modal.id = 'sp-modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); modal.setAttribute('aria-label', 'Split payment');
+    modal.innerHTML = '<div class="sp-card"><div class="sp-head"><div class="sp-title">➗ Split payment</div><div class="sp-total" id="sp-total"></div>'
+      + '<button type="button" class="sp-x" aria-label="Close">✕</button></div>'
+      + '<div class="sp-body"><div class="sp-sec sp-slot-split"></div><div class="sp-mp-h">📲 M-Pesa details</div><div class="sp-slot-mpesa"></div></div>'
+      + '<div class="sp-foot"><button type="button" class="sp-done">✅ Done</button></div></div>';
+    document.body.appendChild(modal);
+    slotMp = modal.querySelector('.sp-slot-mpesa');
+    sum = document.createElement('button'); sum.type = 'button'; sum.id = 'sp-summary'; sum.className = 'sp-summary'; sum.hidden = true;
+    sum.setAttribute('aria-label', 'Split payment - edit');
+    panel.parentNode.insertBefore(sum, panel);
+    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+    modal.querySelector('.sp-x').addEventListener('click', close);
+    modal.querySelector('.sp-done').addEventListener('click', close);
+    sum.addEventListener('click', open);
+    modal.addEventListener('input', function () { refresh(); });
+    document.addEventListener('keydown', function (e) {
+      if (!modal.classList.contains('open')) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+      if (e.key === 'Tab') {   // keep Tab inside the popup
+        var f = Array.prototype.filter.call(modal.querySelectorAll('input, button, select, textarea'), function (x) { return !x.disabled && x.offsetParent !== null; });
+        if (!f.length) return;
+        var first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }, true);
+    try { new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['class'] }); } catch (e) { /* no observer: wrapped setPaymentMethod below covers it */ }
+    var st = $('mpesa-status-line'); if (st) { try { new MutationObserver(function () { refresh(); }).observe(st, { childList: true, characterData: true, subtree: true }); } catch (e) { /* cosmetic */ } }
+    built = true; return true;
+  }
+
+  function moveMp(into) {
+    if (!mp) return;
+    if (into) { if (mp.parentNode !== slotMp) { mpHome = { parent: mp.parentNode, next: mp.nextSibling }; slotMp.appendChild(mp); } return; }
+    if (mp.parentNode === slotMp && mpHome && mpHome.parent) {
+      var nx = mpHome.next && mpHome.next.parentNode === mpHome.parent ? mpHome.next : null;
+      mpHome.parent.insertBefore(mp, nx);
+    }
+  }
+
+  function refresh() {
+    if (!built || !active) return;
+    var t = total(), c = num('split-cash-input'), m = num('split-mpesa-input'), k = num('split-card-input');
+    var diff = Math.round((t - c - m - k) * 100) / 100, ok = Math.abs(diff) < 0.01;
+    var tt = $('sp-total'); if (tt) tt.textContent = 'Total ' + money(t);
+    var parts = []; if (c) parts.push('Cash ' + money(c)); if (m) parts.push('M-Pesa ' + money(m)); if (k) parts.push('Card ' + money(k));
+    var st = $('mpesa-status-line'), stt = st ? (st.textContent || '').trim() : '';
+    sum.className = 'sp-summary ' + (ok ? 'ok' : 'bad');
+    while (sum.firstChild) sum.removeChild(sum.firstChild);
+    function span(cls, text) { var s = document.createElement('span'); s.className = cls; s.textContent = text; sum.appendChild(s); }
+    span('sp-s-t', '➗ Split');
+    span('sp-s-v', parts.length ? parts.join(' + ') : 'nothing allocated yet');
+    span('sp-s-ok', ok ? '✅ matches total' : (diff > 0 ? '⚠️ ' + money(diff) + ' left' : '⚠️ ' + money(-diff) + ' over'));
+    if (stt) span('sp-s-m', stt);
+    span('sp-s-e', 'Edit');
+  }
+
+  function open() {
+    if (!build() || !active) return;
+    lastFocus = document.activeElement; refresh();
+    modal.classList.add('open');
+    setTimeout(function () { var f = $('split-cash-input'); if (f && modal.classList.contains('open')) { try { f.focus(); f.select(); } catch (e) { /* hidden */ } } }, 30);
+  }
+  function close() {
+    if (!built) return;
+    modal.classList.remove('open'); refresh();
+    try { if (lastFocus && lastFocus.focus && document.body.contains(lastFocus)) lastFocus.focus(); } catch (e) { /* gone */ }
+  }
+
+  function sync() {
+    if (!built) return;
+    var want = panel.classList.contains('show') && desk();
+    if (want && !active) { active = true; modal.querySelector('.sp-slot-split').appendChild(panel); moveMp(true); sum.hidden = false; open(); }
+    else if (!want && active) { active = false; modal.classList.remove('open'); sum.parentNode.insertBefore(panel, sum.nextSibling); moveMp(false); sum.hidden = true; }
+  }
+
+  function wrap(name) {
+    var f = window[name]; if (typeof f !== 'function' || f.__sp) return;
+    var w = function () { var r = f.apply(this, arguments); try { refresh(); } catch (e) { /* cosmetic */ } return r; };
+    w.__sp = true; window[name] = w;
+  }
+  function init() {
+    if (!build()) return;
+    wrap('updateSplitBalanceLine'); wrap('updateChangeDue');
+    var f = window.setPaymentMethod;
+    if (typeof f === 'function' && !f.__sp) { var w = function () { var r = f.apply(this, arguments); try { sync(); } catch (e) { /* cosmetic */ } return r; }; w.__sp = true; window.setPaymentMethod = w; }
+    sync();
+    try { var mq = window.matchMedia(MQ); if (mq.addEventListener) mq.addEventListener('change', sync); else if (mq.addListener) mq.addListener(sync); } catch (e) { /* resize only */ }
+  }
+  window.__spOpen = open; window.__spClose = close;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  window.addEventListener('load', init);
+})();
+</script>

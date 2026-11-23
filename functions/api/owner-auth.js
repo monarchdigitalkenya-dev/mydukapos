@@ -22,7 +22,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
+import { loginBlocked, noteLoginFailure, checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import {
   getOwnerAccount,
   createOwnerAccount,
@@ -65,6 +65,8 @@ export async function onRequestPost(context) {
   const action = body.action;
 
   if (action === 'signup') {
+    const rls = await checkRateLimit(env, 'ownerSignup', (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown').slice(0, 60));      // zip 273: the sign-up had no limit at all
+    if (!rls.ok) return rateLimitResponse('owner sign-up attempts', rls);
     const identifier = String(body.identifier || '').trim();
     const password = String(body.password || '');
     if (!identifier) {

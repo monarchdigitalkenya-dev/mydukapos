@@ -1,0 +1,341 @@
+<!-- LAUNCHER VIEW ---------------------------------------------------------------------------------------------------------------------------
+     zip 364. A second way to move around the shop app: the TILE MENU. Choose a folder (Sell, Stock, Money, Reports, People, Business, System),
+     then the page (Money ▸ Daily Sales). Switch between it and the classic sidebar in Settings ▸ 👁️ View ▸ Screen view (or the button at the bottom of
+     either menu). Each person's choice is remembered on the device, so the app opens in the view they used last.
+     NAVIGATION ONLY - NOTHING ABOUT ACCESS CHANGES: the tiles are built by the sidebar (window.sidebarNav.model) from the app's own visible tab
+     buttons, so staff see only the tabs they were given; a tile clicks the real tab button through the sidebar's go(), so locked-tab passwords,
+     guardedSwitchTab and every per-tab rule run exactly as before. In the tile view the ☰ button opens this menu instead of the sidebar.
+     If anything fails, it turns itself off and the classic sidebar is used. Shared via `npm run sync`; never hand-edit it inside an app. -->
+<style id="launcher-view-css">
+    #lv { display: none; }
+    body.lv-on.lv-open #lv { display: flex; }
+    body.lv-on #snav { display: none !important; }
+    body.lv-on.snav-on, body.lv-on.snav-on.snav-collapsed { padding-left: 0 !important; }
+    body.lv-on.snav-on .header-brand { display: flex !important; }
+    body.lv-on #snav-burger { display: inline-flex !important; }
+    body.lv-on.snav-on .floating-kb-btn, body.lv-on.snav-on .scroll-to-top-btn { left: 18px !important; }
+    body.lv-on.lv-open { overflow: hidden; }
+    body.lv-open .floating-kb-btn, body.lv-open .scroll-to-top-btn, body.lv-open #posnet-offline-pill, body.lv-open #floating-kb-toggle { display: none !important; }
+    #lv { position: fixed; inset: 0; z-index: 9450; flex-direction: column; color: #1e3a8a; font-family: inherit;
+        background-color: #f4f7fb;
+        background-image:
+            linear-gradient(135deg, rgba(37, 99, 235, .05) 25%, transparent 25%, transparent 50%, rgba(37, 99, 235, .05) 50%, rgba(37, 99, 235, .05) 75%, transparent 75%),
+            radial-gradient(circle at 1px 1px, rgba(30, 58, 138, .07) 1px, transparent 0);
+        background-size: 46px 46px, 14px 14px; }
+    #lv .lv-top { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 14px 22px; border-bottom: 3px solid #1e3a8a; background: rgba(255, 255, 255, .86); backdrop-filter: blur(4px); position: relative; overflow: hidden; }
+    #lv .lv-top::after { content: ''; position: absolute; right: 120px; top: 0; width: 360px; height: 100%; pointer-events: none; opacity: .35;
+        background-image: linear-gradient(90deg, #38bdf8 0 22px, transparent 22px 46px), linear-gradient(90deg, transparent 0 23px, #7dd3fc 23px 45px, transparent 45px);
+        background-size: 92px 22px, 92px 22px; background-position: 0 0, 0 22px; background-repeat: repeat-x; }
+    #lv .lv-logo { width: 44px; height: 44px; border-radius: 12px; background: #1e3a8a; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 22px; overflow: hidden; flex: 0 0 auto; }
+    #lv .lv-logo img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+    #lv .lv-title { min-width: 0; flex: 1 1 auto; line-height: 1.15; }
+    #lv .lv-title b { display: block; font-size: 20px; font-weight: 800; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #lv .lv-title small { font-size: 12px; color: #475569; font-style: italic; }
+    #lv .lv-clock { text-align: right; line-height: 1.15; flex: 0 0 auto; position: relative; z-index: 1; }
+    #lv .lv-clock b { display: block; font-size: 20px; }
+    #lv .lv-clock small { font-size: 12px; color: #475569; }
+    #lv .lv-x { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; color: #1e3a8a; font-size: 20px; cursor: pointer; position: relative; z-index: 1; }
+    #lv .lv-x:hover { background: #eff6ff; }
+    #lv .lv-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 22px 0; }
+    #lv .lv-crumb { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; min-width: 0; }
+    #lv .lv-crumb button { border: 0; background: none; color: #2563eb; font: inherit; cursor: pointer; padding: 6px 2px; }
+    #lv .lv-crumb span { color: #94a3b8; }
+    #lv .lv-back { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid #bfdbfe; background: #fff; color: #1e40af; font: inherit; font-weight: 700; cursor: pointer; }
+    #lv .lv-find { margin-left: auto; flex: 0 1 300px; }
+    #lv .lv-find input { width: 100%; box-sizing: border-box; min-height: 42px; padding: 8px 14px; border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; font-size: 16px; color: #0f172a; }
+    #lv .lv-find input:focus { outline: 2px solid #2563eb; outline-offset: 0; }
+    #lv .lv-body { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px 26px; -webkit-overflow-scrolling: touch; }
+    #lv .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 18px 22px; max-width: 1180px; margin: 0 auto; }
+    #lv .lv-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 12px; min-height: 168px; padding: 20px 10px 16px; border-radius: 18px;
+        border: 1px solid transparent; background: transparent; color: #1e40af; font: inherit; cursor: pointer; text-align: center; transition: background .15s ease, transform .12s ease, box-shadow .15s ease, border-color .15s ease; }
+    #lv .lv-tile:hover, #lv .lv-tile:focus-visible { background: rgba(255, 255, 255, .92); border-color: #dbeafe; box-shadow: 0 10px 26px rgba(30, 58, 138, .12); transform: translateY(-2px); outline: none; }
+    #lv .lv-tile:active { transform: translateY(0) scale(.98); }
+    #lv .lv-ic { width: 92px; height: 92px; border-radius: 24px; display: flex; align-items: center; justify-content: center; font-size: 50px; line-height: 1;
+        background: linear-gradient(145deg, rgba(255, 255, 255, .95), rgba(226, 232, 240, .9)); box-shadow: inset 0 0 0 1px rgba(148, 163, 184, .25), 0 6px 16px rgba(15, 23, 42, .08); }
+    #lv .lv-tile[data-c] .lv-ic { box-shadow: inset 0 -5px 0 var(--lvc, #2563eb), inset 0 0 0 1px rgba(148, 163, 184, .25), 0 6px 16px rgba(15, 23, 42, .08); }
+    #lv .lv-tx { font-size: 17px; font-weight: 700; letter-spacing: .01em; line-height: 1.2; color: #1e40af; }
+    #lv .lv-sub { font-size: 12px; color: #64748b; font-weight: 600; margin-top: -6px; }
+    #lv .lv-tile.cur .lv-tx { color: #b45309; }
+    #lv .lv-tile.cur::after { content: 'Open now'; position: absolute; top: 10px; left: 10px; font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #b45309; background: #fef3c7; border-radius: 999px; padding: 2px 8px; }
+    #lv .lv-bd { position: absolute; top: 12px; right: calc(50% - 56px); min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 3px #fff; }
+    #lv .lv-empty { text-align: center; color: #64748b; padding: 40px 10px; font-size: 15px; }
+    #lv .lv-foot { flex: 0 0 auto; }
+    #lv .lv-biz { padding: 6px 22px 4px; font-size: 24px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #lv .lv-status { display: flex; align-items: center; gap: 8px 26px; flex-wrap: wrap; padding: 8px 22px; background: linear-gradient(90deg, #1e3a8a, #1d4ed8); color: #e0e7ff; font-size: 13px; }
+    #lv .lv-status b { color: #fff; }
+    #lv .lv-status .lv-sp { flex: 1 1 auto; }
+    #lv .lv-fb { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .12); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    #lv .lv-fb:hover { background: rgba(255, 255, 255, .22); }
+    #lv .lv-fb.out { background: #dc2626; border-color: #dc2626; }
+    html[data-theme="dark"] #lv { background-color: #0f172a; color: #dbeafe;
+        background-image: linear-gradient(135deg, rgba(96, 165, 250, .06) 25%, transparent 25%, transparent 50%, rgba(96, 165, 250, .06) 50%, rgba(96, 165, 250, .06) 75%, transparent 75%), radial-gradient(circle at 1px 1px, rgba(148, 163, 184, .1) 1px, transparent 0); }
+    html[data-theme="dark"] #lv .lv-top { background: rgba(15, 23, 42, .9); }
+    html[data-theme="dark"] #lv .lv-title small, html[data-theme="dark"] #lv .lv-clock small { color: #94a3b8; }
+    html[data-theme="dark"] #lv .lv-tx, html[data-theme="dark"] #lv .lv-biz, html[data-theme="dark"] #lv .lv-tile { color: #bfdbfe; }
+    html[data-theme="dark"] #lv .lv-ic { background: linear-gradient(145deg, #1e293b, #0f172a); }
+    html[data-theme="dark"] #lv .lv-tile:hover { background: rgba(30, 41, 59, .9); border-color: #334155; }
+    html[data-theme="dark"] #lv .lv-x, html[data-theme="dark"] #lv .lv-back, html[data-theme="dark"] #lv .lv-find input { background: #1e293b; color: #e2e8f0; border-color: #334155; }
+    /* Settings > Screen View */
+    .lv-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 10px 0 6px; }
+    .lv-opt { display: block; border: 2px solid var(--border-color, #dfe6e9); border-radius: 14px; padding: 12px; cursor: pointer; background: var(--bg-surface, #fff); }
+    .lv-opt.on { border-color: var(--accent, #3498db); box-shadow: 0 0 0 3px rgba(52, 152, 219, .18); }
+    .lv-opt input { margin-right: 6px; }
+    .lv-opt b { font-size: 15px; }
+    .lv-opt p { margin: 6px 0 0; font-size: 13px; opacity: .8; }
+    .lv-pv { height: 92px; border-radius: 10px; margin-bottom: 10px; border: 1px solid var(--border-color, #e1e6ea); overflow: hidden; display: flex; background: #f8fafc; }
+    .lv-pv.cl i { width: 30%; background: #1e293b; }
+    .lv-pv.cl s { flex: 1; text-decoration: none; background: repeating-linear-gradient(180deg, #fff 0 14px, #eef2f7 14px 16px); }
+    .lv-pv.tl { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 10px; background: #eef4fb; }
+    .lv-pv.tl i { border-radius: 8px; background: #fff; box-shadow: inset 0 -3px 0 #2563eb; }
+    @media (max-width: 760px) {
+        #lv .lv-top { padding: 10px 12px; gap: 10px; }
+        #lv .lv-top::after { display: none; }
+        #lv .lv-logo { width: 38px; height: 38px; font-size: 19px; }
+        #lv .lv-title b { font-size: 16px; }
+        #lv .lv-clock { display: none; }
+        #lv .lv-bar { padding: 10px 12px 0; }
+        #lv .lv-find { flex: 1 1 100%; order: 3; margin-left: 0; }
+        #lv .lv-body { padding: 12px 10px 16px; }
+        #lv .lv-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        #lv .lv-tile { min-height: 118px; padding: 12px 4px 10px; gap: 8px; border-radius: 14px; background: rgba(255, 255, 255, .7); border-color: #e2e8f0; }
+        html[data-theme="dark"] #lv .lv-tile { background: rgba(30, 41, 59, .7); border-color: #334155; }
+        #lv .lv-ic { width: 62px; height: 62px; border-radius: 18px; font-size: 33px; }
+        #lv .lv-tx { font-size: 13.5px; }
+        #lv .lv-sub { font-size: 11px; margin-top: -4px; }
+        #lv .lv-bd { right: calc(50% - 40px); top: 6px; }
+        #lv .lv-tile.cur::after { top: 4px; left: 4px; font-size: 8.5px; padding: 1px 5px; }
+        #lv .lv-biz { font-size: 16px; padding: 4px 12px 2px; }
+        #lv .lv-status { padding: 8px 12px; gap: 4px 14px; font-size: 12px; }
+        #lv .lv-status .lv-sp { flex-basis: 100%; height: 0; }
+        #lv .lv-fb { flex: 1 1 auto; justify-content: center; min-height: 42px; }
+    }
+    @media (max-width: 360px) { #lv .lv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media print { #lv { display: none !important; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    /* colour of each folder's tile (the folders and their order come from the sidebar) */
+    var COLORS = { sell: '#2563eb', ops: '#0d9488', stock: '#7c3aed', fin: '#16a34a', rep: '#ea580c', people: '#0891b2', biz: '#db2777', sys: '#475569', clinical: '#dc2626', more: '#64748b', care: '#2563eb', mch: '#db2777' };
+    var NOTES = { sell: 'Dispatch, deliveries, returns', ops: 'Day-to-day operations', stock: 'Items, restock, stock take', fin: 'Sales book, bills, debts, expenses', rep: 'Sales and stock reports', people: 'Customers, staff, attendance', biz: 'Store and contracts', sys: 'Settings and audit trail', more: 'Everything else' };
+    var K_DEF = 'pos_view_default';
+    var lv = null, level = '', findQ = '', lastUser = '', lastSig = '', on = false, wantOpen = false;
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* not remembered */ } return null; }
+    function nav() { return window.sidebarNav && typeof window.sidebarNav.model === 'function' && window.sidebarNav.on() ? window.sidebarNav : null; }
+    function serving() { try { return typeof currentServer !== 'undefined' && currentServer ? currentServer : null; } catch (e) { return null; } }
+    function uid() { var s = serving(); return s ? 'staff:' + (s.id || s.name || '') : 'admin'; }
+    /* signed in = the sign-in screens are gone (the app shows them over everything while nobody is signed in) */
+    function signedIn() {
+        var ids = ['login-screen', 'staff-login-screen', 'license-lock-screen', 'registration-screen', 'account-reset-screen', 'invite-screen'];
+        for (var i = 0; i < ids.length; i++) { var el = $(ids[i]); if (el && el.style.display !== 'none' && getComputedStyle(el).display !== 'none') return false; }
+        return true;
+    }
+    /* the view this person uses on this device: their last choice, else the device default the admin set, else the classic sidebar */
+    function modeOf(u) { var m = store('pos_view:' + (u || uid())); if (m === 'tiles' || m === 'classic') return m; m = store(K_DEF); return m === 'tiles' ? 'tiles' : 'classic'; }
+    function mode() { return document.body.classList.contains('lv-on') ? 'tiles' : 'classic'; }
+
+    function setMode(m, openMenu) {
+        m = m === 'tiles' ? 'tiles' : 'classic';
+        store('pos_view:' + uid(), m);
+        apply(m, openMenu);
+        syncSettings();
+    }
+    function apply(m, openMenu) {
+        var b = document.body;
+        if (m === 'tiles' && nav()) {
+            b.classList.add('lv-on');
+            try { window.sidebarNav.close(); } catch (e) { /* drawer already shut */ }
+            if (openMenu) show();
+        } else {
+            b.classList.remove('lv-on', 'lv-open');
+        }
+        try { window.dispatchEvent(new Event('resize')); } catch (e2) { /* cosmetic */ }
+        try { window.sidebarNav && window.sidebarNav.rebuild(); } catch (e3) { /* sidebar redraws itself */ }
+    }
+
+    // ---- the menu ----
+    function userLine() {
+        var n = nav(), u = n ? n.userInfo() : { name: '', role: '' }, br = n ? n.branchName() : '', s = serving();
+        var role = s ? (s.role || s.title || 'Staff') : 'Admin';
+        try { if (s && typeof staff !== 'undefined' && Array.isArray(staff)) { var m = staff.filter(function (x) { return x && x.id === s.id; })[0]; if (m && (m.title || m.position || m.jobTitle)) role = m.title || m.position || m.jobTitle; } } catch (e) { /* plain Staff */ }
+        return { name: s ? (u.name || s.name || 'Staff') : 'ADMIN', role: String(role).toUpperCase(), branch: br || 'MAIN' };
+    }
+    function bizName() {
+        var t = ($('app-title') && $('app-title').textContent || '').replace(/^[\s\p{Extended_Pictographic}️‍]+/u, '').trim();
+        return t || document.title || 'MyDukaPOS';
+    }
+    function tiles(m) {
+        var out = [];
+        m.items.forEach(function (it) {
+            if (it.kind === 'item') out.push({ kind: 'tab', id: it.id });
+            else out.push({ kind: 'group', g: it.g, kids: it.kids });
+        });
+        return out;
+    }
+    function tabTile(n, m, id, sub) {
+        var b = m.byId[id]; if (!b) return '';
+        var l = n.labelOf(b), bd = n.badgeOf(b), cur = b.classList.contains('active');
+        return '<button type="button" class="lv-tile' + (cur ? ' cur' : '') + '" data-lvgo="' + esc(id) + '" title="' + esc(l.text) + '"><span class="lv-ic">' + l.icon + '</span><span class="lv-tx">' + esc(l.text) + '</span>' + (sub ? '<span class="lv-sub">' + esc(sub) + '</span>' : '') + (bd ? '<span class="lv-bd">' + esc(bd) + '</span>' : '') + '</button>';
+    }
+    function render() {
+        var n = nav(); if (!lv || !n) return;
+        var m = n.model(), list = tiles(m), body = lv.querySelector('.lv-grid'), crumb = lv.querySelector('.lv-crumb'), h = '';
+        var grp = level ? list.filter(function (t) { return t.kind === 'group' && t.g.id === level; })[0] : null;
+        if (level && !grp) level = '';                                     /* that folder has no page this person may open any more */
+        if (findQ) {
+            var q = findQ.toLowerCase();
+            list.forEach(function (t) {
+                var ids = t.kind === 'tab' ? [t.id] : t.kids, gl = t.kind === 'group' ? t.g.label : '';
+                ids.forEach(function (id) { var l = n.labelOf(m.byId[id]); if ((l.text + ' ' + gl).toLowerCase().indexOf(q) !== -1) h += tabTile(n, m, id, gl); });
+            });
+            crumb.innerHTML = '<span>🔎</span> Pages matching “' + esc(findQ) + '”';
+            if (!h) h = '<div class="lv-empty">No page matches “' + esc(findQ) + '”.</div>';
+        } else if (grp) {
+            crumb.innerHTML = '<button type="button" class="lv-back" data-lvback="1">← All menus</button><span>›</span><b>' + grp.g.icon + ' ' + esc(grp.g.label) + '</b>';
+            h = grp.kids.map(function (id) { return tabTile(n, m, id); }).join('');
+        } else {
+            crumb.innerHTML = '<b>Choose a menu</b>';
+            h = list.map(function (t) {
+                if (t.kind === 'tab') return tabTile(n, m, t.id);
+                var active = t.kids.some(function (k) { return m.byId[k].classList.contains('active'); });
+                var bd = 0; t.kids.forEach(function (k) { var x = parseInt(n.badgeOf(m.byId[k]), 10); if (x > 0) bd += x; });
+                return '<button type="button" class="lv-tile' + (active ? ' cur' : '') + '" data-lvgrp="' + esc(t.g.id) + '" data-c="1" style="--lvc:' + (COLORS[t.g.id] || '#2563eb') + '" title="' + esc(t.g.label) + '"><span class="lv-ic">' + t.g.icon + '</span><span class="lv-tx">' + esc(t.g.label) + '</span><span class="lv-sub">' + t.kids.length + ' page' + (t.kids.length === 1 ? '' : 's') + '</span>' + (bd ? '<span class="lv-bd">' + bd + '</span>' : '') + '</button>';
+            }).join('');
+            if (!list.length) h = '<div class="lv-empty">No pages have been given to you yet. Ask the admin.</div>';
+        }
+        body.innerHTML = h;
+        var u = userLine();
+        lv.querySelector('.lv-biz').textContent = bizName();
+        lv.querySelector('.lv-who').innerHTML = 'Login Staff: <b>' + esc(u.name) + '</b>';
+        lv.querySelector('.lv-role').innerHTML = 'Role: <b>' + esc(u.role) + '</b>';
+        lv.querySelector('.lv-br').innerHTML = 'Branch: <b>' + esc(u.branch) + '</b>';
+        var t = $('app-title'); lv.querySelector('.lv-title b').textContent = bizName();
+        var logo = $('header-logo'), lg = lv.querySelector('.lv-logo');
+        if (logo && logo.getAttribute('src') && logo.style.display !== 'none') { if (!lg.querySelector('img')) { lg.textContent = ''; var im = document.createElement('img'); im.alt = ''; lg.appendChild(im); } lg.querySelector('img').src = logo.getAttribute('src'); }
+        else if (lg.querySelector('img')) lg.textContent = '🏪';
+        lastSig = sigOf();
+    }
+    function sigOf() { var n = nav(); if (!n) return ''; try { var m = n.model(); return m.items.map(function (it) { return it.kind === 'item' ? it.id + (m.byId[it.id].classList.contains('active') ? '*' : '') + n.badgeOf(m.byId[it.id]) : it.g.id + ':' + it.kids.map(function (k) { return k + (m.byId[k].classList.contains('active') ? '*' : '') + n.badgeOf(m.byId[k]); }).join(','); }).join('|') + '#' + uid() + level + findQ; } catch (e) { return ''; } }
+    function tick() {
+        if (!lv) return;
+        var d = new Date(), c = lv.querySelector('.lv-clock');
+        c.innerHTML = '<b>' + esc(d.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase()) + '</b><small>' + esc(d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) + '</small>';
+    }
+    function show(lvl) {
+        if (!lv || !nav() || !signedIn()) { wantOpen = true; return; }
+        wantOpen = false;
+        level = lvl || ''; findQ = ''; var fi = lv.querySelector('.lv-find input'); if (fi) fi.value = '';
+        document.body.classList.add('lv-open'); render(); tick();
+        try { lv.querySelector('.lv-body').scrollTop = 0; } catch (e) { /* cosmetic */ }
+        setTimeout(function () { var f = lv && lv.querySelector('.lv-tile'); if (f && !(window.sidebarNav && window.sidebarNav.isPhone())) try { f.focus({ preventScroll: true }); } catch (e2) { /* old browser */ } }, 30);
+    }
+    function hide() { document.body.classList.remove('lv-open'); }
+    function isOpen() { return document.body.classList.contains('lv-open'); }
+    function open(id) {
+        var n = nav(); if (!n) return;
+        hide();                                          /* first, so a locked-tab password box shows on top of the page */
+        n.go(id);
+    }
+    function signOut() {
+        hide();
+        try {
+            if (serving() && typeof logoutServer === 'function') { logoutServer(); return; }
+            if (typeof logoutAdmin === 'function') { logoutAdmin(); return; }
+        } catch (e) { /* fall through to the app's own menu */ }
+        try { var sb = $('server-btn'); if (sb) sb.click(); } catch (e2) { /* nothing more to try */ }
+    }
+    function onClick(e) {
+        var t = e.target && e.target.closest ? e.target : null; if (!t) return;
+        var x;
+        if ((x = t.closest('[data-lvgo]'))) { open(x.getAttribute('data-lvgo')); return; }
+        if ((x = t.closest('[data-lvgrp]'))) { level = x.getAttribute('data-lvgrp'); findQ = ''; lv.querySelector('.lv-find input').value = ''; render(); lv.querySelector('.lv-body').scrollTop = 0; return; }
+        if (t.closest('[data-lvback]')) { level = ''; render(); return; }
+        if (t.closest('[data-lvx]')) { hide(); return; }
+        if (t.closest('[data-lvclassic]')) { setMode('classic'); return; }
+        if (t.closest('[data-lvout]')) { signOut(); return; }
+    }
+    function onKey(e) {
+        if (!isOpen()) return;
+        if (e.key === 'Escape') { if (findQ) { findQ = ''; lv.querySelector('.lv-find input').value = ''; render(); } else if (level) { level = ''; render(); } else hide(); e.preventDefault(); return; }
+        if (e.key === 'Enter' && e.target && e.target.closest && e.target.closest('.lv-find')) { var f = lv.querySelector('[data-lvgo],[data-lvgrp]'); if (f) { e.preventDefault(); f.click(); } }
+    }
+
+    // ---- Settings > 👁️ View: a "Screen view" card at the top of the app's existing View section (view-settings block) ----
+    var CARD = 'lv-viewcard';
+    function settingsHtml() {
+        var m = mode(), admin = !serving();
+        function opt(v, title, pv, note) { return '<label class="lv-opt' + (m === v ? ' on' : '') + '"><div class="lv-pv ' + pv + '">' + (pv === 'cl' ? '<i></i><s></s>' : '<i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>') + '</div><input type="radio" name="lv-mode" value="' + v + '"' + (m === v ? ' checked' : '') + '><b>' + title + '</b><p>' + note + '</p></label>'; }
+        return '<h4 style="margin-top:0">🖥️ Screen view <small style="font-weight:600;opacity:.7">(you, on this device)</small></h4><p style="font-size:13px;margin:0 0 8px;opacity:.85">Choose how you move around the app. Your choice is remembered on this device, so the app opens in the view you used last. Each staff member chooses their own (button at the bottom of either menu); they only ever see the tabs they were given.</p>'
+            + '<div class="lv-opts">' + opt('classic', 'Classic sidebar', 'cl', 'The menu down the left side, with folders you open and close.') + opt('tiles', 'Tile menu', 'tl', 'Big tiles: choose a menu (e.g. 💰 Money), then the page (Daily Sales). Tap ☰ to come back to the tiles.') + '</div>'
+            + (admin ? '<label class="label" for="lv-def" style="margin-top:10px">Staff who have not chosen yet start in</label><select id="lv-def" style="max-width:320px"><option value="classic"' + (store(K_DEF) !== 'tiles' ? ' selected' : '') + '>Classic sidebar</option><option value="tiles"' + (store(K_DEF) === 'tiles' ? ' selected' : '') + '>Tile menu</option></select><p class="settings-msg" style="font-size:12.5px;opacity:.75;margin:4px 0 0">On this device.</p>' : '')
+            + '<hr class="settings-divider">';
+    }
+    function syncSettings() { var c = $(CARD); if (c) c.innerHTML = settingsHtml(); }
+    function installSettings() {
+        if ($(CARD)) return;
+        var sec = null; try { sec = typeof window.__viewSection === 'function' ? window.__viewSection() : null; } catch (e) { sec = null; }
+        if (!sec) return;
+        var card = document.createElement('div'); card.id = CARD;
+        var hint = sec.querySelector('p'), h4 = sec.querySelector('h4'), after = hint && hint.parentNode === sec ? hint : h4;
+        if (after && after.parentNode === sec) sec.insertBefore(card, after.nextSibling); else sec.insertBefore(card, sec.firstChild);
+        card.innerHTML = settingsHtml();
+        card.addEventListener('change', function (e) {
+            var t = e.target; if (!t) return;
+            if (t.name === 'lv-mode') { setMode(t.value, false); try { if (typeof showToast === 'function') showToast(t.value === 'tiles' ? 'Tile menu on. Tap ☰ (top left) to open the menu.' : 'Classic sidebar on.'); } catch (x) { /* cosmetic */ } }
+            if (t.id === 'lv-def') { store(K_DEF, t.value === 'tiles' ? 'tiles' : 'classic'); try { if (typeof showToast === 'function') showToast('Saved.'); } catch (x2) { /* cosmetic */ } }
+        });
+    }
+
+    // ---- who is signed in: each person gets their own view; a new sign-in in the tile view starts at the tiles ----
+    function watch() {
+        try {
+            var n = nav();
+            if (!n) { if (on && document.body.classList.contains('lv-on')) apply('classic'); return; }
+            installSettings();
+            var inNow = signedIn(), u = inNow ? uid() : '';
+            if (u !== lastUser) {
+                lastUser = u;
+                if (u) { var m = modeOf(u); apply(m, m === 'tiles'); syncSettings(); }
+                else hide();
+                return;
+            }
+            if (!inNow) { hide(); return; }
+            if (wantOpen && mode() === 'tiles') show();
+            if (isOpen() && sigOf() !== lastSig) render();
+        } catch (e) { fail(e); }
+    }
+    function fail(e) { try { console.warn('tile menu off', e); } catch (x) { /* ignore */ } try { document.body.classList.remove('lv-on', 'lv-open'); if (lv && lv.parentNode) lv.parentNode.removeChild(lv); } catch (x2) { /* gone */ } lv = null; on = false; }
+
+    function start() {
+        try {
+            if (!document.querySelector('nav.tabs') || !document.querySelector('header')) return;          /* not a POS page */
+            lv = document.createElement('div'); lv.id = 'lv'; lv.setAttribute('role', 'dialog'); lv.setAttribute('aria-label', 'Menu');
+            lv.innerHTML = '<div class="lv-top"><div class="lv-logo">🏪</div><div class="lv-title"><b></b><small>Point of Sale</small></div><div class="lv-clock"></div><button type="button" class="lv-x" data-lvx="1" aria-label="Close the menu" title="Back to the page (Esc)">✕</button></div>'
+                + '<div class="lv-bar"><div class="lv-crumb"></div><div class="lv-find"><input type="search" placeholder="🔎 Find a page…" aria-label="Find a page" autocomplete="off"></div></div>'
+                + '<div class="lv-body"><div class="lv-grid"></div></div>'
+                + '<div class="lv-foot"><div class="lv-biz"></div><div class="lv-status"><span class="lv-who"></span><span class="lv-role"></span><span class="lv-br"></span><span class="lv-sp"></span><button type="button" class="lv-fb" data-lvclassic="1" title="Use the classic sidebar instead">☰ Classic view</button><button type="button" class="lv-fb out" data-lvout="1">🕒 Clock Out</button></div></div>';
+            document.body.appendChild(lv);
+            lv.addEventListener('click', onClick);
+            lv.querySelector('.lv-find input').addEventListener('input', function (e) { findQ = String(e.target.value || '').trim(); render(); });
+            document.addEventListener('keydown', onKey);
+            /* in the tile view the ☰ button opens the tiles (capture: before the sidebar's own handler) */
+            document.addEventListener('click', function (e) {
+                if (!document.body.classList.contains('lv-on')) return;
+                var b = e.target && e.target.closest && e.target.closest('#snav-burger'); if (!b) return;
+                e.preventDefault(); e.stopImmediatePropagation();
+                if (isOpen()) hide(); else show();
+            }, true);
+            on = true;
+            window.launcherView = { setMode: setMode, mode: mode, open: show, close: hide, isOpen: isOpen, modeOf: modeOf };
+            try { window.sidebarNav && window.sidebarNav.rebuild(); } catch (e0) { /* shows the button on its next redraw */ }
+            setInterval(watch, 600); setInterval(tick, 15000);
+            watch();
+        } catch (e) { fail(e); }
+    }
+    /* after the sidebar (it starts on the next tick after DOMContentLoaded) */
+    function later() { setTimeout(start, 60); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', later); else later();
+})();
+</script>

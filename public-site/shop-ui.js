@@ -96,7 +96,7 @@
     if (d.systems && d.systems.length) items.push('<a role="menuitem" href="/shop?view=systems">Complete systems</a>');
     if (PM.offers(d).length) items.push('<a role="menuitem" href="/shop?view=offers">Special offers</a>');
     var wrap = document.createElement('div'); wrap.className = 'nav-dd';
-    wrap.innerHTML = '<button type="button" class="nav-dd-btn" aria-haspopup="true" aria-expanded="false">Products <i aria-hidden="true">▾</i></button><div class="nav-dd-menu" role="menu">' + items.join('') + '</div>';
+    wrap.innerHTML = '<button type="button" class="nav-dd-btn" aria-haspopup="true" aria-expanded="false">Hardware <i aria-hidden="true">▾</i></button><div class="nav-dd-menu" role="menu">' + items.join('') + '</div>';
     link.replaceWith(wrap);
     var btn = wrap.firstChild, pinned = false, hov = false, canHover = function () { return window.matchMedia && matchMedia('(hover:hover) and (pointer:fine)').matches; };
     var open = function (v) { wrap.classList.toggle('open', v); btn.setAttribute('aria-expanded', v ? 'true' : 'false'); if (!v) pinned = false; };

@@ -23,8 +23,13 @@
 import { ledgerHealth, saveAlert } from '../functions/api/_ledger-health.js';
 import { auditMaintenance } from '../functions/api/_audit-db.js';
 import { scheduledStorageJobs, configuredAuditDays } from '../functions/api/_storage-report.js';
+import { scheduledStaffReports } from '../functions/api/_hr.js';
 
-const PAGES_ORIGIN = 'mydukapos.pages.dev'; // <-- your Pages project's own *.pages.dev domain
+// zip 273: the Pages project's own *.pages.dev address now comes from the router's PAGES_ORIGIN variable (wildcard-router/wrangler.toml [vars], written by
+// `node tools\switch-account.mjs --pages-host <address>`). The built-in default is only for the original account. A NEW Cloudflare account's project often gets a
+// different address (mydukapos-3ao.pages.dev): with the default, its shop traffic would be forwarded to the OLD account's project (and old database).
+const DEFAULT_PAGES_ORIGIN = 'mydukapos-3ao.pages.dev';   // zip 294: the NEW account's project - a router deployed without the PAGES_ORIGIN variable can no longer fall back to the deleted old account (that was the 503)
+export const upstreamHost = (env) => { const v = String((env && env.PAGES_ORIGIN) || '').trim().toLowerCase(); return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.pages\.dev$/.test(v) ? v : DEFAULT_PAGES_ORIGIN; };
 
 // Subdomains that should NOT be routed into the app — add to this if you
 // ever want e.g. "www" or "status" to do something else. Everything else
@@ -41,7 +46,7 @@ export default {
     }
 
     const originalHost = url.hostname;
-    url.hostname = PAGES_ORIGIN;
+    url.hostname = upstreamHost(env);
 
     const proxied = new Request(url.toString(), request);
     proxied.headers.set('X-Forwarded-Host', originalHost);
@@ -65,6 +70,8 @@ export default {
   async scheduled(event, env, ctx) {
     // zip 186: LEDGER SIZE WATCHDOG (every cron firing, see wrangler.toml). Inert unless this Worker has the LEDGER_DB binding.
     ctx.waitUntil(ledgerSizeWatchdog(env));
+    // zip 328: weekly / monthly staff reports for every business that switched them on. Idempotent (a report is never made twice), so every firing may safely try; a missed day is caught up on the next one.
+    ctx.waitUntil(scheduledStaffReports(env).catch((e) => { try { console.error('staff reports failed:', e && e.message); } catch (x) { /* log only */ } }));
     if (event && event.cron === WATCHDOG_ONLY_CRON) return;                  // the 6-hourly firing is for the watchdog only; the shop health check stays daily
     if (!env || !env.HEALTH_URL || !env.ROUTER_SHARED_SECRET) return;
     ctx.waitUntil(fetch(env.HEALTH_URL + (env.HEALTH_URL.includes('?') ? '&' : '?') + 'cron=1', { headers: { 'X-Router-Secret': env.ROUTER_SHARED_SECRET } }).catch(() => {}));
@@ -130,6 +137,9 @@ export async function ledgerSizeWatchdog(env) {
 export class SyncRoom {
   constructor(ctx) {
     this.ctx = ctx;
+    // zip 280: devices send 'ping' every 20 s and get 'pong' from the runtime itself, without waking this object: that is how an app knows the live
+    // connection is really alive before it slows its safety polling (see wsHealthStart in src/shared/functions.js).
+    try { if (ctx && typeof ctx.setWebSocketAutoResponse === 'function' && typeof WebSocketRequestResponsePair === 'function') ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong')); } catch (e) { /* devices keep polling quickly: nothing breaks */ }
   }
 
   async fetch(request) {
@@ -141,8 +151,17 @@ export class SyncRoom {
     }
 
     const url = new URL(request.url);
+    // zip 306: "a new version of the shop exists" (from the shop's database after any change, or from pos-sync after a single-record save).
+    // Only remembered - nothing is sent to the devices (they ask for it, see webSocketMessage).
+    if (url.pathname === '/ver' && request.method === 'POST') {
+      let ver = 0; try { ver = Number((await request.json()).ver) || 0; } catch (e) { /* a bare note still counts */ }
+      return new Response(JSON.stringify(this.noteVersion(ver)), { headers: { 'Content-Type': 'application/json' } });
+    }
     if (url.pathname === '/broadcast' && request.method === 'POST') {
       const body = await request.text();
+      // every broadcast is a change too (the full record of a single-record shop, or a poke)
+      let ver = 0; try { ver = Number(JSON.parse(body).updatedAt) || 0; } catch (e) { /* poke without a version */ }
+      try { this.noteVersion(ver); } catch (e) { /* the broadcast below is what matters here */ }
       let delivered = 0;
       for (const ws of this.ctx.getWebSockets()) {
         try {
@@ -161,11 +180,39 @@ export class SyncRoom {
     return new Response('Not found', { status: 404 });
   }
 
-  // Devices never send anything meaningful over this socket today — it's
-  // server-to-client push only. Still required by the hibernation API, and
-  // left ready for a future heartbeat/ping without needing a protocol
-  // change.
-  async webSocketMessage() {}
+  // zip 306 - THE CHEAP SAFETY CHECK. A device with a healthy connection used to ask the server over HTTP every ~30 s "anything new?" (two
+  // Worker requests + a database call each, even when nothing had changed). It now sends 'v?' on this socket and gets back the shop's change
+  // version {t:'v', ver, e, n}: `ver` is the newest shop version (updatedAt) any change was noted with - the same number the server compares
+  // with `?since=`. The device pulls over HTTP only when `ver` is newer than the version it holds (exactly when an HTTP pull would NOT answer
+  // "unchanged"); `e` / `n` (room id / count of notes) are for diagnostics. An incoming message costs 1/20 of a request and the object goes back
+  // to hibernating right after. 'ping' is still answered by the runtime itself (auto-response) without waking anything.
+  async webSocketMessage(ws, message) {
+    if (message !== 'v?') return;
+    try { ws.send(JSON.stringify({ t: 'v', ...this.version() })); } catch (e) { /* the device falls back to its HTTP check */ }
+  }
+
+  // The change counter, kept in this object's own SQLite storage (survives hibernation and restarts).
+  meta() {
+    if (this._meta) return this._meta;
+    const sql = this.ctx && this.ctx.storage && this.ctx.storage.sql;
+    if (!sql) { this._meta = { e: 'm' + Math.random().toString(36).slice(2, 10), n: 0, ver: 0, mem: true }; return this._meta; }
+    sql.exec('CREATE TABLE IF NOT EXISTS ver (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+    const rows = sql.exec('SELECT k, v FROM ver').toArray();
+    const m = {}; for (const r of rows) m[r.k] = r.v;
+    if (!m.e) { m.e = Date.now().toString(36) + Math.random().toString(36).slice(2, 8); sql.exec("INSERT OR REPLACE INTO ver (k, v) VALUES ('e', ?)", m.e); }
+    this._meta = { e: String(m.e), n: Number(m.n) || 0, ver: Number(m.ver) || 0 };
+    return this._meta;
+  }
+  version() { const m = this.meta(); return { e: m.e, n: m.n, ver: m.ver }; }
+  noteVersion(ver) {
+    const m = this.meta();
+    // the NEWEST version wins: notes can arrive out of order (the database's own note and pos-sync's poke for the same save), and a lower
+    // number arriving late must never hide a newer change from a device. (`n` only counts notes - for diagnostics.)
+    m.n += 1; if (Number(ver) > m.ver) m.ver = Number(ver);
+    const sql = !m.mem && this.ctx && this.ctx.storage && this.ctx.storage.sql;
+    if (sql) { sql.exec("INSERT OR REPLACE INTO ver (k, v) VALUES ('n', ?)", String(m.n)); sql.exec("INSERT OR REPLACE INTO ver (k, v) VALUES ('ver', ?)", String(m.ver)); }
+    return { e: m.e, n: m.n, ver: m.ver };
+  }
 
   async webSocketClose(ws, code, reason) {
     try { ws.close(code, reason); } catch (e) {}

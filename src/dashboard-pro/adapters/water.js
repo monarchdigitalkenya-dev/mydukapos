@@ -103,7 +103,7 @@
     function isPay(it) { return typeof aquaIsPaymentLine === 'function' ? aquaIsPaymentLine(it) : !!(it && (it.type === 'payment' || it.unit === 'payment' || it.isPayment)); }
     function saleTotalOf(s) { var t = Number(s.total); if (isFinite(t) && t >= 0) return t; return arr(s.items).reduce(function (a, it) { return a + (isPay(it) ? 0 : n0(it.price) * n0(it.qty)); }, 0); }
     function saleFactor(s) { try { return typeof aquaSaleRevenueFactor === 'function' ? aquaSaleRevenueFactor(s) : 1; } catch (e) { return 1; } }
-    function lineCost(it, s) { try { return typeof itemCogs === 'function' ? n0(itemCogs(it, s)) : 0; } catch (e) { return 0; } }
+    function lineCost(it, s) { try { if (typeof moneyLineCost === "function") return n0(moneyLineCost(it, s)); return typeof itemCogs === 'function' ? n0(itemCogs(it, s)) : 0; } catch (e) { return 0; } }
     function hourOf(ts) { var off = null; try { off = bizTzOffsetMin(); } catch (e) { off = null; } if (off == null || !isFinite(off)) return new Date(ts).getHours(); return new Date(ts + off * 60000).getUTCHours(); }
     function kindOf(it) { var t = it.type; return t === 'refill' ? 'refill' : t === 'bottled' ? 'bottled' : t === 'bale' ? 'bale' : (t === 'bulk-booking' || t === 'bulk-booking-deposit') ? 'bulk' : 'other'; }
     function countsAsUnit(it) { var t = it.type; return t !== 'bulk-booking' && t !== 'bulk-booking-deposit' && t !== 'accessory-material' && t !== 'material'; }
@@ -346,8 +346,10 @@
     }
 
     /* ---------- widgets ---------- */
+    // zip 298: on a phone only the first four sections start open; the rest fold (tap the title) - this page was ~5,000-6,000 px of scrolling
+    function foldable(id) { for (var k = 0; k < WIDGETS.length; k++) if (WIDGETS[k][0] === id) return k >= 4 && id !== 'alerts' && id !== 'actions'; return false; }
     function card(id, title, body, extra) {
-        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
+        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + (foldable(id) ? ' dp-fold' : '') + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
     }
     function empty(msg) { return '<p class="dp-empty">' + esc(msg) + '</p>'; }
     function viewBtn(tab, label) { return '<button type="button" class="dp-link" data-goto="' + tab + '">' + esc(label || 'View report') + ' →</button>'; }
@@ -625,6 +627,8 @@
 
     /* ---------- events (one delegated listener) ---------- */
     function onClick(ev) {
+        var fh = ev.target && ev.target.closest ? ev.target.closest('.dp-fold > .dp-card-h') : null;
+        if (fh && root && root.contains(fh) && !(ev.target.closest('button,a,[data-goto]'))) { fh.parentNode.classList.toggle('dp-open'); return; }
         var t = ev.target && ev.target.closest ? ev.target.closest('[data-preset],[data-metric],[data-topby],[data-topall],[data-staffby],[data-goto],[data-act],[data-retry],[data-applycustom],[data-wmove]') : null;
         if (!t || !root || !root.contains(t)) return;
         if (t.dataset.preset) { S.preset = t.dataset.preset; persist(); return D.render(); }

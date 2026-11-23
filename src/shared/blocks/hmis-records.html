@@ -1,0 +1,922 @@
+<!-- HMIS RECORDS (zip 351) ------------------------------------------------------------------------------------------------------
+     Four things the hospital workflow was missing, added on top of what already exists (nothing here replaces or re-prices anything):
+       1. BILLS POPUP        - the "Patient Bills" button opens a pop-up window instead of switching tab. It shows every unpaid patient charge grouped by
+                               visit (with "Open in Cashier") and, below it, the normal Bills list (Pay Later bills, Record a Bill, search, closed bills).
+       2. PATIENT DATABASE   - a searchable list of every patient (last visit, visits, balance, admitted, chronic conditions) and, for each patient, a
+                               full profile: medical history (chronic conditions, past illness, surgery, family, social, current medicines, immunisation,
+                               obstetric), the whole timeline, visits, labs, admissions, billing and clinical forms. Print a patient summary.
+       3. CLINICAL FORMS     - Nursing Kardex, medication chart (MAR), observation chart, fluid balance chart, nursing notes, handover (SBAR), admission
+                               record, discharge summary, referral, consent, blood transfusion record, pre-op checklist, operation notes, anaesthesia
+                               record, sick note / medical certificate and death notification. Each is saved against the patient (it appears in the timeline
+                               and syncs like any other patient note), can be edited and printed.
+       4. WORKFLOW GAPS      - registration (file / card) fee, optionally charged automatically when a NEW patient is registered; waive or discount an
+                               unpaid charge with a reason (kept in the audit log); sick note / medical certificate.
+     Classes / ids: hrx-*. Patient history is stored on the patient record (patient.history); forms are stored as patient notes (kind 'form'). -->
+<style id="hrx-css">
+#hrx-pdb-btn { }
+.hrx-ov { position: fixed; inset: 0; z-index: 9000; background: rgba(16, 36, 40, .72); display: flex; align-items: flex-start; justify-content: center; padding: 18px 12px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.hrx-box { width: 100%; max-width: 1120px; background: var(--bg-surface, #fff); color: var(--text, #17323a); border-radius: 16px; box-shadow: 0 24px 70px rgba(0, 0, 0, .35); overflow: hidden; margin: auto 0; }
+.hrx-box.hrx-narrow { max-width: 720px; }
+.hrx-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; color: #fff; background-color: #134a9c;
+  background-image: radial-gradient(circle at 12px 12px, rgba(255, 255, 255, .13) 2px, transparent 2.5px), linear-gradient(135deg, #134a9c, #1a66c4 55%, #14a37f); background-size: 24px 24px, 100% 100%; }
+.hrx-head h3 { margin: 0; font-size: 18px; flex: 1; color: #fff; min-width: 0; }
+.hrx-head small { display: block; font-weight: 500; opacity: .85; font-size: 12.5px; margin-top: 2px; }
+.hrx-x { border: 0; background: rgba(255, 255, 255, .18); color: #fff; width: 40px; height: 40px; border-radius: 12px; font-size: 20px; cursor: pointer; flex: 0 0 auto; }
+.hrx-x:hover { background: rgba(255, 255, 255, .32); }
+.hrx-body { padding: 16px 18px 22px; }
+.hrx-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+.hrx-bar input[type=search], .hrx-bar input[type=text], .hrx-bar select { flex: 1 1 220px; min-width: 0; padding: 11px 12px; border: 1px solid var(--border, #cfd8dc); border-radius: 10px; font-size: 15px; background: var(--bg-surface, #fff); color: inherit; }
+.hrx-chip { border: 1px solid var(--accent, #1a66c4); background: transparent; color: var(--accent-strong, #134a9c); border-radius: 999px; padding: 8px 14px; font-size: 13.5px; font-weight: 700; cursor: pointer; }
+.hrx-chip.on, .hrx-chip:hover { background: var(--accent, #1a66c4); color: #fff; }
+.hrx-btn { border: 0; border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--accent, #1a66c4); color: #fff; min-height: 40px; }
+.hrx-btn:hover { background: var(--accent-strong, #134a9c); }
+.hrx-btn.sec { background: var(--tint-accent, #e4f3ee); color: var(--accent-strong, #134a9c); }
+.hrx-btn.sec:hover { background: #cfe9df; }
+.hrx-btn.warn { background: #b4551a; }
+.hrx-btn.sm { padding: 6px 11px; min-height: 32px; font-size: 13px; }
+.hrx-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.hrx-card { border: 1px solid var(--border, #dbe6e3); border-left: 5px solid var(--accent, #1a66c4); border-radius: 12px; padding: 10px 14px; background: var(--tint-accent, #f1f8f6); }
+.hrx-card b { display: block; font-size: 20px; }
+.hrx-card span { font-size: 12.5px; color: var(--muted, #5d7378); }
+.hrx-card.red { border-left-color: #c0392b; background: #fdf0ee; }
+.hrx-tablewrap { overflow-x: auto; border: 1px solid var(--border, #dbe6e3); border-radius: 12px; }
+.hrx-tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.hrx-tbl th { text-align: left; background: var(--tint-accent, #e4f3ee); color: var(--accent-strong, #134a9c); padding: 9px 10px; font-size: 12.5px; white-space: nowrap; position: sticky; top: 0; }
+.hrx-tbl td { padding: 9px 10px; border-top: 1px solid var(--border, #e5eeec); vertical-align: top; }
+.hrx-tbl tr.hrx-row { cursor: pointer; }
+.hrx-tbl tr.hrx-row:hover td { background: var(--tint-accent, #f1f8f6); }
+.hrx-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #e4f3ee; color: #134a9c; margin: 1px 3px 1px 0; }
+.hrx-pill.red { background: #fde2de; color: #a52a1f; }
+.hrx-pill.amber { background: #fdf0d2; color: #8a5a00; }
+.hrx-pill.blue { background: #e0ecfb; color: #1c4f8f; }
+.hrx-muted { color: var(--muted, #5d7378); font-size: 13px; }
+.hrx-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; border-bottom: 2px solid var(--border, #dbe6e3); padding-bottom: 8px; }
+.hrx-tab { border: 0; background: transparent; padding: 9px 14px; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; color: var(--muted, #5d7378); }
+.hrx-tab.on { background: var(--accent, #1a66c4); color: #fff; }
+.hrx-profile { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.hrx-fact { background: var(--tint-accent, #f1f8f6); border: 1px solid var(--border, #dbe6e3); border-radius: 12px; padding: 9px 12px; }
+.hrx-fact small { display: block; color: var(--muted, #5d7378); font-size: 12px; }
+.hrx-fact b { font-size: 15px; word-break: break-word; }
+.hrx-alert { border: 2px solid #c0392b; background: #fdf0ee; color: #8f2a20; border-radius: 12px; padding: 10px 14px; margin: 0 0 14px; font-weight: 700; }
+.hrx-sec { border: 1px solid var(--border, #dbe6e3); border-radius: 14px; padding: 12px 14px 14px; margin: 0 0 14px; background: var(--bg-surface, #fff); }
+.hrx-sec > h4 { margin: 0 0 10px; font-size: 15px; color: var(--accent-strong, #134a9c); }
+.hrx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px 12px; }
+.hrx-grid label { display: block; font-size: 12.5px; font-weight: 700; color: var(--muted, #5d7378); margin: 0 0 3px; }
+.hrx-grid input, .hrx-grid select, .hrx-grid textarea, .hrx-tbl td input, .hrx-tbl td select, .hrx-tbl td textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border, #cfd8dc); border-radius: 9px; font-size: 14.5px; background: var(--bg-surface, #fff); color: inherit; font-family: inherit; }
+.hrx-grid textarea { min-height: 70px; resize: vertical; }
+.hrx-grid .wide { grid-column: 1 / -1; }
+#hrx-svc-rows td:nth-child(2) { min-width: 300px; } #hrx-svc-rows td:nth-child(3) { min-width: 170px; }
+.hrx-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.hrx-checks label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; margin: 0; color: inherit; }
+.hrx-checks input { width: auto; }
+.hrx-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.hrx-list { display: grid; gap: 8px; }
+.hrx-item { border: 1px solid var(--border, #dbe6e3); border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--bg-surface, #fff); }
+.hrx-item .grow { flex: 1 1 200px; min-width: 0; }
+.hrx-bills-panel .panel { box-shadow: none; border: 0; padding: 0; background: transparent; }
+.hrx-bills-panel .panel > h3 { display: none; }
+@media (min-width: 1000px) { .hrx-ov { padding-left: 250px; } }
+@media (max-width: 640px) { .hrx-ov { padding: 0; } .hrx-box { border-radius: 0; min-height: 100vh; } .hrx-body { padding: 12px 12px 22px; } }
+#hrx-pdb, #hrx-svc, #hrx-price { padding: 0; }
+.hrx-ov.as-page, .hrx-ov.as-page * { }
+.hrx-ov.as-page { position: static; inset: auto; z-index: auto; background: none; display: block; padding: 0; overflow: visible; }
+.hrx-ov.as-page .hrx-box { max-width: none; margin: 0; border-radius: 12px; box-shadow: 0 2px 14px rgba(0, 0, 0, .12); overflow: visible; }
+.hrx-ov.as-page .hrx-head { border-radius: 12px 12px 0 0; }
+.hrx-bills-top { margin: 0 0 14px; }
+@media (max-width: 640px) { .hrx-ov.as-page .hrx-box { border-radius: 0; min-height: 0; } }
+#hrx-edit, #hrx-lc { padding: 0; }
+.hrx-page2 { position: static !important; inset: auto !important; z-index: auto !important; background: none !important; padding: 0 !important; overflow: visible !important; }
+.hrx-page2:not(.open):not(.on) { display: none !important; }
+.hrx-page2.open, .hrx-page2.on { display: block !important; }
+.hrx-page2 .hc-box, .hrx-page2 .he-in { max-width: none !important; box-shadow: 0 2px 14px rgba(0,0,0,.12) !important; }
+@media print { .hrx-ov { position: static; background: none; padding: 0; } .hrx-head, .hrx-foot, .hrx-tabs, .hrx-bar { display: none !important; } }
+</style>
+<script id="hrx-js">
+(function () {
+    'use strict';
+    if (window.__hrx) return; window.__hrx = true;
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { try { alert(m); } catch (e2) { /* none */ } } }
+    function money(n) { return 'KES ' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+    function who() { try { return activeServerName() || ''; } catch (e) { return ''; } }
+    function dt(ts) { var d = new Date(ts); return isFinite(d) ? d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''; }
+    function dd(ts) { var d = new Date(ts); return isFinite(d) ? d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : ''; }
+    function today() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function nowLocal() { var d = new Date(); return today() + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+    function hospitalName() { var t = $('app-title'); var s = t ? (t.textContent || '') : ''; s = s.replace(/^[^A-Za-z0-9]+/, '').trim(); return s || 'Hospital'; }
+    function P() { return (typeof patients !== 'undefined' && Array.isArray(patients)) ? patients : []; }
+    function getP(id) { return P().find(function (p) { return p.id === id; }); }
+    var GET = {
+        visits: function () { return typeof visits !== 'undefined' ? visits : []; },
+        queue: function () { return typeof queue !== 'undefined' ? queue : []; },
+        labResults: function () { return typeof labResults !== 'undefined' ? labResults : []; },
+        admissions: function () { return typeof admissions !== 'undefined' ? admissions : []; },
+        patientCharges: function () { return typeof patientCharges !== 'undefined' ? patientCharges : []; },
+        patientNotes: function () { return typeof patientNotes !== 'undefined' ? patientNotes : []; }
+    };
+    function arr(name) { try { var a = GET[name](); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function savePatients() { try { safeSetItem('pos_patients', JSON.stringify(patients)); queuePush(); } catch (e) { /* storage */ } }
+
+    /* ---------- overlay helper ---------- */
+    var stack = [];
+    /* a pop-up that is really a page: its own tab (sidebar entry stays highlighted, other tabs switch normally) */
+    function pagePane(id) {
+        var p = $(id);
+        if (p && p.classList.contains('tab-content')) return p;
+        var ref = $('staff-tab') || document.querySelector('.tab-content'); if (!ref || !ref.parentNode) return null;
+        if (p && p.parentNode) p.parentNode.removeChild(p);
+        p = document.createElement('div'); p.id = id; p.className = 'tab-content';
+        ref.parentNode.insertBefore(p, ref.nextSibling); return p;
+    }
+    function goTab(id) {
+        var btn = document.querySelector('.tab-link[data-tab="' + id + '"]');
+        try { if (typeof performTabSwitch === 'function') performTabSwitch(btn, id); else { Array.prototype.forEach.call(document.querySelectorAll('.tab-content'), function (x) { x.classList.remove('active'); }); var t = $(id); if (t) t.classList.add('active'); } } catch (e) { /* stay */ }
+        try { window.scrollTo(0, 0); } catch (e2) { /* none */ }
+    }
+    function overlay(title, sub, bodyHtml, opts) {
+        opts = opts || {};
+        var ov = document.createElement('div'); ov.className = 'hrx-ov';
+        var pane = opts.page ? pagePane(opts.page) : null;
+        if (pane) ov.className = 'hrx-ov as-page';
+        ov.innerHTML = '<div class="hrx-box' + (opts.narrow ? ' hrx-narrow' : '') + '" role="dialog" aria-modal="true"><div class="hrx-head"><h3>' + title + (sub ? '<small>' + sub + '</small>' : '') + '</h3><button type="button" class="hrx-x" aria-label="Close">✕</button></div><div class="hrx-body">' + (bodyHtml || '') + '</div></div>';
+        var prev = null;
+        if (pane) { var cur = document.querySelector('.tab-content.active'); prev = cur && cur !== pane ? cur.id : null; pane.innerHTML = ''; pane.appendChild(ov); }
+        else document.body.appendChild(ov);
+        var rec = { ov: ov, body: ov.querySelector('.hrx-body'), head: ov.querySelector('.hrx-head h3'), onClose: opts.onClose || null, pane: pane };
+        function close() {
+            var i = stack.indexOf(rec); if (i >= 0) stack.splice(i, 1); if (rec.onClose) { try { rec.onClose(); } catch (e) { /* ignore */ } }
+            if (pane) {
+                var wasOn = pane.classList.contains('active'); pane.innerHTML = '';
+                if (wasOn) { var back = prev && document.getElementById(prev) ? prev : 'dashboard-tab'; if (!document.getElementById(back)) back = 'sales-tab'; goTab(back); }
+                return;
+            }
+            if (ov.parentNode) ov.parentNode.removeChild(ov);
+        }
+        rec.close = close;
+        rec.show = function () { if (pane) goTab(pane.id); };
+        ov.querySelector('.hrx-x').addEventListener('click', close);
+        if (!pane) { ov.addEventListener('mousedown', function (e) { if (e.target === ov && !opts.sticky) close(); }); stack.push(rec); }
+        if (pane) rec.show();
+        return rec;
+    }
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && stack.length) { var t = stack[stack.length - 1]; if (t && !t.sticky) t.close(); } });
+
+    /* ======================================================================================================================
+       1. BILLS POPUP
+       ====================================================================================================================== */
+    function unpaidGroups() { try { return pendingBillGroups(''); } catch (e) { return []; } }
+    function billsSummaryHtml() {
+        var g = unpaidGroups(), total = g.reduce(function (s, x) { return s + x.total; }, 0);
+        var html = '<div class="hrx-cards"><div class="hrx-card red"><b>' + g.length + '</b><span>Unpaid patient bills</span></div><div class="hrx-card red"><b>' + esc(money(total)) + '</b><span>Waiting at the cashier</span></div></div>';
+        if (g.length) {
+            html += '<div class="hrx-sec"><h4>🧾 Unpaid patient charges (by visit)</h4><div class="hrx-list">' + g.slice(0, 60).map(function (x) {
+                return '<div class="hrx-item"><div class="grow"><b>' + esc(x.patientName || x.patientId || '') + '</b> <span class="hrx-muted">· ' + esc(x.ref) + ' · ' + esc(dt(x.createdAt)) + '</span><div class="hrx-muted">' + esc(x.charges.map(function (c) { return c.name; }).slice(0, 4).join(', ')) + (x.charges.length > 4 ? ' +' + (x.charges.length - 4) + ' more' : '') + '</div></div><b>' + esc(money(x.total)) + '</b><button type="button" class="hrx-btn sm" data-hrx-cashier="' + esc(x.ref) + '">Open in Cashier</button></div>';
+            }).join('') + '</div></div>';
+        } else html += '<div class="hrx-sec"><h4>🧾 Unpaid patient charges</h4><p class="hrx-muted" style="margin:0;">Nothing is waiting at the cashier right now.</p></div>';
+        return html;
+    }
+    function billsClick(e) {
+        var b = e.target.closest ? e.target.closest('[data-hrx-cashier]') : null;
+        if (!b) return;
+        var ref = b.getAttribute('data-hrx-cashier');
+        try { if (typeof isTabLocked === 'function' && isTabLocked('sales-tab')) { var bt = $('sales-tab-btn'); if (bt) bt.click(); return; } performTabSwitch($('sales-tab-btn'), 'sales-tab'); } catch (e2) { /* stay */ }
+        try { loadPatientBill(ref); } catch (e3) { /* shown in the cashier search */ }
+    }
+    /* Patient Bills is the normal Bills tab with the unpaid-charges summary on top (no pop-up) */
+    function openBills() {
+        var tab = $('bills-tab'); if (!tab) return;
+        var top = $('hrx-bills-top');
+        if (!top) { top = document.createElement('div'); top.id = 'hrx-bills-top'; top.className = 'hrx-bills-top'; tab.insertBefore(top, tab.firstChild); tab.addEventListener('click', billsClick); }
+        top.innerHTML = billsSummaryHtml();
+        goTab('bills-tab');
+        try { if (typeof renderBillsTab === 'function') renderBillsTab(); } catch (e) { /* the list is rendered on the next change */ }
+    }
+    // The button (and the sidebar entry, which clicks the real button) opens the pop-up. A locked tab keeps its password prompt: then the old behaviour runs.
+    document.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('.tab-link[data-tab="bills-tab"]') : null;
+        if (!b) return;
+        try { if (typeof isTabLocked === 'function' && isTabLocked('bills-tab')) return; } catch (e1) { /* open it */ }
+        e.preventDefault(); e.stopImmediatePropagation();
+        openBills();
+    }, true);
+    window.hrxOpenBills = openBills;
+
+    /* ======================================================================================================================
+       2. PATIENT DATABASE
+       ====================================================================================================================== */
+    var CHRONIC = ['Hypertension', 'Diabetes', 'Asthma / COPD', 'HIV', 'Tuberculosis (past/current)', 'Epilepsy', 'Sickle cell disease', 'Heart disease', 'Kidney disease', 'Cancer', 'Arthritis', 'Peptic ulcer / gastritis', 'Mental health condition', 'Stroke', 'Hepatitis B/C'];
+    var dbRec = null, dbState = { q: '', f: 'all', sort: 'recent', limit: 80 };
+    function statsFor(p) {
+        var vs = arr('visits').filter(function (v) { return v.patientId === p.id && !v.voided; });
+        var last = vs.reduce(function (m, v) { return Math.max(m, v.timestamp || 0); }, 0);
+        var lq = arr('queue').filter(function (q) { return q.patientId === p.id; }).reduce(function (m, q) { return Math.max(m, q.arrivedAt || 0); }, 0);
+        var bal = arr('patientCharges').filter(function (c) { return c.patientId === p.id && c.status === 'unpaid'; }).reduce(function (s, c) { return s + (Number(c.price) || 0) * (Number(c.qty) || 0); }, 0);
+        var adm = arr('admissions').some(function (a) { return a.patientId === p.id && !a.dischargedAt; });
+        return { visits: vs.length, last: Math.max(last, lq), bal: bal, admitted: adm, chronic: (p.history && p.history.chronic) || [] };
+    }
+    function dbRows() {
+        var q = dbState.q.trim().toLowerCase(), f = dbState.f, sod = new Date(); sod.setHours(0, 0, 0, 0);
+        var rows = P().map(function (p) { return { p: p, s: statsFor(p) }; }).filter(function (r) {
+            if (q) {
+                var hay = [r.p.name, r.p.id, r.p.phone, r.p.altPhone, r.p.nationalId, r.p.sha, r.p.shaNumber, r.p.email].join(' ').toLowerCase();
+                if (hay.indexOf(q) < 0) return false;
+            }
+            if (f === 'admitted') return r.s.admitted;
+            if (f === 'balance') return r.s.bal > 0;
+            if (f === 'chronic') return r.s.chronic.length > 0;
+            if (f === 'today') return r.s.last >= sod.getTime();
+            if (f === 'allergy') return !!(r.p.allergies && String(r.p.allergies).trim() && !/^(none|nil|no|n\/a)$/i.test(String(r.p.allergies).trim()));
+            return true;
+        });
+        rows.sort(function (a, b) { return dbState.sort === 'name' ? String(a.p.name).localeCompare(String(b.p.name)) : dbState.sort === 'new' ? (b.p.registeredAt || 0) - (a.p.registeredAt || 0) : (b.s.last || b.p.registeredAt || 0) - (a.s.last || a.p.registeredAt || 0); });
+        return rows;
+    }
+    function dbRender() {
+        if (!dbRec) return;
+        var all = P(), rows = dbRows(), host = $('hrx-db-rows');
+        if (!host) return;
+        var bal = 0, adm = 0, chr = 0;
+        all.forEach(function (p) { var s = statsFor(p); bal += s.bal; if (s.admitted) adm++; if (s.chronic.length) chr++; });
+        $('hrx-db-cards').innerHTML = '<div class="hrx-card"><b>' + all.length + '</b><span>Patients on file</span></div><div class="hrx-card"><b>' + adm + '</b><span>Currently admitted</span></div><div class="hrx-card"><b>' + chr + '</b><span>With chronic conditions</span></div><div class="hrx-card red"><b>' + esc(money(bal)) + '</b><span>Unpaid charges</span></div>';
+        var shown = rows.slice(0, dbState.limit);
+        host.innerHTML = shown.length ? shown.map(function (r) {
+            var p = r.p, s = r.s, tags = '';
+            if (s.admitted) tags += '<span class="hrx-pill blue">Admitted</span>';
+            if (s.bal > 0) tags += '<span class="hrx-pill red">Owes ' + esc(money(s.bal)) + '</span>';
+            if (p.allergies && !/^(none|nil|no|n\/a)$/i.test(String(p.allergies).trim())) tags += '<span class="hrx-pill amber">Allergy</span>';
+            s.chronic.slice(0, 3).forEach(function (c) { tags += '<span class="hrx-pill">' + esc(c) + '</span>'; });
+            var age = ''; try { age = hmisAgeText(p); } catch (e) { age = p.age || ''; }
+            return '<tr class="hrx-row" data-pid="' + esc(p.id) + '"><td><b>' + esc(p.name) + '</b><div class="hrx-muted">' + esc(p.id) + '</div></td><td>' + esc(age) + ' · ' + esc(p.sex || '?') + '</td><td>' + esc(p.phone || '') + '</td><td>' + (s.last ? esc(dd(s.last)) : '<span class="hrx-muted">no visit yet</span>') + '<div class="hrx-muted">' + s.visits + ' visit' + (s.visits === 1 ? '' : 's') + '</div></td><td>' + tags + '</td><td><button type="button" class="hrx-btn sec" data-hist="' + esc(p.id) + '">📜 Patient history</button></td></tr>';
+        }).join('') : '<tr><td colspan="6" class="hrx-muted" style="padding:18px;">No patients match.</td></tr>';
+        $('hrx-db-more').style.display = rows.length > dbState.limit ? '' : 'none';
+        $('hrx-db-more').textContent = 'Show more (' + (rows.length - dbState.limit) + ' more)';
+        $('hrx-db-count').textContent = rows.length + ' of ' + all.length + ' patients';
+    }
+    function regFeeCfg() { var a = 300, on = false; try { on = localStorage.getItem('pos_hrx_regfee_on') === '1'; a = Number(localStorage.getItem('pos_hrx_regfee_amt')) || 300; } catch (e) { /* defaults */ } return { on: on, amt: a }; }
+    function openDb() {
+        if (dbRec) { dbRec.show(); dbRender(); return; }
+        var cfg = regFeeCfg();
+        var rec = overlay('🗄️ Patient Database', 'Every patient, their history, bills and forms', '<div class="hrx-cards" id="hrx-db-cards"></div>' +
+            '<div class="hrx-bar"><input type="search" id="hrx-db-q" placeholder="Search name, patient no., phone, ID, SHA no."><select id="hrx-db-sort" style="flex:0 1 170px"><option value="recent">Latest visit first</option><option value="name">Name A–Z</option><option value="new">Newest registered</option></select></div>' +
+            '<div class="hrx-bar" id="hrx-db-filters">' + [['all', 'All'], ['today', 'Seen today'], ['admitted', 'Admitted'], ['balance', 'Owes money'], ['chronic', 'Chronic conditions'], ['allergy', 'Has allergy']].map(function (f) { return '<button type="button" class="hrx-chip' + (f[0] === 'all' ? ' on' : '') + '" data-f="' + f[0] + '">' + f[1] + '</button>'; }).join('') + '<span class="hrx-muted" id="hrx-db-count" style="margin-left:auto"></span></div>' +
+            '<div class="hrx-sec" style="padding:10px 14px;"><label class="hrx-checks"><span><input type="checkbox" id="hrx-fee-on"' + (cfg.on ? ' checked' : '') + '> <b>Charge a registration (file / card) fee automatically when a NEW patient is registered on this device</b></span></label><div class="hrx-bar" style="margin:8px 0 0;"><span class="hrx-muted">Fee (KES):</span><input type="text" inputmode="decimal" id="hrx-fee-amt" value="' + esc(cfg.amt) + '" style="flex:0 1 120px"><span class="hrx-muted">It goes to the cashier as an unpaid charge, like any other.</span></div></div>' +
+            '<div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Patient</th><th>Age · Sex</th><th>Phone</th><th>Last visit</th><th>Flags</th><th></th></tr></thead><tbody id="hrx-db-rows"></tbody></table></div><div style="text-align:center;margin-top:12px;"><button type="button" class="hrx-btn sec" id="hrx-db-more">Show more</button></div>',
+            { page: 'hrx-pdb', onClose: function () { dbRec = null; } });
+        dbRec = rec;
+        var b = rec.body;
+        b.querySelector('#hrx-db-q').addEventListener('input', function (e) { dbState.q = e.target.value; dbState.limit = 80; dbRender(); });
+        b.querySelector('#hrx-db-sort').addEventListener('change', function (e) { dbState.sort = e.target.value; dbRender(); });
+        b.querySelector('#hrx-db-filters').addEventListener('click', function (e) { var c = e.target.closest('[data-f]'); if (!c) return; dbState.f = c.getAttribute('data-f'); dbState.limit = 80; Array.prototype.forEach.call(b.querySelectorAll('#hrx-db-filters .hrx-chip'), function (x) { x.classList.toggle('on', x === c); }); dbRender(); });
+        b.querySelector('#hrx-db-more').addEventListener('click', function () { dbState.limit += 120; dbRender(); });
+        b.querySelector('#hrx-db-rows').addEventListener('click', function (e) { var hb = e.target.closest('[data-hist]'); if (hb) { e.stopPropagation(); openPatientHistory(hb.getAttribute('data-hist')); return; } var r = e.target.closest('tr[data-pid]'); if (r) openProfile(r.getAttribute('data-pid')); });
+        function saveFee() { try { localStorage.setItem('pos_hrx_regfee_on', b.querySelector('#hrx-fee-on').checked ? '1' : '0'); localStorage.setItem('pos_hrx_regfee_amt', String(Math.max(0, Number(b.querySelector('#hrx-fee-amt').value) || 0))); } catch (e2) { /* ignore */ } }
+        b.querySelector('#hrx-fee-on').addEventListener('change', saveFee); b.querySelector('#hrx-fee-amt').addEventListener('change', saveFee);
+        dbRender();
+    }
+    window.hrxOpenDb = openDb;
+
+    /* put a "Patient Database" button next to Patient Records, so the sidebar picks it up like every other entry */
+    function addNavButton() {
+        if ($('hrx-pdb-btn')) return;
+        var ref = $('patients-tab-btn'); if (!ref || !ref.parentNode) return;
+        ['hrx-pdb', 'hrx-svc', 'hrx-price'].forEach(function (id) { pagePane(id); });   // the sidebar lists a button only when a page of that name exists
+        var b = document.createElement('button'); b.type = 'button'; b.id = 'hrx-pdb-btn'; b.className = 'tab-link'; b.setAttribute('data-tab', 'hrx-pdb'); b.textContent = '🗄️ Patient Database';
+        b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openDb(); });
+        ref.parentNode.insertBefore(b, ref.nextSibling);
+        var ref2 = document.querySelector('.tab-link[data-tab="inventory-list-tab"]');
+        if (ref2 && ref2.parentNode && !$('hrx-svc-btn')) { var b2 = document.createElement('button'); b2.type = 'button'; b2.id = 'hrx-svc-btn'; b2.className = 'tab-link'; b2.setAttribute('data-tab', 'hrx-svc'); b2.textContent = '🩺 Services Catalogue'; ref2.parentNode.insertBefore(b2, ref2.nextSibling); }
+        if (ref2 && ref2.parentNode && !$('hrx-price-btn')) { var b3 = document.createElement('button'); b3.type = 'button'; b3.id = 'hrx-price-btn'; b3.className = 'tab-link'; b3.setAttribute('data-tab', 'hrx-price'); b3.textContent = '💰 Price List (everything charged)'; ref2.parentNode.insertBefore(b3, ref2.nextSibling); }
+    }
+    // clicking it must never be treated as a real tab switch by anything that restores the "last open tab"
+    document.addEventListener('click', function (e) { var b = e.target.closest ? e.target.closest('#hrx-pdb-btn') : null; if (b) { e.preventDefault(); e.stopImmediatePropagation(); openDb(); return; } var c = e.target.closest ? e.target.closest('#hrx-svc-btn') : null; if (c) { e.preventDefault(); e.stopImmediatePropagation(); openServices(); return; } var d = e.target.closest ? e.target.closest('#hrx-price-btn') : null; if (d) { e.preventDefault(); e.stopImmediatePropagation(); openPrices(); } }, true);
+
+    /* ======================================================================================================================
+       3. PATIENT PROFILE
+       ====================================================================================================================== */
+    var profRec = null, profPid = null, profTab = 'overview';
+    function openProfile(pid, tab) {
+        var p = getP(pid); if (!p) { toast('Could not find that patient.', true); return; }
+        if (profRec) { profRec.close(); }
+        profPid = pid; profTab = tab || 'overview';
+        var age = ''; try { age = hmisAgeText(p); } catch (e) { age = p.age || ''; }
+        profRec = overlay('👤 ' + esc(p.name), esc(p.id) + ' · ' + esc(age) + ' · ' + esc(p.sex || '?') + (p.phone ? ' · ' + esc(p.phone) : ''), '', { onClose: function () { profRec = null; } });
+        profRec.body.addEventListener('click', profClick);
+        profRender();
+    }
+    window.hrxOpenProfile = openProfile;
+    function profRender() {
+        if (!profRec) return;
+        var p = getP(profPid); if (!p) { profRec.close(); return; }
+        var s = statsFor(p);
+        var tabs = [['overview', '📋 Medical history'], ['timeline', '📈 Timeline'], ['visits', '🩺 Visits'], ['labs', '🧪 Labs'], ['adm', '🛏️ Admissions'], ['bill', '🧾 Billing'], ['forms', '📑 Forms']];
+        var html = '';
+        if (p.allergies && !/^(none|nil|no|n\/a)$/i.test(String(p.allergies).trim())) html += '<div class="hrx-alert">⚠️ ALLERGIES: ' + esc(p.allergies) + '</div>';
+        html += '<div class="hrx-bar"><button type="button" class="hrx-btn" data-act="edit">✏️ Edit details</button><button type="button" class="hrx-btn sec" data-act="newform">📑 New form</button><button type="button" class="hrx-btn" data-act="phistory">📜 Patient history</button><button type="button" class="hrx-btn sec" data-act="print">🖨️ Print summary</button><button type="button" class="hrx-btn sec" data-act="sicksheet">📄 Sick-off sheet</button><button type="button" class="hrx-btn sec" data-act="lab">🧪 Request lab tests</button><button type="button" class="hrx-btn sec" data-act="send">➡️ Send to a station</button><button type="button" class="hrx-btn sec" data-act="regfee">💳 Registration fee</button></div>';
+        html += '<div class="hrx-profile">' + [
+            ['Patient no.', p.id], ['Phone', p.phone || '—'], ['Date of birth', p.dob ? dd(p.dob) : '—'], ['Blood group', p.bloodType || p.bloodGroup || '—'], ['ID / Passport', p.nationalId || '—'], ['SHA / insurance no.', p.shaNumber || p.sha || '—'],
+            ['County / area', [p.county, p.subCounty, p.ward].filter(Boolean).join(' · ') || p.address || '—'], ['Next of kin', [p.nextOfKinName, p.nextOfKinRelationship, p.nextOfKinPhone].filter(Boolean).join(' · ') || '—'],
+            ['Registered', p.registeredAt ? dd(p.registeredAt) : '—'], ['Visits', String(s.visits)], ['Unpaid charges', money(s.bal)], ['Status', s.admitted ? 'Admitted' : 'Not admitted']
+        ].map(function (f) { return '<div class="hrx-fact"><small>' + esc(f[0]) + '</small><b>' + esc(f[1]) + '</b></div>'; }).join('') + '</div>';
+        html += '<div class="hrx-tabs">' + tabs.map(function (t) { return '<button type="button" class="hrx-tab' + (t[0] === profTab ? ' on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div><div id="hrx-prof-pane"></div>';
+        profRec.body.innerHTML = html;
+        profPane(p);
+    }
+    function profPane(p) {
+        var el = $('hrx-prof-pane'); if (!el) return;
+        var t = profTab;
+        if (t === 'overview') el.innerHTML = historyHtml(p);
+        else if (t === 'timeline') {
+            var ev = []; try { ev = buildPatientTimeline(p.id); } catch (e) { ev = []; }
+            el.innerHTML = ev.length ? ev.map(function (e) { return '<div class="hrx-item"' + (e.flag ? ' style="border-left:5px solid #c0392b;background:#fdf0ee"' : '') + '><div style="font-size:22px">' + esc(e.icon) + '</div><div class="grow"><b>' + esc(e.title) + '</b> <span class="hrx-muted">· ' + esc(e.kind) + '</span>' + (e.detail ? '<div class="hrx-muted" style="word-break:break-word">' + esc(e.detail) + '</div>' : '') + '</div><span class="hrx-muted">' + esc(dt(e.ts)) + '</span></div>'; }).join('') : '<p class="hrx-muted">No activity on file yet.</p>';
+            el.className = 'hrx-list';
+        } else if (t === 'visits') {
+            var vs = arr('visits').filter(function (v) { return v.patientId === p.id; }).sort(function (a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
+            el.innerHTML = vs.length ? '<div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Date</th><th>Type</th><th>Diagnosis</th><th>Medicines</th><th>Ref</th></tr></thead><tbody>' + vs.map(function (v) { return '<tr><td>' + esc(dt(v.timestamp)) + '</td><td>' + esc(v.visitType || 'outpatient') + (v.voided ? ' <span class="hrx-pill red">voided</span>' : '') + '</td><td>' + esc(v.diagnosis || '') + (v.icd10Code ? ' <span class="hrx-muted">(' + esc(v.icd10Code) + ')</span>' : '') + '</td><td>' + esc((v.medications || []).map(function (m) { return m.name + ' x' + m.qty + (m.dosage ? ' (' + m.dosage + ')' : ''); }).join('; ')) + '</td><td>' + esc(v.ref || '') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="hrx-muted">No consultations recorded.</p>';
+        } else if (t === 'labs') {
+            var ls = arr('labResults').filter(function (x) { return x.patientId === p.id; }).sort(function (a, b) { return (b.requestedAt || 0) - (a.requestedAt || 0); });
+            el.innerHTML = ls.length ? '<div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Requested</th><th>Test</th><th>Result</th><th>Flag</th></tr></thead><tbody>' + ls.map(function (x) { return '<tr><td>' + esc(dt(x.requestedAt)) + '</td><td>' + esc(x.testName || '') + '</td><td>' + (x.resultAt ? esc((x.resultText || '') + (x.resultUnits ? ' ' + x.resultUnits : '')) : '<span class="hrx-muted">pending</span>') + '</td><td>' + (x.flag && x.flag !== 'normal' ? '<span class="hrx-pill red">' + esc(String(x.flag).toUpperCase()) + '</span>' : '') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="hrx-muted">No laboratory requests.</p>';
+        } else if (t === 'adm') {
+            var as = arr('admissions').filter(function (a) { return a.patientId === p.id; }).sort(function (a, b) { return (b.admittedAt || 0) - (a.admittedAt || 0); });
+            el.innerHTML = as.length ? '<div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Admitted</th><th>Bed / ward</th><th>Diagnosis</th><th>Discharged</th></tr></thead><tbody>' + as.map(function (a) { return '<tr><td>' + esc(dt(a.admittedAt)) + '</td><td>' + esc((a.bedLabel || '') + (a.wardType ? ' · ' + a.wardType : '')) + '</td><td>' + esc(a.diagnosis || '') + '</td><td>' + (a.dischargedAt ? esc(dt(a.dischargedAt)) : '<span class="hrx-pill blue">in ward</span>') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="hrx-muted">Never admitted.</p>';
+        } else if (t === 'bill') {
+            el.innerHTML = billingHtml(p);
+        } else if (t === 'forms') {
+            el.innerHTML = formsListHtml(p);
+        }
+        if (t !== 'timeline') el.className = '';
+    }
+    function billingHtml(p) {
+        var cs = arr('patientCharges').filter(function (c) { return c.patientId === p.id && c.status !== 'declined'; }).sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+        if (!cs.length) return '<p class="hrx-muted">No charges yet.</p><button type="button" class="hrx-btn sec" data-act="regfee">💳 Add registration fee</button>';
+        var tot = 0, paid = 0;
+        cs.forEach(function (c) { var v = (Number(c.price) || 0) * (Number(c.qty) || 0); if (c.status === 'paid') paid += v; else if (c.status === 'unpaid') tot += v; });
+        return '<div class="hrx-cards"><div class="hrx-card red"><b>' + esc(money(tot)) + '</b><span>Unpaid</span></div><div class="hrx-card"><b>' + esc(money(paid)) + '</b><span>Paid</span></div></div><div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Date</th><th>Ref</th><th>Item</th><th>Qty</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>' + cs.map(function (c) {
+            var amt = (Number(c.price) || 0) * (Number(c.qty) || 0);
+            return '<tr><td>' + esc(dd(c.createdAt)) + '</td><td>' + esc(c.ref || '') + '</td><td>' + esc(c.name || '') + (c.waiver ? '<div class="hrx-muted">Waived/discounted from ' + esc(money(c.waiver.from)) + ': ' + esc(c.waiver.reason) + '</div>' : '') + '</td><td>' + esc(c.qty) + '</td><td>' + esc(money(amt)) + '</td><td><span class="hrx-pill' + (c.status === 'unpaid' ? ' red' : c.status === 'paid' ? '' : ' amber') + '">' + esc(c.status) + '</span></td><td>' + (c.status === 'unpaid' ? '<button type="button" class="hrx-btn sm warn" data-waive="' + esc(c.id) + '">Waive / discount</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div><div class="hrx-foot" style="justify-content:flex-start"><button type="button" class="hrx-btn sec" data-act="regfee">💳 Add registration fee</button></div>';
+    }
+    function waive(id) {
+        var c = arr('patientCharges').find(function (x) { return x.id === id; }); if (!c || c.status !== 'unpaid') return;
+        var from = (Number(c.price) || 0) * (Number(c.qty) || 0);
+        var ans = prompt('Waive or discount "' + c.name + '" (currently ' + money(from) + ').\n\nType the NEW amount to charge for the whole line (0 = waive fully):', String(from));
+        if (ans === null) return;
+        var to = Number(String(ans).replace(/,/g, '')); if (!isFinite(to) || to < 0 || to > from) { toast('Enter an amount from 0 to ' + from + '.', true); return; }
+        var reason = prompt('Reason for the waiver / discount (required, kept in the audit log):', ''); if (reason === null) return;
+        reason = String(reason).trim(); if (!reason) { toast('A reason is required.', true); return; }
+        c.waiver = { from: from, to: to, reason: reason, by: who(), at: Date.now() };
+        c.price = (Number(c.qty) || 1) > 0 ? to / (Number(c.qty) || 1) : to; c.updatedAt = Date.now();
+        try { logAudit('Charge waived/discounted', c.patientName || c.patientId, c.name + ': ' + money(from) + ' → ' + money(to) + ' — ' + reason); } catch (e) { /* audit best effort */ }
+        try { savePatientCharges(); } catch (e2) { /* ignore */ }
+        toast(to === 0 ? 'Charge waived.' : 'Charge reduced to ' + money(to) + '.');
+        profRender();
+    }
+    function addRegFee(p, quiet) {
+        var cfg = regFeeCfg(), amt = cfg.amt;
+        try { var svc = catalogServiceByName('Patient file / card registration (new patient)'); if (svc && svc.price > 0 && !(localStorage.getItem('pos_hrx_regfee_amt'))) amt = svc.price; } catch (e) { /* default */ }
+        if (!(amt > 0)) { if (!quiet) toast('Set the registration fee amount in the Patient Database first.', true); return false; }
+        if (arr('patientCharges').some(function (c) { return c.patientId === p.id && c.kind === 'registration' && c.status !== 'cancelled' && c.status !== 'declined'; }) && !quiet) { if (!confirm('This patient already has a registration fee charge. Add another?')) return false; }
+        else if (arr('patientCharges').some(function (c) { return c.patientId === p.id && c.kind === 'registration' && c.status !== 'cancelled' && c.status !== 'declined'; })) return false;
+        addPatientCharge({ ref: newVisitRef(), visitId: '', patientId: p.id, patientName: p.name, kind: 'registration', name: 'Registration (file / card) fee', code: '', qty: 1, price: amt, unit: 'use', isService: true, vatCategory: 'E' });
+        savePatientCharges();
+        if (!quiet) toast('Registration fee of ' + money(amt) + ' sent to the cashier.');
+        return true;
+    }
+    // new patient registered on this device + auto fee switched on -> the fee is raised once
+    function hookRegistration() {
+        if (typeof window.hregAfterSave === 'function' && !window.hregAfterSave.__hrx) {
+            var orig = window.hregAfterSave;
+            window.hregAfterSave = function (id, isNew) {
+                var r = orig.apply(this, arguments);
+                try { if (isNew && regFeeCfg().on) { var p = getP(id); if (p) addRegFee(p, true); } } catch (e) { /* the registration itself is saved */ }
+                return r;
+            };
+            window.hregAfterSave.__hrx = true;
+        }
+    }
+
+    /* ---- medical history (stored on the patient) ---- */
+    function historyHtml(p) {
+        var h = p.history || {};
+        var chosen = h.chronic || [];
+        function ta(k, label, ph) { return '<div class="wide"><label>' + label + '</label><textarea data-h="' + k + '" placeholder="' + esc(ph || '') + '">' + esc(h[k] || '') + '</textarea></div>'; }
+        return '<div class="hrx-sec"><h4>🩺 Chronic conditions</h4><div class="hrx-checks">' + CHRONIC.map(function (c) { return '<label><input type="checkbox" data-chronic="' + esc(c) + '"' + (chosen.indexOf(c) >= 0 ? ' checked' : '') + '> ' + esc(c) + '</label>'; }).join('') + '</div><div class="hrx-grid" style="margin-top:10px"><div class="wide"><label>Other chronic conditions</label><input type="text" data-h="chronicOther" value="' + esc(h.chronicOther || '') + '"></div></div></div>' +
+            '<div class="hrx-sec"><h4>📚 History</h4><div class="hrx-grid">' + ta('pastMedical', 'Past illnesses / hospital admissions', 'e.g. Malaria 2022, pneumonia 2019') + ta('surgical', 'Past surgery / procedures', 'e.g. Appendicectomy 2018') + ta('family', 'Family history', 'e.g. Father: hypertension; mother: diabetes') + ta('currentMeds', 'Medicines taken regularly', 'drug, dose, how often') + ta('immunisation', 'Immunisation status', 'e.g. complete per KEPI, COVID-19 x2, tetanus 2023') +
+            '<div><label>Smoking</label><select data-h="smoking">' + ['', 'Never', 'Former', 'Current'].map(function (o) { return '<option' + ((h.smoking || '') === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></div><div><label>Alcohol</label><select data-h="alcohol">' + ['', 'None', 'Occasional', 'Regular', 'Heavy'].map(function (o) { return '<option' + ((h.alcohol || '') === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></div><div><label>Occupation</label><input type="text" data-h="occupation" value="' + esc(h.occupation || '') + '"></div><div><label>Disability / special needs</label><input type="text" data-h="disability" value="' + esc(h.disability || '') + '"></div>' +
+            (/^f/i.test(p.sex || '') ? '<div class="wide"><label>Obstetric / gynaecological (G, P, LMP, family planning)</label><input type="text" data-h="obstetric" value="' + esc(h.obstetric || '') + '" placeholder="e.g. G2P1+0, LMP 12 Oct, on Depo"></div>' : '') + '</div></div>' +
+            '<div class="hrx-foot"><span class="hrx-muted" style="margin-right:auto">' + (h.updatedAt ? 'Last updated ' + esc(dt(h.updatedAt)) + (h.updatedBy ? ' by ' + esc(h.updatedBy) : '') : 'Not filled in yet') + '</span><button type="button" class="hrx-btn" data-act="savehist">💾 Save history</button></div>';
+    }
+    function saveHistory() {
+        var p = getP(profPid); if (!p) return;
+        var h = {}, root = $('hrx-prof-pane');
+        h.chronic = Array.prototype.map.call(root.querySelectorAll('[data-chronic]:checked'), function (x) { return x.getAttribute('data-chronic'); });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-h]'), function (x) { h[x.getAttribute('data-h')] = String(x.value || '').trim(); });
+        h.updatedAt = Date.now(); h.updatedBy = who();
+        p.history = h; p.updatedAt = Date.now();
+        savePatients();
+        try { logAudit('Patient history updated', p.name, p.id); } catch (e) { /* ignore */ }
+        toast('History saved for ' + p.name + '.');
+        profRender();
+    }
+
+    /* ---- printable patient summary ---- */
+    function logoSrc() { try { return (typeof receiptLogoData !== 'undefined' && receiptLogoData) ? receiptLogoData : (window.__hrxLogo || ''); } catch (e) { return ''; } }
+    function printHtml(title, inner) {
+        var w = window.open('', '_blank');
+        if (!w) { toast('Allow pop-ups to print.', true); return; }
+        w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + esc(title) + '</title><style>body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:22px;font-size:14px}h1{font-size:20px;margin:0}h2{font-size:16px;margin:16px 0 6px;border-bottom:2px solid #134a9c;padding-bottom:3px;color:#134a9c}table{border-collapse:collapse;width:100%;margin:6px 0}th,td{border:1px solid #999;padding:5px 7px;text-align:left;vertical-align:top}th{background:#eef5f3}.k{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 14px}.k div{border-bottom:1px dotted #aaa;padding:3px 0}.k small{color:#555;display:block;font-size:13.4px}.sig{display:grid;grid-template-columns:repeat(2,1fr);gap:26px;margin-top:30px}.sig div{border-top:1px solid #000;padding-top:4px;font-size:13.4px}@media print{button{display:none}}</style></head><body><div style="display:flex;justify-content:space-between;align-items:flex-start"><div style="display:flex;gap:14px;align-items:center">' + (logoSrc() ? '<img src="' + logoSrc() + '" style="height:70px" alt="">' : '') + '<div><h1>' + esc(hospitalName()) + '</h1><div>' + esc(title) + '</div></div></div><button onclick="window.print()">Print</button></div>' + inner + '</body></html>');
+        w.document.close();
+    }
+    function printSummary() {
+        var p = getP(profPid); if (!p) return;
+        var h = p.history || {}, s = statsFor(p), age = ''; try { age = hmisAgeText(p); } catch (e) { age = p.age || ''; }
+        function k(l, v) { return '<div><small>' + esc(l) + '</small>' + esc(v || '—') + '</div>'; }
+        var vs = arr('visits').filter(function (v) { return v.patientId === p.id && !v.voided; }).sort(function (a, b) { return (b.timestamp || 0) - (a.timestamp || 0); }).slice(0, 15);
+        var ls = arr('labResults').filter(function (x) { return x.patientId === p.id && x.resultAt; }).sort(function (a, b) { return (b.resultAt || 0) - (a.resultAt || 0); }).slice(0, 15);
+        var inner = '<h2>Patient details</h2><div class="k">' + k('Name', p.name) + k('Patient no.', p.id) + k('Age / sex', age + ' / ' + (p.sex || '?')) + k('Phone', p.phone) + k('ID / passport', p.nationalId) + k('SHA / insurance no.', p.shaNumber || p.sha) + k('Blood group', p.bloodType || p.bloodGroup) + k('Allergies', p.allergies) + k('Next of kin', [p.nextOfKinName, p.nextOfKinRelationship, p.nextOfKinPhone].filter(Boolean).join(', ')) + '</div>' +
+            '<h2>Medical history</h2><div class="k">' + k('Chronic conditions', (h.chronic || []).concat(h.chronicOther ? [h.chronicOther] : []).join(', ')) + k('Medicines taken regularly', h.currentMeds) + k('Immunisation', h.immunisation) + k('Past illnesses', h.pastMedical) + k('Past surgery', h.surgical) + k('Family history', h.family) + k('Smoking / alcohol', [h.smoking, h.alcohol].filter(Boolean).join(' / ')) + k('Occupation', h.occupation) + k('Obstetric', h.obstetric) + '</div>' +
+            '<h2>Recent visits</h2>' + (vs.length ? '<table><tr><th>Date</th><th>Diagnosis</th><th>Medicines</th></tr>' + vs.map(function (v) { return '<tr><td>' + esc(dt(v.timestamp)) + '</td><td>' + esc(v.diagnosis || '') + '</td><td>' + esc((v.medications || []).map(function (m) { return m.name + ' x' + m.qty; }).join('; ')) + '</td></tr>'; }).join('') + '</table>' : '<p>None recorded.</p>') +
+            '<h2>Recent laboratory results</h2>' + (ls.length ? '<table><tr><th>Date</th><th>Test</th><th>Result</th></tr>' + ls.map(function (x) { return '<tr><td>' + esc(dt(x.resultAt)) + '</td><td>' + esc(x.testName) + '</td><td>' + esc((x.resultText || '') + ' ' + (x.resultUnits || '')) + (x.flag && x.flag !== 'normal' ? ' [' + esc(x.flag) + ']' : '') + '</td></tr>'; }).join('') + '</table>' : '<p>None.</p>') +
+            '<p style="margin-top:14px;color:#555">Printed ' + esc(dt(Date.now())) + (who() ? ' by ' + esc(who()) : '') + '</p>';
+        printHtml('Patient summary — ' + p.name, inner);
+    }
+
+
+    /* ---- Patient history: every visit, prescription, lab, admission, bill and form for one patient (on screen + printable) ---- */
+    function histDocHtml(p) {
+        var h = p.history || {}, age = ''; try { age = hmisAgeText(p); } catch (e) { age = p.age || ''; }
+        function k(l, v) { return '<div><small>' + esc(l) + '</small>' + esc(v || '—') + '</div>'; }
+        function byDesc(f) { return function (a, b) { return (b[f] || 0) - (a[f] || 0); }; }
+        var vs = arr('visits').filter(function (v) { return v.patientId === p.id && !v.voided; }).sort(byDesc('timestamp'));
+        var ls = arr('labResults').filter(function (x) { return x.patientId === p.id; }).sort(function (a, b) { return (b.resultAt || b.requestedAt || 0) - (a.resultAt || a.requestedAt || 0); });
+        var as = arr('admissions').filter(function (a) { return a.patientId === p.id; }).sort(byDesc('admittedAt'));
+        var cs = arr('patientCharges').filter(function (c) { return c.patientId === p.id && c.status !== 'cancelled'; }).sort(function (a, b) { return (b.createdAt || b.at || 0) - (a.createdAt || a.at || 0); });
+        var ns = arr('patientNotes').filter(function (n) { return n.patientId === p.id; }).sort(function (a, b) { return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0); });
+        var o = '<h2>Patient details</h2><div class="k">' + k('Name', p.name) + k('Patient no.', p.id) + k('Age / sex', age + ' / ' + (p.sex || '?')) + k('Phone', p.phone) + k('ID / passport', p.nationalId) + k('SHA / insurance no.', p.shaNumber || p.sha) + k('Allergies', p.allergies) + k('Next of kin', [p.nextOfKinName, p.nextOfKinPhone].filter(Boolean).join(' ')) + k('Address', p.address || p.residence) + '</div>' +
+            '<h2>Medical history</h2><div class="k">' + k('Chronic conditions', (h.chronic || []).concat(h.chronicOther ? [h.chronicOther] : []).join(', ')) + k('Regular medicines', h.currentMeds) + k('Past illnesses', h.pastMedical) + k('Past surgery', h.surgical) + k('Family history', h.family) + k('Immunisation', h.immunisation) + '</div>';
+        o += '<h2>Visits and consultations (' + vs.length + ')</h2>';
+        if (!vs.length) o += '<p>No visits recorded.</p>';
+        vs.forEach(function (v) {
+            var meds = (v.medications || []).map(function (m) { return esc(m.name) + ' ×' + esc(m.qty) + (m.unit ? ' ' + esc(m.unit) : '') + (m.dosage ? ' — ' + esc(m.dosage) : ''); });
+            var svc = (v.services || []).map(function (x) { return esc(x.name) + (x.qty > 1 ? ' ×' + x.qty : ''); });
+            var vit = v.vitals ? Object.keys(v.vitals).filter(function (q) { return v.vitals[q] !== '' && v.vitals[q] != null && typeof v.vitals[q] !== 'object'; }).map(function (q) { return esc(q) + ' ' + esc(v.vitals[q]); }).join(' · ') : '';
+            var so = v.soap ? ['s', 'o', 'a', 'p'].filter(function (q) { return v.soap[q]; }).map(function (q) { return q.toUpperCase() + ': ' + esc(v.soap[q]); }).join('<br>') : '';
+            o += '<table class="ph-v"><tr><th colspan="2">' + esc(dt(v.timestamp)) + ' · ' + esc(v.ref || '') + ' · ' + (v.visitType === 'inpatient' ? 'Inpatient' : 'Outpatient') + (v.seenBy ? ' · seen by ' + esc(v.seenBy) : '') + '</th></tr>' +
+                '<tr><td style="width:24%">Diagnosis</td><td><b>' + esc(v.diagnosis || '—') + '</b>' + (v.icd10Code ? ' (' + esc(v.icd10Code) + ')' : '') + '</td></tr>' +
+                (vit ? '<tr><td>Vitals</td><td>' + vit + '</td></tr>' : '') + (so ? '<tr><td>Clinical notes</td><td>' + so + '</td></tr>' : '') + (v.notes ? '<tr><td>Treatment notes</td><td>' + esc(v.notes) + '</td></tr>' : '') +
+                (meds.length ? '<tr><td>Prescription</td><td>' + meds.join('<br>') + '</td></tr>' : '') + (svc.length ? '<tr><td>Services</td><td>' + svc.join(', ') + '</td></tr>' : '') +
+                (v.disposition ? '<tr><td>Outcome</td><td>' + esc(v.disposition) + (v.bedLabel ? ' — ' + esc(v.wardType || '') + ', ' + esc(v.bedLabel) : '') + '</td></tr>' : '') + '</table>';
+        });
+        o += '<h2>Prescriptions summary</h2>';
+        var rx = []; vs.forEach(function (v) { (v.medications || []).forEach(function (m) { rx.push('<tr><td>' + esc(dd(v.timestamp)) + '</td><td>' + esc(m.name) + '</td><td>' + esc(m.qty) + ' ' + esc(m.unit || '') + '</td><td>' + esc(m.dosage || '') + '</td></tr>'); }); });
+        o += rx.length ? '<table><tr><th>Date</th><th>Medicine</th><th>Qty</th><th>Dosage</th></tr>' + rx.join('') + '</table>' : '<p>No prescriptions recorded.</p>';
+        o += '<h2>Laboratory (' + ls.length + ')</h2>' + (ls.length ? '<table><tr><th>Date</th><th>Test</th><th>Result</th><th>Flag</th></tr>' + ls.map(function (x) { return '<tr><td>' + esc(dd(x.resultAt || x.requestedAt || x.createdAt)) + '</td><td>' + esc(x.testName || x.test || '') + '</td><td>' + esc(x.resultText || x.result || (x.resultAt ? '' : 'Pending')) + (x.unit ? ' ' + esc(x.unit) : '') + '</td><td>' + esc(x.flag || '') + '</td></tr>'; }).join('') + '</table>' : '<p>No laboratory tests.</p>');
+        o += '<h2>Admissions (' + as.length + ')</h2>' + (as.length ? '<table><tr><th>Admitted</th><th>Discharged</th><th>Ward / bed</th><th>Diagnosis</th></tr>' + as.map(function (a) { return '<tr><td>' + esc(dt(a.admittedAt)) + '</td><td>' + (a.dischargedAt ? esc(dt(a.dischargedAt)) : 'Still admitted') + '</td><td>' + esc((a.wardType || '') + ' / ' + (a.bedLabel || '')) + '</td><td>' + esc(a.diagnosis || '') + (a.dischargeSummary ? '<br><small>' + esc(a.dischargeSummary) + '</small>' : '') + '</td></tr>'; }).join('') + '</table>' : '<p>No admissions.</p>');
+        var tot = 0, unpaid = 0; cs.forEach(function (c) { var a = (Number(c.price) || 0) * (Number(c.qty) || 0); tot += a; if (c.status === 'unpaid') unpaid += a; });
+        o += '<h2>Billing</h2>' + (cs.length ? '<table><tr><th>Item</th><th>Qty</th><th>Amount</th><th>Status</th></tr>' + cs.map(function (c) { return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.qty) + '</td><td>' + esc(money((Number(c.price) || 0) * (Number(c.qty) || 0))) + '</td><td>' + esc(c.status || '') + '</td></tr>'; }).join('') + '<tr><th colspan="2">Total / outstanding</th><th colspan="2">' + esc(money(tot)) + ' / ' + esc(money(unpaid)) + '</th></tr></table>' : '<p>No charges.</p>');
+        o += '<h2>Clinical forms and notes (' + ns.length + ')</h2>' + (ns.length ? '<table><tr><th>Date</th><th>Form</th><th>By</th></tr>' + ns.map(function (n) { var def = FORMS[n.formType]; return '<tr><td>' + esc(dt(n.updatedAt || n.createdAt)) + '</td><td>' + esc(def ? def.title : n.formType) + '</td><td>' + esc(n.by || n.updatedBy || '') + '</td></tr>'; }).join('') + '</table>' : '<p>No forms.</p>');
+        return o + '<p style="margin-top:14px">Printed ' + esc(dt(Date.now())) + (who() ? ' by ' + esc(who()) : '') + '</p>';
+    }
+    function openPatientHistory(pid) {
+        var p = getP(pid); if (!p) { toast('Could not find that patient.', true); return; }
+        var rec = overlay('📜 Patient history', esc(p.name) + ' · ' + esc(p.id), '<div class="hrx-bar"><button type="button" class="hrx-btn" id="hrx-ph-print">🖨️ Print patient history</button></div><div class="hrx-ph" style="font-size:14px">' + histDocHtml(p) + '</div><style>.hrx-ph h2{font-size:16px;margin:16px 0 6px;border-bottom:2px solid #134a9c;color:#134a9c}.hrx-ph table{border-collapse:collapse;width:100%;margin:6px 0}.hrx-ph th,.hrx-ph td{border:1px solid #bbb;padding:5px 7px;text-align:left;vertical-align:top}.hrx-ph th{background:#eef3fb}.hrx-ph .k{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 14px}.hrx-ph .k small{display:block;color:#667}</style>', {});
+        rec.body.querySelector('#hrx-ph-print').addEventListener('click', function () { printHtml('Patient history — ' + p.name, histDocHtml(p)); });
+    }
+    window.hrxPatientHistory = openPatientHistory;
+    /* ======================================================================================================================
+       4. CLINICAL FORMS
+       ====================================================================================================================== */
+    var T = 'text', TA = 'textarea', D = 'date', TM = 'time', DT = 'datetime-local', N = 'number';
+    var CARE_AREAS = ['Personal hygiene / bathing', 'Nutrition and feeding', 'Elimination (bladder / bowel)', 'Mobility and positioning', 'Skin and pressure areas', 'Breathing / oxygenation', 'Circulation / IV site care', 'Pain control', 'Sleep and rest', 'Fluid balance', 'Communication / sensory', 'Safety / falls / infection control', 'Emotional and psychosocial support', 'Health education / discharge teaching'];
+    var FORMS = {
+        kardex: { icon: '🗂️', title: 'Nursing Kardex', note: 'The ward\'s quick-reference card for one patient: who they are, current orders, treatments and the nursing care plan.', sections: [
+            { t: 'Patient identification', f: [['ward', 'Ward / bed', T], ['admDate', 'Date of admission', D], ['dx', 'Medical diagnosis', T], ['doctor', 'Attending doctor', T], ['allergies', 'Allergies', T], ['diet', 'Diet', 'select', ['Normal', 'Soft', 'Liquid', 'Diabetic', 'Low salt', 'Renal', 'Nil by mouth', 'Enteral feeds', 'Other']], ['activity', 'Activity', 'select', ['Bed rest', 'Bathroom privileges', 'Sit out of bed', 'Walk with help', 'Walk freely']], ['isolation', 'Isolation / precautions', T], ['code', 'Resuscitation status', 'select', ['Full resuscitation', 'Do not resuscitate (DNR)']], ['nok', 'Next of kin / contact', T], ['weight', 'Weight (kg)', N], ['vitalsFreq', 'Vital signs frequency', 'select', ['4-hourly', '6-hourly', '8-hourly', '12-hourly', 'Daily', 'Every 30 min', 'Hourly']]] },
+            { t: 'Medication orders (colour code: new order in pencil, confirmed in ink)', tbl: { k: 'meds', cols: [['date', 'Date ordered', D], ['drug', 'Drug / strength', T], ['dose', 'Dose', T], ['route', 'Route', 'select', ['PO', 'IV', 'IM', 'SC', 'PR', 'SL', 'Topical', 'Inhaled', 'Eye', 'Ear', 'NG']], ['freq', 'Frequency / 24 h', T], ['times', 'Times (e.g. 06-14-22)', T], ['stop', 'Stop date', D], ['by', 'Nurse', T]] } },
+            { t: 'STAT / PRN / SOS orders', tbl: { k: 'prn', cols: [['drug', 'Drug / dose / route', T], ['reason', 'Give for', T], ['max', 'Maximum in 24 h', T], ['by', 'Ordered by', T]] } },
+            { t: 'Treatments, IV lines and procedures', tbl: { k: 'tx', cols: [['date', 'Date', D], ['item', 'Treatment / IV fluid / line / procedure', T], ['rate', 'Rate / frequency', T], ['site', 'Site', T], ['next', 'Next due / change', T], ['by', 'Nurse', T]] } },
+            { t: 'Investigations pending', f: [['labs', 'Laboratory tests pending', TA], ['imaging', 'Imaging / other tests pending', TA]] },
+            { t: 'Nursing care plan', tbl: { k: 'plan', rows: CARE_AREAS, cols: [['area', 'Area of care', T], ['need', 'Problem / need', T], ['action', 'Nursing intervention', T], ['eval', 'Evaluation', T]] } },
+            { t: 'Sign-off', f: [['nurse', 'Nurse completing (name & sign)', T], ['updated', 'Updated on', DT]] }] },
+        mar: { icon: '💊', title: 'Medication Administration Record (MAR)', note: 'Each dose given or withheld, with the time and who gave it.', sections: [
+            { t: 'Patient', f: [['allergies', 'Allergies', T], ['weight', 'Weight (kg)', N]] },
+            { t: 'Doses', tbl: { k: 'doses', cols: [['when', 'Date & time', DT], ['drug', 'Drug / strength', T], ['dose', 'Dose', T], ['route', 'Route', 'select', ['PO', 'IV', 'IM', 'SC', 'PR', 'SL', 'Topical', 'Inhaled', 'NG']], ['given', 'Given?', 'select', ['Given', 'Withheld', 'Refused', 'Not available']], ['reason', 'Reason if not given', T], ['by', 'Given by', T], ['chk', 'Checked by', T]] } }] },
+        obs: { icon: '🌡️', title: 'Observation (vital signs) chart', note: 'Temperature, pulse, breathing, blood pressure, oxygen and pain over time.', sections: [
+            { t: 'Observations', tbl: { k: 'obs', cols: [['when', 'Date & time', DT], ['temp', 'Temp °C', N], ['pulse', 'Pulse /min', N], ['resp', 'Resp /min', N], ['bp', 'BP (mmHg)', T], ['spo2', 'SpO₂ %', N], ['pain', 'Pain 0–10', N], ['avpu', 'AVPU / GCS', T], ['by', 'By', T]] } }] },
+        fluid: { icon: '💧', title: 'Fluid balance chart', note: 'Everything taken in and everything passed out, totalled.', sections: [
+            { t: 'Intake and output', tbl: { k: 'fluid', cols: [['when', 'Date & time', DT], ['inType', 'Intake (oral / IV / NG)', T], ['inMl', 'Intake ml', N], ['outType', 'Output (urine / vomit / stool / drain)', T], ['outMl', 'Output ml', N], ['note', 'Remarks', T]] } },
+            { t: '24-hour totals', f: [['inTotal', 'Total intake (ml)', N], ['outTotal', 'Total output (ml)', N], ['balance', 'Balance (ml)', N]] }] },
+        nnotes: { icon: '📝', title: 'Nursing notes (ADPIE)', note: 'Assessment, diagnosis, planning, intervention and evaluation, one row per entry.', sections: [
+            { t: 'Entries', tbl: { k: 'notes', cols: [['when', 'Date & time', DT], ['assess', 'Assessment', TA], ['dx', 'Nursing diagnosis / problem', TA], ['plan', 'Plan / goal', TA], ['act', 'Intervention', TA], ['eval', 'Evaluation', TA], ['by', 'Nurse', T]] } }] },
+        handover: { icon: '🔁', title: 'Shift handover (SBAR)', note: 'Situation, Background, Assessment, Recommendation.', sections: [
+            { t: 'Handover', f: [['when', 'Date & time', DT], ['from', 'Handing over (name)', T], ['to', 'Receiving (name)', T], ['ward', 'Ward / bed', T], ['s', 'Situation', TA], ['b', 'Background', TA], ['a', 'Assessment (vitals, pain, lines, wounds, results)', TA], ['r', 'Recommendation / outstanding tasks', TA]] }] },
+        admission: { icon: '🛏️', title: 'Inpatient admission record', note: 'Why the patient is admitted and how they arrived.', sections: [
+            { t: 'Admission', f: [['when', 'Date & time of admission', DT], ['ward', 'Ward / bed', T], ['source', 'Admitted from', 'select', ['Outpatient clinic', 'Casualty / emergency', 'Referral from another facility', 'Maternity', 'Direct']], ['doctor', 'Admitting doctor', T], ['complaint', 'Presenting complaint', TA], ['hpi', 'History of present illness', TA], ['exam', 'Examination findings', TA], ['dx', 'Provisional diagnosis', T], ['plan', 'Initial management plan', TA], ['condition', 'Condition on admission', 'select', ['Stable', 'Fair', 'Serious', 'Critical']], ['belongings', 'Belongings / valuables listed', TA], ['sign', 'Admitted by (name & sign)', T]] }] },
+        discharge: { icon: '🏁', title: 'Discharge summary', note: 'What happened in hospital and what the patient must do next.', sections: [
+            { t: 'Discharge', f: [['admDate', 'Date of admission', D], ['disDate', 'Date of discharge', D], ['dx', 'Final diagnosis', T], ['procs', 'Procedures done', TA], ['course', 'Summary of stay', TA], ['condition', 'Condition at discharge', 'select', ['Recovered', 'Improved', 'Unchanged', 'Referred', 'Absconded', 'Discharged against advice']], ['meds', 'Medicines to take home (dose, how long)', TA], ['advice', 'Advice and follow-up instructions', TA], ['review', 'Review date / clinic', T], ['sign', 'Doctor (name & sign)', T]] }] },
+        referral: { icon: '➡️', title: 'Referral letter (to another facility)', note: 'Patient referral with clinical details and treatment already given.', sections: [
+            { t: 'Referral', f: [['to', 'Referred to (facility / department)', T], ['date', 'Date', D], ['urgency', 'Urgency', 'select', ['Routine', 'Urgent', 'Emergency']], ['reason', 'Reason for referral', TA], ['hx', 'History and examination', TA], ['inv', 'Investigations done and results', TA], ['dx', 'Diagnosis / impression', T], ['tx', 'Treatment given so far', TA], ['transport', 'Mode of transport', 'select', ['Ambulance', 'Private', 'Public', 'Accompanied by nurse']], ['sign', 'Referring clinician (name, cadre & sign)', T]] }] },
+        consent: { icon: '✍️', title: 'Informed consent (procedure / surgery / anaesthesia)', note: 'Consent recorded before a procedure.', sections: [
+            { t: 'Consent', f: [['proc', 'Procedure / treatment', T], ['doctor', 'Doctor explaining', T], ['risks', 'Benefits, risks and alternatives explained', TA], ['who', 'Consent given by', 'select', ['Patient', 'Parent / guardian', 'Next of kin', 'Two doctors (emergency)']], ['signer', 'Name of person consenting', T], ['rel', 'Relationship to patient', T], ['when', 'Date & time', DT], ['witness', 'Witness (name & sign)', T], ['interpreter', 'Interpreter used (name)', T]] }] },
+        transfusion: { icon: '🩸', title: 'Blood transfusion record', note: 'Unit details and observations during the transfusion.', sections: [
+            { t: 'Unit', f: [['group', 'Patient blood group', T], ['unit', 'Unit number', T], ['product', 'Product', 'select', ['Whole blood', 'Packed red cells', 'Platelets', 'Fresh frozen plasma', 'Cryoprecipitate']], ['donorGroup', 'Unit blood group', T], ['xmatch', 'Cross-match compatible?', 'select', ['Yes', 'No']], ['reason', 'Indication', T], ['start', 'Start time', DT], ['end', 'End time', DT], ['checked', 'Checked by (two nurses)', T], ['reaction', 'Reaction?', 'select', ['None', 'Mild', 'Severe — transfusion stopped']]] },
+            { t: 'Observations', tbl: { k: 'obs', cols: [['when', 'Time', DT], ['temp', 'Temp °C', N], ['pulse', 'Pulse', N], ['bp', 'BP', T], ['resp', 'Resp', N], ['note', 'Remarks', T]] } }] },
+        preop: { icon: '✅', title: 'Pre-operative checklist', note: 'Confirmations before the patient goes to theatre.', sections: [
+            { t: 'Checklist', checks: ['Patient identity confirmed (name band)', 'Procedure and site confirmed / marked', 'Consent signed', 'Allergies checked', 'Nil by mouth since (time below)', 'Theatre gown on, jewellery & dentures removed', 'Bladder emptied', 'Pre-medication given', 'Blood group & cross-match available', 'Investigations (Hb, U&E, ECG, X-ray) in file', 'IV line in place', 'Skin prepared'], f: [['npoSince', 'Nil by mouth since', DT], ['notes', 'Remarks', TA], ['nurse', 'Nurse (name & sign)', T]] }] },
+        opnotes: { icon: '🩹', title: 'Operation notes', note: 'The surgeon\'s record of the operation.', sections: [
+            { t: 'Operation', f: [['date', 'Date', D], ['preDx', 'Pre-operative diagnosis', T], ['postDx', 'Post-operative diagnosis', T], ['proc', 'Operation performed', T], ['surgeon', 'Surgeon', T], ['assist', 'Assistant(s)', T], ['anaes', 'Anaesthetist', T], ['anaesType', 'Anaesthesia', 'select', ['General', 'Spinal', 'Epidural', 'Regional block', 'Local', 'Sedation']], ['start', 'Start time', TM], ['end', 'End time', TM], ['findings', 'Findings', TA], ['steps', 'Procedure description', TA], ['blood', 'Blood loss (ml)', N], ['specimen', 'Specimens sent', T], ['counts', 'Swab / instrument count correct?', 'select', ['Yes', 'No — see remarks']], ['postOp', 'Post-operative instructions', TA]] }] },
+        anaesthesia: { icon: '😴', title: 'Anaesthesia record', note: 'Anaesthetic plan, drugs and monitoring.', sections: [
+            { t: 'Pre-anaesthesia', f: [['asa', 'ASA grade', 'select', ['I', 'II', 'III', 'IV', 'V', 'E']], ['airway', 'Airway assessment (Mallampati etc.)', T], ['fasting', 'Fasting since', T], ['type', 'Technique', 'select', ['General', 'Spinal', 'Epidural', 'Regional block', 'Local', 'Sedation']], ['anaesthetist', 'Anaesthetist', T]] },
+            { t: 'Drugs and monitoring', tbl: { k: 'log', cols: [['time', 'Time', TM], ['drug', 'Drug / fluid', T], ['dose', 'Dose', T], ['bp', 'BP', T], ['pulse', 'Pulse', N], ['spo2', 'SpO₂', N], ['note', 'Remarks', T]] } },
+            { t: 'Recovery', f: [['events', 'Intra-operative events', TA], ['recovery', 'Condition on leaving theatre', TA]] }] },
+        sicknote: { icon: '📄', title: 'Sick note / medical certificate', note: 'Printable excuse from duty or school.', sections: [
+            { t: 'Certificate', f: [['date', 'Date issued', D], ['from', 'Unfit from', D], ['to', 'Unfit until', D], ['days', 'Number of days', N], ['for', 'Addressed to (employer / school)', T], ['dx', 'Condition (leave blank to keep it confidential)', T], ['advice', 'Advice / light duties', TA], ['doctor', 'Doctor (name, reg. no. & sign)', T]] }] },
+        death: { icon: '🕊️', title: 'Death notification summary', note: 'Details needed for the death notification and the mortuary.', sections: [
+            { t: 'Death', f: [['when', 'Date & time of death', DT], ['place', 'Place of death', 'select', ['Ward', 'Casualty / emergency', 'Theatre', 'Brought in dead', 'Maternity']], ['cause1', 'Immediate cause of death', T], ['cause2', 'Underlying cause', T], ['contrib', 'Other significant conditions', T], ['certifier', 'Certified by (name & reg. no.)', T], ['kin', 'Next of kin informed (name, time)', T], ['body', 'Body released to / mortuary no.', T], ['notes', 'Remarks', TA]] }] }
+    };
+    var FORM_ORDER = ['kardex', 'mar', 'obs', 'fluid', 'nnotes', 'handover', 'admission', 'discharge', 'referral', 'consent', 'transfusion', 'preop', 'opnotes', 'anaesthesia', 'sicknote', 'death'];
+    window.hrxForms = FORMS;
+
+    function patientForms(pid) { return arr('patientNotes').filter(function (n) { return n.patientId === pid && n.kind === 'form'; }).sort(function (a, b) { return (b.updatedAt || b.timestamp || 0) - (a.updatedAt || a.timestamp || 0); }); }
+    function formsListHtml(p) {
+        var fs = patientForms(p.id);
+        var html = '<div class="hrx-sec"><h4>➕ Start a new form</h4><div class="hrx-bar" style="margin:0">' + FORM_ORDER.map(function (k) { return '<button type="button" class="hrx-chip" data-newform="' + k + '">' + FORMS[k].icon + ' ' + esc(FORMS[k].title) + '</button>'; }).join('') + '</div></div>';
+        html += fs.length ? '<div class="hrx-list">' + fs.map(function (n) { var d = FORMS[n.formType]; return '<div class="hrx-item"><div style="font-size:22px">' + (d ? d.icon : '📑') + '</div><div class="grow"><b>' + esc(n.title || (d && d.title) || 'Form') + '</b><div class="hrx-muted">' + esc(dt(n.updatedAt || n.timestamp)) + (n.addedBy ? ' · ' + esc(n.addedBy) : '') + '</div></div><button type="button" class="hrx-btn sm sec" data-openform="' + esc(n.id) + '">Open / edit</button><button type="button" class="hrx-btn sm sec" data-printform="' + esc(n.id) + '">🖨️ Print</button></div>'; }).join('') + '</div>' : '<p class="hrx-muted">No forms saved for this patient yet.</p>';
+        return html;
+    }
+    function fieldHtml(f, val, nm) {
+        var k = f[0], type = f[2], opts = f[3], v = val == null ? '' : val, a = ' data-k="' + esc(nm || k) + '"';
+        if (type === 'select') return '<select' + a + '><option value=""></option>' + opts.map(function (o) { return '<option' + (String(v) === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>';
+        if (type === TA) return '<textarea' + a + '>' + esc(v) + '</textarea>';
+        return '<input type="' + type + '"' + (type === N ? ' step="any"' : '') + a + ' value="' + esc(v) + '">';
+    }
+    function tableHtml(tb, rows, sec) {
+        var data = rows && rows.length ? rows : (tb.rows ? tb.rows.map(function (r) { var o = {}; o[tb.cols[0][0]] = r; return o; }) : [{}]);
+        if (!rows || !rows.length) { if (!tb.rows) data = [{}, {}, {}]; }
+        function row(o) { return '<tr>' + tb.cols.map(function (c) { return '<td data-c="' + esc(c[0]) + '">' + fieldHtml(c, o[c[0]], c[0]) + '</td>'; }).join('') + '<td><button type="button" class="hrx-btn sm sec" data-delrow title="Remove row">✕</button></td></tr>'; }
+        return '<div class="hrx-tablewrap"><table class="hrx-tbl" data-tbl="' + esc(tb.k) + '"><thead><tr>' + tb.cols.map(function (c) { return '<th>' + esc(c[1]) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' + data.map(row).join('') + '</tbody></table></div><button type="button" class="hrx-btn sm sec" data-addrow="' + esc(tb.k) + '" style="margin-top:8px">+ Add row</button>';
+    }
+    var formRec = null, formCtx = null;
+    function openForm(pid, type, noteId) {
+        var p = getP(pid), def = FORMS[type]; if (!p || !def) return;
+        var note = noteId ? arr('patientNotes').find(function (n) { return n.id === noteId; }) : null;
+        var data = note ? (note.data || {}) : {};
+        if (!note) { // sensible pre-fill
+            data = {};
+            if (type === 'kardex' || type === 'mar') data.allergies = p.allergies || '';
+            if (type === 'kardex') { data.nok = [p.nextOfKinName, p.nextOfKinPhone].filter(Boolean).join(' ') ; var ad = arr('admissions').filter(function (a) { return a.patientId === p.id && !a.dischargedAt; })[0]; if (ad) { data.ward = ad.bedLabel || ''; data.dx = ad.diagnosis || ''; data.admDate = ad.admittedAt ? new Date(ad.admittedAt).toISOString().slice(0, 10) : ''; } }
+            if (type === 'sicknote') data.date = today();
+            if (type === 'admission' || type === 'handover') data.when = nowLocal();
+            if (type === 'discharge') { data.disDate = today(); var ad2 = arr('admissions').filter(function (a) { return a.patientId === p.id; }).sort(function (a, b) { return (b.admittedAt || 0) - (a.admittedAt || 0); })[0]; if (ad2) { data.admDate = ad2.admittedAt ? new Date(ad2.admittedAt).toISOString().slice(0, 10) : ''; data.dx = ad2.diagnosis || ''; } }
+            if (type === 'referral') data.date = today();
+        }
+        var html = '<p class="hrx-muted" style="margin:0 0 12px">' + esc(def.note) + '</p>';
+        def.sections.forEach(function (s) {
+            html += '<div class="hrx-sec"><h4>' + esc(s.t) + '</h4>';
+            if (s.checks) { var cv = data.checks || []; html += '<div class="hrx-checks" style="margin-bottom:10px">' + s.checks.map(function (c) { return '<label><input type="checkbox" data-chk="' + esc(c) + '"' + (cv.indexOf(c) >= 0 ? ' checked' : '') + '> ' + esc(c) + '</label>'; }).join('') + '</div>'; }
+            if (s.f) html += '<div class="hrx-grid">' + s.f.map(function (f) { var wide = f[2] === TA ? ' wide' : ''; return '<div class="' + wide.trim() + '"><label>' + esc(f[1]) + '</label>' + fieldHtml(f, data[f[0]]) + '</div>'; }).join('') + '</div>';
+            if (s.tbl) html += tableHtml(s.tbl, data[s.tbl.k], s);
+            html += '</div>';
+        });
+        html += '<div class="hrx-foot"><button type="button" class="hrx-btn sec" data-fcancel>Cancel</button><button type="button" class="hrx-btn sec" data-fprint>🖨️ Print</button><button type="button" class="hrx-btn" data-fsave>💾 Save to patient file</button></div>';
+        formCtx = { pid: pid, type: type, noteId: note ? note.id : null };
+        formRec = overlay(def.icon + ' ' + esc(def.title), esc(p.name) + ' · ' + esc(p.id), html, { narrow: false, onClose: function () { formRec = null; } });
+        formRec.sticky = true;
+        formRec.body.addEventListener('click', function (e) {
+            var t = e.target;
+            if (t.closest('[data-fcancel]')) { if (confirm('Close without saving?')) formRec.close(); return; }
+            if (t.closest('[data-fsave]')) { saveForm(); return; }
+            if (t.closest('[data-fprint]')) { printForm(collectForm(), formCtx.type, getP(formCtx.pid)); return; }
+            var ad = t.closest('[data-addrow]'); if (ad) { var tb = formRec.body.querySelector('table[data-tbl="' + ad.getAttribute('data-addrow') + '"] tbody'); var tr = tb.querySelector('tr:last-child'); var nr = tr ? tr.cloneNode(true) : null; if (nr) { Array.prototype.forEach.call(nr.querySelectorAll('input,select,textarea'), function (x) { x.value = ''; }); tb.appendChild(nr); } return; }
+            var dr = t.closest('[data-delrow]'); if (dr) { var tr2 = dr.closest('tr'); var body = tr2.parentNode; if (body.children.length > 1) body.removeChild(tr2); else Array.prototype.forEach.call(tr2.querySelectorAll('input,select,textarea'), function (x) { x.value = ''; }); }
+        });
+    }
+    function collectForm() {
+        var out = {}, root = formRec.body;
+        Array.prototype.forEach.call(root.querySelectorAll('.hrx-grid [data-k]'), function (x) { out[x.getAttribute('data-k')] = x.value; });
+        Array.prototype.forEach.call(root.querySelectorAll('table[data-tbl]'), function (tb) {
+            var rows = [];
+            Array.prototype.forEach.call(tb.querySelectorAll('tbody tr'), function (tr) {
+                var o = {}, any = false;
+                Array.prototype.forEach.call(tr.querySelectorAll('[data-k]'), function (x) { o[x.getAttribute('data-k')] = x.value; if (String(x.value).trim()) any = true; });
+                if (any) rows.push(o);
+            });
+            out[tb.getAttribute('data-tbl')] = rows;
+        });
+        var ch = Array.prototype.map.call(root.querySelectorAll('[data-chk]:checked'), function (x) { return x.getAttribute('data-chk'); });
+        if (root.querySelector('[data-chk]')) out.checks = ch;
+        return out;
+    }
+    function summaryOf(type, data) {
+        var def = FORMS[type]; var bits = [];
+        def.sections.forEach(function (s) { (s.f || []).slice(0, 4).forEach(function (f) { if (data[f[0]]) bits.push(f[1].replace(/ \(.*/, '') + ': ' + data[f[0]]); }); });
+        return '📑 ' + def.title + (bits.length ? ' — ' + bits.slice(0, 3).join('; ') : '');
+    }
+    function saveForm() {
+        var p = getP(formCtx.pid), def = FORMS[formCtx.type]; if (!p) return;
+        var data = collectForm(), now = Date.now(), text = summaryOf(formCtx.type, data);
+        var list = patientNotes;
+        if (formCtx.noteId) {
+            var n = list.find(function (x) { return x.id === formCtx.noteId; });
+            if (n) { n.data = data; n.text = text; n.updatedAt = now; n.updatedBy = who(); }
+        } else {
+            var rec = { id: genSaleId(), patientId: p.id, kind: 'form', formType: formCtx.type, title: def.title, data: data, text: text, timestamp: now, updatedAt: now, addedBy: who() };
+            list.push(rec); formCtx.noteId = rec.id;
+        }
+        try { safeSetItem('pos_patient_notes', JSON.stringify(patientNotes)); queuePush(); } catch (e) { /* storage */ }
+        try { logAudit('Clinical form saved', p.name, def.title); } catch (e2) { /* ignore */ }
+        toast(def.title + ' saved to ' + p.name + '\'s file.');
+        formRec.sticky = false; formRec.close();
+        if (profRec) profRender();
+    }
+    function printForm(data, type, p) {
+        var def = FORMS[type]; if (!def || !p) return;
+        var age = ''; try { age = hmisAgeText(p); } catch (e) { age = p.age || ''; }
+        function kv(l, v) { return '<div><small>' + esc(l) + '</small>' + esc(v || '') + '&nbsp;</div>'; }
+        var inner = '<h2>Patient</h2><div class="k">' + kv('Name', p.name) + kv('Patient no.', p.id) + kv('Age / sex', age + ' / ' + (p.sex || '?')) + kv('Allergies', p.allergies) + '</div>';
+        def.sections.forEach(function (s) {
+            inner += '<h2>' + esc(s.t) + '</h2>';
+            if (s.checks) inner += '<div class="k">' + s.checks.map(function (c) { return '<div>' + ((data.checks || []).indexOf(c) >= 0 ? '☑' : '☐') + ' ' + esc(c) + '</div>'; }).join('') + '</div>';
+            if (s.f) inner += '<div class="k">' + s.f.map(function (f) { return kv(f[1], data[f[0]]); }).join('') + '</div>';
+            if (s.tbl) { var rows = data[s.tbl.k] || []; var blank = rows.length ? rows : [{}, {}, {}, {}]; inner += '<table><tr>' + s.tbl.cols.map(function (c) { return '<th>' + esc(c[1]) + '</th>'; }).join('') + '</tr>' + blank.map(function (r) { return '<tr>' + s.tbl.cols.map(function (c) { return '<td>' + esc(r[c[0]] || '') + '&nbsp;</td>'; }).join('') + '</tr>'; }).join('') + '</table>'; }
+        });
+        inner += '<div class="sig"><div>Name &amp; signature</div><div>Date &amp; time</div></div>';
+        printHtml(def.title + ' — ' + p.name, inner);
+    }
+
+    /* ---- clicks inside the profile ---- */
+    function profClick(e) {
+        var t = e.target; if (!t.closest) return;
+        var tab = t.closest('[data-tab]'); if (tab) { profTab = tab.getAttribute('data-tab'); profRender(); return; }
+        var w = t.closest('[data-waive]'); if (w) { waive(w.getAttribute('data-waive')); return; }
+        var nf = t.closest('[data-newform]'); if (nf) { openForm(profPid, nf.getAttribute('data-newform')); return; }
+        var of = t.closest('[data-openform]'); if (of) { var n = arr('patientNotes').find(function (x) { return x.id === of.getAttribute('data-openform'); }); if (n) openForm(profPid, n.formType, n.id); return; }
+        var pf = t.closest('[data-printform]'); if (pf) { var n2 = arr('patientNotes').find(function (x) { return x.id === pf.getAttribute('data-printform'); }); if (n2) printForm(n2.data || {}, n2.formType, getP(profPid)); return; }
+        var a = t.closest('[data-act]'); if (!a) return;
+        var act = a.getAttribute('data-act'), p = getP(profPid);
+        if (act === 'savehist') saveHistory();
+        else if (act === 'print') printSummary();
+        else if (act === 'phistory') openPatientHistory(profPid);
+        else if (act === 'sicksheet') { try { if (window.hmisSickSheet) window.hmisSickSheet(profPid, ''); else toast('Sick-off sheet is not ready yet.', true); } catch (e) { toast('Could not open the sick-off sheet.', true); } }
+        else if (act === 'lab') { if (window.hmisOpenRequestLabFor) window.hmisOpenRequestLabFor(profPid); }
+        else if (act === 'newform') { profTab = 'forms'; profRender(); }
+        else if (act === 'regfee') { if (p && addRegFee(p, false)) { profTab = 'bill'; profRender(); } }
+        else if (act === 'edit') { profRec.close(); if (dbRec) dbRec.close(); try { performTabSwitch($('patients-tab-btn'), 'patients-tab'); editPatient(p.id); } catch (e2) { toast('Open Patient Records to edit this patient.', true); } }
+        else if (act === 'send') { profRec.close(); if (dbRec) dbRec.close(); try { performTabSwitch($('reception-tab-btn'), 'reception-tab'); if (typeof hregAfterSave === 'function') hregAfterSave(p.id, false); } catch (e3) { toast('Open Reception and search for this patient.', true); } }
+    }
+
+
+    /* ======================================================================================================================
+       5. SERVICES CATALOGUE (the stock list for services: everything the hospital charges that is not a medicine)
+       ====================================================================================================================== */
+    var svcRec = null, svcState = { q: '', cat: '', archived: false, limit: 150 };
+    function invList() { return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : []; }
+    function svcAll() { return invList().filter(function (x) { return x && x.type === 'service'; }); }
+    function svcCats() { var m = {}; svcAll().forEach(function (x) { m[x.category || 'Uncategorised'] = (m[x.category || 'Uncategorised'] || 0) + 1; }); return Object.keys(m).sort().map(function (k) { return [k, m[k]]; }); }
+    function svcFiltered() {
+        var q = svcState.q.trim().toLowerCase();
+        return svcAll().filter(function (x) {
+            if (!svcState.archived && x.archived) return false;
+            if (svcState.cat && (x.category || 'Uncategorised') !== svcState.cat) return false;
+            return !q || (String(x.name) + ' ' + String(x.code) + ' ' + String(x.category || '')).toLowerCase().indexOf(q) >= 0;
+        }).sort(function (a, b) { return String(a.category || '').localeCompare(String(b.category || '')) || String(a.name).localeCompare(String(b.name)); });
+    }
+    function svcSave() { try { safeSetItem('pos_inventory', JSON.stringify(inventory)); queuePush(); } catch (e) { toast('Could not save - storage is full.', true); } }
+    function svcRender() {
+        if (!svcRec) return;
+        var all = svcAll(), act = all.filter(function (x) { return !x.archived; }), rows = svcFiltered();
+        $('hrx-svc-cards').innerHTML = '<div class="hrx-card"><b>' + act.length + '</b><span>Active services</span></div><div class="hrx-card"><b>' + svcCats().length + '</b><span>Categories</span></div><div class="hrx-card' + (all.length - act.length ? ' red' : '') + '"><b>' + (all.length - act.length) + '</b><span>Archived (hidden from billing)</span></div><div class="hrx-card"><b>' + act.filter(function (x) { return !(x.price > 0); }).length + '</b><span>With no price set</span></div>';
+        var cs = $('hrx-svc-cat'), cur = svcState.cat;
+        cs.innerHTML = '<option value="">All categories (' + all.length + ')</option>' + svcCats().map(function (c) { return '<option value="' + esc(c[0]) + '"' + (c[0] === cur ? ' selected' : '') + '>' + esc(c[0]) + ' (' + c[1] + ')</option>'; }).join('');
+        $('hrx-svc-dl').innerHTML = svcCats().map(function (c) { return '<option value="' + esc(c[0]) + '">'; }).join('');
+        var shown = rows.slice(0, svcState.limit);
+        $('hrx-svc-rows').innerHTML = shown.length ? shown.map(function (x) {
+            return '<tr data-code="' + esc(x.code) + '"' + (x.archived ? ' style="opacity:.55"' : '') + '><td><span class="hrx-muted">' + esc(x.code) + '</span></td><td><input type="text" data-f="name" value="' + esc(x.name) + '"></td><td><input type="text" data-f="category" list="hrx-svc-dl" value="' + esc(x.category || '') + '"></td><td style="min-width:110px"><input type="text" inputmode="decimal" data-f="price" value="' + esc(x.price) + '"></td><td style="min-width:80px"><input type="text" data-f="unit" value="' + esc(x.unit || 'use') + '"></td><td style="white-space:nowrap"><button type="button" class="hrx-btn sm sec" data-sa="arch">' + (x.archived ? 'Restore' : 'Archive') + '</button> <button type="button" class="hrx-btn sm warn" data-sa="del">Delete</button></td></tr>';
+        }).join('') : '<tr><td colspan="6" class="hrx-muted" style="padding:18px">No services match.</td></tr>';
+        $('hrx-svc-more').style.display = rows.length > svcState.limit ? '' : 'none';
+        $('hrx-svc-more').textContent = 'Show more (' + (rows.length - svcState.limit) + ' more)';
+        $('hrx-svc-count').textContent = rows.length + ' shown';
+    }
+    function svcAdd() {
+        var n = String($('hrx-sn-name').value || '').trim(), c = String($('hrx-sn-cat').value || '').trim() || 'General', pr = Number(String($('hrx-sn-price').value || '').replace(/,/g, '')), u = String($('hrx-sn-unit').value || '').trim() || 'use';
+        if (!n) { toast('Type the service name.', true); return; }
+        if (!isFinite(pr) || pr < 0) { toast('Type a valid price.', true); return; }
+        if (svcAll().some(function (x) { return String(x.name).trim().toLowerCase() === n.toLowerCase(); })) { toast('A service called "' + n + '" already exists - edit it in the list.', true); return; }
+        var code = 'SV' + Date.now().toString(36).toUpperCase();
+        inventory.push({ type: 'service', code: code, name: n, price: pr, wholesalePrice: 0, minimumPrice: 0, unit: u, qty: null, location: '', category: c, vatCategory: 'E', image: null, updatedAt: Date.now() });
+        svcSave(); ['hrx-sn-name', 'hrx-sn-price'].forEach(function (i) { $(i).value = ''; });
+        toast('Added "' + n + '".'); svcRender();
+    }
+    function svcBulk() {
+        var rows = svcFiltered().filter(function (x) { return !x.archived; });
+        if (!rows.length) { toast('No services in the current list.', true); return; }
+        var v = Number(String($('hrx-sb-pct').value || '').replace(/[%,]/g, ''));
+        if (!isFinite(v) || v === 0 || v < -90 || v > 500) { toast('Type a percentage such as 10 (raise) or -5 (lower).', true); return; }
+        var scope = svcState.cat ? 'the ' + rows.length + ' services in "' + svcState.cat + '"' : (svcState.q ? 'the ' + rows.length + ' services matching your search' : 'ALL ' + rows.length + ' services');
+        if (!confirm((v > 0 ? 'Raise' : 'Lower') + ' the price of ' + scope + ' by ' + Math.abs(v) + '%?\n\nPrices are rounded to the nearest shilling. You can still edit each one afterwards.')) return;
+        var now = Date.now();
+        rows.forEach(function (x) { var np = Math.max(0, Math.round((Number(x.price) || 0) * (1 + v / 100))); if (np !== x.price) { x.price = np; x.updatedAt = now; } });
+        svcSave(); try { logAudit('Service prices changed', 'Services catalogue', (v > 0 ? '+' : '') + v + '% on ' + rows.length + ' services'); } catch (e) { /* audit best effort */ }
+        toast('Prices updated on ' + rows.length + ' services.'); svcRender();
+    }
+    function svcCsv() {
+        var rows = svcFiltered();
+        var q = function (s) { return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; };
+        var csv = 'Code,Service,Category,Price (KES),Unit,Status\n' + rows.map(function (x) { return [x.code, x.name, x.category || '', x.price, x.unit || 'use', x.archived ? 'archived' : 'active'].map(q).join(','); }).join('\n');
+        var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'services-catalogue.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    }
+    function openServices() {
+        if (svcRec) { svcRec.show(); svcRender(); return; }
+        svcState = { q: '', cat: '', archived: false, limit: 150 };
+        var rec = overlay('🩺 Services Catalogue', 'Everything the hospital charges that is not a medicine - edit, add, archive or change prices in bulk', '<div class="hrx-cards" id="hrx-svc-cards"></div>' +
+            '<div class="hrx-sec"><h4>➕ Add a service</h4><div class="hrx-grid"><div><label>Service name</label><input type="text" id="hrx-sn-name" placeholder="e.g. Ear syringing"></div><div><label>Category</label><input type="text" id="hrx-sn-cat" list="hrx-svc-dl" placeholder="e.g. Nursing"></div><div><label>Price (KES)</label><input type="text" inputmode="decimal" id="hrx-sn-price"></div><div><label>Unit</label><input type="text" id="hrx-sn-unit" placeholder="use / day / hour / test"></div></div><div class="hrx-foot" style="margin-top:10px"><button type="button" class="hrx-btn" id="hrx-sn-add">Add service</button></div></div>' +
+            '<div class="hrx-bar"><input type="search" id="hrx-svc-q" placeholder="Search services, codes, categories"><select id="hrx-svc-cat" style="flex:0 1 260px"></select></div>' +
+            '<div class="hrx-bar"><label class="hrx-checks"><span><input type="checkbox" id="hrx-svc-arch"> Show archived</span></label><span class="hrx-muted" id="hrx-svc-count"></span><span style="margin-left:auto" class="hrx-bar"><input type="text" id="hrx-sb-pct" inputmode="decimal" placeholder="% e.g. 10 or -5" style="flex:0 1 130px"><button type="button" class="hrx-btn sec" id="hrx-sb-go">Change prices in this list</button><button type="button" class="hrx-btn sec" id="hrx-svc-csv">⬇ CSV</button></span></div>' +
+            '<datalist id="hrx-svc-dl"></datalist><div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Code</th><th>Service</th><th>Category</th><th>Price (KES)</th><th>Unit</th><th></th></tr></thead><tbody id="hrx-svc-rows"></tbody></table></div><div style="text-align:center;margin-top:12px"><button type="button" class="hrx-btn sec" id="hrx-svc-more">Show more</button></div>',
+            { page: 'hrx-svc', onClose: function () { svcRec = null; } });
+        svcRec = rec; var b = rec.body;
+        b.querySelector('#hrx-sn-add').addEventListener('click', svcAdd);
+        b.querySelector('#hrx-sb-go').addEventListener('click', svcBulk);
+        b.querySelector('#hrx-svc-csv').addEventListener('click', svcCsv);
+        b.querySelector('#hrx-svc-q').addEventListener('input', function (e) { svcState.q = e.target.value; svcState.limit = 150; svcRenderRows(); });
+        b.querySelector('#hrx-svc-cat').addEventListener('change', function (e) { svcState.cat = e.target.value; svcState.limit = 150; svcRenderRows(); });
+        b.querySelector('#hrx-svc-arch').addEventListener('change', function (e) { svcState.archived = e.target.checked; svcRenderRows(); });
+        b.querySelector('#hrx-svc-more').addEventListener('click', function () { svcState.limit += 200; svcRenderRows(); });
+        b.querySelector('#hrx-svc-rows').addEventListener('change', function (e) {
+            var inp = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-code]'); if (!inp || !tr) return;
+            var it = invList().find(function (x) { return x.code === tr.getAttribute('data-code') && x.type === 'service'; }); if (!it) return;
+            var f = inp.getAttribute('data-f'), v = inp.value.trim();
+            if (f === 'price') { var n = Number(v.replace(/,/g, '')); if (!isFinite(n) || n < 0) { toast('Enter a valid price.', true); inp.value = it.price; return; } it.price = n; }
+            else if (f === 'name') { if (!v) { toast('A service needs a name.', true); inp.value = it.name; return; } if (invList().some(function (x) { return x !== it && x.type === 'service' && String(x.name).trim().toLowerCase() === v.toLowerCase(); })) { toast('Another service already has that name.', true); inp.value = it.name; return; } it.name = v; }
+            else if (f === 'category') { it.category = v || 'General'; }
+            else if (f === 'unit') { it.unit = v || 'use'; }
+            it.updatedAt = Date.now(); svcSave();
+            if (f === 'category') svcRender();
+        });
+        b.querySelector('#hrx-svc-rows').addEventListener('click', function (e) {
+            var btn = e.target.closest('[data-sa]'), tr = e.target.closest('tr[data-code]'); if (!btn || !tr) return;
+            var code = tr.getAttribute('data-code'), it = invList().find(function (x) { return x.code === code && x.type === 'service'; }); if (!it) return;
+            if (btn.getAttribute('data-sa') === 'arch') { it.archived = !it.archived; it.updatedAt = Date.now(); svcSave(); toast(it.archived ? '"' + it.name + '" archived - it no longer appears for billing.' : '"' + it.name + '" restored.'); svcRender(); }
+            else if (confirm('Delete "' + it.name + '" permanently?\n\n(Archive keeps it but hides it from billing.)')) { inventory = inventory.filter(function (x) { return !(x.code === code && x.type === 'service'); }); svcSave(); toast('Deleted "' + it.name + '".'); svcRender(); }
+        });
+        svcRender();
+    }
+    function svcRenderRows() { svcRender(); }   // the search box is never re-created, so typing keeps its focus
+    window.hrxOpenServices = openServices;
+
+    /* ---- Reception: the lab tests are chosen when the patient is sent to the laboratory ---- */
+    function labFor(pid) { if (window.hmisOpenRequestLabFor) window.hmisOpenRequestLabFor(pid); }
+    function wrapSend() {
+        if (window.receptionSendTo && !window.receptionSendTo.__hrx) {
+            var orig = window.receptionSendTo;
+            window.receptionSendTo = function (pid, stationId) {
+                var before = queue.length, r = orig.apply(this, arguments);
+                try { var st = hmisStation(stationId); if (st && st.kind === 'lab') labFor(pid); } catch (e) { /* none */ }
+                try { if (queue.length >= before) slipFor(pid, true); } catch (e) { /* none */ }
+                return r;
+            };
+            window.receptionSendTo.__hrx = true;
+        }
+    }
+    /* ---- patient slip: what the patient carries from Reception, so he can quote his number at triage, the lab or the cashier ---- */
+    function slipFor(pid, ask) {
+        var p = patients.find(function (x) { return x.id === pid; }); if (!p) return;
+        var q = queue.filter(function (x) { return x.patientId === pid && hmisActive(x); }).sort(function (a, b) { return (b.stationAt || 0) - (a.stationAt || 0); })[0];
+        if (ask && !confirm('Print a slip for ' + p.name + ' to carry (patient number, queue ticket and where to go)?')) return;
+        var dest = q ? (function () { try { return pipelineStageLabel(hmisStationOf(q)); } catch (e) { return q.service || ''; } })() : 'Reception';
+        var tk = q ? hmisTicket(q) : '-';
+        printHtml('Patient slip', '<div style="text-align:center;border:3px solid #0050b8;border-radius:14px;padding:18px;margin-top:10px"><div style="font-size:13px;color:#555;letter-spacing:.08em">PATIENT NUMBER</div><div style="font-size:46px;font-weight:800;color:#0050b8;letter-spacing:.04em;word-break:break-all">' + esc(p.id) + '</div><div style="font-size:22px;font-weight:700;margin:4px 0 10px">' + esc(p.name) + '</div><div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap"><div style="border:2px solid #de0a12;border-radius:12px;padding:8px 22px"><small style="color:#555">QUEUE TICKET</small><div style="font-size:36px;font-weight:800;color:#de0a12">' + esc(tk) + '</div></div><div style="border:2px solid #0050b8;border-radius:12px;padding:8px 22px"><small style="color:#555">PLEASE GO TO</small><div style="font-size:22px;font-weight:800;color:#0050b8;margin-top:8px">' + esc(dest) + '</div></div></div><p style="margin:14px 0 0;color:#444">Keep this slip. Quote your <b>patient number</b> at the triage desk, the laboratory, the pharmacy and the cashier.</p><p style="color:#777;font-size:11px;margin:6px 0 0">' + new Date().toLocaleString('en-GB') + (p.phone ? '' : '') + '</p></div>');
+    }
+    window.hmisPrintPatientSlip = slipFor;
+    function labButton() {
+        var card = document.getElementById('reception-search-card'); if (!card || card.querySelector('.hrx-labreq')) return;
+        var oc = (card.querySelector('[onclick*="receptionSendTo"]') || {}).outerHTML || '', mm = /receptionSendTo\(\s*&?#?[a-z0-9]*;?'?([^',&]+)/i.exec(oc); var pid = mm && mm[1]; if (!pid || !card.querySelector('.panel')) return;
+        var box = document.createElement('div'); box.className = 'hrx-labreq'; box.style.cssText = 'margin-top:10px;padding:10px 12px;border:2px dashed #1e6fd0;border-radius:10px;background:#eefaf5;display:flex;gap:10px;align-items:center;flex-wrap:wrap';
+        box.innerHTML = '<span style="flex:1;min-width:180px;font-size:13px;color:#14634f"><strong>🧪 Lab tests needed?</strong> Pick the tests now. The patient pays at the cashier, then goes to the lab.</span><button type="button" class="hrx-btn" style="width:auto">🧪 Request lab tests</button><button type="button" class="hrx-btn sec hrx-slipbtn" style="width:auto">🖨️ Print patient slip</button>';
+        box.querySelector('button').onclick = function () { labFor(pid); };
+        box.querySelector('.hrx-slipbtn').onclick = function () { slipFor(pid, false); };
+        card.querySelector('.panel').appendChild(box);
+    }
+    setInterval(function () { try { wrapSend(); labButton(); } catch (e) { /* next tick */ } }, 700);
+
+    /* ---- meals and nursing / procedure charges live in the inventory too, so they can be edited there ---- */
+    var HM = [['mn_porridge', 'Meal: Porridge', 80, 'Meals & Diet', 'meal'], ['mn_tea', 'Meal: Tea & bread', 100, 'Meals & Diet', 'meal'], ['mn_lunch', 'Meal: Standard lunch', 250, 'Meals & Diet', 'meal'], ['mn_supper', 'Meal: Standard supper', 250, 'Meals & Diet', 'meal'], ['mn_soft', 'Meal: Soft diet meal', 200, 'Meals & Diet', 'meal'], ['mn_diab', 'Meal: Diabetic meal', 280, 'Meals & Diet', 'meal'], ['ct_nursing', 'Nursing care (per day)', 500, 'Nursing & Procedures', 'day'], ['ct_dressing', 'Dressing / procedure', 300, 'Nursing & Procedures', 'use'], ['ct_oxygen', 'Oxygen therapy (per day)', 1500, 'Nursing & Procedures', 'day']];
+    function ensureMeals() {
+        try {
+            if (localStorage.getItem('pos_hrx_hm') === '1' || typeof inventory === 'undefined') return;
+            var added = 0;
+            HM.forEach(function (r) {
+                var code = 'HM-' + r[0]; if (inventory.some(function (i) { return i && i.code === code; })) return;
+                inventory.push({ type: 'service', code: code, name: r[1].replace(/^Meal: /, ''), price: r[2], wholesalePrice: 0, minimumPrice: 0, unit: r[4], qty: null, location: '', category: r[3], vatCategory: 'E', image: null, updatedAt: Date.now() }); added++;
+            });
+            if (added) { svcSave(); }
+            localStorage.setItem('pos_hrx_hm', '1');
+        } catch (e) { /* next start */ }
+    }
+
+    /* ======================================================================================================================
+       6. PRICE LIST - every price in the hospital on one page
+       ====================================================================================================================== */
+    var prRec = null, PR = { tab: 'med', q: '', zero: false, limit: 150 };
+    function prDefaultFee() { try { return Number(localStorage.getItem('pos_hrx_consultfee')) || 500; } catch (e) { return 500; } }
+    window.hrxDefaultFee = prDefaultFee;
+    function prWards() { var w = { General: 1 }; try { Object.keys(bedTypes || {}).forEach(function (b) { w[bedTypes[b] || 'General'] = 1; }); } catch (e) { /* General only */ } return Object.keys(w).sort(); }
+    function prRows() {
+        var t = PR.tab, q = PR.q.toLowerCase(), rows = [];
+        if (t === 'med') rows = invList().filter(function (x) { return x && x.type === 'item' && !x.archived; }).map(function (x) { return { key: x.code, code: x.code, name: x.name, cat: x.category || '', price: Number(x.price) || 0, buy: Number(x.wholesalePrice) || 0, qty: x.qty }; });
+        else if (t === 'svc') rows = invList().filter(function (x) { return x && x.type === 'service' && !x.archived; }).map(function (x) { return { key: x.code, code: x.code, name: x.name, cat: x.category || '', price: Number(x.price) || 0 }; });
+        else if (t === 'lab') rows = (window.hmisLab ? window.hmisLab.tests() : []).filter(function (x) { return x.active !== false; }).map(function (x) { return { key: x.id, code: x.code || '', name: x.name, cat: x.category || '', price: Number(x.price) || 0 }; });
+        if (q) rows = rows.filter(function (r) { return (r.name + ' ' + r.code + ' ' + r.cat).toLowerCase().indexOf(q) >= 0; });
+        return rows;
+    }
+    function prCounts() {
+        var med = invList().filter(function (x) { return x && x.type === 'item' && !x.archived; }), svc = invList().filter(function (x) { return x && x.type === 'service' && !x.archived; }), lab = window.hmisLab ? window.hmisLab.tests().filter(function (x) { return x.active !== false; }) : [];
+        var z = function (a) { return a.filter(function (x) { return !(Number(x.price) > 0); }).length; };
+        return { med: [med.length, z(med)], svc: [svc.length, z(svc)], lab: [lab.length, z(lab)] };
+    }
+    function prRender() {
+        if (!prRec) return; var b = prRec.body, c = prCounts();
+        var tabs = [['med', '💊 Medicines & items', c.med], ['svc', '🩺 Services', c.svc], ['lab', '🧪 Lab tests', c.lab], ['bed', '🛏️ Beds & wards'], ['fee', '🧾 Fees']];
+        var h = '<div class="hrx-tabs">' + tabs.map(function (t) { return '<button type="button" class="hrx-tab' + (PR.tab === t[0] ? ' on' : '') + '" data-prt="' + t[0] + '">' + t[1] + (t[2] ? ' <span class="hrx-badge">' + t[2][0] + (t[2][1] ? ' · ' + t[2][1] + ' unpriced' : '') + '</span>' : '') + '</button>'; }).join('') + '</div>';
+        if (PR.tab === 'med' || PR.tab === 'svc' || PR.tab === 'lab') {
+            var rows = prRows(), shown = PR.zero ? rows.filter(function (r) { return !(r.price > 0); }) : rows, more = shown.length > PR.limit;
+            h += '<div class="hrx-bar"><input type="search" id="hrx-pr-q" placeholder="Search name, code or category" value="' + esc(PR.q) + '"><label class="hrx-checks"><span><input type="checkbox" id="hrx-pr-z"' + (PR.zero ? ' checked' : '') + '> Only unpriced (0)</span></label><span class="hrx-muted">' + shown.length + ' shown</span></div>';
+            h += '<div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Code</th><th>Name</th><th>Category</th>' + (PR.tab === 'med' ? '<th>Buying</th>' : '') + '<th>Selling (KES)</th>' + (PR.tab === 'med' ? '<th>In stock</th>' : '') + '</tr></thead><tbody>' + shown.slice(0, PR.limit).map(function (r) {
+                return '<tr data-k="' + esc(r.key) + '"><td>' + esc(r.code) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.cat) + '</td>' + (PR.tab === 'med' ? '<td><input type="number" min="0" step="any" data-f="buy" value="' + r.buy + '" style="width:90px"></td>' : '') + '<td><input type="number" min="0" step="any" data-f="price" value="' + r.price + '" style="width:100px' + (r.price > 0 ? '' : ';border-color:#c0392b;background:#fdecea') + '"></td>' + (PR.tab === 'med' ? '<td><input type="number" min="0" step="any" data-f="qty" value="' + (r.qty == null ? 0 : esc(Number(r.qty) || 0)) + '" style="width:90px" title="Amount available - change it to correct the stock"></td>' : '') + '</tr>';
+            }).join('') + '</tbody></table></div>' + (more ? '<div class="hrx-foot"><button type="button" class="hrx-btn sec" id="hrx-pr-more">Show more</button></div>' : '') +
+                '<p class="hrx-muted">' + (PR.tab === 'med' ? 'Prices and the quantity in stock can be changed here (a changed quantity is recorded as a stock movement). Batches and expiry dates: Pharmacy &amp; Inventory &gt; Edit hospital list. New medicines: Add Item.' : (PR.tab === 'svc' ? 'Add, archive or change prices in bulk in the Services Catalogue.' : 'Tests are added or edited in the Lab Catalogue.')) + '</p>';
+        } else if (PR.tab === 'bed') {
+            var by = window.hmisPrice ? window.hmisPrice.bed() : {};
+            h += '<div class="hrx-sec"><h4>🛏️ Daily rates per ward</h4><p class="hrx-muted">Used when a patient is admitted or moved to a bed in that ward.</p><div class="hrx-tablewrap"><table class="hrx-tbl"><thead><tr><th>Ward</th><th>Bed / day (KES)</th><th>Nursing / day (KES)</th></tr></thead><tbody>' + prWards().map(function (w) {
+                var r = by[w] || {}; return '<tr data-w="' + esc(w) + '"><td>' + esc(w) + '</td><td><input type="number" min="0" data-f="bed" value="' + (r.bed != null ? r.bed : 1500) + '" style="width:110px"></td><td><input type="number" min="0" data-f="nur" value="' + (r.nursing != null ? r.nursing : 500) + '" style="width:110px"></td></tr>';
+            }).join('') + '</tbody></table></div><p class="hrx-muted">Meals, nursing care, dressing and oxygen are in the Services tab (Meals & Diet, Nursing & Procedures).</p></div>';
+        } else {
+            var rf = regFeeCfg();
+            h += '<div class="hrx-sec"><h4>🧾 Standard fees</h4><div class="hrx-grid"><div><label>Default consultation fee (KES)</label><input type="number" min="0" id="hrx-pf-consult" value="' + prDefaultFee() + '"></div><div><label>Registration / file fee (KES)</label><input type="number" min="0" id="hrx-pf-reg" value="' + rf.amt + '"></div></div><p class="hrx-muted">The consultation fee pre-fills the doctor\'s visit form (the doctor can still change it). Switch the registration fee on or off in the Patient Database.</p><div class="hrx-foot"><button type="button" class="hrx-btn" id="hrx-pf-save">💾 Save fees</button></div></div>';
+        }
+        b.innerHTML = h;
+        var q = b.querySelector('#hrx-pr-q'); if (q) { q.addEventListener('input', function (e) { PR.q = e.target.value; PR.limit = 150; var pos = e.target.selectionStart; prRender(); var n = prRec.body.querySelector('#hrx-pr-q'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }); }
+    }
+    function prSaveRow(tr, inp) {
+        var f = inp.getAttribute('data-f'), v = Number(String(inp.value).replace(/,/g, ''));
+        if (!isFinite(v) || v < 0) { toast('Enter a valid price.', true); return; }
+        if (PR.tab === 'bed') {
+            var w = tr.getAttribute('data-w'), bd = Number(tr.querySelector('[data-f="bed"]').value) || 0, nu = Number(tr.querySelector('[data-f="nur"]').value) || 0;
+            if (window.hmisPrice) window.hmisPrice.setBed(w, bd, nu); toast('Saved ' + w + ' rates.'); return;
+        }
+        var key = tr.getAttribute('data-k');
+        if (f === 'qty') {                                              // zip 367: the quantity in stock, edited right in the price list (same rule as the stock list editor)
+            if (typeof window.hmisStockSet === 'function') { if (window.hmisStockSet(key, v)) toast('Stock saved.'); else toast('Stock unchanged.'); }
+            else toast('The stock editor is not ready yet - try again in a moment.', true);
+            return;
+        }
+        if (PR.tab === 'lab') { if (window.hmisPrice) window.hmisPrice.setLab(key, v); }
+        else { var it = invList().find(function (x) { return x.code === key; }); if (!it) return; if (f === 'buy') it.wholesalePrice = v; else it.price = v; it.updatedAt = Date.now(); svcSave(); }
+        try { logAudit('Price changed', key, f + ' = ' + v); } catch (e) { /* none */ }
+        inp.style.borderColor = ''; inp.style.background = ''; if (f === 'price' && !(v > 0)) { inp.style.borderColor = '#c0392b'; inp.style.background = '#fdecea'; }
+        toast('Saved.');
+    }
+    function openPrices() {
+        if (prRec) { prRec.show(); prRender(); return; }
+        PR = { tab: 'med', q: '', zero: false, limit: 150 };
+        prRec = overlay('💰 Price List', 'Everything the hospital charges, in one place - edit any price and it takes effect straight away', '', { page: 'hrx-price', onClose: function () { prRec = null; } });
+        var b = prRec.body;
+        b.addEventListener('click', function (e) {
+            var t = e.target.closest('[data-prt]'); if (t) { PR.tab = t.getAttribute('data-prt'); PR.q = ''; PR.limit = 150; prRender(); return; }
+            if (e.target.closest('#hrx-pr-more')) { PR.limit += 200; prRender(); return; }
+            if (e.target.closest('#hrx-pf-save')) {
+                var c = Number(b.querySelector('#hrx-pf-consult').value), r = Number(b.querySelector('#hrx-pf-reg').value);
+                if (!(c >= 0) || !(r >= 0)) { toast('Enter valid amounts.', true); return; }
+                try { localStorage.setItem('pos_hrx_consultfee', String(c)); localStorage.setItem('pos_hrx_regfee_amt', String(r)); } catch (x) { /* none */ }
+                toast('Fees saved.');
+            }
+        });
+        b.addEventListener('change', function (e) {
+            if (e.target.id === 'hrx-pr-z') { PR.zero = e.target.checked; prRender(); return; }
+            var inp = e.target.closest('[data-f]'), tr = e.target.closest('tr'); if (inp && tr) prSaveRow(tr, inp);
+        });
+        prRender();
+    }
+    window.hrxOpenPrices = openPrices;
+
+    /* a single fixed pop-up that is toggled with a class (Edit hospital list, Lab Catalogue) becomes a page of its own: moved into a tab, shown there, and closing it returns to the tab you came from */
+    window.hrxPageify = function (el, id, cls) {
+        try {
+            var pane = pagePane(id); if (!el || !pane) return;
+            var cur = document.querySelector('.tab-content.active'); el.__prev = cur && cur !== pane ? cur.id : (el.__prev || 'dashboard-tab');
+            if (el.parentNode !== pane) pane.appendChild(el);
+            el.classList.add('hrx-page2');
+            if (!el.__pg) { el.__pg = true; new MutationObserver(function () { if (!el.classList.contains(cls) && pane.classList.contains('active')) goTab(document.getElementById(el.__prev) ? el.__prev : 'dashboard-tab'); }).observe(el, { attributes: true, attributeFilter: ['class'] }); }
+            goTab(id);
+        } catch (e) { /* the pop-up still works where it is */ }
+    };
+    window.hrxUI = { overlay: overlay, esc: esc, toast: toast, who: who, dt: dt, dd: dd };
+    /* ---- start-up ---- */
+    function init() {
+        addNavButton(); hookRegistration(); ensureMeals();
+        // a reload on one of these pages: the page was empty, so build it again
+        [['hrx-pdb', openDb], ['hrx-svc', openServices], ['hrx-price', openPrices]].forEach(function (x) { var p = $(x[0]); if (p && p.classList.contains('active') && !p.firstChild) { try { x[1](); } catch (e) { /* stay */ } } });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(init, 300); }); else setTimeout(init, 300);
+    setTimeout(init, 1500); setTimeout(init, 4000);
+})();
+</script>

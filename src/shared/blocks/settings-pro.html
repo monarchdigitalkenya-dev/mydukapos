@@ -1,0 +1,170 @@
+<!-- SETTINGS PRO (zip 304) ----------------------------------------------------------------------------------------------------------
+     The Settings tab had 20+ section buttons in one long row. They are now shown in plain-language groups (Business & Display, Sales Counter, Payments,
+     Receipts & Printers, Taxes, Staff & Security, Data & Backups, Messages, Advanced) with a "Find a setting" box, and each group says where its settings
+     are kept (this device / every device of the shop / the server).
+     zip 327 (Settings reorganisation): the same groups are now a compact STICKY LIST ON THE LEFT on desktop (>= 900px; content on the right, the list scrolls
+     on its own so it needs no page scrolling); on a phone / narrow tablet the pill rows are replaced by ONE dropdown ("Settings section"). The "Find a setting"
+     box now FILTERS the list (it used to only dim it): it looks through section names and the TEXT inside each section (labels, headings, help text -
+     never what is typed in a field, so a saved key cannot leak into it), shows "x of y sections match", "No settings match" when none do, Enter opens
+     the first match, Esc clears. A section the admin gate hid is never listed, never in the dropdown and never found. Arrow keys move through the list.
+     Still nothing is saved or moved: the dropdown and the search CLICK the real buttons, so each section's own load code and the permission check run unchanged.
+     NOTHING MOVES: the real buttons stay where they are in #settings-subnav (other scripts insert their own buttons next to them) and keep their own
+     onclick; only CSS `order` lines them up under small group labels added to the same row. A button this file does not know goes under "More".
+     If anything fails, the row simply looks as before. Ids: stp-*. -->
+<style id="stp-css">
+#settings-subnav.stp-on { display: flex !important; flex-wrap: wrap; gap: 6px !important; align-items: stretch; }
+#settings-subnav.stp-on > .settings-subtab-btn { margin: 0; }
+#settings-subnav.stp-on > .settings-subtab-btn.stp-hit { outline: 2px solid var(--warning, #f39c12); outline-offset: 1px; }
+#settings-subnav.stp-on > .stp-gone { display: none !important; }
+#settings-subnav .stp-search, #settings-subnav .stp-select { display: block; flex: 0 0 100%; box-sizing: border-box; width: 100%; margin: 0 0 6px; padding: 9px 10px; min-height: 40px; font-size: 14px; border: 1px solid var(--border-color, #cfd6dc); border-radius: 8px; background: var(--bg-surface, #fff); color: var(--dark, inherit); }
+#settings-subnav .stp-search:focus-visible, #settings-subnav .stp-select:focus-visible, #settings-subnav .settings-subtab-btn:focus-visible { outline: 3px solid var(--focus, #0b7a5f); outline-offset: 1px; }
+#settings-subnav .stp-select { display: none; }
+#settings-subnav .stp-n { flex: 0 0 100%; font-size: 11.5px; color: var(--text-muted, #6b7780); margin: -2px 2px 4px; min-height: 14px; order: 1; }
+#settings-subnav .stp-empty { display: none; flex: 0 0 100%; order: 2; padding: 9px 10px; font-size: 13px; color: var(--text-muted, #6b7780); border: 1px dashed var(--border-color, #cfd6dc); border-radius: 8px; }
+#settings-subnav .stp-empty.show { display: block; }
+#settings-subnav .stp-search { order: 0; } #settings-subnav .stp-select { order: 0; }
+@media (max-width: 899.98px) {
+    #settings-subnav.stp-on { display: block !important; margin-bottom: 12px; padding-bottom: 8px; }
+    #settings-subnav.stp-on > .settings-subtab-btn, #settings-subnav.stp-on > .stp-lbl { display: none !important; }
+    #settings-subnav .stp-select { display: block; }
+    .stp-panel > .settings-section-content.active { max-width: none; }
+}
+@media (min-width: 900px) {
+    .stp-panel { display: grid !important; grid-template-columns: 232px minmax(0, 1fr); column-gap: 22px; align-items: start; }
+    .stp-panel > * { grid-column: 1 / -1; }
+    .stp-panel > #settings-subnav.stp-on { grid-column: 1; grid-row: 2; position: sticky; top: 8px; display: flex !important; flex-direction: column; flex-wrap: nowrap; gap: 1px !important; margin: 0; padding: 0 8px 8px 0; border: 0; border-right: 1px solid var(--border-color, #e1e6ea); max-height: calc(100vh - 28px); overflow-y: auto; overscroll-behavior: contain; }
+    .stp-panel > .settings-section-content { grid-column: 2; grid-row: 2; }
+    .stp-panel > .settings-section-content.active { max-width: 740px; }
+    #settings-subnav.stp-on > .settings-subtab-btn { display: block; width: 100%; text-align: left; border: 0; border-left: 3px solid transparent; border-radius: 6px; background: transparent; padding: 8px 10px; font-size: 13px; font-weight: 600; white-space: normal; line-height: 1.25; }
+    #settings-subnav.stp-on > .settings-subtab-btn:hover { background: var(--bg-surface-alt, #f1f4f6); }
+    #settings-subnav.stp-on > .settings-subtab-btn.active { background: var(--bg-surface-alt, #eaf2f8); color: var(--accent, #2980b9); border-left-color: var(--accent, #2980b9); }
+    #settings-subnav.stp-on > .stp-lbl { flex: 0 0 auto; margin: 10px 0 2px; padding: 0 10px; }
+    #settings-subnav.stp-on > .stp-lbl i { display: none; }      /* "where it is kept" stays in the tooltip of each heading, the narrow list has no room for it */
+}
+@media (prefers-reduced-motion: no-preference) { #settings-subnav .settings-subtab-btn { transition: background .12s; } }
+</style>
+<script id="stp-js">
+(function () {
+  'use strict';
+  if (window.__stpInit) return; window.__stpInit = true;
+  var GROUPS = [
+    { k: 'biz', label: 'Business & Display', scope: 'every device of the shop', ids: ['general', 'view', 'catimages', 'ai-capture', 'ptl', 'tiles', 'categories', 'guide'] },
+    { k: 'counter', label: 'Sales Counter', scope: 'every device of the shop', ids: ['offers', 'loyalty', 'gas', 'delivery', 'delivery-agents', 'shortcuts', 'services', 'stations', 'counter', 'lpg'] },
+    { k: 'pay', label: 'Payments', scope: 'saved on the server', ids: ['paymethods', 'payment', 'payment-accounts', 'sha', 'till'] },
+    { k: 'rcpt', label: 'Receipts & Printers', scope: 'receipts: whole shop · printers: this device', ids: ['receipts', 'hardware'] },
+    { k: 'tax', label: 'Taxes', scope: 'whole shop · eTIMS on the server', ids: ['tax', 'etims'] },
+    { k: 'staff', label: 'Staff & Security', scope: 'whole shop', ids: ['staff', 'attendance', 'security', 'devices', 'admin-log'] },
+    { k: 'data', label: 'Data, Branches & Backups', scope: 'saved on the server', ids: ['import', 'backups', 'branches', 'my-plan', 'plan'] },
+    { k: 'dev', label: 'This Device', scope: 'this device only', ids: ['install'] },
+    { k: 'msg', label: 'Messages', scope: 'saved on the server', ids: ['broadcast', 'sms', 'email'] },
+    { k: 'adv', label: 'Advanced & Danger Zone', scope: 'careful: cannot be undone', ids: ['danger'] },
+  ];
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function groupOf(sec) {
+    var id = String(sec || '').replace(/^settings-section-/, '');
+    for (var i = 0; i < GROUPS.length; i++) if (GROUPS[i].ids.indexOf(id) >= 0) return i;
+    for (var j = 0; j < GROUPS.length; j++) if (GROUPS[j].ids.some(function (x) { return id.indexOf(x) === 0; })) return j;
+    return GROUPS.length;
+  }
+  var lastSig = '';
+  function arrange() {
+    var nav = $('settings-subnav'); if (!nav) return;
+    var btns = Array.prototype.filter.call(nav.children, function (c) { return c.classList && c.classList.contains('settings-subtab-btn'); });
+    var sig = btns.map(function (b) { return (b.getAttribute('data-section') || '') + (b.style.display === 'none' ? '-' : ''); }).join(',');
+    if (sig === lastSig && nav.classList.contains('stp-on')) return;
+    lastSig = sig;
+    var used = {};
+    btns.forEach(function (b, i) { var gi = groupOf(b.getAttribute('data-section')); b.style.order = String((gi + 1) * 100 + 1); if (b.style.display !== 'none' && !b.hidden) used[gi] = true; });
+    Array.prototype.forEach.call(nav.querySelectorAll(':scope > .stp-lbl'), function (x) { x.remove(); });
+    GROUPS.concat([{ k: 'more', label: 'More', scope: '' }]).forEach(function (gr, gi) {
+      if (!used[gi]) return;
+      var l = document.createElement('div'); l.className = 'stp-lbl'; l.setAttribute('aria-hidden', 'true'); l.style.order = String((gi + 1) * 100);
+      l.innerHTML = esc(gr.label) + (gr.scope ? ' <i title="Where these settings are kept">' + esc(gr.scope) + '</i>' : '');
+      nav.appendChild(l);
+    });
+    nav.classList.add('stp-on');
+    if (nav.parentNode) nav.parentNode.classList.add('stp-panel');
+    nav.setAttribute('role', 'navigation'); nav.setAttribute('aria-label', 'Settings sections');
+    var oldFind = $('stp-find'); if (oldFind && oldFind.parentNode) oldFind.parentNode.removeChild(oldFind);      // the box now lives inside the list (left column / phone block)
+    if (!$('stp-q')) {
+      var q = document.createElement('input'); q.type = 'search'; q.id = 'stp-q'; q.className = 'stp-search'; q.autocomplete = 'off';
+      q.placeholder = 'Find a setting (printer, VAT, password…)'; q.setAttribute('aria-label', 'Find a setting');
+      var sel = document.createElement('select'); sel.id = 'stp-nav'; sel.className = 'stp-select'; sel.setAttribute('aria-label', 'Settings section');
+      var cnt = document.createElement('div'); cnt.id = 'stp-n'; cnt.className = 'stp-n'; cnt.setAttribute('aria-live', 'polite');
+      var emp = document.createElement('div'); emp.id = 'stp-empty'; emp.className = 'stp-empty'; emp.setAttribute('role', 'status'); emp.textContent = 'No settings match your search.';
+      nav.insertBefore(emp, nav.firstChild); nav.insertBefore(cnt, nav.firstChild); nav.insertBefore(sel, nav.firstChild); nav.insertBefore(q, nav.firstChild);
+      var t = null;
+      q.addEventListener('input', function () { clearTimeout(t); t = setTimeout(function () { find(q.value); }, 90); });
+      q.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { q.value = ''; find(''); }
+        else if (e.key === 'Enter') { var h = firstMatch(); if (h && q.value.trim()) { e.preventDefault(); h.click(); } }
+      });
+      sel.addEventListener('change', function () { var b = nav.querySelector('.settings-subtab-btn[data-section="' + sel.value + '"]'); if (b && b.style.display !== 'none') b.click(); });
+      nav.addEventListener('keydown', function (e) {
+        if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || !e.target || !e.target.classList || !e.target.classList.contains('settings-subtab-btn')) return;
+        var list = shown().sort(function (x, y) { return (+x.style.order || 0) - (+y.style.order || 0); }), i = list.indexOf(e.target), nx = list[i + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (nx) { e.preventDefault(); nx.focus(); }
+      });
+      try { new MutationObserver(function () { clearTimeout(window.__stpObs); window.__stpObs = setTimeout(function () { try { arrange(); syncSelect(); } catch (e2) { /* cosmetic */ } }, 40); }).observe(nav, { attributes: true, attributeFilter: ['class', 'style'], subtree: true }); } catch (e3) { /* the interval below still catches changes */ }
+    }
+    try { var qq = $('stp-q'); if (qq && qq.value) find(qq.value); } catch (e4) { /* the search re-runs on the next keystroke */ }
+    syncSelect();
+  }
+  function btnList() { var nav = $('settings-subnav'); return nav ? Array.prototype.filter.call(nav.children, function (c) { return c.classList && c.classList.contains('settings-subtab-btn'); }) : []; }
+  function allowed(b) { return b.style.display !== 'none' && !b.hidden; }           // the admin gate hides with an inline display:none
+  function shown() { return btnList().filter(function (b) { return allowed(b) && !b.classList.contains('stp-gone'); }); }
+  function firstMatch() { return shown().sort(function (x, y) { return (+x.style.order || 0) - (+y.style.order || 0); })[0] || null; }
+  function syncSelect() {
+    var sel = $('stp-nav'); if (!sel) return;
+    var bs = shown().sort(function (x, y) { return (+x.style.order || 0) - (+y.style.order || 0); }), cur = null;
+    bs.forEach(function (b) { b.removeAttribute('aria-current'); if (b.classList.contains('active')) cur = b; });
+    if (cur) cur.setAttribute('aria-current', 'page');
+    var sig = bs.map(function (b) { return b.getAttribute('data-section') + '|' + (b.textContent || '').trim(); }).join('~');
+    if (sel.getAttribute('data-sig') !== sig) {
+      sel.innerHTML = '';
+      bs.forEach(function (b) { var o = document.createElement('option'); o.value = b.getAttribute('data-section'); o.textContent = (b.textContent || '').trim(); sel.appendChild(o); });
+      sel.setAttribute('data-sig', sig);
+    }
+    var want = cur ? cur.getAttribute('data-section') : '';
+    if (want && sel.value !== want) sel.value = want;
+  }
+  // The words of a section: headings, labels, help text, option names, button captions, placeholders. NEVER what is typed in a field.
+  function textOf(sec) {
+    if (!sec) return '';
+    var out = [], w = document.createTreeWalker(sec, NodeFilter.SHOW_TEXT, null);
+    for (var n = w.nextNode(); n; n = w.nextNode()) { var pn = n.parentNode && n.parentNode.nodeName; if (pn === 'SCRIPT' || pn === 'STYLE' || pn === 'TEXTAREA') continue; out.push(n.nodeValue); }
+    Array.prototype.forEach.call(sec.querySelectorAll('input[placeholder],textarea[placeholder]'), function (i) { out.push(i.getAttribute('placeholder')); });
+    return out.join(' ').toLowerCase().replace(/\s+/g, ' ');
+  }
+  function find(text) {
+    var nav = $('settings-subnav'), n = $('stp-n'), emp = $('stp-empty'); if (!nav) return;
+    var q = String(text || '').trim().toLowerCase().replace(/\s+/g, ' '), hits = 0, total = 0, first = null;
+    btnList().forEach(function (b) {
+      b.classList.remove('stp-hit', 'stp-gone');
+      if (!allowed(b)) return;               // a section the gate hid is not searched, so it is never revealed
+      total++;
+      if (!q) return;
+      var hit = (b.textContent || '').toLowerCase().indexOf(q) >= 0;
+      if (!hit) { var t = textOf($(b.getAttribute('data-section') || '')); hit = q.split(' ').every(function (w) { return t.indexOf(w) >= 0; }); }
+      if (hit) { hits++; if (!first) first = b; b.classList.add('stp-hit'); } else b.classList.add('stp-gone');
+    });
+    Array.prototype.forEach.call(nav.querySelectorAll(':scope > .stp-lbl'), function (l) {            // a heading with nothing under it goes too
+      if (!q) { l.classList.remove('stp-gone'); return; }
+      var o = +l.style.order, any = btnList().some(function (b) { return !b.classList.contains('stp-gone') && allowed(b) && +b.style.order > o && +b.style.order < o + 100; });
+      l.classList.toggle('stp-gone', !any);
+    });
+    var msg = q ? (hits ? hits + ' of ' + total + ' sections match' : '') : '';
+    if (n && n.textContent !== msg) n.textContent = msg;
+    if (emp) emp.classList.toggle('show', !!q && hits === 0);
+    syncSelect();
+  }
+  function boot() {
+    var n = 0;
+    (function tick() { try { arrange(); syncSelect(); } catch (e) { /* the row stays as it was */ } if (++n < 30) setTimeout(tick, n < 10 ? 300 : 1000); })();
+    setInterval(function () { try { arrange(); syncSelect(); } catch (e) { /* cosmetic */ } }, 3000);
+  }
+  window.settingsPro = { arrange: function () { lastSig = ''; arrange(); }, find: find, groupOf: groupOf };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

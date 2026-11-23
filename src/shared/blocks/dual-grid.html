@@ -1,0 +1,56 @@
+<!-- DUAL GRID (zip 327) ---------------------------------------------------------------------------------------------------
+     ROOT CAUSE of "box-and-piece items are in the search results but not in the photo grid": renderItemImageGrid() filtered every item with
+     dualUnit out of the grid ("ambiguous for a single tap - search only"), and the category counters skipped them too.
+     FIX: a box-and-piece item now gets exactly ONE tile (never one per unit). The tile shows the picture and name, and has two buttons -
+     "Box" with the box price and "Piece" with the piece price. Tapping the picture adds one box (or one piece when no whole box is left).
+     Each button uses the same addToCart(code, 'box' | 'piece') the search results use, so stock (the item's own unitsPerBox - never a
+     global factor), prices, offers, the cart unit switch and every report behave exactly as for an item picked from the search box.
+     A variant that is sold by the box and the piece gets the same two buttons. An item with both units out of stock shows "Out of stock".
+     Apps whose grid does not call window.igcDualCellHtml keep their old behaviour (the grid code checks for it). -->
+<style>
+.item-grid-cell.igc-dual .igc-units { display: flex; gap: 4px; padding: 2px 5px 6px; }
+.item-grid-cell.igc-dual .igc-u { flex: 1 1 0; min-width: 0; min-height: 34px; border: 1px solid var(--border-color, #cfd6dc); border-radius: 8px; background: var(--bg-surface-alt, #f4f6f7); color: inherit; font: 700 11px/1.15 system-ui, sans-serif; padding: 3px 2px; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.item-grid-cell.igc-dual .igc-u small { font-weight: 600; font-size: 10px; opacity: .85; }
+.item-grid-cell.igc-dual .igc-u:hover:not(:disabled) { border-color: var(--accent, #2980b9); }
+.item-grid-cell.igc-dual .igc-u:disabled { opacity: .45; cursor: not-allowed; text-decoration: line-through; }
+.item-grid-cell.igc-dual .igc-u:focus-visible { outline: 3px solid var(--focus, #0b7a5f); outline-offset: 1px; }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.igcDualCellHtml) return;
+    function esc(s) { return typeof escapeHtml === 'function' ? escapeHtml(s) : String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function jsa(s) { return typeof escapeJsAttr === 'function' ? escapeJsAttr(s) : String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+    function money(n) { return 'KES ' + (Number(n) || 0).toFixed(2); }
+    // p = the item; v = one of its variants when the tile is for a variant sold by the box and the piece
+    window.igcDualCellHtml = function (p, v) {
+        var boxAvail, pcAvail, boxPrice, pcPrice, name, image, vid = '';
+        if (v) {
+            boxAvail = Number(v.qty) || 0; pcAvail = Number(v.pieceQty) || 0;
+            boxPrice = Number(v.price) || 0; pcPrice = Number(v.piecePrice) || 0;
+            name = p.name + ' — ' + v.name; image = v.image || p.image; vid = ", '" + jsa(v.id) + "'";
+        } else {
+            boxAvail = getAvailableStock(p, 'box'); pcAvail = getAvailableStock(p, 'piece');
+            boxPrice = getEffectivePrice(p, 'box'); pcPrice = Number(p.piecePrice) || 0;
+            name = p.name; image = p.image;
+        }
+        var boxOut = !(boxAvail > 0), pcOut = !(pcAvail > 0), allOut = boxOut && pcOut;
+        var boxWord = 'Box', pcWord = 'Piece';
+        try { if (!v && p.looseUnit && p.looseUnit !== 'pcs') { if (typeof dualBoxWord === 'function') boxWord = dualBoxWord(p); if (typeof dualLooseWord === 'function') pcWord = dualLooseWord(p); } } catch (e) { /* the plain words */ }
+        var code = jsa(p.code);
+        var first = boxOut ? 'piece' : 'box';
+        var photo = image ? '<img src="' + esc(image) + '" alt="' + esc(name) + '" loading="lazy">' : '<div class="igc-noimg">📦</div>';
+        var pill = '';
+        try { if (!allOut && !v && typeof gridStockPillHtml === 'function') pill = gridStockPillHtml(p); } catch (e) { pill = ''; }
+        function btn(mode, word, price, out) {
+            return '<button type="button" class="igc-u" data-mode="' + mode + '"' + (out ? ' disabled aria-disabled="true"' : '') + ' onclick="event.stopPropagation(); addToCart(\'' + code + '\', \'' + mode + '\', undefined' + (v ? vid.replace(/^, /, ', ') : '') + ')" aria-label="' + esc(name + ', ' + word + ', ' + money(price) + (out ? ', out of stock' : '')) + '">'
+                + esc(word) + '<small>' + (out ? 'Out' : money(price)) + '</small></button>';
+        }
+        return '<div class="item-grid-cell igc-dual' + (allOut ? ' out-of-stock' : '') + '" data-dual="1" onclick="' + (allOut ? '' : "addToCart('" + code + "', '" + first + "', undefined" + vid + ")") + '">'
+            + photo + pill
+            + '<div class="igc-name">' + esc(name) + '</div>'
+            + (allOut ? '<div class="igc-price igc-out">Out of stock</div>' : '<div class="igc-units">' + btn('box', boxWord, boxPrice, boxOut) + btn('piece', pcWord, pcPrice, pcOut) + '</div>')
+            + '</div>';
+    };
+})();
+</script>

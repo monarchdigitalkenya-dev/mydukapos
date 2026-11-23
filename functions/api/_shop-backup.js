@@ -3,7 +3,7 @@
 // WHAT A PERMANENT SHOP IS MADE OF (checked in the code, not assumed):
 //   KV   license:<id> (the link record) + slug:<slug> (subdomain -> id) + the licence index (rebuilt by saveLicense) + every key that names the shop
 //        (pos-data:state:<id> and its archives, pos-data:mode:<id>, receipts, QR menus, till / M-PESA records, staff & branch data, ledger outbox ...)
-//   D1   LEDGER_DB tables with a client_id column (sales, payments, bills, returns, stock, orders, payroll, chama, lpg, till ...) and
+//   D1   LEDGER_DB tables with a client_id column (sales, payments, bills, returns, stock, orders, payroll, lpg, till ...) and
 //        LEDGER_AUDIT_DB (append-only audit)
 //   DO   "database" shops keep their working state in the ShopStore Durable Object (router Worker), not in KV
 //   R2   pictures (shop/<id>/<kind>/<file>) in the MEDIA bucket (or in KV on a deployment without R2)
@@ -29,7 +29,6 @@ import { readIndex as readAccountIndex, getAccount, saveAccount } from './_accou
 import { mediaPut, mediaBackend } from './_media.js';
 import { ensureLedgerSchema } from './_ledger.js';
 import { ensureAuditSchema } from './_audit-db.js';
-import { ensureChamaSchema } from './_chama-core.js';
 import { ensurePayrollSchema } from './_payroll.js';
 import { ensureEfficiencySchema } from './_write-fence.js';
 import { ensureTillSchema } from './_till-store.js';
@@ -43,14 +42,14 @@ export const ROW_PAGE = 400;
 export const DENY_PREFIXES = [
   'license:', 'license-gone', 'license-index', 'slug:',                    // rebuilt from the shop record on restore
   'gateway-config:', 'sms-config:', 'sha-config:', 'sha-token:', 'etims-config:', 'email-config', 'payment-accounts:', 'image-search-config:', 'gemini', 'whatsapp',
-  'callback-key:', 'device-auth:', 'pair-code:', 'staff-sess:', 'staff-key:', 'staff-auth-mode:', 'demo-account-session:', 'owner-', 'otp:', 'token:',
+  'callback-key:', 'device-auth:', 'pair-code:', 'staff-sess:', 'staff-key:', 'staff-auth-mode:', 'ai-capture-shop-config:', 'demo-account-session:', 'owner-', 'otp:', 'token:',
   'rl:', 'rl185:', 'public-demo-rate:', 'print-relay-devices:', 'barcode-cache:', 'till-purge:', 'till-payment-rejected:',
   'pos-data:backup:', 'pos-data:sizealert:', 'pay-change-log:',
 ];
 export const denied = (key) => DENY_PREFIXES.some((p) => key.startsWith(p));
 
 // The per-shop secrets that can travel (a subset of DENY_PREFIXES; sessions, OTPs, pairing codes and caches never do).
-export const SECRET_PREFIXES = ['gateway-config:', 'sms-config:', 'sha-config:', 'sha-token:', 'etims-config:', 'payment-accounts:', 'image-search-config:', 'callback-key:', 'device-auth:', 'staff-key:', 'staff-auth-mode:'];
+export const SECRET_PREFIXES = ['gateway-config:', 'sms-config:', 'sha-config:', 'sha-token:', 'etims-config:', 'payment-accounts:', 'image-search-config:', 'callback-key:', 'device-auth:', 'staff-key:', 'staff-auth-mode:', 'ai-capture-shop-config:'];
 export const isSecretKey = (key) => SECRET_PREFIXES.some((p) => String(key).startsWith(p));
 // Platform billing keys (not tied to one shop). Restored only where the target has nothing yet.
 export const PLATFORM_PREFIXES = ['billing-settings:', 'billing-offers:', 'billing-offer-used:', 'bill-evt:', 'bill-aud:', 'bill-ref:', 'bill-pay:', 'bill-pay-index:'];
@@ -94,11 +93,12 @@ export async function exportSchema(env) {
     const { results } = await db.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name <> 'd1_migrations' ORDER BY name`).all();
     for (const t of results || []) {
       const cols = (await db.prepare(`PRAGMA table_info(${t.name})`).all()).results || [];
-      if (!cols.some((c) => c.name === 'client_id')) { out.notPerShop.push({ db: name, table: t.name }); continue; }
+      const key = cols.some((c) => c.name === 'client_id') ? 'client_id' : (cols.some((c) => c.name === 'group_id') ? 'group_id' : '');       // zip 269: the branch-group store (store_items, store_movements) is keyed by group_id
+      if (!key) { out.notPerShop.push({ db: name, table: t.name }); continue; }
       const idx = (await db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`).bind(t.name).all()).results || [];
       const fk = ((await db.prepare(`PRAGMA foreign_key_list(${t.name})`).all()).results || []).map((f) => f.table);
       const pk = cols.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
-      out.tables.push({ db: name, name: t.name, ddl: [t.sql].concat(idx.map((i) => i.sql)), cols: cols.map((c) => c.name), pk, fk });
+      out.tables.push({ db: name, name: t.name, key, ddl: [t.sql].concat(idx.map((i) => i.sql)), cols: cols.map((c) => c.name), pk, fk });
     }
   }
   return out;
@@ -174,12 +174,13 @@ export async function exportKvGet(env, { keys }) {
   return { ok: true, items, rest: keys.slice(i) };
 }
 
-export async function exportRows(env, { db: dbName, table, shop, after, cols, pk }) {
+export async function exportRows(env, { db: dbName, table, shop, after, cols, pk, col }) {
   const db = dbs(env)[dbName];
   if (!db || !safeIdent(table) || !SHOP_ID_RE.test(shop)) return { ok: false, error: 'bad request' };
   const order = (pk && pk.length ? pk : ['rowid']).filter((c) => c === 'rowid' || safeIdent(c));
   const tuple = order.join(', ');
-  let sql = `SELECT ${order[0] === 'rowid' ? 'rowid AS _rid, ' : ''}* FROM ${table} WHERE client_id = ?`;
+  const keyCol = col === 'group_id' ? 'group_id' : 'client_id';
+  let sql = `SELECT ${order[0] === 'rowid' ? 'rowid AS _rid, ' : ''}* FROM ${table} WHERE ${keyCol} = ?`;
   const args = [shop];
   if (after && after.length) { sql += ` AND (${tuple}) > (${after.map(() => '?').join(', ')})`; args.push(...after); }
   sql += ` ORDER BY ${tuple} LIMIT ${ROW_PAGE}`;
@@ -214,7 +215,7 @@ export async function exportMediaGet(env, { keys, shop }) {
     const o = await env.MEDIA.get(key);
     if (!o) { items.push({ key, missing: true }); continue; }
     const buf = await o.arrayBuffer(); const v = b64(buf); bytes += v.length;
-    items.push({ key, b64: v, type: (o.httpMetadata && o.httpMetadata.contentType) || 'image/jpeg' });
+    items.push({ key, b64: v, type: (o.httpMetadata && o.httpMetadata.contentType) || 'image/jpeg', meta: o.customMetadata && Object.keys(o.customMetadata).length ? o.customMetadata : undefined });
   }
   return { ok: true, items, rest: keys.slice(i) };
 }
@@ -227,6 +228,29 @@ export async function exportAccounts(env, { ids }) {
     if (a) accounts.push({ shop: e.demoClientId, account: a });
   }
   return { ok: true, accounts };
+}
+// zip 269: the e-mail + password record a shop's recovery pointer names (account-recovery-client:<id> -> e-mail -> account-recovery-account:<e-mail>). The pointer travels with the shop's keys; the record
+// itself has no shop id in its key, so it is fetched through the pointer. It holds a salt and a password HASH (never a password), like the website account.
+const RECOVERY_ACCOUNT = 'account-recovery-account:';
+export async function exportRecovery(env, { ids }) {
+  const items = [];
+  for (const id of (ids || []).filter((i) => SHOP_ID_RE.test(i)).slice(0, 200)) {
+    const email = await env.mydukapos_kv.get('account-recovery-client:' + id);
+    if (!email || /[\s]/.test(email) || email.length > 200) continue;
+    const v = await env.mydukapos_kv.get(RECOVERY_ACCOUNT + email);
+    if (v != null) items.push({ shop: id, key: RECOVERY_ACCOUNT + email, value: v });
+  }
+  return { ok: true, items };
+}
+export async function restoreRecovery(env, { items }) {
+  let put = 0, kept = 0;
+  for (const it of items || []) {
+    const key = String(it.key || '');
+    if (!key.startsWith(RECOVERY_ACCOUNT) || key.length > 260) continue;
+    if ((await env.mydukapos_kv.get(key)) != null) { kept++; continue; }          // never replace a record this deployment already has
+    await env.mydukapos_kv.put(key, String(it.value)); put++;
+  }
+  return { ok: true, put, kept };
 }
 export async function exportBranchGroups(env, { groups }) {
   const out = [];
@@ -325,24 +349,36 @@ export async function restoreBranchGroup(env, { key, value }) {
   return { ok: true };
 }
 
+// zip 269: while rows are restored the ledger's audit triggers are switched off (ledger_meta audit_disabled) - otherwise every restored record writes a fresh audit row that takes an id the
+// restored audit history needs, and part of that history is silently dropped. r-schema returns what the switch was, r-finish puts it back.
+async function metaGet(db, k) { try { const r = await db.prepare('SELECT v FROM ledger_meta WHERE k = ?').bind(k).first(); return r ? r.v : null; } catch (e) { return null; } }
+async function metaSet(db, k, v) { if (v == null) await db.prepare('DELETE FROM ledger_meta WHERE k = ?').bind(k).run(); else await db.prepare('INSERT OR REPLACE INTO ledger_meta (k, v) VALUES (?, ?)').bind(k, String(v)).run(); }
+export async function restoreFinish(env, { auditPrev }) {
+  const d = dbs(env);
+  if (d.ledger && auditPrev !== undefined) await metaSet(d.ledger, 'audit_disabled', auditPrev);
+  return { ok: true };
+}
 export async function restoreSchema(env) {
   const d = dbs(env), done = [];
   const tryDo = async (name, fn) => { try { await fn(); done.push(name); } catch (e) { done.push(name + ' (skipped: ' + String((e && e.message) || e).slice(0, 80) + ')'); } };
-  if (d.ledger) { await tryDo('ledger', () => ensureLedgerSchema(d.ledger)); await tryDo('chama', () => ensureChamaSchema(d.ledger)); await tryDo('payroll', () => ensurePayrollSchema(d.ledger)); await tryDo('efficiency', () => ensureEfficiencySchema(d.ledger)); await tryDo('till', () => ensureTillSchema(d.ledger)); }
+  if (d.ledger) { await tryDo('ledger', () => ensureLedgerSchema(d.ledger)); await tryDo('payroll', () => ensurePayrollSchema(d.ledger)); await tryDo('efficiency', () => ensureEfficiencySchema(d.ledger)); await tryDo('till', () => ensureTillSchema(d.ledger)); }
   if (d.audit) await tryDo('audit', () => ensureAuditSchema(d.audit));
-  return { ok: true, done };
+  let auditPrev = null;
+  if (d.ledger) { try { auditPrev = await metaGet(d.ledger, 'audit_disabled'); await metaSet(d.ledger, 'audit_disabled', '1'); } catch (e) { done.push('audit switch (skipped: ' + String((e && e.message) || e).slice(0, 60) + ')'); } }
+  return { ok: true, done, auditPrev };
 }
 
 const DDL_OK = /^\s*CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)\s/i;
-export async function restoreRows(env, { db: dbName, table, ddl, rows, ids }) {
+export async function restoreRows(env, { db: dbName, table, ddl, rows, ids, col }) {
   const db = dbs(env)[dbName];
   if (!db || !safeIdent(table)) return { ok: false, error: 'bad request' };
   const idSet = new Set(ids || []);
   for (const s of ddl || []) { if (!DDL_OK.test(s)) continue; try { await db.prepare(String(s).replace(/^(\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX))\s+(?!IF\s+NOT\s+EXISTS)/i, '$1 IF NOT EXISTS ')).run(); } catch (e) { /* already there */ } }
   const cols = ((await db.prepare(`PRAGMA table_info(${table})`).all()).results || []).map((c) => c.name);
   if (!cols.length) return { ok: false, error: `Table ${table} does not exist and could not be created.` };
+  const keyCol = col === 'group_id' ? 'group_id' : 'client_id';
   const good = []; let skipped = 0;
-  for (const r of rows || []) { if (!idSet.has(r.client_id)) { skipped++; continue; } good.push(r); }
+  for (const r of rows || []) { if (!idSet.has(r[keyCol])) { skipped++; continue; } good.push(r); }
   let inserted = 0, ignored = 0, error = '';
   for (let i = 0; i < good.length; i += 25) {
     const part = good.slice(i, i + 25);
@@ -352,7 +388,16 @@ export async function restoreRows(env, { db: dbName, table, ddl, rows, ids }) {
       stmts.push(db.prepare(`INSERT OR IGNORE INTO ${table} (${use.join(', ')}) VALUES (${use.map(() => '?').join(', ')})`).bind(...use.map((c) => (r[c] === undefined ? null : r[c]))));
     }
     try { const res = await db.batch(stmts); for (const x of res.slice(1)) { if (x.meta && x.meta.changes) inserted += x.meta.changes; else ignored++; } }
-    catch (e) { error = String((e && e.message) || e).slice(0, 200); break; }
+    catch (e) {
+      // zip 269: one refused row (a final payroll run on a RE-run: the table's trigger aborts the statement even under INSERT OR IGNORE) must not lose the other rows of the chunk: row by row,
+      // a refusal because the row/run is already there counts as "already present"; anything else is a real error and stops here as before.
+      let bad = '';
+      for (const st of stmts.slice(1)) {
+        try { const x = await st.run(); if (x.meta && x.meta.changes) inserted += x.meta.changes; else ignored++; }
+        catch (e2) { const m = String((e2 && e2.message) || e2); if (/payroll_run_is_final|UNIQUE|already|constraint/i.test(m)) ignored++; else { bad = m.slice(0, 200); break; } }
+      }
+      if (bad) { error = bad; break; }
+    }
   }
   return { ok: !error && !skipped, inserted, ignored, skipped, error: error || (skipped ? `${skipped} rows named a shop outside this package` : '') };
 }
@@ -378,7 +423,7 @@ export async function restoreMedia(env, { items, shop }) {
   for (const it of items || []) {
     try {
       if (!String(it.key).startsWith(`shop/${shop}/`)) { errors.push({ key: it.key, error: 'wrong shop' }); continue; }
-      await mediaPut(env, it.key, unb64(it.b64), it.type || 'image/jpeg', {}); put++;
+      await mediaPut(env, it.key, unb64(it.b64), it.type || 'image/jpeg', it.meta && typeof it.meta === 'object' ? it.meta : {}); put++;
     } catch (e) { errors.push({ key: it.key, error: String((e && e.message) || e).slice(0, 120) }); }
   }
   return { ok: !errors.length, put, errors };
@@ -402,7 +447,8 @@ export async function restoreVerify(env, { shop, keys, tables }) {
   for (const k of (keys || []).slice(0, 400)) if ((await env.mydukapos_kv.get(k)) == null) out.kvMissing++;
   for (const t of tables || []) {
     const db = dbs(env)[t.db]; if (!db || !safeIdent(t.name)) { out.tables[t.name] = -1; continue; }
-    out.tables[t.name] = (await db.prepare(`SELECT COUNT(*) AS n FROM ${t.name} WHERE client_id = ?`).bind(shop).first()).n;
+    const keyCol = t.col === 'group_id' ? 'group_id' : 'client_id';
+    out.tables[t.name] = (await db.prepare(`SELECT COUNT(*) AS n FROM ${t.name} WHERE ${keyCol} = ?`).bind(t.id || shop).first()).n;
   }
   return out;
 }

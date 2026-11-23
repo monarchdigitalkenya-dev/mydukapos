@@ -44,9 +44,16 @@
         .ctl-thumb { position: relative; flex: 0 0 56px; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; background: var(--bg-surface-alt, #f4f6f7); }
         .ctl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .ctl-thumb .ctl-ph { font-size: 20px; }
-        .ctl-rname { flex: 1 1 130px; min-width: 0; overflow-wrap: anywhere; }
-        .ctl-rname small { display: block; color: #7f8c8d; font-size: 12px; }
+        .ctl-rname, .ctl-mname { flex: 1 1 130px; min-width: 0; overflow-wrap: anywhere; }
+        .ctl-rname small, .ctl-mname small { display: block; color: #7f8c8d; font-size: 12px; }
         .ctl-racts { display: flex; flex-wrap: wrap; gap: 8px; }
+        .ctl-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin: 8px 0 6px; }
+        .ctl-add input[type=text], .ctl-rn { flex: 1 1 200px; min-height: 44px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border-color, #cfd6db); background: transparent; color: inherit; font-size: 15px; box-sizing: border-box; }
+        .ctl-add .ctl-ordlab { flex-basis: 100%; }
+        .ctl-add button { min-height: 44px; }
+        .ctl-mrow { animation: ctlIn .18s ease-out; }
+        @keyframes ctlIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) { .ctl-mrow { animation: none; } }
         .ctl-racts button { min-height: 44px; }
         .ctl-ordlab { display: block; margin: 10px 0 4px; font-size: 14px; font-weight: 700; }
         .ctl-ordsel { box-sizing: border-box; display: block; width: 100%; max-width: 420px; min-height: 44px; font-size: 16px; padding: 8px 10px; }
@@ -133,7 +140,7 @@
             if (srcInfo) return srcInfo;
             var src = '';
             try { src = String((window.__ctlRenderOrig || window.renderItemImageGrid) || ''); } catch (e) { src = ''; }
-            srcInfo = { noService: /type\s*!==\s*'service'/.test(src), noVariantParent: /!p\.hasVariants/.test(src), variantTiles: /variantItems/.test(src) };
+            srcInfo = { noService: /type\s*!==\s*'service'/.test(src) && !/serviceTiles/.test(src),   /* zip 381: the Shop grid shows service tiles */ noVariantParent: /!p\.hasVariants/.test(src), variantTiles: /variantItems/.test(src), dualTiles: /igcDualCellHtml/.test(src) && typeof window.igcDualCellHtml === 'function' };   // zip 327: dualTiles = the grid draws box-and-piece items
             return srcInfo;
         }
         function normCat(c) { return String(c == null ? '' : c).trim().toLowerCase(); }
@@ -143,7 +150,7 @@
             inv.forEach(function (p) {
                 if (!p) return;
                 try { if (typeof isSellableProduct === 'function' && !isSellableProduct(p)) return; } catch (e) { return; }
-                if (p.dualUnit || (si.noService && p.type === 'service')) return;
+                if ((p.dualUnit && !si.dualTiles) || (si.noService && p.type === 'service')) return;
                 var n = 1;
                 if (p.hasVariants) {
                     if (si.variantTiles && Array.isArray(p.variants) && p.type !== 'service') n = p.variants.length; else if (si.noVariantParent) return;
@@ -499,6 +506,7 @@
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
             var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
             if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device (zip 244: + sub-categories and items)
+            if (lsGet(LS_XC) !== null) o.catExtra = extras();                  // zip 338: categories added in Settings that have no item yet
             if (lsGet(LS_HIDE) !== null) o.catHideAll = hideGet();             // zip 244: hide "All items" / "All <category>"
             return o;
         }
@@ -513,6 +521,7 @@
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
             if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
             if (data.catOrder && typeof data.catOrder === 'object' && !Array.isArray(data.catOrder)) { var co = JSON.stringify(data.catOrder); if (co !== JSON.stringify(ordGet()) && co !== lsGet(LS_ORD)) { lsSet(LS_ORD, co); changed = true; } }
+            if (Array.isArray(data.catExtra)) { var nx = data.catExtra.filter(function (x) { return typeof x === 'string' && x.trim(); }).slice(0, XMAX), sx2 = JSON.stringify(nx); if (sx2 !== JSON.stringify(extras())) { lsSet(LS_XC, sx2); changed = true; } }
             if (data.catHideAll && typeof data.catHideAll === 'object' && !Array.isArray(data.catHideAll)) {
                 var nh = { items: data.catHideAll.items === true, cat: data.catHideAll.cat === true };
                 if (JSON.stringify(nh) !== JSON.stringify(hideGet())) { lsSet(LS_HIDE, JSON.stringify(nh)); changed = true; }
@@ -603,7 +612,8 @@
         function setPlain(on) { lsSet(LS_PLAIN, on ? 'true' : 'false'); pushSoon(); renderPanel(); lastMode = ''; refresh(); return plainOn(); }
         /* ---------- Settings > Category images ---------- */
         var pendingKey = '';
-        function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } }
+        var pendMsg = null;
+        function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } pendMsg = { t: t, bad: bad }; setTimeout(function () { pendMsg = null; }, 0); }   // a re-draw of the panel straight after keeps the message (zip 338)
         function thumb(label, key) {
             var im = images()[key];
             return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
@@ -690,6 +700,171 @@
             o.smode = m; if (subMode(o) === 'manual') seedSubs(o); ordSave(o);
         };
         window.__ctlSetItemMode = function (m) { var o = ordGet(); if (IMODES.indexOf(m) < 0) return; o.imode = m; ordSave(o); };
+        /* ---------- zip 338: add / rename / delete a category ---------- */
+        var LS_XC = 'pos_cat_extra', renaming = null, XMAX = 200;
+        function cleanName(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 60); }
+        function extras() { var a; try { a = JSON.parse(lsGet(LS_XC) || '[]'); } catch (e) { a = []; } return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string' && x.trim(); }).slice(0, XMAX) : []; }
+        function saveExtras(a) { lsSet(LS_XC, JSON.stringify(a.slice(0, XMAX))); pushSoon(); }
+        window.__ctlExtraCats = function () { return extras(); };       // categories added here that have no item yet (the item forms offer them too)
+        function invList() { try { return typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { return []; } }
+        function persistInv() { try { safeSetItem('pos_inventory', JSON.stringify(invList())); } catch (e) { /* next save */ } pushSoon(); try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* not open */ } }
+        function hotelKinds() { try { return typeof hospCatKinds === 'function' ? hospCatKinds() : []; } catch (e) { return []; } }
+        // everything that can be managed: [{ key, label, n, id?, kind?, extra? }]
+        function manageList() {
+            var out = [];
+            if (hotelMode()) {
+                try {
+                    hotelKinds().forEach(function (k) {
+                        (hospCatsOf(k.id, false) || []).forEach(function (c) {
+                            var mem = 0; try { mem = (hospCatIndex().members.get(c.id) || []).length; } catch (e) { mem = 0; }
+                            out.push({ key: c.id, id: c.id, label: c.name, n: mem, kind: k.id, kindText: String(k.label || '').replace(/^[^\p{L}\p{N}]+/u, ''), off: c.active === false });
+                        });
+                    });
+                } catch (e) { /* none */ }
+                return out;
+            }
+            var seen = {};
+            genericCategories().forEach(function (c) { if (c.norm === '') return; seen[c.norm] = 1; out.push({ key: c.key, label: c.label, n: c.n }); });
+            extras().forEach(function (x) { var nk = normCat(x); if (!seen[nk]) { seen[nk] = 1; out.push({ key: x, label: x, n: 0, extra: true }); } });
+            return out;
+        }
+        function manageHtml(ro) {
+            var list = manageList(), hot = hotelMode(), kinds = hot ? hotelKinds() : [];
+            var h = '<h3>🗂️ Categories</h3><p class="ctl-note">Add a category, rename it or delete it. Renaming changes every item in it. Deleting a category never deletes items: they move to “Uncategorised”.</p>'
+                + '<div class="ctl-add"><label class="ctl-ordlab" for="ctl-newcat">New category</label>'
+                + '<input type="text" id="ctl-newcat" maxlength="60" placeholder="e.g. Drinks"' + (ro ? ' disabled' : '') + '>'
+                + (hot && kinds.length ? '<select id="ctl-newkind" class="ctl-ordsel" aria-label="What is it for">' + kinds.map(function (k) { return '<option value="' + esc(k.id) + '">' + esc(String(k.label || k.id).replace(/^[^\p{L}\p{N}]+/u, '')) + '</option>'; }).join('') + '</select>' : '')
+                + '<button type="button" class="settings-small-btn" data-ctl-act="addcat"' + (ro ? ' disabled' : '') + '>➕ Add category</button></div>';
+            h += '<div class="ctl-mgr" role="list">' + (list.length ? list.map(function (c) {
+                var k = esc(encodeURIComponent(c.key)), isR = renaming === c.key;
+                return '<div class="ctl-row ctl-mrow" role="listitem">' + (isR
+                    ? '<input type="text" id="ctl-rn" class="ctl-rn" maxlength="60" value="' + esc(c.label) + '" aria-label="New name for ' + esc(c.label) + '"><span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="rnsave" data-k="' + k + '">✔ Save</button><button type="button" class="settings-small-btn" data-ctl-act="rncancel">Cancel</button></span>'
+                    : '<span class="ctl-mname"><b>' + esc(c.label) + '</b><small>' + c.n + (c.n === 1 ? ' item' : ' items') + (c.kindText ? ' · ' + esc(c.kindText) : '') + (c.extra ? ' · no items yet' : '') + (c.off ? ' · switched off' : '') + '</small></span>'
+                    + '<span class="ctl-racts">' + (hot ? '' : '<button type="button" class="settings-small-btn" data-ctl-act="items" data-k="' + k + '">' + (itemsOpen === c.key ? 'Hide items' : 'Items') + '</button>') + '<button type="button" class="settings-small-btn" data-ctl-act="rncat" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>✏️ Rename</button><button type="button" class="settings-small-btn" data-ctl-act="delcat" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>🗑️ Delete</button></span>') + '</div>';
+            }).join('') : '<p class="ctl-note">No categories yet. Type a name above and press Add, or give items a category in Inventory.</p>') + '</div>';
+            // zip 385: the items in each category can be moved to another category or deleted; "Uncategorised" is listed too
+            if (!hot) {
+                var none = itemsIn('');
+                if (none.length) h += '<div class="ctl-mgr" role="list" style="margin-top:6px"><div class="ctl-row ctl-mrow" role="listitem"><span class="ctl-mname"><b>Uncategorised</b><small>' + none.length + (none.length === 1 ? ' item' : ' items') + ' with no category</small></span>'
+                    + '<span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="items" data-k="">' + (itemsOpen === '' ? 'Hide items' : 'Items') + '</button></span></div></div>';
+                if (itemsOpen !== null) h += itemsPanelHtml(itemsOpen, list, ro);
+            }
+            return h;
+        }
+        /* ---- items of one category: tick, then move to another category or delete (zip 385) ---- */
+        var itemsOpen = null, itemsTicked = {};
+        function itemsIn(key) {
+            var nk = normCat(key);
+            return invList().filter(function (p) { return p && p.code != null && !p._deleted && !p.removed && normCat(p.category) === nk; })
+                .sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
+        }
+        function canDelete() { try { return typeof isAdminServing === 'function' ? isAdminServing() : true; } catch (e) { return true; } }
+        function itemsPanelHtml(key, cats, ro) {
+            var its = itemsIn(key), label = key === '' ? 'Uncategorised' : key, nTick = its.filter(function (p) { return itemsTicked[p.code]; }).length;
+            var opts = '<option value="">Move to...</option>' + cats.filter(function (c) { return normCat(c.label) !== normCat(key); }).map(function (c) { return '<option value="' + esc(encodeURIComponent(c.label)) + '">' + esc(c.label) + '</option>'; }).join('')
+                + (key !== '' ? '<option value="' + esc(encodeURIComponent('')) + '">No category (Uncategorised)</option>' : '') + '<option value="__new">A new category...</option>';
+            return '<div style="border:1px solid var(--border-color,#d6dde3);border-radius:12px;padding:10px 12px;margin-top:8px;background:var(--bg-surface-alt,#f6f8f7)">'
+                + '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><b>Items in ' + esc(label) + ' (' + its.length + ')</b>'
+                + '<span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><label style="display:flex;gap:6px;align-items:center;font-size:13px;margin:0"><input type="checkbox" id="ctl-it-all" style="width:auto;margin:0"' + (its.length && nTick === its.length ? ' checked' : '') + '> All</label>'
+                + '<select id="ctl-it-to" class="ctl-ordsel" style="width:auto;margin:0"' + (ro ? ' disabled' : '') + '>' + opts + '</select>'
+                + '<button type="button" class="settings-small-btn" data-ctl-act="itmove"' + (ro ? ' disabled' : '') + '>Move ' + (nTick || '') + '</button>'
+                + (canDelete() ? '<button type="button" class="settings-small-btn" data-ctl-act="itdel" style="background:var(--danger,#c0392b);color:#fff"' + (ro ? ' disabled' : '') + '>Delete ' + (nTick || '') + '</button>' : '') + '</span></div>'
+                + (its.length ? '<div style="max-height:320px;overflow:auto;margin-top:8px">' + its.map(function (p) {
+                    return '<label style="display:flex;gap:8px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--border-color,#e6eaee);margin:0;font-size:13.5px"><input type="checkbox" data-ctl-tick="' + esc(encodeURIComponent(p.code)) + '" style="width:auto;margin:0"' + (itemsTicked[p.code] ? ' checked' : '') + '>'
+                        + '<span style="flex:1"><b>' + esc(p.name) + '</b> <small style="color:#64748b">' + esc(p.code) + (p.type === 'service' ? ' · service' : ' · ' + (Number(p.qty) || 0) + ' in stock') + '</small></span></label>';
+                }).join('') + '</div>' : '<p class="ctl-note">No items in it.</p>')
+                + '<p class="ctl-note">Tick items, then Move them to another category or Delete them. Deleting removes the item from the till, stock and price list on every device; past sales keep their records.</p></div>';
+        }
+        function itemsMove() {
+            var sel = $('ctl-it-to'), raw = sel ? sel.value : '', to;
+            var codes = Object.keys(itemsTicked).filter(function (c) { return itemsTicked[c]; });
+            if (!codes.length) { msg('Tick at least one item first.', true); return; }
+            if (!raw) { msg('Choose where to move them.', true); return; }
+            if (raw === '__new') { to = cleanName(prompt('Name of the new category:') || ''); if (!to) return; }
+            else { try { to = decodeURIComponent(raw); } catch (e) { to = ''; } }
+            var n = 0, now = Date.now();
+            invList().forEach(function (p) { if (p && itemsTicked[p.code]) { if (to) p.category = to; else delete p.category; p.updatedAt = now; n++; } });
+            if (to && raw === '__new') { var ex = extras(); if (!ex.some(function (x) { return normCat(x) === normCat(to); })) { ex.push(to); saveExtras(ex); } }
+            itemsTicked = {}; persistInv(); lastMode = '';
+            msg('Moved ' + n + (n === 1 ? ' item' : ' items') + ' to ' + (to ? '"' + to + '"' : 'Uncategorised') + '.'); toast('Items moved.');
+            renderPanel(); refresh();
+        }
+        function itemsDelete() {
+            if (!canDelete()) { msg('Only the admin can delete items.', true); return; }
+            var codes = Object.keys(itemsTicked).filter(function (c) { return itemsTicked[c]; });
+            if (!codes.length) { msg('Tick at least one item first.', true); return; }
+            var names = invList().filter(function (p) { return p && itemsTicked[p.code]; }).map(function (p) { return p.name; });
+            if (!confirm('Delete ' + codes.length + (codes.length === 1 ? ' item' : ' items') + ' permanently?\n\n' + names.slice(0, 12).join('\n') + (names.length > 12 ? '\n... and ' + (names.length - 12) + ' more' : '') + '\n\nPast sales keep their records.')) return;
+            var gone = {}; codes.forEach(function (c) { gone[c] = 1; });
+            // the same way a single item is removed in Inventory: out of the list, saved, pushed (the sync sends the deletion to every device)
+            inventory = invList().filter(function (p) { return !(p && gone[p.code]); });
+            itemsTicked = {}; persistInv(); lastMode = '';
+            try { if (typeof renderNotifications === 'function') renderNotifications(); } catch (e) { /* cosmetic */ }
+            msg('Deleted ' + codes.length + (codes.length === 1 ? ' item' : ' items') + '.'); toast('Items deleted.');
+            renderPanel(); refresh();
+        }
+        function findManaged(key) { return manageList().filter(function (c) { return c.key === key; })[0] || null; }
+        function addCat() {
+            var inp = $('ctl-newcat'), name = cleanName(inp ? inp.value : ''); if (!name) { msg('Type a category name first.', true); if (inp) inp.focus(); return; }
+            if (hotelMode()) {
+                var kEl = $('ctl-newkind'), r = (typeof hospCatCreate === 'function' ? hospCatCreate : function () { return { ok: false, error: 'Categories are managed in the Hotel app.' }; })(kEl ? kEl.value : 'dish', name);
+                if (r && r.ok) { msg('Added "' + name + '".'); toast('Category added.'); } else if (r && r.error !== 'denied') msg(r.error || 'Could not add it.', true);
+                try { renderPanel(); } catch (e) { /* closed */ } refresh(); return;
+            }
+            if (manageList().some(function (c) { return normCat(c.label) === normCat(name); }) || normCat(name) === 'uncategorised') { msg('"' + name + '" already exists.', true); return; }
+            var a = extras(); a.push(name); saveExtras(a);
+            msg('Added "' + name + '". Choose it in an item’s Category box to put items in it.'); toast('Category added.');
+            renderPanel();
+        }
+        function renameKeyed(map, from, to) {        // move an entry "from" -> "to", and "from > sub" -> "to > sub" (pictures, order lists)
+            Object.keys(map).forEach(function (k) {
+                var nk = k === from ? to : (k.indexOf(from + SEP) === 0 ? to + SEP + k.slice(from.length + SEP.length) : null);
+                if (nk !== null && nk !== k) { if (map[nk] === undefined) map[nk] = map[k]; delete map[k]; }
+            });
+        }
+        function renameCat(key, to) {
+            var c = findManaged(key); if (!c) return;
+            to = cleanName(to); if (!to) { msg('Type a name.', true); return; }
+            if (to === c.label) { renaming = null; renderPanel(); return; }
+            if (hotelMode()) {
+                var r = (typeof hospCatRename === 'function' ? hospCatRename : function () { return { ok: false, error: 'Categories are managed in the Hotel app.' }; })(c.id, to);
+                if (r && r.ok) { renaming = null; msg('Renamed to "' + to + '" (' + (r.moved || 0) + ' items follow).'); toast('Category renamed.'); }
+                else if (r && r.error !== 'denied') { msg(r.error || 'Could not rename it.', true); return; }
+                try { renderPanel(); } catch (e) { /* closed */ } refresh(); return;
+            }
+            var other = manageList().filter(function (x) { return x.key !== key && normCat(x.label) === normCat(to); })[0];
+            if (other && !confirm('"' + other.label + '" already exists. Merge "' + c.label + '" into it? All their items will be together.')) return;
+            var from = c.label, fn = normCat(from), moved = 0;
+            invList().forEach(function (p) { if (p && normCat(p.category) === fn) { p.category = to; p.updatedAt = Date.now(); moved++; } });
+            var imgs = {}; Object.keys(images()).forEach(function (k) { imgs[k] = images()[k]; }); renameKeyed(imgs, from, to); saveImages(imgs);
+            var o = ordGet(); o.manual = (o.manual || []).map(function (x) { return x === from ? to : x; }); renameKeyed(o.subs || {}, from, to); renameKeyed(o.items || {}, from, to);
+            var seen = {}; o.manual = o.manual.filter(function (x) { var n = normCat(x); if (seen[n]) return false; seen[n] = 1; return true; });
+            lsSet(LS_ORD, JSON.stringify(o));
+            var ex = extras().map(function (x) { return normCat(x) === fn ? to : x; }), sx = {}; ex = ex.filter(function (x) { var n = normCat(x); if (sx[n]) return false; sx[n] = 1; return true; }); saveExtras(ex);
+            if (moved) persistInv();
+            renaming = null; lastMode = ''; pushSoon();
+            msg('Renamed "' + from + '" to "' + to + '"' + (moved ? ' (' + moved + (moved === 1 ? ' item' : ' items') + ' updated).' : '.')); toast('Category renamed.');
+            renderPanel(); refresh();
+        }
+        function deleteCat(key) {
+            var c = findManaged(key); if (!c) return;
+            if (!confirm('Delete the category "' + c.label + '"?' + (c.n ? '\n\nIts ' + c.n + (c.n === 1 ? ' item is' : ' items are') + ' NOT deleted - they move to Uncategorised.' : ''))) return;
+            if (hotelMode()) {
+                var r = (typeof hospCatDelete === 'function' ? hospCatDelete : function () { return { ok: false, error: 'Categories are managed in the Hotel app.' }; })(c.id, null);
+                if (r && r.ok) { msg('Deleted "' + c.label + '".' + (r.moved ? ' ' + r.moved + ' items are now Uncategorised.' : '')); toast('Category deleted.'); }
+                else if (r && r.error !== 'denied') msg(r.error || 'Could not delete it.', true);
+                try { renderPanel(); } catch (e) { /* closed */ } refresh(); return;
+            }
+            var from = c.label, fn = normCat(from), moved = 0;
+            invList().forEach(function (p) { if (p && normCat(p.category) === fn) { delete p.category; p.updatedAt = Date.now(); moved++; } });
+            var imgs = {}; Object.keys(images()).forEach(function (k) { if (k !== from && k.indexOf(from + SEP) !== 0) imgs[k] = images()[k]; }); saveImages(imgs);
+            var o = ordGet(); o.manual = (o.manual || []).filter(function (x) { return x !== from; }); delete (o.subs || {})[from]; delete (o.items || {})[from]; lsSet(LS_ORD, JSON.stringify(o));
+            saveExtras(extras().filter(function (x) { return normCat(x) !== fn; }));
+            if (moved) persistInv();
+            lastMode = ''; pushSoon();
+            msg('Deleted "' + from + '".' + (moved ? ' ' + moved + (moved === 1 ? ' item is' : ' items are') + ' now Uncategorised.' : '')); toast('Category deleted.');
+            renderPanel(); refresh();
+        }
         function rowHtml(label, key, sub, count, ro) {
             var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
             return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
@@ -706,7 +881,7 @@
             });
             var orphan = Object.keys(imgs).filter(function (k) { return !listed[k]; });
             if (orphan.length) rows += '<div class="ctl-row"><b>Pictures for categories that have no items now</b></div>' + orphan.map(function (k) { return rowHtml(k, k, false, null, ro); }).join('');
-            el.innerHTML = ordHtml(cats, ro) + '<h3 style="margin-top:16px;">🖼️ Category images</h3>'
+            el.innerHTML = manageHtml(ro) + '<div style="height:12px"></div>' + ordHtml(cats, ro) + '<h3 style="margin-top:16px;">🖼️ Category images</h3>'
                 + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
@@ -717,18 +892,29 @@
                 + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
                 + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
                 + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
-                + '<p class="ctl-msg" id="ctl-msg" role="status"></p>';
+                + '<p class="ctl-msg" id="ctl-msg" role="status" aria-live="polite"></p>';
+            if (pendMsg) { var pm = $('ctl-msg'); if (pm) { pm.textContent = pendMsg.t || ''; pm.className = 'ctl-msg' + (pendMsg.bad ? ' bad' : ''); } pendMsg = null; }
         }
         function onPanelClick(ev) {
             var t = ev.target && ev.target.closest ? ev.target.closest('[data-ctl-act]') : null; if (!t || t.disabled) return;
             var act = t.getAttribute('data-ctl-act'), k = ''; try { k = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { k = ''; }
             if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
             else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
+            else if (act === 'addcat') addCat();
+            else if (act === 'rncat') { renaming = k; renderPanel(); var rn = $('ctl-rn'); if (rn) { try { rn.focus(); rn.select(); } catch (e) { /* hidden */ } } }
+            else if (act === 'rnsave') { var ri = $('ctl-rn'); renameCat(k, ri ? ri.value : ''); }
+            else if (act === 'rncancel') { renaming = null; renderPanel(); }
+            else if (act === 'delcat') deleteCat(k);
+            else if (act === 'items') { itemsOpen = itemsOpen === k ? null : k; itemsTicked = {}; renderPanel(); }
+            else if (act === 'itmove') itemsMove();
+            else if (act === 'itdel') itemsDelete();
             else if (act === 'mv') { moveItem(k, parseInt(t.getAttribute('data-d'), 10) || 0); }
             else if (act === 'mvi') { moveCatItem(window.__ctlIordCat, k, parseInt(t.getAttribute('data-d'), 10) || 0); }
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
+            if (t.getAttribute && t.getAttribute('data-ctl-tick') != null) { var tc = ''; try { tc = decodeURIComponent(t.getAttribute('data-ctl-tick')); } catch (e) { tc = ''; } if (tc) { if (t.checked) itemsTicked[tc] = 1; else delete itemsTicked[tc]; } var mb = document.querySelector('[data-ctl-act="itmove"]'), db = document.querySelector('[data-ctl-act="itdel"]'), nn = Object.keys(itemsTicked).length; if (mb) mb.textContent = 'Move ' + (nn || ''); if (db) db.textContent = 'Delete ' + (nn || ''); return; }
+            if (t.id === 'ctl-it-all') { itemsIn(itemsOpen || '').forEach(function (p) { if (t.checked) itemsTicked[p.code] = 1; else delete itemsTicked[p.code]; }); renderPanel(); return; }
             if (t.id === 'ctl-ord-mode') { window.__ctlSetOrderMode(t.value); return; }
             if (t.id === 'ctl-ord-smode') { window.__ctlSetSubMode(t.value); return; }
             if (t.id === 'ctl-ord-imode') { window.__ctlSetItemMode(t.value); return; }
@@ -768,6 +954,11 @@
                 panel.className = 'panel'; panel.style.marginBottom = '15px'; pay.parentNode.insertBefore(panel, pay.nextSibling);
             } else return false;
             panel.addEventListener('click', onPanelClick); panel.addEventListener('change', onPanelChange);
+            panel.addEventListener('keydown', function (ev) {
+                var t = ev.target; if (!t || !t.id) return;
+                if (t.id === 'ctl-newcat' && ev.key === 'Enter') { ev.preventDefault(); addCat(); }
+                else if (t.id === 'ctl-rn') { if (ev.key === 'Enter') { ev.preventDefault(); var b = panel.querySelector('[data-ctl-act="rnsave"]'); renameCat(b ? decodeURIComponent(b.getAttribute('data-k')) : '', t.value); } else if (ev.key === 'Escape') { ev.preventDefault(); renaming = null; renderPanel(); } }
+            });
             renderPanel();
             return true;
         }

@@ -1,0 +1,1619 @@
+<!-- STOCK PRO (zip 336) ----------------------------------------------------------------------------------------------------------
+     The screens and checkout hooks on top of the Stock Engine (stock-engine block). Everything here is guarded: a module that lacks a piece
+     (Aqua POS has no Store / no inventory list) simply does not get that piece.
+       A. STORE <-> INVENTORY: stock coming back from the Store finds the SAME item (code, then the line it went to before, then one exact name + unit
+          match) instead of making a second "Hospital gloves"; two or more look-alikes are held for a person to pick (never guessed), and only confirmed
+          to the server once applied. "Move stock into the Store" in every module (the Shop already had it on each item), with the store line chosen
+          up front. Store check: look-alike lines, stuck transfers, batches that do not add up, merge two lines (manager, audited).
+       B. PACKAGING: carton > packet > piece levels per item (one stock figure in the smallest unit). Sell by any level at the Sales Counter (a chooser,
+          or scan the package barcode), receive by package on Restock, see "2 Carton + 3 Packet" next to the quantity. Voids and returns convert back.
+       C. BATCHES (Pharmacy + Hospital only): every batch's number, expiry, cost, supplier and status; quarantine / recall / release (manager); stock
+          valued at batch cost; FEFO (default) or FIFO.
+       D. COST & PROFIT: the cost check (costs that look wrong, sales at a loss, batches without a cost), a manager's cost correction (from now on, or
+          also restating past sales - shown before it is saved), recalculate profit, a documented profit adjustment (e.g. to zero) and its reversal,
+          books closed through a date. Corrections and adjustments are kept on the server (/api/cost-control), append-only.
+     Ids / classes: spx-*. -->
+<style id="spx-css">
+#spx-ov { position: fixed; inset: 0; z-index: 100040; display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 14px; background: rgba(15, 23, 42, .58); }
+#spx-ov.on { display: flex; }
+#spx-card { width: 100%; max-width: 760px; margin: auto; background: var(--bg-surface, #fff); color: var(--text-main, #2c3e50); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,.35); overflow: hidden; }
+#spx-card.wide { max-width: 1040px; }
+.spx-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; color: #fff; background-color: #14532d; background-image: radial-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(135deg, #14532d, #1e7a4a); background-size: 10px 10px, 100% 100%; }
+.spx-head h3 { margin: 0; flex: 1; font-size: 17px; color: #fff; }
+.spx-x { border: 0; background: rgba(255,255,255,.2); color: #fff; width: 38px; height: 38px; border-radius: 10px; font-size: 17px; cursor: pointer; }
+.spx-body { padding: 14px 16px 18px; max-height: calc(86vh / var(--pos-z, 1)); overflow: auto; }
+.spx-body label { display: block; font-size: 12.5px; font-weight: 700; margin: 10px 0 4px; color: var(--text-muted, #5f6b76); }
+.spx-body input, .spx-body select, .spx-body textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border-color, #cfd8dc); background: var(--bg-surface, #fff); color: inherit; font-size: 15px; }
+.spx-body textarea { min-height: 64px; }
+.spx-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.spx-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.spx-btn { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; font-size: 14px; cursor: pointer; background: #1e7a4a; color: #fff; min-height: 42px; }
+.spx-btn.sec { background: var(--light, #eef2f4); color: var(--text-main, #2c3e50); border: 1px solid var(--border-color, #d5dde2); }
+.spx-btn.warn { background: #d35400; } .spx-btn.bad { background: #c0392b; } .spx-btn[disabled] { opacity: .5; cursor: not-allowed; }
+.spx-mini { border: 1px solid var(--border-color, #d5dde2); background: transparent; color: inherit; border-radius: 8px; padding: 5px 10px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.spx-note { font-size: 13px; padding: 9px 11px; border-radius: 9px; margin: 8px 0; background: rgba(41,128,185,.10); border-left: 4px solid #2980b9; }
+.spx-note.ok { background: rgba(39,174,96,.12); border-left-color: #27ae60; } .spx-note.warn { background: rgba(230,126,34,.13); border-left-color: #e67e22; } .spx-note.bad { background: rgba(192,57,43,.11); border-left-color: #c0392b; }
+.spx-tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.spx-tbl th { text-align: left; padding: 7px 8px; background: rgba(127,140,141,.12); position: sticky; top: 0; white-space: nowrap; }
+.spx-tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border-color, #e3e8eb); vertical-align: top; }
+.spx-tbl td.n, .spx-tbl th.n { text-align: right; white-space: nowrap; }
+.spx-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.spx-chip { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 800; background: rgba(127,140,141,.18); margin: 0 4px 2px 0; white-space: nowrap; }
+.spx-chip.g { background: #d5f5e3; color: #1e8449; } .spx-chip.o { background: #fdebd0; color: #a0570b; } .spx-chip.r { background: #fadbd8; color: #922b21; } .spx-chip.b { background: #d6eaf8; color: #1b4f72; }
+.spx-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 8px 0; }
+.spx-kv div { border: 1px solid var(--border-color, #e1e6ea); border-radius: 11px; padding: 9px 11px; background: rgba(127,140,141,.06); }
+.spx-kv b { display: block; font-size: 17px; } .spx-kv span { font-size: 12px; color: var(--text-muted, #6b7780); }
+.spx-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; border: 1px dashed rgba(30,122,74,.45); background: rgba(30,122,74,.06); }
+.spx-bar .spx-held { flex-basis: 100%; }
+.spx-packlbl { display: block; font-size: 11.5px; color: var(--text-muted, #6b7780); font-weight: 600; margin-top: 2px; }
+.spx-choose { display: grid; gap: 8px; }
+.spx-choose button { text-align: left; display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 12px; border: 2px solid var(--border-color, #d5dde2); background: var(--bg-surface, #fff); color: inherit; font-size: 15px; cursor: pointer; }
+.spx-choose button:hover, .spx-choose button:focus { border-color: #1e7a4a; outline: none; }
+.spx-choose small { color: var(--text-muted, #6b7780); }
+#spx-profit-tools { margin: 14px 0 4px; }
+@media (max-width: 600px) { .spx-body { padding: 12px; } .spx-tbl { font-size: 12.5px; } .spx-btn { flex: 1 1 auto; } }
+@media print { #spx-ov, .spx-bar, #spx-profit-tools .spx-btns { display: none !important; } }
+</style>
+<script id="spx-js">
+(function () {
+    'use strict';
+    if (window.__spx) return; window.__spx = true;
+    var W = window;
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { try { console.log(m); } catch (x) { /* none */ } } }
+    function inv() { try { return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : null; } catch (e) { return null; } }
+    function sales() { try { return (typeof salesLog !== 'undefined' && Array.isArray(salesLog)) ? salesLog : []; } catch (e) { return []; } }
+    function money(n) { var v = Number(n) || 0; return 'KES ' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function who() { try { return activeServerName() || ''; } catch (e) { return ''; } }
+    function key(k) { try { return typeof appStoreKey === 'function' ? appStoreKey(k) : k; } catch (e) { return k; } }
+    function lsGet(k, d) { try { var v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage full: kept in memory for now */ } }
+    function api(path) { try { return typeof apiUrl === 'function' ? apiUrl(path) : path; } catch (e) { return path; } }
+    function rid(p) { try { return (p || '') + genSaleId(); } catch (e) { return (p || '') + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); } }
+    function findP(code) { var a = inv(); if (!a) return null; return a.find(function (p) { return p && String(p.code) === String(code); }) || null; }
+    function SE() { return W.SE; }
+    function lotsOn() { return !!(W.__SE_LOTS && W.SE); }
+    function saveStock() {
+        try { safeSetItem(key('pos_inventory'), JSON.stringify(inventory)); } catch (e) { /* saved by the next change */ }
+        try { if (typeof stockMovementLog !== 'undefined') safeSetItem(key('pos_stock_movement_log'), JSON.stringify(stockMovementLog)); } catch (e) { /* saved by the next change */ }
+        try { queuePush(); } catch (e) { /* the poll sends it */ }
+        try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ }
+    }
+    function post(path, body, extra) {
+        return fetch(api(path), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, extra || {}), body: JSON.stringify(body) })
+            .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok && !(d && d.error), status: r.status, d: d || {} }; }); });
+    }
+    // a manager action checked on the SERVER: the Admin password or a manager PIN (the pay-confirm pop-up), then the call with X-Pay-Proof
+    function withProof(reason, call) {
+        if (navigator.onLine === false) return Promise.resolve({ ok: false, d: { error: 'This needs the internet (the password is checked on the server). Nothing was changed.' } });
+        var askP = typeof W.__payProofAsk === 'function' ? W.__payProofAsk(reason) : Promise.resolve(null);
+        return askP.then(function (hdr) {
+            if (typeof W.__payProofAsk === 'function' && !hdr) return { ok: false, cancelled: true, d: { error: 'Cancelled - nothing was changed.' } };
+            return call(hdr ? { 'X-Pay-Proof': hdr } : {}).then(function (r) {
+                if ((r.status === 401 || r.status === 403) && r.d && /pay_confirm/.test(String(r.d.code || '')) && typeof W.__payProofForget === 'function') W.__payProofForget();
+                return r;
+            });
+        }).catch(function () { return { ok: false, d: { error: 'Could not reach the server - nothing was changed.' } }; });
+    }
+
+    /* ---------------- the pop-up ---------------- */
+    var modalHandlers = {};
+    function modal(title, html, opts) {
+        opts = opts || {};
+        var ov = $('spx-ov');
+        if (!ov) {
+            ov = document.createElement('div'); ov.id = 'spx-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
+            ov.innerHTML = '<div id="spx-card"><div class="spx-head"><h3 id="spx-title"></h3><button type="button" class="spx-x" aria-label="Close" data-spx="close">✕</button></div><div class="spx-body" id="spx-body"></div></div>';
+            document.body.appendChild(ov);
+            ov.addEventListener('click', function (e) {
+                if (e.target === ov) { close(); return; }
+                var b = e.target.closest ? e.target.closest('[data-spx]') : null; if (!b) return;
+                var a = b.getAttribute('data-spx');
+                if (a === 'close') { close(); return; }
+                if (modalHandlers[a]) { e.preventDefault(); modalHandlers[a](b, e); }
+            });
+            ov.addEventListener('input', function (e) { if (modalHandlers.__input) modalHandlers.__input(e.target, e); });
+            ov.addEventListener('change', function (e) { if (modalHandlers.__change) modalHandlers.__change(e.target, e); });
+            document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && $('spx-ov') && $('spx-ov').classList.contains('on')) close(); }, true);
+        }
+        modalHandlers = opts.on || {};
+        $('spx-card').className = opts.wide ? 'wide' : '';
+        $('spx-title').textContent = title;
+        $('spx-body').innerHTML = html;
+        ov.classList.add('on');
+        return $('spx-body');
+    }
+    function close() { var ov = $('spx-ov'); if (ov) ov.classList.remove('on'); modalHandlers = {}; }
+    function body() { return $('spx-body'); }
+    function val(id) { var e = $(id); return e ? e.value : ''; }
+    W.spxClose = close;
+
+    /* ---------------- item picker (search the inventory) ---------------- */
+    function pickItem(title, filter, done) {
+        var list = (inv() || []).filter(function (p) { return p && p._deleted !== true && p.type !== 'service' && (!filter || filter(p)); });
+        function rows(q) {
+            q = String(q || '').trim().toLowerCase();
+            var hit = list.filter(function (p) { return !q || String(p.name || '').toLowerCase().indexOf(q) >= 0 || String(p.code || '').toLowerCase().indexOf(q) >= 0; }).slice(0, 60);
+            return hit.length ? hit.map(function (p) { return '<button type="button" data-spx="pick" data-code="' + esc(p.code) + '"><span><b>' + esc(p.name) + '</b><br><small>#' + esc(p.code) + '</small></span><small>' + esc(stockText(p)) + '</small></button>'; }).join('') : '<div class="spx-note">Nothing matches.</div>';
+        }
+        modal(title, '<input id="spx-pick-q" placeholder="Search name or code" autocomplete="off"><div class="spx-choose" id="spx-pick-list" style="margin-top:10px">' + rows('') + '</div>', {
+            on: { pick: function (b) { var c = b.getAttribute('data-code'); close(); done(findP(c)); }, __input: function (t) { if (t.id === 'spx-pick-q') $('spx-pick-list').innerHTML = rows(t.value); } },
+        });
+        setTimeout(function () { try { $('spx-pick-q').focus(); } catch (e) { /* none */ } }, 40);
+    }
+    function unitOf(p) { return (p && p.unit) || 'pcs'; }
+    function stockText(p) {
+        if (!p) return '';
+        var q = Number(p.qty) || 0, s = SE(), lbl = s ? s.label(p, q) : null;
+        var t = (s ? s.r3(q) : q) + ' ' + unitOf(p) + (lbl ? ' (' + lbl + ')' : '');
+        if (lotsOn() && s.lotTracked(p)) { var ls = s.lotSummary(p); if (ls.expired || ls.blocked) t += ' - ' + ls.usable + ' usable'; }
+        return t;
+    }
+
+    /* ============================ A. STORE <-> INVENTORY ============================ */
+    var LINKS = 'se_store_links', HELD = 'se_store_held';
+    function links() { return lsGet(LINKS, {}); }
+    function linkSet(storeItemId, code) { if (!storeItemId || code == null) return; var l = links(); l[storeItemId] = String(code); var k = Object.keys(l); if (k.length > 800) k.slice(0, k.length - 800).forEach(function (x) { delete l[x]; }); lsSet(LINKS, l); }
+    function linkFor(code) { var l = links(); for (var k in l) { if (l[k] === String(code)) return k; } return null; }
+    function heldList() { return lsGet(HELD, []); }
+    function heldIds() { return heldList().map(function (h) { return h.w && h.w.movementId; }).filter(Boolean); }
+    function heldAdd(w, m) {
+        var h = heldList();
+        if (h.some(function (x) { return x.w && x.w.movementId === w.movementId; })) return;
+        h.push({ w: w, cands: (m.candidates || []).map(function (p) { return p.code; }), parent: m.parent ? m.parent.code : null, how: m.how, at: Date.now() });
+        lsSet(HELD, h);
+        setTimeout(renderStoreBar, 0);
+    }
+    function heldRemove(mid) { lsSet(HELD, heldList().filter(function (x) { return !(x.w && x.w.movementId === mid); })); }
+    function linkCodeOnServer(storeItemId, code) {
+        if (!storeItemId || code == null || navigator.onLine === false) return;
+        post('/api/store', { action: 'linkCode', storeItemId: storeItemId, code: String(code) }).catch(function () { /* next time */ });
+    }
+    function movedWhy(w) { return w.fromBranch ? 'Transfer from ' + w.fromBranch : 'Transfer from Store'; }
+    // credit stock that arrived (from the Store or another branch) to the item `m` (SE.matchLine result, or a person's choice)
+    // zip 336 (fix): a transfer from the Store is applied ONCE however often it is offered (a refresh, a second device, a lost "received"
+    // reply, a cleared claim list). Its stock-ledger entry gets a fixed id made from the transfer's own id, so (a) this till sees it was
+    // already applied and does not add it again, and (b) the server, which stores every ledger id once, can never count it twice.
+    function xferLogId(w, i) { return w && w.movementId ? 'xf-' + w.movementId + (i ? '-' + i : '') : null; }
+    function xferAlreadyApplied(w) {
+        var id = xferLogId(w); if (!id) return false;
+        try { return Array.isArray(stockMovementLog) && stockMovementLog.some(function (e) { return e && typeof e.id === 'string' && (e.id === id || e.id.indexOf(id + '-') === 0); }); } catch (e) { return false; }
+    }
+    function applyArrived(w, m) {
+        var n0 = 0; try { n0 = stockMovementLog.length; } catch (e) { /* no log */ }
+        var r = applyArrivedNow(w, m);
+        try { if (w && w.movementId) { for (var i = n0, k = 0; i < stockMovementLog.length; i++, k++) { if (stockMovementLog[i]) stockMovementLog[i].id = xferLogId(w, k); } } } catch (e) { /* the ledger still counts it once per entry */ }
+        return r;
+    }
+    function applyArrivedNow(w, m) {
+        var s = SE(), qty = s.r3(w.qty), why = movedWhy(w);
+        if (!(qty > 0)) return true;
+        if (m.kind === 'variant') {
+            var v = m.variant, par = m.product;
+            v.qty = s.r3((Number(v.qty) || 0) + qty);
+            par.qty = s.r3(par.variants.reduce(function (a, x) { return a + (Number(x && x.qty) || 0); }, 0));
+            logStockMovement(v.code != null && v.code !== '' ? v.code : par.code, par.name + ' (' + v.name + ')', qty, why);
+            linkSet(w.storeItemId, par.code);
+            return true;
+        }
+        var p = m.product;
+        if (m.kind === 'new' || !p) {
+            var code = (w.code && !/::/.test(String(w.code)) && !(inv() || []).some(function (x) { return x && String(x.code).toLowerCase() === String(w.code).toLowerCase(); })) ? w.code : null;   // zip 338: a "PARENT::id" store code is never an item code
+            p = { code: code || genSaleId(), type: 'item', name: w.name, price: w.price || 0, wholesaleSellingPrice: w.wholesaleSellingPrice || 0, wholesalePrice: w.wholesalePrice || 0, qty: 0, unit: w.unit || 'pcs', vatCategory: 'A' };
+            inventory.push(p);
+        }
+        var lots = Array.isArray(w.lots) ? w.lots.filter(function (l) { return l && l.id && Number(l.q) > 0; }) : [];
+        if (lotsOn() && (lots.length || s.lotTracked(p))) {
+            // the batches come back with the stock (same batch, expiry and cost); units with no batch on file become an "arrived" batch with no cost
+            var inLots = s.r3(lots.reduce(function (t, l) { return t + Number(l.q); }, 0)), useLots = Math.min(inLots, qty);
+            if (lots.length) s.restore(p, lots, useLots);
+            var rest = s.r3(qty - useLots);
+            if (rest > 0) s.receive(p, { qty: rest, cost: null, src: 'transfer', ref: w.movementId || null, by: who() });
+        } else {
+            p.qty = s.r3((Number(p.qty) || 0) + qty);
+        }
+        logStockMovement(p.code, p.name, qty, why + (m.how && m.how !== 'code' && m.how !== 'linked' && m.how !== 'new' ? ' (matched by ' + m.how + ')' : ''));
+        linkSet(w.storeItemId, p.code);
+        if (w.storeItemId && (!w.code || (m.how && m.how !== 'code' && m.how !== 'linked'))) linkCodeOnServer(w.storeItemId, p.code);
+        return true;
+    }
+    function installTransferHooks() {
+        if (typeof W.storeApplyWithdrawn !== 'function' || W.storeApplyWithdrawn.__spx || !inv()) return;
+        var origApply = W.storeApplyWithdrawn;
+        var apply = function (w) {
+            if (!SE() || !inv() || !w) return origApply.apply(this, arguments);
+            if (xferAlreadyApplied(w)) return false;                       // already added (see above) - never again
+            if (typeof storeClaimTransfer === 'function' && !storeClaimTransfer(w)) return false;
+            var m = SE().matchLine(inventory, w, links());
+            if (m.kind === 'ambiguous') { heldAdd(w, m); return false; }
+            return applyArrived(w, m);
+        };
+        apply.__spx = true; W.storeApplyWithdrawn = apply;
+        if (typeof W.storeConfirmReceived === 'function' && !W.storeConfirmReceived.__spx) {
+            var origConfirm = W.storeConfirmReceived;
+            var conf = function (list) { var held = heldIds(); return origConfirm.call(this, (list || []).filter(function (w) { return w && held.indexOf(w.movementId) < 0; })); };
+            conf.__spx = true; W.storeConfirmReceived = conf;
+        }
+    }
+    function resolveHeld(mid, choice) {
+        var h = heldList().find(function (x) { return x.w && x.w.movementId === mid; }); if (!h) return;
+        var m;
+        if (choice === '__new') m = { kind: 'new', how: 'new' };
+        else if (/^v:/.test(String(choice))) {
+            var cut = String(choice).slice(2).split('|'), vp = findP(cut[0]), vv = vp && Array.isArray(vp.variants) ? vp.variants.find(function (x) { return x && x.id === cut[1]; }) : null;
+            if (!vp || !vv) { toast('That item is no longer in Inventory.', true); return; }
+            m = { kind: 'variant', product: vp, variant: vv, how: 'picked by ' + (who() || 'staff') };
+        }
+        else { var p = findP(choice); if (!p) { toast('That item is no longer in Inventory.', true); return; } m = { kind: 'item', product: p, how: 'picked by ' + (who() || 'staff') }; }
+        applyArrived(h.w, m);
+        heldRemove(mid);
+        saveStock();
+        try { if (typeof W.storeConfirmReceived === 'function') W.storeConfirmReceived([h.w]); } catch (e) { /* confirmed on the next Store visit */ }
+        toast('Added ' + h.w.qty + ' ' + (h.w.unit || 'pcs') + ' of ' + h.w.name + (m.variant ? ' to "' + m.product.name + ' (' + m.variant.name + ')"' : m.product ? ' to "' + m.product.name + '"' : ' as a new item') + '.');
+        openHeld();
+    }
+    function openHeld() {
+        var h = heldList();
+        if (!h.length) { close(); renderStoreBar(); return; }
+        var all = (inv() || []).filter(function (p) { return p && SE().stockable(p) && !p.hasVariants; });
+        var html = '<div class="spx-note warn">These arrived from the Store, but more than one item here could be the one meant, so nothing was added yet. Pick the item each belongs to. (It is only marked "received" once you do.)</div>';
+        html += h.map(function (x) {
+            var c = x.cands.map(findP).filter(Boolean);
+            var vpar = x.parent ? findP(x.parent) : null;
+            if (vpar && Array.isArray(vpar.variants)) {       // zip 338: the item is known, only the size / variant is not
+                var vopts = vpar.variants.map(function (vv) { return '<option value="v:' + esc(vpar.code) + '|' + esc(vv.id) + '">' + esc(vpar.name) + ' (' + esc(vv.name) + ') - ' + esc(String(Number(vv.qty) || 0)) + ' in stock</option>'; }).join('');
+                return '<div style="border:1px solid var(--border-color,#dde3e7);border-radius:12px;padding:10px 12px;margin:10px 0"><b>' + esc(x.w.qty) + ' ' + esc(x.w.unit || 'pcs') + ' - ' + esc(x.w.name) + '</b><br><small>Which size / variant of ' + esc(vpar.name) + '? · ' + new Date(x.at).toLocaleString('en-GB') + '</small><select id="spx-hold-' + esc(x.w.movementId) + '" style="margin-top:8px">' + vopts + '</select><div class="spx-btns"><button type="button" class="spx-btn" data-spx="resolve" data-m="' + esc(x.w.movementId) + '">Add it to this variant</button></div></div>';
+            }
+            var opts = c.map(function (p) { return '<option value="' + esc(p.code) + '">' + esc(p.name) + ' - #' + esc(p.code) + ' (' + esc(stockText(p)) + ')</option>'; }).join('')
+                + '<option disabled>──────────</option>' + all.filter(function (p) { return x.cands.indexOf(p.code) < 0; }).slice(0, 400).map(function (p) { return '<option value="' + esc(p.code) + '">' + esc(p.name) + ' - #' + esc(p.code) + '</option>'; }).join('')
+                + '<option value="__new">➕ It is a different product - add it as a new item</option>';
+            return '<div style="border:1px solid var(--border-color,#dde3e7);border-radius:12px;padding:10px 12px;margin:10px 0"><b>' + esc(x.w.qty) + ' ' + esc(x.w.unit || 'pcs') + ' - ' + esc(x.w.name) + '</b>' + (x.w.code ? ' <span class="spx-chip">store code ' + esc(x.w.code) + '</span>' : '') + '<br><small>' + esc(x.how || '') + ' · ' + new Date(x.at).toLocaleString('en-GB') + '</small><select id="spx-hold-' + esc(x.w.movementId) + '" style="margin-top:8px">' + opts + '</select><div class="spx-btns"><button type="button" class="spx-btn" data-spx="resolve" data-m="' + esc(x.w.movementId) + '">Add it to this item</button></div></div>';
+        }).join('');
+        modal('📥 Transfers waiting for you', html, { on: { resolve: function (b) { var mid = b.getAttribute('data-m'); resolveHeld(mid, val('spx-hold-' + mid)); } } });
+    }
+    W.spxOpenHeldTransfers = openHeld;
+
+    /* ---- Inventory -> Store (and -> another branch) ---- */
+    function moveTarget(code, variantId) {
+        var p = findP(code); if (!p) return null;
+        var v = variantId && p.hasVariants && Array.isArray(p.variants) ? p.variants.find(function (x) { return x && x.id === variantId; }) : null;
+        if (variantId && !v) return null;
+        return { p: p, v: v, name: v ? p.name + ' (' + v.name + ')' : p.name, have: Number(v ? v.qty : p.qty) || 0, unit: unitOf(p) };
+    }
+    function storeCache() { try { return (typeof storeItemsCache !== 'undefined' && Array.isArray(storeItemsCache)) ? storeItemsCache : []; } catch (e) { return []; } }
+    function storeChoices(t) {
+        var s = SE(), code = t.v ? (t.v.code || (t.p.code + '::' + t.v.id)) : t.p.code, list = storeCache(), out = [], seen = {};
+        var add = function (it, why) { if (!it || seen[it.id]) return; seen[it.id] = 1; out.push({ id: it.id, label: it.name + (it.code ? ' (#' + it.code + ')' : '') + ' - ' + (it.qty || 0) + ' ' + (it.unit || 'pcs') + ' in store · ' + why }); };
+        var linked = linkFor(t.p.code); if (linked && !t.v) add(list.find(function (x) { return x.id === linked; }), 'it went here before');
+        list.forEach(function (it) { if (it.code && String(it.code).toLowerCase() === String(code).toLowerCase()) add(it, 'same code'); });
+        if (!t.v) list.forEach(function (it) { if (s.normName(it.name) === s.normName(t.p.name) && String(it.unit || 'pcs').toLowerCase() === String(t.unit).toLowerCase()) add(it, 'same name'); });
+        return out;
+    }
+    W.openMoveStock = function (code, variantId) {
+        var t = moveTarget(code, variantId); if (!t) return;
+        var s = SE(), st = { code: code, variantId: variantId || null, key: 'mv-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), busy: false };
+        W.__spxMove = st;
+        var lv = !t.v ? s.levels(t.p).filter(function (l) { return l.buy !== false; }) : [];
+        var unitSel = '<select id="spx-mv-unit"><option value="base">' + esc(t.unit) + '</option>' + lv.map(function (l) { return '<option value="' + esc(l.id) + '">' + esc(l.name) + ' (' + l.per + ' ' + esc(t.unit) + ')</option>'; }).join('') + '</select>';
+        var hasBranches = false; try { hasBranches = !!myBranchGroupId; } catch (e) { /* no branches */ }
+        var html = '<div class="spx-kv" id="spx-mv-have"><div><b>' + esc(stockText(t.v ? { qty: t.have, unit: t.unit } : t.p)) + '</b><span>here now</span></div></div>'
+            + '<label>What do you want to do?</label><div class="spx-row" style="flex-direction:column;align-items:flex-start;gap:6px"><label style="font-weight:600;margin:0"><input type="radio" name="spx-mv-to" value="store" checked style="width:auto"> 📦 Inventory &rarr; 🏬 Store</label>'
+            + (hasBranches ? '<label style="font-weight:600;margin:0"><input type="radio" name="spx-mv-to" value="branch" style="width:auto"> 📦 Inventory &rarr; 🏢 Another branch</label>' : '')
+            + '<label style="font-weight:600;margin:0"><input type="radio" name="spx-mv-to" value="fromstore" style="width:auto"> 🏬 Store &rarr; 📦 this item</label>'
+            + (hasBranches ? '<label style="font-weight:600;margin:0"><input type="radio" name="spx-mv-to" value="frombranch" style="width:auto"> 🏢 Another branch &rarr; 🏬 Store (asks the branch)</label>' : '') + '</div>'
+            + '<div id="spx-mv-from-row" style="display:none"><label for="spx-mv-from">Which line in the Store</label><select id="spx-mv-from"><option value="">Loading the Store…</option></select><div class="spx-note">It is added to <b>this</b> item' + (t.v ? ' (this size)' : '') + ', never to a new one.</div></div>'
+            + '<div id="spx-mv-line-row"><label for="spx-mv-line">Which line in the Store</label><select id="spx-mv-line"><option value="">Loading the Store…</option></select></div>'
+            + '<div id="spx-mv-branch-row" style="display:none"><label for="spx-mv-branch">Branch</label><select id="spx-mv-branch"><option value="">Loading branches…</option></select></div>'
+            + '<div class="spx-row"><div><label for="spx-mv-qty">How many</label><input type="number" id="spx-mv-qty" min="0" step="any" inputmode="decimal"></div><div><label for="spx-mv-unit">Counted in</label>' + unitSel + '</div></div>'
+            + '<div id="spx-mv-eq" class="spx-packlbl"></div>'
+            + (lotsOn() && s.lotTracked(t.p) ? '<div class="spx-note">The batches go with the stock (earliest expiry first), so the Store keeps each batch\'s number, expiry and cost.</div>' : '')
+            + '<div id="spx-mv-err" class="spx-note bad" style="display:none"></div>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" id="spx-mv-go" data-spx="go">Move</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        modal('↔ Move ' + t.name, html, { on: { go: confirmMove, __change: function (el) { if (el.name === 'spx-mv-to') { var v = el.value; $('spx-mv-branch-row').style.display = (v === 'branch' || v === 'frombranch') ? '' : 'none'; $('spx-mv-line-row').style.display = v === 'store' ? '' : 'none'; $('spx-mv-from-row').style.display = v === 'fromstore' ? '' : 'none'; var g = $('spx-mv-go'); if (g) g.textContent = v === 'frombranch' ? 'Send request' : 'Move'; var h = document.querySelector('#spx-mv-have'); if (h) h.style.display = (v === 'store' || v === 'branch') ? '' : 'none'; } eqText(); }, __input: eqText } });
+        function eqText() { var q = parseFloat(val('spx-mv-qty')), u = val('spx-mv-unit'); var e = $('spx-mv-eq'); if (!e) return; e.textContent = (q > 0 && u !== 'base') ? '= ' + s.toBase(t.p, q, u) + ' ' + t.unit : ''; }
+        var fill = function () {
+            var ch = storeChoices(t), sel = $('spx-mv-line'); if (!sel) return;
+            var pre = W.__spxPreStore; W.__spxPreStore = null;      // zip 340: opened from a Store line's Move - that line is the one chosen
+            var preIdx = pre ? ch.findIndex(function (c) { return c.id === pre; }) : -1;
+            if (pre && preIdx < 0) { var pl = storeCache().find(function (x) { return x.id === pre; }); if (pl) { ch.unshift({ id: pl.id, label: pl.name + (pl.code ? ' (#' + pl.code + ')' : '') + ' - ' + (pl.qty || 0) + ' ' + (pl.unit || 'pcs') + ' in store · the line you chose' }); preIdx = 0; } }
+            sel.innerHTML = ch.map(function (c, i) { return '<option value="' + esc(c.id) + '"' + (i === (preIdx >= 0 ? preIdx : 0) ? ' selected' : '') + '>' + esc(c.label) + '</option>'; }).join('') + '<option value="">➕ A new line in the Store</option>';
+        };
+        var loadStore = (typeof loadStoreItems === 'function') ? Promise.resolve().then(function () { return loadStoreItems(); }).catch(function () { /* cache */ }) : Promise.resolve();
+        loadStore.then(fill);
+        loadStore.then(function () { var sel = $('spx-mv-from'); if (!sel) return; var ch = storeChoices(t); sel.innerHTML = ch.length ? ch.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.label) + '</option>'; }).join('') : '<option value="">No matching line in the Store</option>'; });
+        if (hasBranches && typeof fetchBranchesSummary === 'function') {
+            fetchBranchesSummary(false).then(function (data) {
+                var others = ((data && data.branches) || []).filter(function (b) { return b && !b.isSelf && b.status !== 'suspended'; });
+                var sel = $('spx-mv-branch'); if (sel) sel.innerHTML = others.length ? others.map(function (b) { return '<option value="' + esc(b.id) + '">' + esc(b.hqName || b.label || b.slug || b.id) + '</option>'; }).join('') : '<option value="">No other branches</option>';
+            }).catch(function () { /* none */ });
+        }
+        setTimeout(function () { try { $('spx-mv-qty').focus(); } catch (e) { /* none */ } }, 40);
+    };
+    // Store -> this inventory item: the Store gives it up and the stock is added to THIS item/size (same matching as the Store tab's Move)
+    function moveFromStore(st, t, qty, fail) {
+        var sid = val('spx-mv-from'); if (!sid) return fail('There is no matching line in the Store. Use the Store tab to move a differently named line.');
+        var line = storeCache().find(function (x) { return x.id === sid; });
+        if (line && qty > (Number(line.qty) || 0) + 1e-9) return fail('Only ' + line.qty + ' ' + (line.unit || 'pcs') + ' in the Store.');
+        st.busy = true; var go = $('spx-mv-go'); if (go) go.disabled = true; $('spx-mv-err').style.display = 'none';
+        post('/api/store', { action: 'removeFromStore', idemKey: st.key, items: [{ storeItemId: sid, qty: qty }], servedBy: who() }).then(function (r) {
+            if (!r.ok) { fail(r.d.error || 'Could not take it from the Store. Nothing was changed.'); return; }
+            var done = lsGet('pos_moves_applied', []);
+            if (done.indexOf(st.key) < 0) {
+                try { storeItemsCache = r.d.items; } catch (e) { /* the Store tab reloads it */ }
+                (r.d.withdrawn || []).forEach(function (w) { try { storeApplyWithdrawn(w); } catch (e) { /* counted by the check */ } });
+                done.push(st.key); lsSet('pos_moves_applied', done.slice(-300));
+                saveStock();
+                try { if (typeof storeConfirmReceived === 'function') storeConfirmReceived(r.d.withdrawn); } catch (e) { /* cosmetic */ }
+                try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ }
+                try { if (typeof renderStoreTab === 'function') renderStoreTab(); } catch (e) { /* cosmetic */ }
+                toast('Moved ' + qty + ' ' + t.unit + ' from the Store into ' + t.name + '.');
+            }
+            close();
+        }).catch(function () { fail('Could not reach the server - nothing was moved.'); })
+          .then(function () { st.busy = false; var g2 = $('spx-mv-go'); if (g2) g2.disabled = false; });
+    }
+    // another branch -> the Store: only a request; nothing moves until that branch presses Send
+    function requestFromBranchFor(st, t, qty, dest, fail) {
+        if (!dest) return fail('Choose a branch.');
+        var p = t.p, v = t.v;
+        st.busy = true; var go = $('spx-mv-go'); if (go) go.disabled = true; $('spx-mv-err').style.display = 'none';
+        post('/api/store', { action: 'requestFromBranch', idemKey: st.key, fromClientId: dest, name: t.name, code: v ? (v.code || p.code + '::' + v.id) : p.code, unit: t.unit, qty: qty,
+            price: Number(v ? (v.price || p.price) : p.price) || 0, wholesaleSellingPrice: Number(v ? v.wholesaleSellingPrice : p.wholesaleSellingPrice) || 0, wholesalePrice: Number(v ? (v.wholesalePrice || p.wholesalePrice) : p.wholesalePrice) || 0 }).then(function (r) {
+            if (!r.ok || !r.d.requested) { fail(r.d.error || 'Could not send the request. Nothing was changed.'); return; }
+            toast('Request sent to ' + (r.d.fromLabel || 'the branch') + ': ' + qty + ' ' + t.unit + ' of ' + t.name + '. It arrives in the Store when they press Send.');
+            close();
+        }).catch(function () { fail('Could not reach the server - nothing was sent.'); })
+          .then(function () { st.busy = false; var g2 = $('spx-mv-go'); if (g2) g2.disabled = false; });
+    }
+    function confirmMove() {
+        var st = W.__spxMove; if (!st || st.busy) return;
+        var s = SE(), t = moveTarget(st.code, st.variantId), err = $('spx-mv-err');
+        var fail = function (m) { err.textContent = m; err.style.display = ''; };
+        if (!t) return fail('That item is no longer in Inventory.');
+        var to = (document.querySelector('[name="spx-mv-to"]:checked') || {}).value || 'store';
+        var qIn = parseFloat(val('spx-mv-qty')), u = val('spx-mv-unit') || 'base';
+        var qty = u === 'base' ? s.r3(qIn) : s.toBase(t.p, qIn, u);
+        var dest = val('spx-mv-branch');
+        if (!(qty > 0)) return fail('Enter how many to move.');
+        if (to === 'fromstore') return moveFromStore(st, t, qty, fail);
+        if (to === 'frombranch') return requestFromBranchFor(st, t, qty, dest, fail);
+        if (qty > t.have + 1e-9) return fail('Only ' + stockText(t.v ? { qty: t.have, unit: t.unit } : t.p) + ' here.');
+        if (to === 'branch' && !dest) return fail('Choose a branch.');
+        var p = t.p, v = t.v;
+        var line = {
+            code: v ? p.code + '::' + v.id : p.code, name: t.name, unit: t.unit, qty: qty,
+            price: Number(v ? (v.price || p.price) : p.price) || 0, wholesaleSellingPrice: Number(v ? v.wholesaleSellingPrice : p.wholesaleSellingPrice) || 0,
+            wholesalePrice: Number(v ? (v.wholesalePrice || p.wholesalePrice) : p.wholesalePrice) || 0,
+        };
+        if (v) { line.variantCode = v.code || null; line.variantName = v.name || null; }
+        var storeLine = to === 'store' ? val('spx-mv-line') : '';
+        if (storeLine) line.storeItemId = storeLine;
+        var plan = null;
+        if (lotsOn() && !v && s.lotTracked(p)) { var clone = JSON.parse(JSON.stringify(p)); plan = s.consume(clone, qty, { force: true }); if (to === 'store') line.lots = plan.allocs; }
+        var bodyReq = to === 'branch' ? { action: 'sendToBranch', idemKey: st.key, destClientId: dest, items: [line], servedBy: who() } : { action: 'depositFromBranch', idemKey: st.key, items: [line], servedBy: who() };
+        st.busy = true; err.style.display = 'none'; var go = $('spx-mv-go'); if (go) go.disabled = true;
+        post('/api/store', bodyReq).then(function (r) {
+            if (!r.ok || !r.d.moved) { fail(r.d.error || 'Could not move it. Nothing was changed.'); return; }
+            var done = lsGet('pos_moves_applied', []);
+            if (done.indexOf(st.key) < 0) {
+                var where = to === 'branch' ? 'Sent to ' + (r.d.destLabel || 'another branch') : 'Moved to Store';
+                if (v) {
+                    v.qty = s.r3((Number(v.qty) || 0) - qty);
+                    p.qty = s.r3(p.variants.reduce(function (a, x) { return a + (Number(x && x.qty) || 0); }, 0));
+                    logStockMovement(v.code != null && v.code !== '' ? v.code : p.code, t.name, -qty, where);
+                } else if (plan && plan.allocs.length) {
+                    s.align(p);
+                    plan.allocs.forEach(function (a) { var b = p.batches.find(function (x) { return x && x.id === a.id; }); if (b) b.qty = s.r3(Math.max(0, (Number(b.qty) || 0) - a.q)); });
+                    s.refreshAgg(p);
+                    var gap = s.r3(qty - plan.allocs.reduce(function (t2, a) { return t2 + a.q; }, 0));
+                    if (gap > 0) p.qty = s.r3(Math.max(0, p.qty - gap));
+                    logStockMovement(p.code, p.name, -qty, where);
+                } else {
+                    p.qty = s.r3((Number(p.qty) || 0) - qty);
+                    logStockMovement(p.code, p.name, -qty, where);
+                }
+                done.push(st.key); lsSet('pos_moves_applied', done.slice(-300));
+                if (to === 'store' && Array.isArray(r.d.items)) {
+                    try { storeItemsCache = r.d.items; } catch (e) { /* the Store tab reloads it */ }
+                    var landed = r.d.items.find(function (x) { return x && (x.id === storeLine || (x.code && String(x.code).toLowerCase() === String(line.code).toLowerCase())); });
+                    if (landed && !v) linkSet(landed.id, p.code);
+                }
+                saveStock();
+                try { if (typeof renderStoreTab === 'function') renderStoreTab(); } catch (e) { /* cosmetic */ }
+                toast(to === 'branch' ? 'Sent ' + qty + ' ' + t.unit + ' of ' + t.name + ' to ' + (r.d.destLabel || 'the branch') + '.' : 'Moved ' + qty + ' ' + t.unit + ' of ' + t.name + ' to the Store.');
+            }
+            close();
+        }).catch(function () { fail('Could not reach the server - nothing was moved.'); })
+          .then(function () { st.busy = false; var g2 = $('spx-mv-go'); if (g2) g2.disabled = false; });
+    }
+
+    /* ---- Store check (read-only report + merge) ---- */
+    function storeCheck() {
+        modal('🩺 Store & inventory check', '<div class="spx-note">Checking…</div>', { wide: true });
+        var local = SE().duplicateItems(inv() || []);
+        post('/api/store', { action: 'reconcile' }).catch(function () { return { ok: false, d: { error: 'offline' } }; }).then(function (r) {
+            var d = r.d || {}, h = '';
+            if (!r.ok) h += '<div class="spx-note warn">The Store could not be checked right now (' + esc(d.error || 'offline') + '). The inventory part below is from this device.</div>';
+            else {
+                var bad = (d.duplicates || []).length + (d.stuck || []).length + (d.mismatched || []).length + (d.negative || []).length;
+                h += '<div class="spx-note ' + (bad ? 'warn' : 'ok') + '">' + (bad ? 'Some things need a look.' : 'The Store adds up: no look-alike lines, nothing stuck in transit.') + ' Checked ' + esc(d.lines || 0) + ' store lines. Nothing here changes anything until you press a button.</div>';
+                if ((d.duplicates || []).length) {
+                    h += '<h4>Store lines that look like the same product</h4><p style="font-size:13px">Same name and unit, different codes. If they really are the same product, merge them into one (a manager confirms; both histories are kept).</p>';
+                    d.duplicates.forEach(function (g) {
+                        h += '<div class="spx-scroll"><table class="spx-tbl"><tr><th>Line</th><th>Code</th><th class="n">In store</th><th></th></tr>' + g.map(function (it, i) { return '<tr><td>' + esc(it.name) + '</td><td>' + esc(it.code || '-') + '</td><td class="n">' + esc(it.qty) + ' ' + esc(it.unit) + '</td><td>' + (i > 0 ? '<button type="button" class="spx-mini" data-spx="merge" data-from="' + esc(it.id) + '" data-into="' + esc(g[0].id) + '">Merge into the first line</button>' : '<span class="spx-chip b">kept</span>') + '</td></tr>'; }).join('') + '</table></div>';
+                    });
+                }
+                if ((d.stuck || []).length) h += '<h4>Transfers in transit for more than 2 days</h4><div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th class="n">Qty</th><th>To</th><th>Since</th></tr>' + d.stuck.map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td class="n">' + esc(x.qty) + ' ' + esc(x.unit || '') + '</td><td>' + esc(x.to || '') + '</td><td>' + esc(new Date(x.at).toLocaleString('en-GB')) + '</td></tr>'; }).join('') + '</table></div><p style="font-size:12.5px">The receiving branch adds these when its till next checks in. If a branch never received one, cancel it from the Store history so the stock returns to the Store.</p>';
+                if ((d.mismatched || []).length) h += '<h4>Lines whose quantity is not what their history says</h4><div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th class="n">Now</th><th class="n">History says</th><th>Last change</th></tr>' + d.mismatched.map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td class="n">' + esc(x.qty) + '</td><td class="n">' + esc(x.historySays) + '</td><td>' + esc(x.kind) + ' · ' + esc(new Date(x.lastChange).toLocaleString('en-GB')) + '</td></tr>'; }).join('') + '</table></div><p style="font-size:12.5px">Count it and set the right figure in the Store (it is recorded as a correction).</p>';
+                if ((d.lotGaps || []).length) h += '<h4>Batches in the Store</h4><div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th class="n">Line</th><th class="n">In batches</th><th></th></tr>' + d.lotGaps.map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td class="n">' + esc(x.qty) + '</td><td class="n">' + esc(x.inBatches) + '</td><td>' + esc(x.note) + '</td></tr>'; }).join('') + '</table></div>';
+            }
+            var held = heldList();
+            if (held.length) h += '<h4>Transfers waiting for you to pick the item</h4><div class="spx-note warn">' + held.length + ' transfer' + (held.length === 1 ? '' : 's') + ' from the Store could belong to more than one item here. <button type="button" class="spx-mini" data-spx="held">Pick the items</button></div>';
+            // zip 338: extra items an older version made when a variant came back from the Store ("Grey fleece (30)" next to the real "Grey fleece")
+            var stray = SE().strayVariants(inv() || []);
+            if (stray.length) {
+                h += '<h4>Extra items that belong to a size / variant (' + stray.length + ')</h4><div class="spx-note warn">Stock that came back from the Store for a size or colour was added as its own item instead of to that size. Merge adds the stock to the real variant and archives the extra item (its history is kept). Nothing changes until you press Merge.</div>'
+                    + '<div class="spx-scroll"><table class="spx-tbl"><tr><th>Extra item</th><th class="n">Stock</th><th>Belongs to</th><th></th></tr>' + stray.map(function (x) { return '<tr><td>' + esc(x.stray.name) + '<br><small>#' + esc(x.stray.code) + '</small></td><td class="n">' + esc(Number(x.stray.qty) || 0) + '</td><td>' + esc(x.parent.name) + ' (' + esc(x.variant.name) + ')</td><td><button type="button" class="spx-mini" data-spx="stray" data-code="' + esc(x.stray.code) + '">Merge into ' + esc(x.variant.name) + '</button></td></tr>'; }).join('') + '</table></div>';
+            }
+            h += '<h4>Inventory: items that may be duplicates</h4>';
+            h += local.length ? '<p style="font-size:13px">Same name and unit, different codes. They are NOT merged automatically - they may be different strengths or packs. If one is a mistake, move its stock with ⚖️ Adjust stock (reason "correction") and archive it.</p>' + local.map(function (g) { return '<div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th>Code</th><th class="n">Stock</th></tr>' + g.map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td>' + esc(p.code) + '</td><td class="n">' + esc(stockText(p)) + '</td></tr>'; }).join('') + '</table></div>'; }).join('') : '<div class="spx-note ok">No look-alike items in Inventory.</div>';
+            // stock that has not moved (no sale, no restock, no adjustment) for 90 days
+            var moved = {}, since = Date.now() - 90 * 86400000;
+            try { (typeof stockMovementLog !== 'undefined' ? stockMovementLog : []).forEach(function (m) { if (m && Date.parse(m.timestamp) >= since) moved[String(m.code)] = 1; }); } catch (e) { /* none */ }
+            sales().forEach(function (x) { if (x && Date.parse(x.timestamp) >= since) (x.items || []).forEach(function (it) { if (it) moved[String(it.code)] = 1; }); });
+            var still = (inv() || []).filter(function (p) { return p && SE().stockable(p) && (Number(p.qty) || 0) > 0 && !moved[String(p.code)] && !(Number(p.createdAt) > since); });
+            if (still.length) h += '<h4>No movement for 90 days (' + still.length + ')</h4><div class="spx-scroll" style="max-height:220px"><table class="spx-tbl"><tr><th>Item</th><th class="n">Stock</th><th class="n">At cost</th></tr>' + still.slice(0, 200).map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td class="n">' + esc(stockText(p)) + '</td><td class="n">' + esc(money((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0))) + '</td></tr>'; }).join('') + '</table></div>';
+            if (lotsOn()) {
+                var over = SE().lotOverAllocation(inv() || [], sales());
+                if (over.length) h += '<h4>Batches sold more than they held</h4><div class="spx-note warn">Two tills sold from the same batch while offline. The stock figure is right; the cost of the extra units was taken from a batch that was already empty. Check these and correct the cost if the next batch cost differently.</div><div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th>Batch</th><th class="n">Held</th><th class="n">Sold from it</th></tr>' + over.map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td>' + esc(x.batch || x.lotId) + '</td><td class="n">' + esc(x.held) + '</td><td class="n">' + esc(x.sold) + '</td></tr>'; }).join('') + '</table></div>';
+            }
+            var neg = (inv() || []).filter(function (p) { return p && Number(p.qty) < 0; });
+            if (neg.length) h += '<div class="spx-note bad">' + neg.length + ' item(s) show a NEGATIVE quantity: ' + neg.slice(0, 8).map(function (p) { return esc(p.name); }).join(', ') + '. Count them (Stock Take).</div>';
+            body().innerHTML = h;
+        });
+        modalHandlers = { held: openHeld, merge: function (b) { mergeLines(b.getAttribute('data-from'), b.getAttribute('data-into')); }, stray: function (b) { mergeStray(b.getAttribute('data-code')); } };
+    }
+    W.spxStoreCheck = storeCheck;
+    // zip 338: put the stock of an extra "Item (Variant)" item into the real variant, then archive the extra one (both movements are in the stock ledger)
+    function mergeStray(code, silent) {
+        var list = inv() || [], st = list.find(function (p) { return p && String(p.code) === String(code); }); if (!st) return false;
+        var hit = SE().strayVariants(list).find(function (x) { return x.stray === st; });
+        if (!hit) { if (!silent) toast('That item is not an extra variant item any more.', true); return false; }
+        if (Array.isArray(st.batches) && st.batches.some(function (b) { return b && Number(b.qty) > 0; }) || Array.isArray(hit.variant.batches) && hit.variant.batches.length) { toast('This one has batches, so it cannot be merged automatically. Do a Stock Take on the real size instead, then remove the extra item.', true); return; }
+        var s = SE(), q = s.r3(Number(st.qty) || 0), par = hit.parent, v = hit.variant, nm = par.name + ' (' + v.name + ')';
+        if (!silent && !confirm('Add ' + q + ' ' + unitOf(st) + ' to "' + nm + '" and archive the extra item "' + st.name + '"?')) return;
+        if (q !== 0) {
+            v.qty = s.r3((Number(v.qty) || 0) + q);
+            par.qty = s.r3(par.variants.reduce(function (a, x) { return a + (Number(x && x.qty) || 0); }, 0));
+            logStockMovement(v.code != null && v.code !== '' ? v.code : par.code, nm, q, 'Merged from the extra item "' + st.name + '"');
+            logStockMovement(st.code, st.name, -q, 'Merged into ' + nm);
+            st.qty = 0;
+        }
+        st.archived = true;
+        saveStock();
+        if (!silent) { toast('Merged ' + q + ' into ' + nm + '.'); storeCheck(); }
+        return true;
+    }
+    // zip 340: one visible place to match the extra "Item (Size)" items to the real size - one by one, or all at once
+    function matchStrays() {
+        var list = inv() || [], st = SE().strayVariants(list), s = SE();
+        if (!st.length) { modal('🔗 Match extra items to sizes', '<div class="spx-note">Nothing to match: every item that belongs to a size is already counted in that size.</div><div class="spx-btns"><button type="button" class="spx-btn sec" data-spx="close">Close</button></div>'); return; }
+        var rows = st.map(function (x) { return '<tr><td>' + esc(x.stray.name) + '<br><small>#' + esc(x.stray.code) + '</small></td><td class="n">' + esc(Number(x.stray.qty) || 0) + '</td><td>' + esc(x.parent.name) + ' (' + esc(x.variant.name) + ')<br><small>#' + esc(x.variant.code || x.parent.code) + '</small></td><td><button type="button" class="spx-mini" data-spx="stray1" data-code="' + esc(x.stray.code) + '">Match</button></td></tr>'; }).join('');
+        modal('🔗 Match extra items to sizes', '<div class="spx-note warn">These items are really a size of another item. Match adds their stock to the real size (same code as in your inventory) and archives the extra one; its history is kept. Nothing changes until you press Match.</div>'
+            + '<div class="spx-scroll"><table class="spx-tbl"><tr><th>Extra item</th><th class="n">Stock</th><th>Is really</th><th></th></tr>' + rows + '</table></div>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="strayall">Match all (' + st.length + ')</button><button type="button" class="spx-btn sec" data-spx="close">Close</button></div>',
+            { wide: true, on: {
+                stray1: function (b) { if (mergeStray(b.getAttribute('data-code'), false)) matchStrays(); },
+                strayall: function () {
+                    var cur = SE().strayVariants(inv() || []); if (!confirm('Match ' + cur.length + ' extra item(s) to their real sizes and archive the extras?')) return;
+                    var done = 0, skipped = 0; cur.forEach(function (x) { if (mergeStray(x.stray.code, true)) done++; else skipped++; });
+                    toast('Matched ' + done + ' item(s)' + (skipped ? '; ' + skipped + ' skipped (they have batches: do a Stock Take on the real size)' : '') + '.', skipped > 0 && done === 0);
+                    matchStrays();
+                } } });
+    }
+    function mergeLines(fromId, intoId) {
+        post('/api/store', { action: 'mergeItems', fromId: fromId, intoId: intoId }).then(function (r) {
+            if (!r.ok) { toast(r.d.error || 'Could not check that merge.', true); return; }
+            var pv = r.d.preview, key2 = 'merge-' + Date.now().toString(36);
+            modal('Merge two Store lines', '<div class="spx-note">"' + esc(pv.from.name) + '"' + (pv.from.code ? ' (#' + esc(pv.from.code) + ')' : '') + ' - ' + esc(pv.from.qty) + ' ' + esc(pv.from.unit) + '<br>goes into<br>"' + esc(pv.into.name) + '"' + (pv.into.code ? ' (#' + esc(pv.into.code) + ')' : '') + ' - now ' + esc(pv.into.qty) + ', after: <b>' + esc(pv.after.qty) + ' ' + esc(pv.into.unit) + '</b>.</div><p style="font-size:13px">The first line is archived (its history is kept), its batches move too. Only do this when both are really the same product - not a different strength or pack size.</p><label for="spx-merge-why">Why are they the same product?</label><textarea id="spx-merge-why"></textarea><div class="spx-btns"><button type="button" class="spx-btn warn" data-spx="go">Merge (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>', {
+                on: { go: function () {
+                    var why = val('spx-merge-why').trim(); if (why.length < 3) { toast('Say why they are the same product.', true); return; }
+                    withProof('Merging two Store lines changes stock records, so a manager confirms it.', function (h) { return post('/api/store', { action: 'mergeItems', fromId: fromId, intoId: intoId, confirm: true, reason: why, idemKey: key2, servedBy: who() }, h); }).then(function (r2) {
+                        if (!r2.ok) { if (!r2.cancelled) toast(r2.d.error || 'Not merged.', true); return; }
+                        try { storeItemsCache = r2.d.items; } catch (e) { /* reloaded */ }
+                        toast('Merged. Both histories are kept.'); close(); try { renderStoreTab(); } catch (e) { /* cosmetic */ }
+                    });
+                } },
+            });
+        });
+    }
+    function renderStoreBar() {
+        var tab = $('store-tab'); if (!tab || !inv()) return;
+        var bar = $('spx-store-bar');
+        if (!bar) {
+            var anchor = $('store-search-input'); var host = anchor && anchor.closest ? anchor.closest('.form-group') : null;
+            if (!host || !host.parentNode) return;
+            bar = document.createElement('div'); bar.id = 'spx-store-bar'; bar.className = 'spx-bar';
+            host.parentNode.insertBefore(bar, host);
+            bar.addEventListener('click', function (e) {
+                var b = e.target.closest ? e.target.closest('[data-spxb]') : null; if (!b) return;
+                var a = b.getAttribute('data-spxb');
+                if (a === 'move') pickItem('📤 Move stock into the Store - which item?', function (p) { return !p.hasVariants && (Number(p.qty) || 0) > 0; }, function (p) { if (p) W.openMoveStock(p.code); });
+                if (a === 'check') storeCheck();
+                if (a === 'held') openHeld();
+            });
+        }
+        var held = heldList().length;
+        if (bar.__held === held && bar.firstChild) return;
+        bar.__held = held;
+        bar.innerHTML = '<button type="button" class="settings-small-btn" data-spxb="move">📤 Move stock into the Store</button><button type="button" class="settings-small-btn" data-spxb="check">🩺 Store check</button>'
+            + (held ? '<div class="spx-held spx-note warn">📥 ' + held + ' transfer' + (held === 1 ? '' : 's') + ' from the Store need' + (held === 1 ? 's' : '') + ' you to pick the item. <button type="button" class="spx-mini" data-spxb="held">Pick now</button></div>' : '');
+    }
+
+
+    /* ---- zip 340: requests from other branches ("send me some for the Store") ----
+       Another branch asked (from its Store tab: Move -> Another branch -> Store) for stock from THIS branch's shelf. Nothing moves until a person here
+       presses Send: the Store takes it in (server, once) and this till then takes the same quantity off its own stock (once, whatever the retries). */
+    var REQ = { at: 0, list: [], busy: false };
+    function loadRequests(force) {
+        var multi = false; try { multi = !!myBranchGroupId; } catch (e) { multi = false; }
+        if (!multi || REQ.busy || navigator.onLine === false || (!force && Date.now() - REQ.at < 120000)) return;
+        REQ.busy = true; REQ.at = Date.now();
+        post('/api/store', { action: 'pendingRequests' }).then(function (r) { REQ.list = (r.ok && Array.isArray(r.d.requests)) ? r.d.requests : []; REQ.busy = false; renderRequests(true); }).catch(function () { REQ.busy = false; });
+    }
+    function reqHost() {
+        var id = (document.querySelector('.tab-content.active') || {}).id;
+        if (id !== 'store-tab' && id !== 'inventory-list-tab' && id !== 'inventory-tab') return null;
+        return $(id);
+    }
+    function renderRequests(force) {
+        var host = reqHost(), bar = $('spx-req-bar');
+        if (!host) { if (bar) bar.remove(); return; }
+        var sig = REQ.list.map(function (x) { return x.movementId; }).join(',');
+        if (bar && bar.parentNode === host && bar.__sig === sig && !force) return;
+        if (!REQ.list.length) { if (bar) bar.remove(); return; }
+        if (!bar) { bar = document.createElement('div'); bar.id = 'spx-req-bar'; bar.className = 'spx-bar'; bar.style.cssText = 'display:block;border-color:rgba(41,128,185,.55);background:rgba(41,128,185,.07)';
+            bar.addEventListener('click', function (e) { var b = e.target.closest ? e.target.closest('[data-rq]') : null; if (!b) return; var id = b.getAttribute('data-id'); if (b.getAttribute('data-rq') === 'send') fulfilRequest(id); else declineRequest(id); }); }
+        if (bar.parentNode !== host) host.insertBefore(bar, host.firstChild);
+        bar.__sig = sig;
+        bar.innerHTML = '<b>📨 Other branches are asking you for stock (' + REQ.list.length + ')</b>' + REQ.list.map(function (x) {
+            return '<div class="spx-note" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0"><span style="flex:1 1 240px">' + esc(x.note || 'A branch') + ' wants <b>' + esc(Math.round((Number(x.qty) || 0) * 1000) / 1000) + ' ' + esc(x.unit || 'pcs') + '</b> of <b>' + esc(x.name) + '</b> for the Store.</span>'
+                + '<button type="button" class="settings-small-btn" data-rq="send" data-id="' + esc(x.movementId) + '">📤 Send to the Store</button><button type="button" class="settings-small-btn" data-rq="no" data-id="' + esc(x.movementId) + '">Not now</button></div>'; }).join('');
+    }
+    function reqTarget(x) {
+        var a = inv() || [], c = String(x.code || '').toLowerCase(), nm = SE() ? SE().normName(x.name) : String(x.name || '').toLowerCase(), hits = [];
+        a.forEach(function (p) {
+            if (!p || p.type === 'service') return;
+            if (p.hasVariants && Array.isArray(p.variants)) p.variants.forEach(function (v) { if (v && c && (String(v.code || '').toLowerCase() === c || String(p.code + '::' + v.id).toLowerCase() === c)) hits.push({ p: p, v: v }); });
+            else if (c && String(p.code).toLowerCase() === c) hits.push({ p: p, v: null });
+        });
+        if (!hits.length) a.forEach(function (p) { if (p && p.type !== 'service' && !p.hasVariants && SE() && SE().normName(p.name) === nm) hits.push({ p: p, v: null }); });
+        return hits.length === 1 ? hits[0] : null;
+    }
+    function fulfilRequest(id) {
+        var x = REQ.list.find(function (r) { return r.movementId === id; }); if (!x) return;
+        var t = reqTarget(x);
+        if (!t) { pickItem('📤 Which of your items is "' + x.name + '"?', function (p) { return !p.hasVariants; }, function (p) { if (p) sendRequest(x, { p: p, v: null }); }); return; }
+        sendRequest(x, t);
+    }
+    function sendRequest(x, t) {
+        var s = SE(), p = t.p, v = t.v, have = Number(v ? v.qty : p.qty) || 0, want = s.r3(Number(x.qty) || 0), qty = Math.min(want, have);
+        if (!(qty > 0)) { toast('You have none of ' + p.name + ' to send.', true); return; }
+        if (qty < want && !confirm('You only have ' + qty + ' ' + unitOf(p) + ' of ' + p.name + ' (they asked for ' + want + '). Send ' + qty + '?')) return;
+        var key = 'req-' + x.movementId;
+        post('/api/store', { action: 'fulfilRequest', movementId: x.movementId, qty: qty, servedBy: who() }).then(function (r) {
+            if (!r.ok || !r.d.moved) { toast(r.d.error || 'Could not send it. Nothing was changed.', true); return; }
+            var done = lsGet('pos_moves_applied', []);
+            if (done.indexOf(key) < 0) {
+                var sent = s.r3(Number(r.d.qty) || qty), where = 'Sent to the Store (asked for)', plan = null;
+                if (lotsOn() && !v && s.lotTracked(p)) { var clone = JSON.parse(JSON.stringify(p)); plan = s.consume(clone, sent, { force: true }); }
+                if (v) { v.qty = s.r3((Number(v.qty) || 0) - sent); p.qty = s.r3(p.variants.reduce(function (a, y) { return a + (Number(y && y.qty) || 0); }, 0)); logStockMovement(v.code != null && v.code !== '' ? v.code : p.code, p.name + ' (' + v.name + ')', -sent, where); }
+                else if (plan && plan.allocs.length) {
+                    s.align(p); plan.allocs.forEach(function (a) { var b = p.batches.find(function (y) { return y && y.id === a.id; }); if (b) b.qty = s.r3(Math.max(0, (Number(b.qty) || 0) - a.q)); }); s.refreshAgg(p);
+                    var gap = s.r3(sent - plan.allocs.reduce(function (t2, a) { return t2 + a.q; }, 0)); if (gap > 0) p.qty = s.r3(Math.max(0, p.qty - gap)); logStockMovement(p.code, p.name, -sent, where);
+                } else { p.qty = s.r3((Number(p.qty) || 0) - sent); logStockMovement(p.code, p.name, -sent, where); }
+                done.push(key); lsSet('pos_moves_applied', done.slice(-300)); saveStock();
+            }
+            if (Array.isArray(r.d.items)) { try { storeItemsCache = r.d.items; } catch (e) { /* the Store tab reloads it */ } }
+            REQ.list = REQ.list.filter(function (q) { return q.movementId !== x.movementId; }); renderRequests(true);
+            toast('Sent ' + qty + ' ' + unitOf(p) + ' of ' + p.name + ' to the Store.');
+            try { if (typeof renderStoreTab === 'function') renderStoreTab(); if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ }
+        }).catch(function () { toast('Could not reach the server - nothing was moved.', true); });
+    }
+    function declineRequest(id) {
+        post('/api/store', { action: 'declineRequest', movementId: id, servedBy: who() }).then(function () { REQ.list = REQ.list.filter(function (q) { return q.movementId !== id; }); renderRequests(true); toast('Request declined.'); }).catch(function () { toast('Could not reach the server.', true); });
+    }
+    W.spxLoadRequests = loadRequests;
+
+    /* ============================ B. PACKAGING ============================ */
+    function packBlocked(p) {
+        if (!p) return 'Item not found.';
+        if (p.type === 'service') return 'A service has no stock to pack.';
+        if (p.dualUnit) return 'This item already uses "Box & piece". Package levels do the same job with more levels: turn Box & piece off in Edit Item first (its stock stays), then add the levels here.';
+        if (p.hasVariants) return 'Package levels are set per item; an item with variants is not supported yet - give each variant its own item if it needs package levels.';
+        if ((Array.isArray(p.recipe) && p.recipe.length) || (Array.isArray(p.productionRecipe) && p.productionRecipe.length) || (Array.isArray(p.comboItems) && p.comboItems.length) || p.type === 'set') return 'A made-to-order, produced or combo item keeps its stock in its parts - package levels are for items you buy and sell as they are.';
+        return '';
+    }
+    function packEditor(code) {
+        var p = findP(code), s = SE(), why = packBlocked(p);
+        if (why) { modal('📦 Package sizes', '<div class="spx-note warn">' + esc(why) + '</div>'); return; }
+        var base = unitOf(p);
+        var rows = s.levels(p).slice().reverse().map(function (l) { return { id: l.id, name: l.name, parent: l.parent || 'base', count: l.count || l.per, barcode: l.barcode || '', price: l.price || '', sell: l.sell !== false, buy: l.buy !== false }; });
+        if (!rows.length) rows = [{ id: '', name: '', parent: 'base', count: '', barcode: '', price: '', sell: true, buy: true }];
+        function readRows() {
+            return rows.map(function (r, i) {
+                return { id: r.id, name: val('spx-pk-n' + i), parent: val('spx-pk-p' + i) || 'base', count: val('spx-pk-c' + i), barcode: val('spx-pk-b' + i), price: val('spx-pk-r' + i), sell: !!($('spx-pk-s' + i) || {}).checked, buy: !!($('spx-pk-u' + i) || {}).checked };
+            });
+        }
+        function draw() {
+            var opts = function (i) {
+                var o = '<option value="base">' + esc(base) + ' (base unit)</option>';
+                rows.forEach(function (r, j) { if (j !== i && (r.name || r.id)) o += '<option value="' + esc(r.id || ('#' + j)) + '">' + esc(r.name || ('level ' + (j + 1))) + '</option>'; });
+                return o;
+            };
+            var h = '<div class="spx-note">Stock is always counted in the smallest unit: <b>' + esc(base) + '</b>. Levels only change how a quantity is typed, sold and shown - never the stock itself. Example: Packet holds 20 ' + esc(base) + '; Carton holds 10 Packet.</div>';
+            h += rows.map(function (r, i) {
+                return '<div style="border:1px solid var(--border-color,#dde3e7);border-radius:12px;padding:10px 12px;margin:10px 0"><div class="spx-row">'
+                    + '<div><label for="spx-pk-n' + i + '">Level name</label><input id="spx-pk-n' + i + '" value="' + esc(r.name) + '" placeholder="e.g. Packet, Carton, Box"></div>'
+                    + '<div><label for="spx-pk-c' + i + '">One holds</label><input id="spx-pk-c' + i + '" type="number" min="1" step="any" value="' + esc(r.count) + '"></div>'
+                    + '<div><label for="spx-pk-p' + i + '">of</label><select id="spx-pk-p' + i + '">' + opts(i) + '</select></div></div><div class="spx-row">'
+                    + '<div><label for="spx-pk-b' + i + '">Barcode on this package (optional)</label><input id="spx-pk-b' + i + '" value="' + esc(r.barcode) + '"></div>'
+                    + '<div><label for="spx-pk-r' + i + '">Selling price for one (KES, optional)</label><input id="spx-pk-r' + i + '" type="number" min="0" step="0.01" value="' + esc(r.price) + '" placeholder="= price × quantity"></div></div>'
+                    + '<label style="font-weight:600;display:inline-flex;gap:6px;align-items:center;margin-right:14px"><input type="checkbox" id="spx-pk-s' + i + '" style="width:auto"' + (r.sell ? ' checked' : '') + '> Sold by this package</label>'
+                    + '<label style="font-weight:600;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="spx-pk-u' + i + '" style="width:auto"' + (r.buy ? ' checked' : '') + '> Bought / moved by this package</label>'
+                    + ' <button type="button" class="spx-mini" data-spx="rm" data-i="' + i + '" style="float:right">Remove</button></div>';
+            }).join('');
+            h += '<button type="button" class="spx-mini" data-spx="add">+ Add a level</button><div id="spx-pk-prev"></div>'
+                + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="save">Save package sizes</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+            body().innerHTML = h;
+            rows.forEach(function (r, i) { var sel = $('spx-pk-p' + i); if (sel) sel.value = r.parent && Array.prototype.some.call(sel.options, function (o) { return o.value === r.parent; }) ? r.parent : 'base'; });
+            preview();
+        }
+        function resolved() {
+            var rr = readRows();
+            // a parent typed as "#index" (a level not saved yet) -> its name
+            rr.forEach(function (r) { if (/^#\d+$/.test(r.parent)) { var j = Number(r.parent.slice(1)); r.parent = rr[j] ? (rr[j].id || rr[j].name) : 'base'; } });
+            rr.forEach(function (r) { if (r.parent !== 'base' && !rr.some(function (x) { return x.id === r.parent; })) { var byName = rr.find(function (x) { return x.name && x.name === r.parent; }); if (byName) r.parent = byName.id || byName.name; } });
+            return s.buildLevels(rr, base, p.packs || []);
+        }
+        function preview() {
+            var res = resolved(), el = $('spx-pk-prev'); if (!el) return;
+            if (!res.ok) { el.innerHTML = '<div class="spx-note warn">' + esc(res.error) + '</div>'; return; }
+            var tmp = { unit: base, packs: res.packs };
+            el.innerHTML = '<div class="spx-note ok">' + res.packs.map(function (l) { return '1 ' + esc(l.name) + ' = ' + esc(l.per) + ' ' + esc(base); }).join(' · ') + '<br>Stock now: <b>' + esc(s.r3(p.qty || 0)) + ' ' + esc(base) + '</b>' + (res.packs.length ? ' = ' + esc(s.label(tmp, p.qty || 0)) : '') + ' (the stock figure does not change).</div>';
+        }
+        modal('📦 Package sizes - ' + p.name, '', {
+            on: {
+                add: function () { rows = readRows(); rows.push({ id: '', name: '', parent: rows.length ? (rows[rows.length - 1].id || '#' + (rows.length - 1)) : 'base', count: '', barcode: '', price: '', sell: true, buy: true }); draw(); },
+                rm: function (b) { rows = readRows(); rows.splice(Number(b.getAttribute('data-i')), 1); draw(); },
+                save: function () {
+                    var res = resolved(); if (!res.ok) { toast(res.error, true); return; }
+                    var codes = {}; (inv() || []).forEach(function (x) { if (x && x !== p) { codes[String(x.code).toLowerCase()] = x.name; (s.levels(x) || []).forEach(function (l) { if (l.barcode) codes[String(l.barcode).toLowerCase()] = x.name + ' (' + l.name + ')'; }); } });
+                    for (var i = 0; i < res.packs.length; i++) { var bc = res.packs[i].barcode; if (bc && (codes[bc.toLowerCase()] || bc.toLowerCase() === String(p.code).toLowerCase())) { toast('Barcode ' + bc + ' is already used by ' + (codes[bc.toLowerCase()] || 'this item itself') + '.', true); return; } }
+                    var desc = function (list) { return list.map(function (l) { return l.name + '=' + l.per; }).join(', ') || 'none'; };
+                    var before = desc(s.levels(p)), after = desc(res.packs);
+                    var commit = function () {
+                        p.packs = res.packs; p.updatedAt = Date.now();
+                        saveStock();
+                        toast(res.packs.length ? 'Package sizes saved for ' + p.name + '. Stock stays ' + s.r3(p.qty || 0) + ' ' + base + '.' : 'Package sizes removed. Stock unchanged.');
+                        close();
+                    };
+                    if (before === after) { commit(); return; }   // only a barcode / price / tick changed
+                    // a change of what a package HOLDS is a manager decision (recorded on the server). Past sales keep the size they were sold at.
+                    withProof('Changing how many units a package holds is a manager decision (it is recorded).', function (h) {
+                        return post('/api/cost-control', { action: 'event', evId: rid('pk-'), kind: 'packaging', code: p.code, name: p.name, detail: before + ' -> ' + after + ' (stock ' + s.r3(p.qty || 0) + ' ' + base + ', unchanged)', reason: 'Package sizes set on ' + (who() || 'this device'), servedBy: who() }, h);
+                    }).then(function (r) { if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not saved.', true); return; } commit(); });
+                },
+                __input: preview, __change: preview,
+            },
+        });
+        draw();
+    }
+    W.spxPackEditor = packEditor;
+    function sellLevels(p) { var s = SE(); return s ? s.levels(p).filter(function (l) { return l.sell !== false; }) : []; }
+    function cartObj() { try { return (typeof currentCart !== 'undefined' && currentCart) ? currentCart : null; } catch (e) { return null; } }
+    function baseAvailable(p) {
+        var s = SE(), q = Number(p.qty) || 0;
+        if (lotsOn() && s.lotTracked(p)) q = s.usableQty(p);
+        return q;
+    }
+    function inCartBase(p) { var c = cartObj(); if (!c) return 0; var s = SE(); return Object.keys(c).reduce(function (t, k) { var l = c[k]; return l && String(l.code) === String(p.code) && !l.variantId ? t + (Number(l.qty) || 0) * s.linePer(l, p) : t; }, 0); }
+    function packAdd(p, level) {
+        var s = SE(), c = cartObj(); if (!c) return;
+        var per = Number(level.per), avail = baseAvailable(p), used = inCartBase(p);
+        if (used + per > avail + 1e-9) { toast('Not enough "' + p.name + '" for one more ' + level.name + ': ' + s.r3(Math.max(0, avail - used)) + ' ' + unitOf(p) + ' left.', true); return; }
+        var k = p.code + '::pack::' + level.id;
+        if (c[k]) c[k].qty += 1;
+        else {
+            var unitPrice = 0; try { unitPrice = typeof getEffectivePrice === 'function' ? Number(getEffectivePrice(p)) || 0 : Number(p.price) || 0; } catch (e) { unitPrice = Number(p.price) || 0; }
+            var line = { code: p.code, cartKey: k, name: p.name + ' - ' + level.name + ' (' + per + ' ' + unitOf(p) + ')', price: level.price > 0 ? Number(level.price) : s.r2(unitPrice * per),
+                wholesalePrice: Math.round((Number(p.wholesalePrice) || 0) * per * 10000) / 10000, unit: level.name, isService: false, vatCategory: p.vatCategory || 'A', qty: 1, saleMode: 'pack:' + level.id, packPer: per, packName: level.name };
+            if (p.requiresPrescription) {
+                var prescriber = (prompt('"' + p.name + '" requires a prescription.\n\nPrescriber\'s name (include a title if relevant, e.g. Dr. Otieno):') || '').trim();
+                if (!prescriber) { toast('A prescriber name is required to add this item.', true); return; }
+                var patient = (prompt('Patient\'s name:') || '').trim();
+                if (!patient) { toast('A patient name is required to add this item.', true); return; }
+                line.prescriberName = prescriber; line.patientName = patient;
+            }
+            c[k] = line;
+        }
+        try { renderCart(); } catch (e) { /* cosmetic */ }
+        try { var si = $('sales-search'); if (si) si.value = ''; var sr = $('search-results'); if (sr) sr.style.display = 'none'; } catch (e) { /* cosmetic */ }
+    }
+    function packChooser(p, args) {
+        var s = SE(), avail = baseAvailable(p), unitPrice = 0;
+        try { unitPrice = typeof getEffectivePrice === 'function' ? Number(getEffectivePrice(p)) || 0 : Number(p.price) || 0; } catch (e) { unitPrice = Number(p.price) || 0; }
+        var html = '<div class="spx-choose"><button type="button" data-spx="base"><span><b>1 ' + esc(unitOf(p)) + '</b><br><small>the smallest unit</small></span><span>' + esc(money(unitPrice)) + '<br><small>' + esc(s.r3(avail)) + ' left</small></span></button>'
+            + sellLevels(p).map(function (l) { var n = Math.floor((avail + 1e-9) / l.per); return '<button type="button" data-spx="lvl" data-id="' + esc(l.id) + '"' + (n < 1 ? ' disabled style="opacity:.5"' : '') + '><span><b>1 ' + esc(l.name) + '</b><br><small>' + esc(l.per) + ' ' + esc(unitOf(p)) + '</small></span><span>' + esc(money(l.price > 0 ? l.price : unitPrice * l.per)) + '<br><small>' + n + ' left</small></span></button>'; }).join('') + '</div>';
+        modal('Sell ' + p.name + ' by…', html, {
+            on: {
+                base: function () { close(); W.__spxBypass = true; try { W.addToCart.apply(null, args); } finally { W.__spxBypass = false; } },
+                lvl: function (b) { var l = s.levelOf(p, b.getAttribute('data-id')); close(); if (l) packAdd(p, l); },
+            },
+        });
+    }
+    function installCartHooks() {
+        var s = SE(); if (!s || !inv()) return;
+        if (typeof W.addToCart === 'function' && !W.addToCart.__spx) {
+            var origAdd = W.addToCart;
+            var add = function (code, mode) {
+                var p = findP(code);
+                if (p && !W.__spxBypass && mode === undefined && arguments.length < 4 && sellLevels(p).length && !p.dualUnit && !p.hasVariants) { packChooser(p, [code, mode, arguments[2]]); return; }
+                if (p && lotsOn() && s.lotTracked(p) && s.usableQty(p) <= 0 && (Number(p.qty) || 0) > 0) {
+                    var ls = s.lotSummary(p);
+                    toast('"' + p.name + '" cannot be sold: all ' + s.r3(p.qty) + ' in stock ' + (ls.expired && ls.blocked ? 'are expired or blocked' : ls.expired ? 'are past their expiry date' : 'are quarantined / recalled') + '. Open its batches in Inventory.', true);
+                    return;
+                }
+                return origAdd.apply(this, arguments);
+            };
+            add.__spx = true; W.addToCart = add;
+        }
+        if (typeof W.handleBarcodeScan === 'function' && !W.handleBarcodeScan.__spx) {
+            var origScan = W.handleBarcodeScan;
+            var scan = function (code) {
+                try {
+                    var tab = document.querySelector('.tab-content.active');
+                    if (tab && tab.id === 'sales-tab') {
+                        var hit = s.findPackBarcode(inv(), code);
+                        if (hit && hit.level.sell !== false) { packAdd(hit.product, hit.level); return; }
+                        W.__spxBypass = true;   // the item's own barcode is the smallest unit: no chooser in the middle of scanning
+                        try { return origScan.apply(this, arguments); } finally { W.__spxBypass = false; }
+                    }
+                } catch (e) { /* the normal scan below */ }
+                return origScan.apply(this, arguments);
+            };
+            scan.__spx = true; W.handleBarcodeScan = scan;
+        }
+        if (typeof W.getAvailableStock === 'function' && !W.getAvailableStock.__spx) {
+            var origAvail = W.getAvailableStock;
+            var avail = function (product, mode) {
+                if (product && /^pack:/.test(String(mode || ''))) {
+                    var per = s.perOf(product, String(mode).slice(5)) || 1;
+                    var b = origAvail.call(this, product, undefined);
+                    if (lotsOn() && s.lotTracked(product)) b = Math.min(b, s.usableQty(product));
+                    return Math.floor((Number(b) + 1e-9) / per);
+                }
+                var v = origAvail.apply(this, arguments);
+                if (product && lotsOn() && s.lotTracked(product) && typeof v === 'number' && isFinite(v)) v = Math.min(v, s.usableQty(product));
+                return v;
+            };
+            avail.__spx = true; W.getAvailableStock = avail;
+        }
+        var packQty = function (product, qty, mode, x) {
+            if (product && /^pack:/.test(String(mode || ''))) { var per = (x && typeof x === 'object' && Number(x.packPer) > 0) ? Number(x.packPer) : (s.perOf(product, String(mode).slice(5)) || 1); return [s.r3(Number(qty) * per), undefined]; }
+            return null;
+        };
+        if (typeof W.deductStockForSaleUnit === 'function' && !W.deductStockForSaleUnit.__spx) {
+            var origDeduct = W.deductStockForSaleUnit;
+            var ded = function (product, qty, mode, x) { var c = packQty(product, qty, mode, x); if (c) return origDeduct.call(this, product, c[0], c[1], x); return origDeduct.apply(this, arguments); };
+            ded.__spx = true; W.deductStockForSaleUnit = ded;
+        }
+        if (typeof W.restoreStockForSaleUnit === 'function' && !W.restoreStockForSaleUnit.__spx) {
+            var origRestore = W.restoreStockForSaleUnit;
+            var res = function (product, qty, mode, x) { var c = packQty(product, qty, mode, x); if (c) return origRestore.call(this, product, c[0], c[1], x); return origRestore.apply(this, arguments); };
+            res.__spx = true; W.restoreStockForSaleUnit = res;
+        }
+        if (typeof W.restockReturnedItem === 'function' && !W.restockReturnedItem.__spx) {
+            var origRet = W.restockReturnedItem;
+            var ret = function (product, qty, sel, reason) {
+                sel = sel || {};
+                var line = null;
+                try {
+                    var sale = sel.sourceRefNumber ? sales().find(function (x) { return x && x.refNumber === sel.sourceRefNumber; }) : null;
+                    if (sale && product) line = (sale.items || []).find(function (l) { return l && String(l.code) === String(product.code) && String(l.saleMode || '') === String(sel.saleMode || '') && (!sel.variantId || l.variantId === sel.variantId); }) || null;
+                } catch (e) { line = null; }
+                if (product && /^pack:/.test(String(sel.saleMode || ''))) {
+                    var per = (line && Number(line.packPer) > 0) ? Number(line.packPer) : (Number(sel.packPer) > 0 ? Number(sel.packPer) : (s.perOf(product, String(sel.saleMode).slice(5)) || 1));
+                    qty = s.r3(Number(qty) * per); sel = Object.assign({}, sel, { saleMode: undefined });
+                }
+                if (lotsOn() && line && Array.isArray(line.lots) && line.lots.length) {
+                    // what earlier returns of this same line already gave back (base units) - so a second partial return does not refill the same batch twice
+                    var already = 0;
+                    try { (typeof returns !== 'undefined' && Array.isArray(returns) ? returns : []).forEach(function (r) { if (r && r.restocked && r.refNumber === sel.sourceRefNumber && String(r.itemCode) === String(product.code)) already += (Number(r.qty) || 0) * (Number(line.packPer) > 0 ? Number(line.packPer) : 1); }); } catch (e) { already = 0; }
+                    W.__spxRestoreLots = { code: product.code, lots: line.lots, already: already };
+                }
+                try { return origRet.call(this, product, qty, sel, reason); } finally { W.__spxRestoreLots = null; }
+            };
+            ret.__spx = true; W.restockReturnedItem = ret;
+        }
+        if (typeof W.batchesPutBack === 'function' && !W.batchesPutBack.__spx) {
+            var origPut = W.batchesPutBack;
+            var put = function (product, qty) { var c = W.__spxRestoreLots; if (c && product && String(c.code) === String(product.code) && s.restore(product, c.lots, qty, c.already || 0)) return true; return origPut.apply(this, arguments); };
+            put.__spx = true; W.batchesPutBack = put;
+        }
+        if (lotsOn() && typeof W.poCustomStockIn !== 'function') {
+            // Hospital: an arrived purchase order for a batch-tracked item becomes a costed batch (Pharmacy defines its own)
+            W.poCustomStockIn = function (product, qty, info) { if (!s.lotTracked(product)) return false; info = info || {}; s.receive(product, { qty: qty, cost: info.cost != null ? info.cost : (Number(product.wholesalePrice) > 0 ? Number(product.wholesalePrice) : null), src: 'purchase order', ref: info.ref || null, supplier: info.supplier || null, by: who(), hospital: true }); return true; };
+        }
+    }
+
+    /* ---- Restock by package ---- */
+    function restockByPack() {
+        pickItem('📦 Restock by carton / packet - which item?', function (p) { return SE().levels(p).length > 0; }, function (p) {
+            if (!p) return;
+            var s = SE(), lv = s.levels(p).filter(function (l) { return l.buy !== false; });
+            if (!lv.length) { toast('This item has no package level that is bought. Set one in 📦 Package sizes.', true); return; }
+            modal('📦 ' + p.name + ' - received by package', '<div class="spx-row"><div><label for="spx-rp-l">Package</label><select id="spx-rp-l">' + lv.map(function (l) { return '<option value="' + esc(l.id) + '">' + esc(l.name) + ' (' + l.per + ' ' + esc(unitOf(p)) + ')</option>'; }).join('') + '</select></div>'
+                + '<div><label for="spx-rp-n">How many packages</label><input id="spx-rp-n" type="number" min="0" step="1"></div><div><label for="spx-rp-c">Cost of ONE package (KES)</label><input id="spx-rp-c" type="number" min="0" step="0.01"></div></div>'
+                + '<div id="spx-rp-out" class="spx-note"></div><div class="spx-btns"><button type="button" class="spx-btn" data-spx="go">Add to the delivery</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>', {
+                on: {
+                    __input: function () { out(); }, __change: function () { out(); },
+                    go: function () {
+                        var r = calc(); if (!r) { toast('Enter how many packages and the cost of one.', true); return; }
+                        try {
+                            addRestockRow();
+                            var row = restockDraft[restockDraft.length - 1];
+                            row.code = p.code; row.name = p.name; row.unit = unitOf(p); row.qty = String(r.base); row.cost = String(r.unitCost);
+                            row.packNote = r.n + ' × ' + r.l.name;
+                            if (typeof renderRestockRows === 'function') renderRestockRows(); else if (typeof renderRestockTable === 'function') renderRestockTable();
+                            try { renderRestockTotals(); } catch (e) { /* totals refresh on the next edit */ }
+                            toast(r.n + ' ' + r.l.name + ' = ' + r.base + ' ' + unitOf(p) + ' at KES ' + r.unitCost + ' each added to the delivery.');
+                            close();
+                        } catch (e) { toast('Could not add the row - open the Restock tab first.', true); }
+                    },
+                },
+            });
+            function calc() { var l = s.levelOf(p, val('spx-rp-l')), n = parseFloat(val('spx-rp-n')), c = parseFloat(val('spx-rp-c')); if (!l || !(n > 0) || !(c >= 0)) return null; return { l: l, n: n, base: s.toBase(p, n, l.id), unitCost: s.baseCostFrom(p, l.id, c), total: s.r2(n * c) }; }
+            function out() { var r = calc(), e = $('spx-rp-out'); if (!e) return; e.innerHTML = r ? r.n + ' ' + esc(r.l.name) + ' = <b>' + r.base + ' ' + esc(unitOf(p)) + '</b> · cost per ' + esc(unitOf(p)) + ': <b>KES ' + r.unitCost + '</b> (a ' + esc(r.l.name) + ' costs KES ' + s.r2(r.total / r.n) + ' - not the price of each ' + esc(unitOf(p)) + ') · total KES ' + r.total : 'Type the number of packages and the cost of one package.'; }
+            out();
+        });
+    }
+    W.spxRestockByPack = restockByPack;
+    function renderRestockBar() {
+        var tab = $('restock-tab'); if (!tab || !inv() || $('spx-restock-bar')) return;
+        var addBtn = Array.prototype.find.call(tab.querySelectorAll('button'), function (b) { return /addRestockRow\(\)/.test(b.getAttribute('onclick') || ''); });
+        if (!addBtn || !addBtn.parentNode) return;
+        var b = document.createElement('button'); b.type = 'button'; b.id = 'spx-restock-bar'; b.className = addBtn.className || 'settings-small-btn'; b.style.marginLeft = '8px';
+        b.textContent = '📦 Add by carton / packet'; b.onclick = restockByPack;
+        addBtn.parentNode.insertBefore(b, addBtn.nextSibling);
+    }
+
+    /* ---- package labels next to quantities (Inventory, Store, Stock Take, the Sales Counter grid) + count by package in Stock Take ---- */
+    var labelTick = 0;
+    function codeIn(el, byCode, storeMap) {
+        var c = el.getAttribute && el.getAttribute('data-code'); if (c && byCode[c]) return c;
+        var sid = el.getAttribute && (el.getAttribute('data-id') || el.getAttribute('data-sid')); if (sid && storeMap[sid] && byCode[storeMap[sid]]) return storeMap[sid];
+        var hs = [el].concat(Array.prototype.slice.call(el.querySelectorAll ? el.querySelectorAll('[onclick],[oninput],[onchange],[data-id]') : [], 0, 12));
+        for (var i = 0; i < hs.length; i++) {
+            var h = hs[i];
+            var di = h.getAttribute('data-id'); if (di && storeMap[di] && byCode[storeMap[di]]) return storeMap[di];
+            var txt = (h.getAttribute('onclick') || '') + ' ' + (h.getAttribute('oninput') || '') + ' ' + (h.getAttribute('onchange') || '');
+            var re = /['"]([^'"]{1,60})['"]/g, m;
+            while ((m = re.exec(txt))) { if (byCode[m[1]]) return m[1]; if (storeMap[m[1]] && byCode[storeMap[m[1]]]) return storeMap[m[1]]; }
+        }
+        return null;
+    }
+    function decorate() {
+        var s = SE(), a = inv(); if (!s || !a) return;
+        var withPacks = a.filter(function (p) { return p && s.levels(p).length; });
+        if (!withPacks.length) return;
+        var byCode = {}; withPacks.forEach(function (p) { byCode[String(p.code)] = p; });
+        var storeMap = {}; storeCache().forEach(function (it) { if (it && it.id && it.code) storeMap[it.id] = String(it.code); });
+        var sig = withPacks.map(function (p) { return p.code + ':' + p.qty; }).join('|');
+        var tab = document.querySelector('.tab-content.active'); if (!tab) return;
+        tab.querySelectorAll('tr, .item-grid-cell, [data-code]').forEach(function (el) {
+            if (el.__spxSeen === sig) return; el.__spxSeen = sig;        // each row once (a redrawn row is a new element)
+            if (el.querySelector && el.querySelector('.spx-packlbl')) return;
+            if (el.closest && el.closest('#spx-ov')) return;
+            var code = codeIn(el, byCode, storeMap), p = code && byCode[code]; if (!p) return;
+            var qty = Number(p.qty) || 0;
+            if (tab.id === 'store-tab') { var sid = Object.keys(storeMap).find(function (k) { return storeMap[k] === String(code); }); var it = sid && storeCache().find(function (x) { return x.id === sid; }); if (it) qty = Number(it.qty) || 0; }
+            var lbl = s.label(p, qty); if (!lbl) return;
+            var span = document.createElement('span'); span.className = 'spx-packlbl'; span.textContent = '📦 ' + lbl;
+            var target = el.querySelector && (el.querySelector('.igc-name') || el.querySelector('td:nth-child(2)') || el.firstElementChild);
+            (target || el).appendChild(span);
+            // Stock Take: count cartons, packets and loose units, the figure goes in the count box
+            if (tab.id === 'stock-take-tab') {
+                var box = el.querySelector('input.st-input, input[type="number"], input[inputmode="decimal"]'); if (!box) return;
+                var b = document.createElement('button'); b.type = 'button'; b.className = 'spx-mini'; b.textContent = '📦 Count by package'; b.style.marginTop = '4px';
+                b.onclick = function () { countByPack(p, box); };
+                span.appendChild(document.createElement('br')); span.appendChild(b);
+            }
+        });
+    }
+    function countByPack(p, box) {
+        var s = SE(), lv = s.levels(p);
+        var h = '<div class="spx-note">Count each kind of package you see, and the loose ' + esc(unitOf(p)) + '. The total in ' + esc(unitOf(p)) + ' goes into the count box.</div><div class="spx-row">'
+            + lv.map(function (l) { return '<div><label for="spx-cp-' + esc(l.id) + '">' + esc(l.name) + ' (' + l.per + ' ' + esc(unitOf(p)) + ')</label><input id="spx-cp-' + esc(l.id) + '" type="number" min="0" step="1" inputmode="numeric"></div>'; }).join('')
+            + '<div><label for="spx-cp-base">Loose ' + esc(unitOf(p)) + '</label><input id="spx-cp-base" type="number" min="0" step="any" inputmode="decimal"></div></div><div id="spx-cp-out" class="spx-note ok"></div>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="go">Use this count</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        var total = function () { var t = Number(val('spx-cp-base')) || 0; lv.forEach(function (l) { t += (Number(val('spx-cp-' + l.id)) || 0) * l.per; }); return s.r3(t); };
+        modal('📦 Count ' + p.name, h, {
+            on: {
+                __input: function () { var e = $('spx-cp-out'); if (e) e.textContent = 'Total: ' + total() + ' ' + unitOf(p) + (s.label(p, total()) ? ' (' + s.label(p, total()) + ')' : ''); },
+                go: function () { box.value = String(total()); ['input', 'change'].forEach(function (ev) { try { box.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) { /* old browser */ } }); close(); },
+            },
+        });
+        $('spx-cp-out').textContent = 'Total: 0 ' + unitOf(p);
+    }
+    W.spxCountByPack = countByPack;
+
+    /* ---- Edit Item: buttons for package sizes and batches ---- */
+    function editButtons() {
+        if ($('spx-edit-btns')) return;
+        var anchor = $('inv-edit-expiry-input') || $('inv-edit-expiry-group') || $('inv-edit-qty-group'); if (!anchor) return;
+        var host = /-group$/.test(anchor.id) ? anchor : (anchor.closest ? (anchor.closest('.form-group') || anchor.parentNode) : anchor.parentNode);
+        if (!host || !host.parentNode) return;
+        var d = document.createElement('div'); d.id = 'spx-edit-btns'; d.className = 'spx-btns'; d.style.margin = '10px 0';
+        d.innerHTML = '<button type="button" class="settings-small-btn" data-x="pack">📦 Package sizes (carton / packet)</button>' + (lotsOn() ? '<button type="button" class="settings-small-btn" data-x="assign">🔀 Choose the batch this stock belongs to</button><button type="button" class="settings-small-btn" data-x="lots">🧪 Batches, expiry &amp; cost</button>' : '');
+        d.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('[data-x]') : null; if (!b) return;
+            var code = null; try { code = inventoryEditModalCode; } catch (x) { code = null; }
+            if (!code) return;
+            var xx = b.getAttribute('data-x');
+            if (xx === 'pack') packEditor(code); else if (xx === 'assign') W.spxLotAssign(code); else lotsModal(code);
+        });
+        host.parentNode.insertBefore(d, host.nextSibling);
+    }
+    function inventoryBar() {
+        var tab = $('inventory-list-tab'); if (!tab || $('spx-inv-bar')) return;
+        var anchor = tab.querySelector('#inventory-search-input') || tab.querySelector('input[type="text"]');
+        var host = anchor && anchor.closest ? (anchor.closest('.form-group') || anchor.parentNode) : null;
+        if (!host || !host.parentNode) return;
+        var d = document.createElement('div'); d.id = 'spx-inv-bar'; d.className = 'spx-bar';
+        d.innerHTML = '<button type="button" class="settings-small-btn" data-x="strays">🔗 Match extra items to sizes</button><button type="button" class="settings-small-btn" data-x="pack">📦 Package sizes</button>' + (lotsOn() ? '<button type="button" class="settings-small-btn" data-x="lots">🧪 Batches &amp; expiry</button>' : '') + '<button type="button" class="settings-small-btn" data-x="check">🩺 Stock check</button><button type="button" class="settings-small-btn" data-x="cost">🧮 Cost check</button>';
+        d.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('[data-x]') : null; if (!b) return;
+            var x = b.getAttribute('data-x');
+            if (x === 'pack') pickItem('📦 Package sizes - which item?', function (p) { return !packBlocked(p); }, function (p) { if (p) packEditor(p.code); });
+            if (x === 'lots') pickItem('🧪 Batches - which item?', null, function (p) { if (p) lotsModal(p.code); });
+            if (x === 'strays') matchStrays();
+            if (x === 'check') storeCheck();
+            if (x === 'cost') costCheck();
+        });
+        host.parentNode.insertBefore(d, host);
+    }
+
+    /* ============================ C. BATCHES (Pharmacy + Hospital) ============================ */
+    function lotStatusChip(b) {
+        var s = SE(), t = s.today();
+        if (s.lotBlocked(b)) return '<span class="spx-chip r">' + esc(s.LOT_STATUS[b.status] || b.status) + '</span>';
+        if (s.lotExpired(b, t)) return '<span class="spx-chip r">Expired</span>';
+        var e = String(b.expiryDate || ''); if (e && e !== s.NOEXP) { var days = Math.round((Date.parse(e) - Date.parse(t)) / 86400000); if (days <= 90) return '<span class="spx-chip o">' + days + ' days left</span>'; }
+        return '<span class="spx-chip g">Usable</span>';
+    }
+    function lotsModal(code) {
+        var p = findP(code), s = SE(); if (!p || !s) return;
+        if (!lotsOn()) { toast('Batch costing is used in Pharmacy and Hospital.', true); return; }
+        var draw = function () {
+            var list = s.order((p.batches || []).filter(function (b) { return b && (Number(b.qty) || 0) > 0; }), s.policy());
+            var sum = s.lotSummary(p), hdr = '<div class="spx-kv"><div><b>' + esc(sum.usable) + '</b><span>usable (can be sold)</span></div><div><b>' + esc(sum.expired) + '</b><span>expired</span></div><div><b>' + esc(sum.blocked) + '</b><span>quarantined / recalled</span></div><div><b>' + esc(sum.noCost) + '</b><span>with no cost on file</span></div></div>';
+            var untracked = s.r3((Number(p.qty) || 0) - (p.batches || []).reduce(function (t, b) { return t + (Number(b && b.qty) || 0); }, 0));
+            var h = hdr + '<div class="spx-note">Sales take the batch in this order (' + (s.policy() === 'fifo' ? 'FIFO: oldest received first' : 'FEFO: earliest expiry first, oldest received breaks a tie') + '). Expired, quarantined and recalled batches are never sold.</div>';
+            if (untracked > 0) h += '<div class="spx-note warn">' + untracked + ' ' + esc(unitOf(p)) + ' have no batch on file yet (stock from before batches were kept). They are shown as "Stock before batches" once anything is sold or received. Use "Record batch details" on that line to give them a batch number, expiry and cost.</div>';
+            h += '<div class="spx-scroll"><table class="spx-tbl"><tr><th>#</th><th>Batch</th><th>Expiry</th><th class="n">Qty</th><th class="n">Cost / ' + esc(unitOf(p)) + '</th><th>Received</th><th>Status</th><th></th></tr>'
+                + list.map(function (b, i) {
+                    var c = (b.cost === null || b.cost === undefined || b.cost === '') ? '<span class="spx-chip o">no cost</span>' : esc(money(b.cost));
+                    return '<tr><td>' + (i + 1) + '</td><td>' + esc(s.lotNo(b) || '-') + (b.supplier ? '<br><small>' + esc(b.supplier) + (b.ref ? ' · ' + esc(b.ref) : '') + '</small>' : '') + '</td><td>' + esc(b.expiryDate && b.expiryDate !== s.NOEXP ? b.expiryDate : 'none') + '</td><td class="n">' + esc(s.r3(b.qty)) + (s.label(p, b.qty) ? '<br><small>' + esc(s.label(p, b.qty)) + '</small>' : '') + '</td><td class="n">' + c + '</td><td>' + esc(b.receivedAt ? new Date(b.receivedAt).toLocaleDateString('en-GB') : '-') + '</td><td>' + lotStatusChip(b) + '</td>'
+                        + '<td style="white-space:nowrap">' + (s.lotBlocked(b) ? '<button type="button" class="spx-mini" data-spx="st" data-id="' + esc(b.id) + '" data-to="ok">Release</button>' : '<button type="button" class="spx-mini" data-spx="st" data-id="' + esc(b.id) + '" data-to="quarantine">Quarantine</button> <button type="button" class="spx-mini" data-spx="st" data-id="' + esc(b.id) + '" data-to="recalled">Recall</button>')
+                        + ' <button type="button" class="spx-mini" data-spx="cost" data-id="' + esc(b.id) + '">Cost…</button>'
+                        + (s.lotUsable(b) ? (p.lotFirst && p.lotFirst.id === b.id ? ' <span class="spx-chip b">sold first</span> <button type="button" class="spx-mini" data-spx="first" data-id="">Back to ' + s.policy().toUpperCase() + '</button>' : ' <button type="button" class="spx-mini" data-spx="first" data-id="' + esc(b.id) + '">Sell first…</button>') : '') + (b.src === 'untracked' || /^(Stock before batches|Stock adjustment)$/.test(s.lotNo(b)) ? ' <button type="button" class="spx-mini" data-spx="det" data-id="' + esc(b.id) + '">Record batch details</button>' : '')
+                        + ' <button type="button" class="spx-mini" data-spx="mv" data-id="' + esc(b.id) + '">Move stock…</button> <button type="button" class="spx-mini" data-spx="bid" data-id="' + esc(b.id) + '">Edit ID</button> <button type="button" class="spx-mini" style="color:#c0392b;border-color:#e6b0aa" data-spx="rmv" data-id="' + esc(b.id) + '">Remove from stock</button>' + '</td></tr>';
+                }).join('') + '</table></div>';
+            if (!list.length) h += '<div class="spx-note">No batches on file. A restock with an expiry date or batch number creates the first one.</div>';
+            h += '<div class="spx-btns" style="margin-top:10px"><button type="button" class="spx-btn" data-spx="mv" data-id="">🔀 Put stock into a batch</button></div>';
+            var gone = (p.lotRemoved || []).slice(-6).reverse();
+            if (gone.length) h += '<h4>Removed from stock (recalls &amp; write-offs)</h4><div class="spx-scroll"><table class="spx-tbl"><tr><th>When</th><th>Batch</th><th class="n">Qty</th><th>Why</th><th>Who</th></tr>' + gone.map(function (g) { return '<tr><td>' + esc(new Date(g.at).toLocaleDateString('en-GB')) + '</td><td>' + esc(g.batch || '-') + '</td><td class="n">' + esc(g.qty) + '</td><td>' + esc(g.reason) + '</td><td>' + esc(g.by || '') + '</td></tr>'; }).join('') + '</table></div>';
+            h += '<label for="spx-pol">How sales choose the batch (all batch items on this device)</label><select id="spx-pol"><option value="fefo"' + (s.policy() === 'fefo' ? ' selected' : '') + '>FEFO - earliest expiry first (recommended for medicines)</option><option value="fifo"' + (s.policy() === 'fifo' ? ' selected' : '') + '>FIFO - oldest received first</option></select>';
+            body().innerHTML = h;
+        };
+        modal('🧪 Batches - ' + p.name, '', {
+            wide: true,
+            on: {
+                st: function (b) { lotStatus(p, b.getAttribute('data-id'), b.getAttribute('data-to'), draw); },
+                cost: function (b) { correctCostModal(p.code, b.getAttribute('data-id')); },
+                det: function (b) { lotDetails(p, b.getAttribute('data-id'), draw); },
+                first: function (b) { lotFirst(p, b.getAttribute('data-id'), draw); },
+                mv: function (b) { lotAssign(p, b.getAttribute('data-id') || '', function () { lotsModal(p.code); }); },
+                bid: function (b) { lotEditId(p, b.getAttribute('data-id')); },
+                rmv: function (b) { lotRemove(p, b.getAttribute('data-id')); },
+                __change: function (el) {
+                    if (el.id !== 'spx-pol') return;
+                    var to = el.value, from = s.policy(); if (to === from) return;
+                    el.value = from;
+                    withProof('Changing how batches are chosen for sales is a manager decision.', function (h2) { return post('/api/cost-control', { action: 'event', evId: rid('pol-'), kind: 'lot_policy', detail: 'Batch order for sales: ' + from.toUpperCase() + ' -> ' + to.toUpperCase(), reason: 'Batch order changed on ' + (who() || 'this device'), servedBy: who() }, h2); }).then(function (r) {
+                        if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not changed.', true); return; }
+                        try { localStorage.setItem('se_lot_policy', to); } catch (e) { /* default stays */ }
+                        toast('Sales now take batches ' + (to === 'fifo' ? 'oldest received first (FIFO).' : 'earliest expiry first (FEFO).')); draw();
+                    });
+                },
+            },
+        });
+        draw();
+    }
+    W.spxLotsModal = lotsModal;
+    function lotStatus(p, id, to, redraw) {
+        var s = SE(), b = (p.batches || []).find(function (x) { return x && x.id === id; }); if (!b) return;
+        var label = to === 'ok' ? 'release (make usable again)' : to === 'recalled' ? 'recall' : 'quarantine';
+        var reason = (prompt('Reason to ' + label + ' batch ' + (s.lotNo(b) || '(no number)') + ' of ' + p.name + ':') || '').trim();
+        if (reason.length < 5) { if (reason) toast('Write a reason of a few words.', true); return; }
+        withProof('Quarantining, recalling or releasing a batch is a medicine-safety decision, so a manager confirms it.', function (h) {
+            return post('/api/cost-control', { action: 'event', evId: rid('lot-'), kind: 'lot_status', code: p.code, name: p.name, detail: 'Batch ' + (s.lotNo(b) || b.id) + ' (' + s.r3(b.qty) + ' ' + unitOf(p) + ', exp ' + (b.expiryDate || '-') + '): ' + (b.status || 'ok') + ' -> ' + to, reason: reason, servedBy: who() }, h);
+        }).then(function (r) {
+            if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not changed.', true); return; }
+            b.status = to; b.statusReason = reason; b.statusBy = (r.d.who && r.d.who.name) || who(); b.statusAt = Date.now();
+            (b.log = Array.isArray(b.log) ? b.log : []).push({ at: Date.now(), by: b.statusBy, what: to, reason: reason });
+            s.refreshAgg(p); p.updatedAt = Date.now(); saveStock();
+            toast(to === 'ok' ? 'Batch released - it can be sold again.' : 'Batch ' + (to === 'recalled' ? 'recalled' : 'quarantined') + ' - it will not be sold.');
+            redraw();
+        });
+    }
+    // an authorised override of the batch order: this usable batch is sold first (a reason is required and logged); "Back to FEFO" ends it.
+    // It is never possible to sell an expired, quarantined or recalled batch this way.
+    function lotFirst(p, id, redraw) {
+        var s = SE(), b = id ? (p.batches || []).find(function (x) { return x && x.id === id; }) : null;
+        if (id && (!b || !s.lotUsable(b))) { toast('Only a usable batch can be sold first.', true); return; }
+        var reason = (prompt(id ? 'Why should batch ' + (s.lotNo(b) || '(no number)') + ' be sold before the batch order says?' : 'Why go back to the normal batch order?') || '').trim();
+        if (reason.length < 5) { if (reason) toast('Write a reason of a few words.', true); return; }
+        withProof('Changing which batch is sold first is a manager decision (it is recorded).', function (h) {
+            return post('/api/cost-control', { action: 'event', evId: rid('ovr-'), kind: 'lot_override', code: p.code, name: p.name, detail: id ? 'Sell batch ' + (s.lotNo(b) || b.id) + ' (exp ' + (b.expiryDate || '-') + ') first' : 'Back to the ' + s.policy().toUpperCase() + ' order', reason: reason, servedBy: who() }, h);
+        }).then(function (r) {
+            if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not changed.', true); return; }
+            if (id) p.lotFirst = { id: id, reason: reason, by: (r.d.who && r.d.who.name) || who(), at: Date.now() }; else delete p.lotFirst;
+            p.updatedAt = Date.now(); saveStock(); toast(id ? 'That batch is sold first now.' : 'Back to the normal batch order.'); redraw();
+        });
+    }
+    function lotDetails(p, id, redraw) {
+        var s = SE(), b = (p.batches || []).find(function (x) { return x && x.id === id; }); if (!b) return;
+        modal('Record batch details - ' + p.name, '<div class="spx-note">' + esc(s.r3(b.qty)) + ' ' + esc(unitOf(p)) + ' are on file with no batch number, expiry or cost. Type what is printed on the packs. Leave the cost empty if you do not know it - nothing is invented; it then counts at the item\'s cost price and stays in the cost check.</div>'
+            + '<div class="spx-row"><div><label for="spx-ld-b">Batch number</label><input id="spx-ld-b"></div><div><label for="spx-ld-e">Expiry date</label><input id="spx-ld-e" type="date"></div><div><label for="spx-ld-c">Cost per ' + esc(unitOf(p)) + ' (KES)</label><input id="spx-ld-c" type="number" min="0" step="0.01"></div></div>'
+            + '<label for="spx-ld-r">Where do these details come from?</label><input id="spx-ld-r" placeholder="e.g. opening count 1 Nov, supplier invoice INV-552">'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="go">Save (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>', {
+            on: { go: function () {
+                var bn = val('spx-ld-b').trim(), ex = val('spx-ld-e'), cRaw = val('spx-ld-c'), reason = val('spx-ld-r').trim();
+                if (!bn && !ex && cRaw === '') { toast('Type at least one detail.', true); return; }
+                if (reason.length < 5) { toast('Say where these details come from.', true); return; }
+                var c = cRaw === '' ? null : Number(cRaw); if (c !== null && !(c >= 0)) { toast('Cost must be 0 or more.', true); return; }
+                withProof('Recording an opening batch (and its cost) is a manager action.', function (h) { return post('/api/cost-control', { action: 'event', evId: rid('open-'), kind: 'lot_opening', code: p.code, name: p.name, detail: s.r3(b.qty) + ' ' + unitOf(p) + ': batch ' + (bn || '-') + ', exp ' + (ex || '-') + ', cost ' + (c === null ? 'unknown' : c), reason: reason, servedBy: who() }, h); }).then(function (r) {
+                    if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not saved.', true); return; }
+                    if (bn) { b.batchNumber = bn; if ('batchNo' in b) b.batchNo = bn; }
+                    if (ex) b.expiryDate = ex;
+                    if (c !== null) b.cost = Math.round(c * 1e6) / 1e6;
+                    b.src = 'opening'; (b.log = Array.isArray(b.log) ? b.log : []).push({ at: Date.now(), by: (r.d.who && r.d.who.name) || who(), what: 'opening details', reason: reason });
+                    s.refreshAgg(p); p.updatedAt = Date.now(); saveStock(); toast('Batch details saved.'); lotsModal(p.code);
+                });
+            } },
+        });
+        void redraw;
+    }
+
+    // ---- zip 345: put EXISTING stock into the batch it belongs to, rename a batch ID, remove a recalled batch from the shelves
+    function hasNoKey(p) { return (p.batches || []).some(function (x) { return x && 'batchNo' in x; }); }
+    function lotLabel(p, b) { var s = SE(); return (s.lotNo(b) || '(no batch ID)') + ' · ' + s.r3(b.qty) + ' ' + unitOf(p) + (b.expiryDate && b.expiryDate !== s.NOEXP ? ' · exp ' + b.expiryDate : ''); }
+    function sameLot(b, no, exp) { var s = SE(); return s.lotNo(b).toLowerCase() === String(no || '').trim().toLowerCase() && String(b.expiryDate && b.expiryDate !== s.NOEXP ? b.expiryDate : '') === String(exp || ''); }
+    function lotAssign(p, preSrc, after) {
+        var s = SE(); if (!p || !s) return;
+        if (!lotsOn()) { toast('Batches are used in Pharmacy and Hospital.', true); return; }
+        try { s.align(p); } catch (e) { /* the list is shown as it is */ }
+        var bs = (p.batches || []).filter(function (b) { return b && (Number(b.qty) || 0) > 0; });
+        if (!bs.length) { toast('This item has no stock to put into a batch.', true); return; }
+        var def = bs.find(function (b) { return b.id === preSrc; }) || bs.find(function (b) { return b.src === 'untracked' || /^(Stock before batches|Stock adjustment)$/.test(s.lotNo(b)); }) || bs[0];
+        function opts(sel, skip) { return bs.filter(function (b) { return b.id !== skip; }).map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === sel ? ' selected' : '') + '>' + esc(lotLabel(p, b)) + '</option>'; }).join(''); }
+        var h = '<div class="spx-note">Pick the stock you already have on the shelf and say which batch it belongs to. The total stock does not change - only which batch the units are counted in (this matters for expiry, recalls and cost).</div>'
+            + '<label for="spx-as-src">Take the units from</label><select id="spx-as-src">' + opts(def.id) + '</select>'
+            + '<div class="spx-row"><div><label for="spx-as-qty">How many ' + esc(unitOf(p)) + '</label><input id="spx-as-qty" type="number" min="0" step="any" value="' + esc(s.r3(def.qty)) + '"></div><div><label>&nbsp;</label><button type="button" class="spx-mini" data-spx="all" style="width:100%;min-height:42px">All of them</button></div></div>'
+            + '<label for="spx-as-dst">Put them into</label><select id="spx-as-dst"><option value="">➕ A batch ID I type below</option>' + opts('', def.id) + '</select>'
+            + '<div id="spx-as-new" class="spx-row"><div><label for="spx-as-id">Batch ID / number</label><input id="spx-as-id" placeholder="as printed on the pack"></div><div><label for="spx-as-exp">Expiry date</label><input id="spx-as-exp" type="date"></div><div><label for="spx-as-cost">Cost per ' + esc(unitOf(p)) + ' (optional)</label><input id="spx-as-cost" type="number" min="0" step="0.01"></div></div>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="go">Move into the batch</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        function cur() { return bs.find(function (b) { return b.id === val('spx-as-src'); }) || def; }
+        function fill() { var src = cur(), d = $('spx-as-dst'), keep = d.value; d.innerHTML = '<option value="">➕ A batch ID I type below</option>' + opts('', src.id); if (keep && keep !== src.id) d.value = keep; $('spx-as-new').style.display = d.value ? 'none' : ''; }
+        modal('🔀 Put stock into a batch - ' + p.name, h, { on: {
+            all: function () { $('spx-as-qty').value = cur().qty; },
+            __change: function (el) { if (el.id === 'spx-as-src') { $('spx-as-qty').value = cur().qty; fill(); } if (el.id === 'spx-as-dst') fill(); },
+            go: function () {
+                var src = cur(), q = Number(val('spx-as-qty')), dstId = val('spx-as-dst');
+                if (!(q > 0) || q > (Number(src.qty) || 0) + 1e-9) { toast('Type a quantity between 0 and ' + s.r3(src.qty) + '.', true); return; }
+                var dst = null, no = val('spx-as-id').trim(), exp = val('spx-as-exp'), cRaw = val('spx-as-cost');
+                if (dstId) dst = bs.find(function (b) { return b.id === dstId; });
+                else {
+                    if (!no) { toast('Type the batch ID.', true); return; }
+                    if (cRaw !== '' && !(Number(cRaw) >= 0)) { toast('Cost must be 0 or more.', true); return; }
+                    dst = (p.batches || []).find(function (b) { return b && b.id !== src.id && sameLot(b, no, exp); }) || null;
+                    if (!dst) {
+                        dst = { id: rid('lot-'), batchNumber: no, expiryDate: exp || s.NOEXP, qty: 0, cost: cRaw === '' ? (src.cost === undefined ? null : src.cost) : Math.round(Number(cRaw) * 1e6) / 1e6, receivedAt: src.receivedAt || Date.now(), supplier: src.supplier || null, ref: src.ref || null, src: 'assigned', status: 'ok' };
+                        if (hasNoKey(p)) dst.batchNo = no;
+                        p.batches.push(dst);
+                    }
+                }
+                if (!dst || dst === src) { toast('Choose a different batch.', true); return; }
+                q = s.r3(q); src.qty = s.r3((Number(src.qty) || 0) - q); dst.qty = s.r3((Number(dst.qty) || 0) + q);
+                var by = who(), at = Date.now();
+                (src.log = Array.isArray(src.log) ? src.log : []).push({ at: at, by: by, what: 'moved out', reason: q + ' ' + unitOf(p) + ' into ' + (s.lotNo(dst) || 'another batch') });
+                (dst.log = Array.isArray(dst.log) ? dst.log : []).push({ at: at, by: by, what: 'moved in', reason: q + ' ' + unitOf(p) + ' from ' + (s.lotNo(src) || 'stock before batches') });
+                s.refreshAgg(p); p.updatedAt = at; saveStock();
+                toast(q + ' ' + unitOf(p) + ' now counted in batch ' + (s.lotNo(dst) || '') + '.');
+                if (after) after(); else close();
+            },
+        } });
+        fill();
+    }
+    W.spxLotAssign = function (code) { var p = findP(code); if (p) lotAssign(p, '', function () { lotsModal(code); }); };
+    function lotEditId(p, id) {
+        var s = SE(), b = (p.batches || []).find(function (x) { return x && x.id === id; }); if (!b) return;
+        modal('✏️ Edit batch ID - ' + p.name, '<div class="spx-note">Fix a mistyped batch ID or expiry date. Quantities and cost are not touched. The change is kept in the batch history.</div>'
+            + '<div class="spx-row"><div><label for="spx-ei-b">Batch ID / number</label><input id="spx-ei-b" value="' + esc(s.lotNo(b)) + '"></div><div><label for="spx-ei-e">Expiry date</label><input id="spx-ei-e" type="date" value="' + esc(b.expiryDate && b.expiryDate !== s.NOEXP ? b.expiryDate : '') + '"></div></div>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" data-spx="go">Save</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>', { on: { go: function () {
+                var no = val('spx-ei-b').trim(), ex = val('spx-ei-e');
+                if (!no) { toast('The batch needs an ID.', true); return; }
+                if ((p.batches || []).some(function (x) { return x && x.id !== b.id && sameLot(x, no, ex); })) { toast('Another batch already has this ID and expiry. Use "Move stock…" to combine them.', true); return; }
+                var old = s.lotNo(b) + ' / ' + (b.expiryDate || '-');
+                b.batchNumber = no; if ('batchNo' in b || hasNoKey(p)) b.batchNo = no; b.expiryDate = ex || s.NOEXP;
+                (b.log = Array.isArray(b.log) ? b.log : []).push({ at: Date.now(), by: who(), what: 'ID edited', reason: old + ' -> ' + no + ' / ' + (ex || '-') });
+                s.refreshAgg(p); p.updatedAt = Date.now(); saveStock(); toast('Batch ID saved.'); lotsModal(p.code);
+            } } });
+    }
+    function soldFromLot(code, lotId) {
+        var n = 0, q = 0, last = 0, s = SE();
+        sales().forEach(function (sale) { if (!sale || sale.voided) return; (sale.items || []).forEach(function (it) { if (!it || it.code !== code || !Array.isArray(it.lots)) return; it.lots.forEach(function (a) { if (a && a.id === lotId) { q += Number(a.q) || 0; n++; last = Math.max(last, new Date(sale.timestamp).getTime() || 0); } }); }); });
+        return { sales: n, qty: s.r3(q), last: last };
+    }
+    function lotRemove(p, id) {
+        var s = SE(), b = (p.batches || []).find(function (x) { return x && x.id === id; }); if (!b) return;
+        var sold = soldFromLot(p.code, b.id), max = s.r3(b.qty);
+        modal('🗑️ Remove batch from stock - ' + p.name, '<div class="spx-note warn">For a batch the maker or supplier has recalled, or one that is not up to standard. The units come OUT of your stock (and its value) and are never sold. A manager confirms it, and the reason is kept for audit.</div>'
+            + '<div class="spx-kv"><div><b>' + esc(s.lotNo(b) || '(no batch ID)') + '</b><span>batch ID</span></div><div><b>' + esc(max) + ' ' + esc(unitOf(p)) + '</b><span>left on the shelf</span></div><div><b>' + esc(sold.qty) + '</b><span>already sold from it (' + sold.sales + ' sale line' + (sold.sales === 1 ? '' : 's') + (sold.last ? ', last ' + esc(new Date(sold.last).toLocaleDateString('en-GB')) : '') + ')</span></div></div>'
+            + '<label for="spx-rm-k">Why is it being removed?</label><select id="spx-rm-k"><option>Supplier / maker recall - not to standard</option><option>Failed our own quality check</option><option>Damaged or contaminated</option><option>Expired - disposed</option><option>Other</option></select>'
+            + '<label for="spx-rm-w">More detail (required - recall notice number, who told you…)</label><input id="spx-rm-w" placeholder="e.g. Recall notice PPB/2026/114 from the distributor">'
+            + '<div class="spx-row"><div><label for="spx-rm-q">How many ' + esc(unitOf(p)) + ' to remove</label><input id="spx-rm-q" type="number" min="0" step="any" value="' + esc(max) + '"></div><div><label>&nbsp;</label><button type="button" class="spx-mini" data-spx="all" style="width:100%;min-height:42px">The whole batch</button></div></div>'
+            + '<p style="font-size:13px">Only want to stop it being sold while you wait for news? Use <b>Quarantine</b> or <b>Recall</b> on the batch instead - the units stay counted but cannot be sold.</p>'
+            + '<div class="spx-btns"><button type="button" class="spx-btn bad" id="spx-rm-go" data-spx="go">Remove from stock (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>', { on: {
+                all: function () { $('spx-rm-q').value = max; },
+                go: function () {
+                    var q = s.r3(Number(val('spx-rm-q'))), why = val('spx-rm-k') + ' - ' + val('spx-rm-w').trim();
+                    if (!(q > 0) || q > max + 1e-9) { toast('Type a quantity between 0 and ' + max + '.', true); return; }
+                    if (val('spx-rm-w').trim().length < 5) { toast('Write the detail of the recall in a few words.', true); return; }
+                    var go = $('spx-rm-go'); if (go) go.disabled = true;
+                    withProof('Removing a batch from stock changes your stock and its value, so a manager confirms it (checked on the server).', function (h) {
+                        return post('/api/cost-control', { action: 'event', evId: rid('rmv-'), kind: 'lot_remove', code: p.code, name: p.name, detail: 'Batch ' + (s.lotNo(b) || b.id) + ': ' + q + ' of ' + max + ' ' + unitOf(p) + ' removed from stock', reason: why, servedBy: who() }, h);
+                    }).then(function (r) {
+                        if (go) go.disabled = false;
+                        if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not removed.', true); return; }
+                        var by = (r.d.who && r.d.who.name) || who(), at = Date.now(), no = s.lotNo(b) || '(no batch ID)';
+                        b.qty = s.r3(max - q);
+                        (b.log = Array.isArray(b.log) ? b.log : []).push({ at: at, by: by, what: 'removed ' + q, reason: why });
+                        (p.lotRemoved = Array.isArray(p.lotRemoved) ? p.lotRemoved : []).push({ id: b.id, batch: no, qty: q, cost: b.cost === undefined ? null : b.cost, reason: why, by: by, at: at });
+                        if (p.lotRemoved.length > 60) p.lotRemoved = p.lotRemoved.slice(-60);
+                        try { if (typeof stockMovementLog !== 'undefined') stockMovementLog.push({ id: rid('mv-'), lg: 1, timestamp: new Date(at).toISOString(), code: p.code, name: p.name, delta: -q, type: 'removed', reason: 'Batch ' + no + ' removed: ' + why }); } catch (e) { /* the batch record above is the proof */ }
+                        s.refreshAgg(p); p.updatedAt = at; saveStock();
+                        toast('Batch ' + no + ': ' + q + ' ' + unitOf(p) + ' removed from stock.'); lotsModal(p.code);
+                    });
+                },
+            } });
+    }
+
+    // ---- zip 345: edit profit (set it to 0, or put it back) on every related sale line in the report period
+    function peLines(name, from, to) {
+        var out = [];
+        sales().forEach(function (sl) {
+            if (!sl || sl.voided || !Array.isArray(sl.items)) return;
+            var d = dayKey(sl.timestamp); if ((from && d < from) || (to && d > to)) return;
+            sl.items.forEach(function (it) { if (!it || it.unit === 'payment' || it.isPayment) return; if (name != null && String(it.name) !== String(name)) return; out.push({ s: sl, it: it }); });
+        });
+        return out;
+    }
+    function peSum(lines) {
+        var rev = 0, cost = 0, edited = 0;
+        lines.forEach(function (x) { rev += (Number(x.it.price) || 0) * (Number(x.it.qty) || 0); cost += (Number(x.it.wholesalePrice) || 0) * (Number(x.it.qty) || 0); if (x.it.profitWas) edited++; });
+        return { rev: rev, cost: cost, profit: rev - cost, n: lines.length, edited: edited };
+    }
+    function profitEdit(name) {
+        var rg = profitRange(), lines = peLines(name, rg.from, rg.to), t = peSum(lines);
+        if (!lines.length) { toast('No sales of ' + (name || 'anything') + ' in this period.', true); return; }
+        var h = '<div class="spx-note">Sets the <b>profit</b> of ' + (name ? '<b>' + esc(name) + '</b>' : '<b>every item</b>') + ' sold from <b>' + esc(rg.from) + '</b> to <b>' + esc(rg.to) + '</b> (the dates on the Profits tab). Every sale line is changed, so the Profits report, Dashboard and receipts-history all agree. The sales and the money taken are not touched, and you can put it back.</div>'
+            + '<div class="spx-kv"><div><b>' + t.n + '</b><span>sale lines</span></div><div><b>' + esc(money(t.rev)) + '</b><span>sales</span></div><div><b>' + esc(money(t.profit)) + '</b><span>profit now</span></div><div><b>' + t.edited + '</b><span>already edited</span></div></div>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-pe-m" value="zero" checked style="width:auto"> Set profit to 0 (cost is counted equal to the selling price)</label>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-pe-m" value="restore" style="width:auto"> Put the original profit back (undo earlier edits)</label>'
+            + '<label for="spx-pe-w">Why? (kept with the record)</label><input id="spx-pe-w" placeholder="e.g. Stock was a gift, no profit to count">'
+            + '<div class="spx-btns"><button type="button" class="spx-btn" id="spx-pe-go" data-spx="go">Apply (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        modal('✏️ Edit profit' + (name ? ' - ' + name : ''), h, { on: { go: function () {
+            var mode = (document.querySelector('[name="spx-pe-m"]:checked') || {}).value || 'zero', why = val('spx-pe-w').trim();
+            if (why.length < 3) { toast('Write the reason in a few words.', true); return; }
+            var todo = lines.filter(function (x) { return mode === 'zero' ? !x.it.profitWas : !!x.it.profitWas; });
+            if (!todo.length) { toast(mode === 'zero' ? 'Those lines are already at 0 profit.' : 'Nothing was edited, so nothing to put back.', true); return; }
+            var go = $('spx-pe-go'); if (go) go.disabled = true;
+            withProof('Changing profit changes your reports, so a manager confirms it (checked on the server).', function (hd) {
+                return post('/api/cost-control', { action: 'event', evId: rid('pe-'), kind: 'profit_edit', code: '', name: name || 'All items', detail: (mode === 'zero' ? 'Profit set to 0' : 'Profit restored') + ' on ' + todo.length + ' sale lines, ' + rg.from + ' to ' + rg.to, reason: why, servedBy: who() }, hd);
+            }).then(function (r) {
+                if (go) go.disabled = false;
+                if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not changed.', true); return; }
+                var by = (r.d.who && r.d.who.name) || who(), at = Date.now();
+                todo.forEach(function (x) {
+                    var it = x.it;
+                    if (mode === 'zero') { it.profitWas = { wp: Number(it.wholesalePrice) || 0 }; it.wholesalePrice = Math.round((Number(it.price) || 0) * 1e6) / 1e6; it.profitEdit = { by: by, at: at, why: why }; }
+                    else { it.wholesalePrice = it.profitWas.wp; delete it.profitWas; delete it.profitEdit; }
+                    x.s.updatedAt = at;
+                });
+                try { safeSetItem(key('pos_sales_log'), JSON.stringify(sales())); } catch (e) { /* saved by the next change */ }
+                try { queuePush(); } catch (e) { /* the poll sends it */ }
+                close(); toast(todo.length + ' sale lines ' + (mode === 'zero' ? 'now show 0 profit.' : 'back to their original profit.'));
+                try { renderProfitReport(); } catch (e) { /* cosmetic */ } try { if (typeof renderDashboard === 'function') renderDashboard(); } catch (e) { /* cosmetic */ }
+            });
+        } } });
+    }
+    W.spxProfitEdit = profitEdit;
+    function peDecorate() {
+        var tb = $('profit-breakdown-table'); if (!tb || !sales().length) return;
+        var hr = tb.querySelector('thead tr'); if (hr && !hr.querySelector('[data-pe]')) { var th = document.createElement('th'); th.setAttribute('data-pe', '1'); th.textContent = 'Profit'; th.style.minWidth = '120px'; hr.appendChild(th); }
+        var rg = profitRange();
+        Array.prototype.forEach.call(tb.querySelectorAll('tbody tr'), function (tr) {
+            if (tr.children.length < 5 || tr.querySelector('[data-pe]')) return;
+            var nm = tr.children[0].textContent, td = document.createElement('td'); td.setAttribute('data-pe', '1');
+            var t = peSum(peLines(nm, rg.from, rg.to));
+            td.innerHTML = '<button type="button" class="settings-small-btn" data-pe-name="' + esc(nm) + '" style="font-size:12px;white-space:nowrap">' + (t.n && t.edited === t.n ? '↩ Undo edit' : '✏️ Edit') + '</button>';
+            tr.appendChild(td);
+        });
+    }
+    document.addEventListener('click', function (e) { var b = e.target.closest ? e.target.closest('[data-pe-name]') : null; if (!b) return; e.preventDefault(); profitEdit(b.getAttribute('data-pe-name')); });
+    function peWrap() {
+        if (typeof window.renderProfitReport !== 'function' || window.renderProfitReport.__pe) return;
+        var o = window.renderProfitReport, w = function () { var v = o.apply(this, arguments); try { peDecorate(); } catch (e) { /* cosmetic */ } return v; };
+        w.__pe = true; window.renderProfitReport = w;
+    }
+    // stock value at BATCH cost (live) - the Stock Valuation "at cost" figure in Pharmacy / Hospital
+    function installValueHook() {
+        if (!lotsOn() || typeof W.currentStockValueTotals !== 'function' || W.currentStockValueTotals.__spx) return;
+        var orig = W.currentStockValueTotals, s = SE();
+        var f = function () {
+            var t = orig.apply(this, arguments);
+            try {
+                (inv() || []).forEach(function (p) {
+                    if (!p || !s.lotTracked(p) || p.dualUnit) return;
+                    var base = (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0);
+                    var lots = (p.batches || []).reduce(function (sum, b) { return sum + (Number(b.qty) || 0) * ((b.cost === null || b.cost === undefined || b.cost === '') ? (Number(p.wholesalePrice) || 0) : Number(b.cost)); }, 0);
+                    t.cost += lots - base;
+                });
+            } catch (e) { /* the plain figure stays */ }
+            return t;
+        };
+        f.__spx = true; W.currentStockValueTotals = f;
+    }
+    function lotValuePanel() {
+        if (!lotsOn()) return;
+        var host = $('stock-value-tab') || $('stock-valuation-panel'); if (!host || !host.offsetParent) return;
+        var el = $('spx-lot-value');
+        if (!el) { el = document.createElement('div'); el.id = 'spx-lot-value'; el.className = 'panel'; host.appendChild(el); }
+        var sig = (inv() || []).reduce(function (a, p) { return p && p.batches ? a + (p.batches.length * 7) + (Number(p.qty) || 0) + (p.batches.filter(function (b) { return b && b.status && b.status !== 'ok'; }).length * 13) : a; }, 0) + '|' + SE().today();
+        if (el.__sig === sig) return;
+        el.__sig = sig;
+        var s = SE(), t = s.today(), rows = [], tot = { val: 0, exp: 0, blk: 0, noCost: 0, soon: 0 };
+        (inv() || []).forEach(function (p) {
+            if (!p || !s.lotTracked(p)) return;
+            (p.batches || []).forEach(function (b) {
+                var q = Number(b.qty) || 0; if (q <= 0) return;
+                var known = !(b.cost === null || b.cost === undefined || b.cost === ''), c = known ? Number(b.cost) : (Number(p.wholesalePrice) || 0), v = q * c;
+                tot.val += v; if (!known) tot.noCost += q;
+                if (s.lotBlocked(b)) tot.blk += v; else if (s.lotExpired(b, t)) tot.exp += v;
+                var e = String(b.expiryDate || ''), days = e && e !== s.NOEXP ? Math.round((Date.parse(e) - Date.parse(t)) / 86400000) : null;
+                if (days !== null && days >= 0 && days <= 90 && !s.lotBlocked(b)) tot.soon += v;
+                rows.push({ p: p, b: b, q: q, c: c, known: known, v: v, days: days });
+            });
+        });
+        rows.sort(function (a, b) { return (a.days === null ? 99999 : a.days) - (b.days === null ? 99999 : b.days); });
+        el.innerHTML = '<h3>🧪 Stock value by batch (what each batch really cost)</h3><div class="spx-kv"><div><b>' + esc(money(tot.val)) + '</b><span>all batches at their own cost</span></div><div><b>' + esc(money(tot.exp)) + '</b><span>expired (cannot be sold)</span></div><div><b>' + esc(money(tot.blk)) + '</b><span>quarantined / recalled</span></div><div><b>' + esc(money(tot.soon)) + '</b><span>expiring within 90 days</span></div><div><b>' + esc(s.r3(tot.noCost)) + '</b><span>units with no batch cost (counted at the item cost)</span></div></div>'
+            + (rows.length ? '<details><summary style="cursor:pointer;font-weight:700">Every batch (' + rows.length + ')</summary><div class="spx-scroll" style="max-height:420px"><table class="spx-tbl"><tr><th>Item</th><th>Batch</th><th>Expiry</th><th>Status</th><th class="n">Qty</th><th class="n">Cost</th><th class="n">Value</th></tr>' + rows.slice(0, 600).map(function (r) { return '<tr><td>' + esc(r.p.name) + '</td><td>' + esc(s.lotNo(r.b) || '-') + '</td><td>' + esc(r.b.expiryDate && r.b.expiryDate !== s.NOEXP ? r.b.expiryDate : '-') + '</td><td>' + lotStatusChip(r.b) + '</td><td class="n">' + esc(s.r3(r.q)) + '</td><td class="n">' + (r.known ? esc(money(r.c)) : '<span class="spx-chip o">item cost</span>') + '</td><td class="n">' + esc(money(r.v)) + '</td></tr>'; }).join('') + '</table></div></details>' : '<div class="spx-note">No batch-tracked items yet.</div>');
+    }
+
+    /* ============================ D. COST & PROFIT ============================ */
+    var CC_KEY = 'spx_cc_cache';
+    var cc = lsGet(CC_KEY, { corrections: [], adjustments: [], audit: [], settings: {}, at: 0 });
+    function applyCc() { try { if (SE()) SE().setCorrections(cc.corrections || []); } catch (e) { /* none */ } }
+    applyCc();
+    var ccLoading = null;
+    function loadCc(force) {
+        if (navigator.onLine === false) return Promise.resolve(cc);
+        if (!force && Date.now() - (cc.at || 0) < 10 * 60 * 1000) return Promise.resolve(cc);
+        if (ccLoading) return ccLoading;
+        ccLoading = post('/api/cost-control', { action: 'list' }).then(function (r) {
+            if (r.ok && r.d) { cc = { corrections: r.d.corrections || [], adjustments: r.d.adjustments || [], audit: r.d.audit || [], settings: r.d.settings || {}, at: Date.now() }; lsSet(CC_KEY, cc); applyCc(); }
+            return cc;
+        }).catch(function () { return cc; }).then(function (x) { ccLoading = null; return x; });
+        return ccLoading;
+    }
+    function closedThrough() { return (cc.settings && cc.settings.closedThrough) || null; }
+    function dayKey(ts) { try { return SE().today(ts); } catch (e) { return ''; } }
+    function costOfItemIn(code, from, to) {
+        var t = 0, n = 0, fixed = 0, first = null, last = null, refs = [];
+        sales().forEach(function (s0) {
+            if (!s0 || s0.voided || !Array.isArray(s0.items)) return;
+            var d = dayKey(s0.timestamp); if ((from && d < from) || (to && d > to)) return;
+            s0.items.forEach(function (it) { if (!it || String(it.code) !== String(code) || it.unit === 'payment' || it.isPayment) return; t += SE().lineCogs(it); n++; if (SE().lineFix(it)) fixed++; if (!first || d < first) first = d; if (!last || d > last) last = d; if (refs.length < 12) refs.push({ ref: s0.refNumber || s0.id, d: d, qty: it.qty, cost: it.wholesalePrice }); });
+        });
+        return { cost: SE().r2(t), lines: n, fixed: fixed, first: first, last: last, refs: refs };
+    }
+    function suspicious() { return SE().suspiciousCosts(inv() || [], sales()); }
+    function costCheck() {
+        if (!inv()) {
+            modal('🧮 Cost check', '<div class="spx-note">Aqua POS works out its costs from the refill sizes, bottles and materials in Settings - correct a wrong cost there (it applies to sales from then on). For a period that must be reported differently, use ⚖️ Profit adjustment.</div><div class="spx-btns"><button type="button" class="spx-btn sec" data-spx="hist">📚 Corrections & adjustments</button></div>', { on: { hist: history } });
+            return;
+        }
+        loadCc(false).then(function () {
+            var list = suspicious();
+            var h = '<div class="spx-note">Costs that look wrong. Look at each one: the fix is usually a wrong cost price typed at a restock (a carton cost typed per piece, a missing digit) or no cost at all. Nothing is changed until a manager confirms a correction.</div>';
+            h += list.length ? '<div class="spx-scroll"><table class="spx-tbl"><tr><th>Item</th><th class="n">Cost</th><th class="n">Price</th><th class="n">In stock</th><th>Why it is listed</th><th></th></tr>' + list.slice(0, 300).map(function (x) {
+                return '<tr><td>' + esc(x.name) + '<br><small>#' + esc(x.code) + '</small></td><td class="n">' + esc(money(x.cost)) + '</td><td class="n">' + esc(money(x.price)) + '</td><td class="n">' + esc(x.qty) + ' ' + esc(x.unit) + '</td><td>' + x.reasons.map(function (r) { return '<span class="spx-chip o">' + esc(r) + '</span>'; }).join('') + (x.sold && x.sold.refs.length ? '<details><summary style="cursor:pointer;font-size:12px">sales at a loss</summary><small>' + x.sold.refs.map(function (r) { return esc(r.ref) + ': ' + esc(r.qty) + ' × KES ' + esc(r.price) + ' (cost ' + esc(r.cost) + ')'; }).join('<br>') + '</small></details>' : '') + '</td><td><button type="button" class="spx-mini" data-spx="fix" data-code="' + esc(x.code) + '">Correct cost…</button></td></tr>';
+            }).join('') + '</table></div>' : '<div class="spx-note ok">No suspicious costs found.</div>';
+            h += '<div class="spx-btns"><button type="button" class="spx-btn sec" data-spx="any">Correct the cost of another item…</button><button type="button" class="spx-btn sec" data-spx="hist">📚 Corrections & adjustments</button></div>';
+            modal('🧮 Cost check', h, { wide: true, on: { fix: function (b) { correctCostModal(b.getAttribute('data-code'), null); }, any: function () { pickItem('Correct the cost of…', null, function (p) { if (p) correctCostModal(p.code, null); }); }, hist: history } });
+        });
+    }
+    W.spxCostCheck = costCheck;
+    function correctCostModal(code, lotId) {
+        var p = findP(code), s = SE(); if (!p) return;
+        var lots = lotsOn() && s.lotTracked(p) ? (p.batches || []).filter(function (b) { return b && (Number(b.qty) || 0) > 0; }) : [];
+        var corrId = rid('cc-');
+        var monthAgo = s.today(Date.now() - 30 * 86400000);
+        var sus = suspicious().find(function (x) { return String(x.code) === String(code); });
+        var firstLoss = sus && sus.sold && sus.sold.refs.length ? sus.sold.refs.reduce(function (m, r) { var d = dayKey(r.at); return !m || d < m ? d : m; }, null) : null;
+        var ct = closedThrough();
+        var lv = s.levels(p);
+        var h = '<div class="spx-kv"><div><b>' + esc(money(p.wholesalePrice || 0)) + '</b><span>cost price now (per ' + esc(unitOf(p)) + ')</span></div><div><b>' + esc(money(p.price || 0)) + '</b><span>selling price</span></div><div><b>' + esc(stockText(p)) + '</b><span>in stock</span></div></div>'
+            + (lots.length ? '<label for="spx-cc-lot">What has the wrong cost</label><select id="spx-cc-lot"><option value="">The item\'s cost price (and batches with no cost of their own)</option>' + lots.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === lotId ? ' selected' : '') + '>Batch ' + esc(s.lotNo(b) || '-') + ' · exp ' + esc(b.expiryDate || '-') + ' · ' + esc(s.r3(b.qty)) + ' left · cost ' + ((b.cost === null || b.cost === undefined) ? 'none' : esc(money(b.cost))) + '</option>'; }).join('') + '</select>' : '')
+            + '<div class="spx-row"><div><label for="spx-cc-new">Correct cost per ' + esc(unitOf(p)) + ' (KES)</label><input id="spx-cc-new" type="number" min="0" step="0.0001" inputmode="decimal"></div>'
+            + (lv.length ? '<div><label for="spx-cc-pk">…or the cost of one package</label><div style="display:flex;gap:6px"><input id="spx-cc-pkc" type="number" min="0" step="0.01" placeholder="KES"><select id="spx-cc-pk">' + lv.map(function (l) { return '<option value="' + esc(l.id) + '">' + esc(l.name) + ' (' + l.per + ')</option>'; }).join('') + '</select></div></div>' : '') + '</div>'
+            + '<label>What should the correction change?</label>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-cc-mode" value="forward" checked style="width:auto"> From now on: the stock on hand and future sales use the correct cost. Past profit stays as it was reported.</label>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-cc-mode" value="restate" style="width:auto"> Also count past sales at the correct cost (restate them) from <input id="spx-cc-from" type="date" value="' + esc(firstLoss || monthAgo) + '" style="width:auto;display:inline-block"> to <input id="spx-cc-to" type="date" style="width:auto;display:inline-block"> (empty = today)</label>'
+            + (ct ? '<div class="spx-note">The books are closed through <b>' + esc(ct) + '</b>: sales up to that date cannot be restated.</div>' : '')
+            + '<label for="spx-cc-why">Why is the old cost wrong? (kept with the record)</label><textarea id="spx-cc-why" placeholder="e.g. Restock of 12 Oct: the carton cost (2,000) was typed as the cost of each piece; the invoice says KES 10 a piece."></textarea>'
+            + '<div id="spx-cc-prev"></div><div class="spx-btns"><button type="button" class="spx-btn" id="spx-cc-go" data-spx="go">Save the correction (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        modal('Correct a cost - ' + p.name, h, { on: { __input: prev, __change: prev, go: save } });
+        function state() {
+            var lot = val('spx-cc-lot') || null, b = lot ? (p.batches || []).find(function (x) { return x && x.id === lot; }) : null;
+            var nv = val('spx-cc-new'), pkc = val('spx-cc-pkc');
+            if (nv === '' && pkc !== '' && val('spx-cc-pk')) { nv = String(s.baseCostFrom(p, val('spx-cc-pk'), Number(pkc))); }
+            var oldCost = b ? ((b.cost === null || b.cost === undefined || b.cost === '') ? null : Number(b.cost)) : Number(p.wholesalePrice) || 0;
+            var mode = (document.querySelector('[name="spx-cc-mode"]:checked') || {}).value || 'forward';
+            return { lot: lot, b: b, newCost: nv === '' ? null : Number(nv), oldCost: oldCost, mode: mode, from: val('spx-cc-from') || null, to: val('spx-cc-to') || null, reason: val('spx-cc-why').trim() };
+        }
+        function effect(st) {
+            var qty = st.b ? Number(st.b.qty) || 0 : (lots.length ? lots.filter(function (b) { return b.cost === null || b.cost === undefined || b.cost === ''; }).reduce(function (t, b) { return t + (Number(b.qty) || 0); }, 0) : Number(p.qty) || 0);
+            var valueOld = qty * (st.oldCost === null ? (Number(p.wholesalePrice) || 0) : st.oldCost), valueNew = qty * (st.newCost || 0);
+            var out = { qty: s.r3(qty), valueEffect: s.r2(valueNew - valueOld), cogs: 0, lines: 0, first: null, last: null, refs: [] };
+            if (st.mode === 'restate' && st.newCost !== null) {
+                var before = costOfItemIn(p.code, st.from, st.to);
+                var tmp = (cc.corrections || []).concat([{ corr_id: 'preview', code: p.code, lot_id: st.lot, mode: 'restate', old_cost: st.lot ? null : st.oldCost, new_cost: st.newCost, from: st.from, to: st.to }]);
+                s.setCorrections(tmp);
+                var after = costOfItemIn(p.code, st.from, st.to);
+                applyCc();
+                out.cogs = s.r2(after.cost - before.cost); out.lines = Math.max(0, after.fixed - before.fixed) || (out.cogs ? after.fixed : 0); out.first = before.first; out.last = before.last; out.refs = before.refs;
+            }
+            return out;
+        }
+        function prev() {
+            var st = state(), el = $('spx-cc-prev'); if (!el) return;
+            if (st.newCost === null || !(st.newCost >= 0)) { el.innerHTML = '<div class="spx-note">Type the correct cost to see what it changes.</div>'; return; }
+            var e = effect(st), cl = closedThrough();
+            var blocked = st.mode === 'restate' && cl && st.from && st.from <= cl;
+            el.innerHTML = '<div class="spx-note ' + (blocked ? 'bad' : 'ok') + '"><b>Before you save:</b><br>'
+                + (st.b ? 'Batch ' + esc(s.lotNo(st.b) || '-') : 'Item cost price') + ': ' + (st.oldCost === null ? 'no cost' : esc(money(st.oldCost))) + ' → <b>' + esc(money(st.newCost)) + '</b> per ' + esc(unitOf(p)) + '<br>'
+                + 'Stock on hand (' + esc(e.qty) + ' ' + esc(unitOf(p)) + '): value ' + (e.valueEffect >= 0 ? '+' : '') + esc(money(e.valueEffect)) + '<br>'
+                + (st.mode === 'restate' ? 'Past sales ' + esc(st.from || '') + ' to ' + esc(st.to || 'today') + ': ' + e.lines + ' line(s) counted again; cost of goods sold ' + (e.cogs >= 0 ? '+' : '') + esc(money(e.cogs)) + ', so profit ' + (e.cogs <= 0 ? '+' : '-') + esc(money(Math.abs(e.cogs))) + '.' + (e.refs.length ? '<br><small>e.g. ' + e.refs.slice(0, 6).map(function (r) { return esc(r.ref) + ' (' + esc(r.d) + ')'; }).join(', ') + '</small>' : '') : 'Past sales keep the cost they were sold at (no change to past profit).')
+                + (blocked ? '<br><b>Not allowed:</b> the books are closed through ' + esc(cl) + '.' : '') + '<br><small>The sales themselves are never edited; this correction is its own record (who, when, why, old and new cost).</small></div>';
+        }
+        function save() {
+            var st = state();
+            if (st.newCost === null || !(st.newCost >= 0)) { toast('Type the correct cost.', true); return; }
+            if (st.oldCost !== null && Math.abs(st.oldCost - st.newCost) < 0.000001) { toast('That is the cost already on file.', true); return; }
+            if (st.reason.length < 5) { toast('Write why the old cost is wrong.', true); return; }
+            if (st.mode === 'restate' && !st.from) { toast('From which date should past sales be restated?', true); return; }
+            var e = effect(st), go = $('spx-cc-go'); if (go) go.disabled = true;
+            withProof('Correcting a cost changes your profit figures, so a manager confirms it (checked on the server).', function (h2) {
+                return post('/api/cost-control', { action: 'correct', corrId: corrId, code: p.code, name: p.name, lotId: st.lot, mode: st.mode, oldCost: st.lot ? st.oldCost : st.oldCost, newCost: st.newCost, from: st.mode === 'restate' ? st.from : null, to: st.mode === 'restate' ? (st.to || s.today()) : null,
+                    reason: st.reason, qtyOnHand: e.qty, valueEffect: e.valueEffect, cogsEffect: e.cogs, linesAffected: e.lines, detail: JSON.stringify({ refs: e.refs.slice(0, 12).map(function (r) { return r.ref; }), unit: unitOf(p) }), servedBy: who() }, h2);
+            }).then(function (r) {
+                if (go) go.disabled = false;
+                if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not saved.', true); return; }
+                // the stock side: the batch (or the item's cost price) carries the correct cost from now on
+                if (st.b) st.b.cost = Math.round(st.newCost * 1e6) / 1e6; else p.wholesalePrice = Math.round(st.newCost * 1e6) / 1e6;
+                if (st.b) (st.b.log = Array.isArray(st.b.log) ? st.b.log : []).push({ at: Date.now(), by: (r.d.who && r.d.who.name) || who(), what: 'cost ' + (st.oldCost === null ? 'none' : st.oldCost) + ' -> ' + st.newCost, reason: st.reason, corr: corrId });
+                p.updatedAt = Date.now(); saveStock();
+                if (r.d.correction && !(cc.corrections || []).some(function (c) { return c.corr_id === r.d.correction.corr_id; })) { cc.corrections = (cc.corrections || []).concat([r.d.correction]); lsSet(CC_KEY, cc); applyCc(); }
+                loadCc(true).then(rerenderReports);
+                toast(r.d.replay ? 'This correction was already saved.' : 'Cost corrected' + (st.mode === 'restate' ? ' and past sales restated' : '') + '. Recorded in the history.');
+                close();
+            });
+        }
+        prev();
+    }
+    W.spxCorrectCost = correctCostModal;
+    function rerenderReports() {
+        try { if (typeof renderProfitsTabScoped === 'function') renderProfitsTabScoped(); else if (typeof renderProfitReport === 'function') renderProfitReport(); } catch (e) { /* cosmetic */ }
+        try { if (typeof renderStockValuationSummary === 'function') renderStockValuationSummary(); } catch (e) { /* cosmetic */ }
+        try { if (typeof reportsGenerate === 'function' && $('reports-tab') && $('reports-tab').classList.contains('active')) reportsGenerate(); } catch (e) { /* cosmetic */ }
+    }
+    function parseKes(t) { var m = /-?[\d,]+(\.\d+)?/.exec(String(t || '').replace(/\s/g, '')); return m ? Number(m[0].replace(/,/g, '')) : 0; }
+    function profitRange() { try { var r = profitReportRange(); return { from: r.from, to: r.to }; } catch (e) { var t = SE().today(); return { from: t, to: t }; } }
+    function adjIn(from, to) {
+        var list = cc.adjustments || [];
+        var reversed = {}; list.forEach(function (a) { if (a.kind === 'reversal' && a.reverses) reversed[a.reverses] = a; });
+        return list.filter(function (a) { return a.date_from >= from && a.date_to <= to; }).map(function (a) { return Object.assign({}, a, { reversedBy: reversed[a.adj_id] || null }); });
+    }
+    function profitTools() {
+        var tab = $('profits-tab'); if (!tab) return;
+        var gross = $('profit-gross-total'); if (!gross) return;
+        relabel(tab);
+        var el = $('spx-profit-tools');
+        if (!el) {
+            el = document.createElement('div'); el.id = 'spx-profit-tools';
+            var host = gross.closest ? (gross.closest('.stats-grid, .profit-summary, .summary-grid') || gross.parentNode.parentNode) : gross.parentNode.parentNode;
+            if (!host || !host.parentNode) return;
+            host.parentNode.insertBefore(el, host.nextSibling);
+            el.addEventListener('click', function (e) {
+                var b = e.target.closest ? e.target.closest('[data-x]') : null; if (!b) return;
+                var x = b.getAttribute('data-x');
+                if (x === 'check') costCheck(); if (x === 'recalc') recalc(); if (x === 'adj') adjustModal(); if (x === 'hist') history(); if (x === 'pedit') profitEdit(null);
+            });
+        }
+        var rg = profitRange(), adj = adjIn(rg.from, rg.to), sum = adj.reduce(function (t, a) { return t + (Number(a.amount) || 0); }, 0);
+        var reported = parseKes(gross.textContent), fixes = SE() ? SE().fixedLines() : 0;
+        el.innerHTML = '<div class="spx-bar" style="display:block">'
+            + '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="flex:1;min-width:200px">🧮 Cost &amp; profit tools</b><button type="button" class="settings-small-btn" data-x="check">🔎 Cost check</button><button type="button" class="settings-small-btn" data-x="recalc">♻️ Recalculate profit</button><button type="button" class="settings-small-btn" data-x="adj">⚖️ Profit adjustment</button><button type="button" class="settings-small-btn" data-x="pedit">✏️ Edit profit (set to 0)</button><button type="button" class="settings-small-btn" data-x="hist">📚 History</button></div>'
+            + (fixes ? '<div class="spx-note" style="margin-bottom:0">' + fixes + ' sale line(s) are counted at a corrected cost (approved cost corrections). The sales themselves are unchanged.</div>' : '')
+            + (adj.length ? '<div class="spx-kv"><div><b>' + esc(money(reported)) + '</b><span>net profit from the sales (after expenses)</span></div><div><b>' + (sum >= 0 ? '+' : '') + esc(money(sum)) + '</b><span>management adjustments (' + adj.length + ')</span></div><div><b>' + esc(money(reported + sum)) + '</b><span>reported profit after adjustments</span></div></div>' : '')
+            + '</div>';
+    }
+    function relabel(tab) {
+        // zip 336: "Gross profit" is before expenses and "Net profit" after - the cards said "Profit (before expenses)" and "Gross Profit (after expenses)"
+        tab.querySelectorAll('.label, th, div, span').forEach(function (n) {
+            if (n.children.length) return;
+            var t = n.textContent;
+            if (/^\s*Profit \(before expenses\)\s*$/i.test(t)) n.textContent = 'Gross profit (before expenses)';
+            else if (/^\s*💰?\s*Gross Profit \(after expenses\)\s*$/i.test(t)) n.textContent = '💰 Net profit (after expenses)';
+        });
+    }
+    function installProfitHook() {
+        if (typeof W.renderProfitReport === 'function' && !W.renderProfitReport.__spx) {
+            var orig = W.renderProfitReport;
+            var f = function () { var r = orig.apply(this, arguments); try { profitTools(); } catch (e) { /* the report itself is drawn */ } return r; };
+            f.__spx = true; W.renderProfitReport = f;
+        }
+        if (typeof W.itemCogs === 'function' && !W.itemCogs.__spx) {
+            var oc = W.itemCogs;
+            var g = function (it) { var v = oc.apply(this, arguments); try { return v + (SE() ? SE().lineFix(it) : 0); } catch (e) { return v; } };
+            g.__spx = true; W.itemCogs = g;
+        }
+    }
+    function recalc() {
+        modal('♻️ Recalculate profit', '<div class="spx-note">Fetching the latest approved cost corrections…</div>');
+        loadCc(true).then(function () {
+            rerenderReports();
+            var gross = $('profit-gross-total'), rg = profitRange();
+            body().innerHTML = '<div class="spx-note ok">Profit was worked out again for ' + esc(rg.from) + ' to ' + esc(rg.to) + ' from the sales, the cost recorded on each sale line, approved cost corrections (' + (cc.corrections || []).filter(function (c) { return c.mode === 'restate'; }).length + '), returns and voids, and expenses. Nothing is stored as a total that could go stale - every screen adds it up from the same records.</div>'
+                + (gross ? '<div class="spx-kv"><div><b>' + esc(gross.textContent) + '</b><span>net profit (after expenses)</span></div></div>' : '')
+                + '<p style="font-size:13px">If a figure is still wrong because of a wrong cost price, use 🔎 Cost check and correct the cost (preferred). A profit adjustment is for a figure you must report differently, with a reason.</p><div class="spx-btns"><button type="button" class="spx-btn sec" data-spx="close">Close</button></div>';
+        });
+    }
+    function adjustModal() {
+        var rg = profitRange(), gross = $('profit-gross-total');
+        var reported = gross ? parseKes(gross.textContent) : 0, already = adjIn(rg.from, rg.to).reduce(function (t, a) { return t + (Number(a.amount) || 0); }, 0);
+        var now = SE().r2(reported + already), adjId = rid('pa-');
+        var h = '<div class="spx-note warn">Use this only when a profit figure must be reported differently and correcting the costs is not possible. It does NOT change any sale, cost or expense: it is a separate, signed entry with its reason, shown as its own line ("management adjustment"). Prefer 🔎 Cost check → correct cost when wrong costs caused the problem.</div>'
+            + '<div class="spx-row"><div><label for="spx-pa-from">Period from</label><input id="spx-pa-from" type="date" value="' + esc(rg.from) + '"></div><div><label for="spx-pa-to">to</label><input id="spx-pa-to" type="date" value="' + esc(rg.to) + '"></div></div>'
+            + '<div class="spx-kv"><div><b>' + esc(money(reported)) + '</b><span>net profit from the sales (after expenses)</span></div><div><b>' + esc(money(already)) + '</b><span>adjustments already in this period</span></div><div><b>' + esc(money(now)) + '</b><span>reported now</span></div></div>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-pa-kind" value="zero" checked style="width:auto"> Bring the reported profit for this period to zero</label>'
+            + '<label style="font-weight:600"><input type="radio" name="spx-pa-kind" value="amount" style="width:auto"> Adjust by an amount: <input id="spx-pa-amt" type="number" step="0.01" style="width:auto;display:inline-block" placeholder="e.g. -1500"></label>'
+            + '<label for="spx-pa-why">Reason (kept with the entry)</label><textarea id="spx-pa-why" placeholder="e.g. Opening stock was entered at carton prices; the true cost cannot be traced - management decided to report this week at zero profit."></textarea>'
+            + '<div id="spx-pa-prev"></div><div class="spx-btns"><button type="button" class="spx-btn warn" id="spx-pa-go" data-spx="go">Record the adjustment (manager)</button><button type="button" class="spx-btn sec" data-spx="close">Cancel</button></div>';
+        modal('⚖️ Profit adjustment', h, { on: { __input: prev, __change: prev, go: save } });
+        function st() {
+            var kind = (document.querySelector('[name="spx-pa-kind"]:checked') || {}).value || 'zero';
+            var from = val('spx-pa-from'), to = val('spx-pa-to');
+            var same = from === rg.from && to === rg.to;
+            var amount = kind === 'zero' ? SE().r2(-now) : Number(val('spx-pa-amt'));
+            return { kind: kind, from: from, to: to, same: same, amount: amount, reason: val('spx-pa-why').trim() };
+        }
+        function prev() {
+            var s0 = st(), el = $('spx-pa-prev'); if (!el) return;
+            if (!s0.same) { el.innerHTML = '<div class="spx-note warn">The figures above are for ' + esc(rg.from) + ' to ' + esc(rg.to) + '. To adjust another period, close this, choose that period in Profits &amp; Expenses, and open it again.</div>'; return; }
+            if (!isFinite(s0.amount) || s0.amount === 0) { el.innerHTML = '<div class="spx-note">' + (s0.kind === 'zero' ? 'The reported profit is already zero.' : 'Type the amount (negative lowers the profit).') + '</div>'; return; }
+            var ct = closedThrough();
+            el.innerHTML = '<div class="spx-note ' + (ct && s0.from <= ct ? 'bad' : 'ok') + '"><b>Before you save:</b> reported ' + esc(money(now)) + ' → adjustment ' + (s0.amount >= 0 ? '+' : '') + esc(money(s0.amount)) + ' → <b>' + esc(money(now + s0.amount)) + '</b> for ' + esc(s0.from) + ' to ' + esc(s0.to) + '.<br>Sales, costs and expenses stay exactly as they are; the adjustment shows as its own line and can only be undone by a reversal (also recorded).' + (ct && s0.from <= ct ? '<br><b>Not allowed:</b> the books are closed through ' + esc(ct) + '.' : '') + '</div>';
+        }
+        function save() {
+            var s0 = st();
+            if (!s0.same) { toast('Choose this period in Profits & Expenses first.', true); return; }
+            if (!isFinite(s0.amount) || s0.amount === 0) { toast('Nothing to adjust.', true); return; }
+            if (s0.reason.length < 5) { toast('Write the reason.', true); return; }
+            var go = $('spx-pa-go'); if (go) go.disabled = true;
+            withProof('A profit adjustment changes what your reports show, so a manager confirms it (checked on the server).', function (h2) {
+                return post('/api/cost-control', { action: 'adjust', adjId: adjId, kind: s0.kind, from: s0.from, to: s0.to, amount: s0.amount, reportedBefore: now, reason: s0.reason, servedBy: who() }, h2);
+            }).then(function (r) {
+                if (go) go.disabled = false;
+                if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not recorded.', true); return; }
+                if (r.d.adjustment && !(cc.adjustments || []).some(function (a) { return a.adj_id === r.d.adjustment.adj_id; })) { cc.adjustments = (cc.adjustments || []).concat([r.d.adjustment]); lsSet(CC_KEY, cc); }
+                loadCc(true).then(rerenderReports); rerenderReports();
+                toast(r.d.replay ? 'This adjustment was already recorded.' : 'Adjustment recorded.'); close();
+            });
+        }
+        prev();
+    }
+    function history() {
+        loadCc(true).then(function () {
+            var c = cc.corrections || [], a = cc.adjustments || [], au = cc.audit || [], ct = closedThrough();
+            var reversed = {}; a.forEach(function (x) { if (x.kind === 'reversal' && x.reverses) reversed[x.reverses] = 1; });
+            var h = '<h4>Cost corrections (' + c.length + ')</h4>' + (c.length ? '<div class="spx-scroll"><table class="spx-tbl"><tr><th>When</th><th>Item</th><th class="n">Old → new</th><th>What it changed</th><th>Why</th><th>Who</th></tr>' + c.slice().reverse().map(function (x) { return '<tr><td>' + esc(new Date(x.at).toLocaleString('en-GB')) + '</td><td>' + esc(x.name || x.code) + (x.lot_id ? '<br><small>batch ' + esc(x.lot_id) + '</small>' : '') + '</td><td class="n">' + (x.old_cost === null ? 'none' : esc(x.old_cost)) + ' → ' + esc(x.new_cost) + '</td><td>' + (x.mode === 'restate' ? 'restated sales ' + esc(x.date_from) + ' to ' + esc(x.date_to || 'today') + ' (' + esc(x.lines_affected || 0) + ' lines, COGS ' + esc(money(x.cogs_effect || 0)) + ')' : 'from now on') + '<br><small>stock value ' + esc(money(x.value_effect || 0)) + '</small></td><td>' + esc(x.reason) + '</td><td>' + esc(x.actor || '') + ' <small>(' + esc(x.actor_kind || '') + ')</small></td></tr>'; }).join('') + '</table></div>' : '<div class="spx-note">None yet.</div>')
+                + '<h4>Profit adjustments (' + a.length + ')</h4>' + (a.length ? '<div class="spx-scroll"><table class="spx-tbl"><tr><th>When</th><th>Period</th><th class="n">Amount</th><th>Before → after</th><th>Why</th><th>Who</th><th></th></tr>' + a.slice().reverse().map(function (x) { return '<tr><td>' + esc(new Date(x.at).toLocaleString('en-GB')) + '</td><td>' + esc(x.date_from) + ' to ' + esc(x.date_to) + '</td><td class="n">' + esc(money(x.amount)) + '</td><td>' + (x.kind === 'reversal' ? 'reversal of ' + esc(x.reverses) : esc(money(x.reported_before)) + ' → ' + esc(money(x.reported_after))) + '</td><td>' + esc(x.reason) + '</td><td>' + esc(x.actor || '') + '</td><td>' + (x.kind !== 'reversal' && !reversed[x.adj_id] ? '<button type="button" class="spx-mini" data-spx="rev" data-id="' + esc(x.adj_id) + '">Reverse</button>' : (reversed[x.adj_id] ? '<span class="spx-chip">reversed</span>' : '')) + '</td></tr>'; }).join('') + '</table></div>' : '<div class="spx-note">None yet.</div>')
+                + '<h4>Stock actions by managers</h4>' + (au.length ? '<div class="spx-scroll" style="max-height:260px"><table class="spx-tbl"><tr><th>When</th><th>What</th><th>Item</th><th>Detail</th><th>Why</th><th>Who</th></tr>' + au.map(function (x) { return '<tr><td>' + esc(new Date(x.at).toLocaleString('en-GB')) + '</td><td>' + esc(x.kind) + '</td><td>' + esc(x.name || x.code || '') + '</td><td>' + esc(x.detail || '') + '</td><td>' + esc(x.reason || '') + '</td><td>' + esc(x.actor || '') + '</td></tr>'; }).join('') + '</table></div>' : '<div class="spx-note">None yet.</div>')
+                + '<h4>Books closed through</h4><div class="spx-row"><div><input id="spx-close-d" type="date" value="' + esc(ct || '') + '"></div><div><button type="button" class="spx-btn sec" data-spx="setclose">Save closing date (manager)</button></div></div><p style="font-size:12.5px">After closing, sales up to that date cannot be restated and that period cannot be adjusted. Only the Admin can move the date back.</p>';
+            modal('📚 Corrections, adjustments & audit', h, {
+                wide: true,
+                on: {
+                    rev: function (b) {
+                        var id = b.getAttribute('data-id'), why = (prompt('Why is this adjustment being reversed?') || '').trim(); if (why.length < 5) { if (why) toast('Write a reason of a few words.', true); return; }
+                        withProof('Reversing a profit adjustment changes your reports, so a manager confirms it.', function (h2) { return post('/api/cost-control', { action: 'reverse', adjId: rid('rv-'), reverseOf: id, reason: why, servedBy: who() }, h2); }).then(function (r) { if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not reversed.', true); return; } toast('Reversed (both entries are kept).'); loadCc(true).then(function () { rerenderReports(); history(); }); });
+                    },
+                    setclose: function () {
+                        var d = val('spx-close-d'), why = (prompt(d ? 'Close the books through ' + d + '? Reason:' : 'Reopen the books? Reason:') || '').trim(); if (why.length < 5) { if (why) toast('Write a reason of a few words.', true); return; }
+                        withProof('Closing the books is a manager decision.', function (h2) { return post('/api/cost-control', { action: 'setClosed', through: d, reason: why, servedBy: who() }, h2); }).then(function (r) { if (!r.ok) { if (!r.cancelled) toast(r.d.error || 'Not saved.', true); return; } toast(d ? 'Books closed through ' + d + '.' : 'Books reopened.'); loadCc(true).then(history); });
+                    },
+                },
+            });
+        });
+    }
+
+    /* ============================ install ============================ */
+    function install() {
+        if (!W.SE) return;
+        try { installTransferHooks(); } catch (e) { /* none */ }
+        try { installCartHooks(); } catch (e) { /* none */ }
+        try { installValueHook(); } catch (e) { /* none */ }
+        try { installProfitHook(); } catch (e) { /* none */ }
+    }
+    install();
+    document.addEventListener('DOMContentLoaded', install);
+    setTimeout(install, 1500);
+
+    /* ---- zip 342: a Move button on every Inventory row (same dialog, four ways) ---- */
+    function moveButtons() {
+        var tab = $('inventory-list-tab'); if (!tab) return;
+        var list = tab.querySelectorAll('button[onclick^="openInventoryEditModal("]');
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i], nx = b.nextElementSibling; if (nx && nx.hasAttribute && nx.hasAttribute('data-spxmv')) continue;
+            if (b.parentNode && b.parentNode.querySelector && b.parentNode.querySelector('.inv-move-btn, [data-spxmv]')) continue;   // the Shop already has its own Move button here
+            var m = /openInventoryEditModal\('([^']*)'(?:\s*,\s*'([^']*)')?\)/.exec(b.getAttribute('onclick') || ''); if (!m) continue;
+            var n = document.createElement('button'); n.type = 'button'; n.className = 'settings-small-btn'; n.setAttribute('data-spxmv', '1'); n.setAttribute('data-code', m[1].replace(/\\'/g, "'")); if (m[2]) n.setAttribute('data-vid', m[2]);
+            n.style.cssText = 'font-size:12px;margin:0 0 4px 4px'; n.textContent = '↔ Move'; n.title = 'Move stock between this item, the Store and other branches';
+            b.parentNode.insertBefore(n, b.nextSibling);
+        }
+    }
+    document.addEventListener('click', function (e) { var b = e.target.closest ? e.target.closest('[data-spxmv]') : null; if (!b) return; e.preventDefault(); W.openMoveStock(b.getAttribute('data-code'), b.getAttribute('data-vid') || undefined); });
+    function tick() {
+        try {
+            var tab = document.querySelector('.tab-content.active'); var id = tab ? tab.id : '';
+            if (id === 'store-tab') renderStoreBar();
+            if (id === 'store-tab' || id === 'inventory-list-tab' || id === 'inventory-tab') { loadRequests(false); renderRequests(false); } else if ($('spx-req-bar')) renderRequests(false);
+            if (id === 'restock-tab') renderRestockBar();
+            if (id === 'inventory-list-tab') { inventoryBar(); moveButtons(); }
+            if (id === 'profits-tab') { peWrap(); peDecorate(); }
+            if (id === 'profits-tab' && !$('spx-profit-tools')) { loadCc(false).then(function () { try { if (typeof renderProfitReport === 'function') renderProfitReport(); } catch (e) { /* cosmetic */ } }); profitTools(); }
+            if (id === 'stock-value-tab') lotValuePanel();
+            editButtons();
+            if (++labelTick % 2 === 0) decorate();
+        } catch (e) { /* next tick */ }
+    }
+    setInterval(tick, 1200);
+    // once after start (approved corrections are needed by the reports), then only when the Profits tab or a cost tool is opened - no polling
+    setTimeout(function () { loadCc(false); }, 8000);
+})();
+</script>

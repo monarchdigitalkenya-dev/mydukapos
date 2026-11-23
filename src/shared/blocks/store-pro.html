@@ -1,0 +1,715 @@
+<!-- STORE PRO (zip 301) ---------------------------------------------------------------------------------------------------------------
+     The Store (warehouse) is now as complete as Inventory: every line has name, code, category, unit, quantity, cost / retail / wholesale price,
+     minimum selling price, reorder level, supplier and notes, and an item can have VARIANTS (sizes, colours, flavours) - each variant is its own
+     store line with its own code, price and stock, grouped under the item. Everything is editable in the row itself or in the Edit popup, new
+     items are added in that same popup, and there is a Store valuation (cost / retail / wholesale value, profit, by category, low and out of stock)
+     that can be exported. Stock still only moves the old, safe way: Take to My Inventory / sell from the Store (atomic on the server).
+     The server keeps the extra details apart from the stock columns (functions/api/_store-extra.js). Ids / classes: sp2-*. -->
+<style id="sp2-css">
+#sp2-root { margin: 4px 0 14px; }
+#sp2-root .sp2-views { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+#sp2-root .sp2-chip { border: 1px solid var(--border-color, #d5dbdf); background: transparent; color: inherit; border-radius: 999px; padding: 7px 14px; font-weight: 700; font-size: 13px; cursor: pointer; }
+#sp2-root .sp2-chip.on { background: #2980b9; border-color: #2980b9; color: #fff; }
+#sp2-root .sp2-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+#sp2-root .sp2-tile { border-radius: 12px; padding: 12px 14px; background: rgba(41,128,185,.09); border: 1px solid rgba(41,128,185,.22); }
+#sp2-root .sp2-tile.g { background: rgba(39,174,96,.10); border-color: rgba(39,174,96,.30); }
+#sp2-root .sp2-tile.o { background: rgba(230,126,34,.10); border-color: rgba(230,126,34,.32); }
+#sp2-root .sp2-tile.r { background: rgba(192,57,43,.09); border-color: rgba(192,57,43,.28); }
+#sp2-root .sp2-tile b { display: block; font-size: 19px; line-height: 1.2; overflow-wrap: anywhere; }
+#sp2-root .sp2-tile span { font-size: 12px; color: #7f8c8d; }
+#sp2-root h4 { margin: 14px 0 6px; font-size: 14px; }
+#sp2-root .sp2-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+#sp2-root .sp2-bar select { padding: 7px 8px; border-radius: 8px; max-width: 100%; }
+#sp2-root table.sp2-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+#sp2-root table.sp2-t th { text-align: left; font-size: 11.5px; color: #7f8c8d; padding: 6px 5px; border-bottom: 2px solid var(--border-color, #e3e7ea); white-space: nowrap; }
+#sp2-root table.sp2-t td { padding: 6px 5px; border-bottom: 1px solid var(--border-color, #eef0f2); vertical-align: top; }
+#sp2-root table.sp2-t tr.sp2-grp td { background: rgba(41,128,185,.07); }
+#sp2-root table.sp2-t tr.sp2-kid td:first-child { padding-left: 22px; border-left: 3px solid rgba(41,128,185,.35); }
+#sp2-root table.sp2-t tr.sp2-low td:first-child { box-shadow: inset 3px 0 0 #e67e22; }
+#sp2-root table.sp2-t tr.sp2-out td:first-child { box-shadow: inset 3px 0 0 #c0392b; }
+#sp2-root .sp2-in { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid var(--border-color, #d5dbdf); border-radius: 6px; font-size: 13px; background: transparent; color: inherit; }
+#sp2-root .sp2-in.n { width: 84px; }
+#sp2-root .sp2-sub { display: flex; gap: 4px; margin-top: 4px; }
+#sp2-root .sp2-sub .sp2-in { flex: 1; min-width: 0; }
+#sp2-root .sp2-tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(41,128,185,.15); color: #2471a3; font-weight: 700; margin-left: 6px; }
+#sp2-root .sp2-tag.w { background: rgba(230,126,34,.18); color: #b9770e; }
+#sp2-root .sp2-tag.d { background: rgba(192,57,43,.15); color: #a93226; }
+#sp2-root .sp2-act { display: flex; gap: 4px; flex-wrap: wrap; }
+#sp2-root .sp2-note { font-size: 12px; color: #7f8c8d; margin: 4px 0; }
+/* zip 338: the Store table is laid out exactly like the Inventory table (same columns, same flat variant rows, same buttons) */
+#sp2-root .sp2-valpanel { border: 1px solid var(--border-color, #e3e7ea); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+#sp2-root .sp2-valpanel h3 { margin: 0 0 8px; font-size: 16px; }
+#sp2-root .sp2-valrow { display: flex; gap: 8px 24px; flex-wrap: wrap; font-size: 14px; }
+#store-inv-table { width: 100%; border-collapse: collapse; }
+#store-inv-table th:nth-child(1), #store-inv-table td:nth-child(1), #store-inv-table th:nth-child(2), #store-inv-table td:nth-child(2), #store-inv-table th:nth-child(3), #store-inv-table td:nth-child(3) { position: sticky; background: var(--bg-surface, var(--card, #fff)); z-index: 2; box-sizing: border-box; }
+#store-inv-table th:nth-child(1), #store-inv-table td:nth-child(1) { left: 0; width: 66px; }
+#store-inv-table th:nth-child(2), #store-inv-table td:nth-child(2) { left: 66px; width: 84px; word-break: break-word; }
+#store-inv-table th:nth-child(3), #store-inv-table td:nth-child(3) { left: 150px; width: 150px; white-space: normal; word-break: break-word; box-shadow: 2px 0 4px rgba(0,0,0,.08); }
+#store-inv-table thead th:nth-child(-n+3) { z-index: 3; }
+#store-inv-table td { vertical-align: middle; }
+#store-inv-table .inv-edit-input[type=number] { min-width: 92px; }
+#sp2-root .sp2-pager { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+#sp2-root .sp2-cell { cursor: text; min-height: 1.2em; }
+#sp2-root .sp2-sm { font-size: 11px; color: #7f8c8d; }
+#sp2-move { position: fixed; inset: 0; z-index: 100003; display: none; align-items: center; justify-content: center; padding: 12px; background: rgba(0,0,0,.5); }
+#sp2-move.open { display: flex; animation: sp2fade .15s ease-out; }
+#sp2-move .mv-card { width: min(420px, 100%); background: var(--card, #fff); color: var(--text, #2c3e50); border-radius: 16px; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.35); animation: sp2pop .18s ease-out; }
+#sp2-move h3 { margin: 0 0 4px; font-size: 18px; }
+#sp2-move .mv-big { font-size: 24px; font-weight: 800; }
+#sp2-move input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 18px; border: 1px solid var(--border-color, #d5dbdf); border-radius: 10px; background: transparent; color: inherit; margin: 6px 0; }
+#sp2-move .mv-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+#sp2-move .mv-row button { flex: 1 1 120px; border: 0; border-radius: 10px; padding: 11px 14px; font-weight: 800; cursor: pointer; }
+#sp2-move .mv-go { background: #27ae60; color: #fff; } #sp2-move .mv-no { background: rgba(127,140,141,.2); color: inherit; }
+#sp2-move .mv-dirs { display: grid; gap: 6px; margin: 10px 0; }
+#sp2-move .mv-opt { display: flex; align-items: center; gap: 10px; margin: 0; padding: 10px 12px; border: 1px solid var(--border-color, #d5dbdf); border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 14px; }
+#sp2-move .mv-opt:has(input:checked) { border-color: #2980b9; background: rgba(41,128,185,.10); }
+#sp2-move .mv-opt:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+#sp2-move .mv-opt input { width: auto; margin: 0; }
+#sp2-move .mv-err { color: #c0392b; font-size: 13px; min-height: 1.2em; margin: 4px 0 0; }
+@keyframes sp2fade { from { opacity: 0 } to { opacity: 1 } } @keyframes sp2pop { from { transform: translateY(12px) scale(.97); opacity: 0 } to { transform: none; opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { #sp2-move.open, #sp2-move .mv-card { animation: none; } }
+#sp2-modal { position: fixed; inset: 0; z-index: 100002; display: none; align-items: flex-start; justify-content: center; padding: calc(4vh / var(--pos-z,1)) 10px 10px; background: rgba(0,0,0,.5); overflow: auto; }
+#sp2-modal.open { display: flex; }
+#sp2-modal .sp2-card { width: min(760px, 100%); background: var(--card, #fff); color: var(--text, #2c3e50); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.35); overflow: hidden; }
+#sp2-modal .sp2-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid rgba(127,140,141,.3); }
+#sp2-modal .sp2-head b { flex: 1; font-size: 17px; }
+#sp2-modal .sp2-x { border: 0; background: rgba(127,140,141,.18); color: inherit; border-radius: 8px; padding: 6px 11px; cursor: pointer; font-weight: 700; }
+#sp2-modal .sp2-body { padding: 14px 16px 18px; }
+#sp2-modal .sp2-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+#sp2-modal label { display: block; font-size: 12px; font-weight: 600; margin: 0 0 3px; }
+#sp2-modal input, #sp2-modal select, #sp2-modal textarea { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid var(--border-color, #d5dbdf); border-radius: 8px; font-size: 14px; background: transparent; color: inherit; }
+#sp2-modal textarea { min-height: 60px; }
+#sp2-modal .sp2-box { margin-top: 14px; padding: 12px; border-radius: 12px; background: rgba(41,128,185,.07); border: 1px dashed rgba(41,128,185,.4); }
+#sp2-modal .sp2-box h5 { margin: 0 0 8px; font-size: 14px; }
+#sp2-modal .sp2-vscroll { overflow-x: auto; }
+#sp2-modal table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#sp2-modal table th { text-align: left; font-size: 11px; color: #7f8c8d; padding: 2px 4px; }
+#sp2-modal table td { padding: 3px; }
+#sp2-modal table input { padding: 6px 7px; font-size: 13px; }
+#sp2-modal .sp2-hint { font-size: 12px; color: #7f8c8d; margin: 4px 0 0; }
+#sp2-modal .sp2-err { color: #c0392b; font-size: 13px; margin: 8px 0 0; min-height: 1em; }
+#sp2-modal .sp2-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin-top: 8px; }
+#sp2-modal .sp2-row > div { flex: 1 1 160px; }
+#sp2-modal .sp2-btn { border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 700; cursor: pointer; background: #27ae60; color: #fff; }
+#sp2-modal .sp2-btn.alt { background: #2980b9; }
+#sp2-modal .sp2-btn.bad { background: #c0392b; }
+@media (max-width: 700px) { #sp2-modal { padding-top: 0; align-items: flex-end; } #sp2-modal .sp2-card { border-radius: 16px 16px 0 0; } }
+@media print { #sp2-modal { display: none !important; } #sp2-root .sp2-views, #sp2-root .sp2-bar, #sp2-root .sp2-act { display: none !important; } }
+</style>
+<script id="sp2-js">
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function N(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
+  function r2(n) { return Math.round(n * 100) / 100; }
+  function money(n) { return 'KES ' + r2(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function qtyTxt(n) { return String(Math.round(N(n) * 1000) / 1000); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function who() { try { return typeof activeServerName === 'function' ? activeServerName() : null; } catch (e) { return null; } }
+  function all() { try { return Array.isArray(storeItemsCache) ? storeItemsCache : []; } catch (e) { return []; } }
+  function setAll(a) { try { storeItemsCache = a; } catch (e) { /* none */ } }
+  var UNITS = [['pcs', 'Pieces'], ['kg', 'Kilograms'], ['g', 'Grams'], ['l', 'Litres'], ['ml', 'Millilitres'], ['m', 'Metres'], ['cm', 'Centimetres'], ['box', 'Box'], ['pack', 'Pack'], ['lb', 'Pounds'], ['oz', 'Ounces'], ['gal', 'Gallons']];
+  var view = 'items', cat = '', status = '', sortBy = 'name', cur = null;   // cur: { id } edit | { id: null } add
+
+  /* ---------------- data helpers ---------------- */
+  function byId(id) { return all().find(function (i) { return i.id === id; }) || null; }
+  function groupIds() { var s = {}; all().forEach(function (i) { if (i.isGroup) s[i.id] = 1; }); return s; }
+  function kids(g) { return all().filter(function (i) { return i.parentId === g.id; }).sort(function (a, b) { return String(a.variantName || a.name).localeCompare(String(b.variantName || b.name)); }); }
+  function parentOf(i) { return i && i.parentId ? byId(i.parentId) : null; }
+  function stockLines() { return all().filter(function (i) { return !i.isGroup; }); }
+  function catOf(i) { var p = parentOf(i); return (i.category || (p && p.category) || '').trim(); }
+  function isLow(i) { return N(i.reorderLevel) > 0 && N(i.qty) <= N(i.reorderLevel) && N(i.qty) > 0; }
+  function isOut(i) { return N(i.qty) <= 0; }
+  function tops() { var g = groupIds(); return all().filter(function (i) { return i.isGroup || !i.parentId || !g[i.parentId]; }); }
+  function codeTaken(c, exceptId) { c = String(c || '').toLowerCase(); return !!c && all().some(function (i) { return i.id !== exceptId && i.code && String(i.code).toLowerCase() === c; }); }
+  function slug(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12) || 'ITEM'; }
+  function uniqCode(base) { var c = base, n = 1; while (codeTaken(c)) c = base + '-' + (++n); return c; }
+  function valueOf(list) {
+    var o = { lines: list.length, units: 0, cost: 0, retail: 0, wholesale: 0, noCost: 0, noPrice: 0 };
+    list.forEach(function (i) {
+      var q = N(i.qty); o.units += q; o.cost += q * N(i.wholesalePrice); o.retail += q * N(i.price); o.wholesale += q * N(i.wholesaleSellingPrice);
+      if (q > 0 && !(N(i.wholesalePrice) > 0)) o.noCost++;
+      if (q > 0 && !(N(i.price) > 0)) o.noPrice++;
+    });
+    o.profit = o.retail - o.cost; o.margin = o.retail > 0 ? (o.profit / o.retail) * 100 : 0;
+    return o;
+  }
+
+  /* ---------------- server calls ---------------- */
+  async function post(body) {
+    body.servedBy = who();
+    var res = await fetch(apiUrl('/api/store'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var d = {}; try { d = await res.json(); } catch (e) { d = {}; }
+    if (!res.ok || d.error) throw new Error(d.error || 'Could not save that.');
+    if (d.items) setAll(d.items);
+    return d;
+  }
+  function fail(e) { toast(String(e && e.message || e), true); }
+  async function upd(id, fields) { return post({ action: 'updateFields', storeItemId: id, fields: fields }); }
+
+  /* ---------------- the tab ---------------- */
+  function mountRoot() {
+    var mc = $('store-main-content'); if (!mc) return null;
+    var root = $('sp2-root');
+    if (!root) {
+      root = document.createElement('div'); root.id = 'sp2-root';
+      var old = $('store-items-table'); var anchor = old ? old.closest('.table-scroll') : null;
+      if (anchor && anchor.parentNode) { anchor.style.display = 'none'; anchor.parentNode.insertBefore(root, anchor); } else mc.appendChild(root);
+      var sm = $('store-summary'); if (sm) sm.style.display = 'none';
+      var mf = $('store-manual-form'); if (mf) mf.style.display = 'none';
+    }
+    return root;
+  }
+
+  function filtered() {
+    var q = (($('store-search-input') || {}).value || '').trim().toLowerCase();
+    var g = groupIds(), out = [];
+    function hit(i) {
+      if (!q) return true;
+      return [i.name, i.code, i.category, i.supplier, i.variantName, i.notes].some(function (s) { return String(s || '').toLowerCase().indexOf(q) >= 0; })
+        || (typeof _codeMatches === 'function' && i.code && _codeMatches(i.code, q));
+    }
+    function stOk(i) { return !status || (status === 'low' && isLow(i)) || (status === 'out' && isOut(i)) || (status === 'instock' && !isOut(i)); }
+    function catOk(i) { return !cat || catOf(i) === cat; }
+    tops().forEach(function (t) {
+      if (t.isGroup) {
+        var ks = kids(t), own = hit(t);
+        var shown = ks.filter(function (k) { return (own || hit(k)) && stOk(k) && catOk(k); });
+        if ((own || shown.length) && (shown.length || (!status && catOk(t) && own))) out.push({ g: t, kids: shown });
+      } else if (hit(t) && stOk(t) && catOk(t)) out.push({ s: t });
+    });
+    function key(e) { var i = e.g || e.s; var v = e.g ? e.kids.reduce(function (a, k) { return a + N(k.qty) * N(k.price); }, 0) : N(i.qty) * N(i.price); return sortBy === 'qty' ? (e.g ? e.kids.reduce(function (a, k) { return a + N(k.qty); }, 0) : N(i.qty)) : sortBy === 'value' ? v : String(i.name).toLowerCase(); }
+    out.sort(function (a, b) { var x = key(a), y = key(b); return typeof x === 'string' ? x.localeCompare(y) : y - x; });
+    return out;
+  }
+
+  function cell(id, f, v, cls, extra) { return '<input class="sp2-in ' + (cls || '') + '" data-id="' + esc(id) + '" data-f="' + f + '" value="' + esc(v) + '" ' + (extra || '') + '>'; }
+  function numCell(id, f, v) { return cell(id, f, v == null || v === '' ? '' : (f === 'qty' ? qtyTxt(v) : r2(N(v)).toFixed(2)), 'n', 'type="number" min="0" step="' + (f === 'qty' ? '0.01' : '0.01') + '" inputmode="decimal"'); }
+  var pg = 1, lastQ = '', editCell = null, PAGE = 20;
+  function invImage(i) {
+    try { var c = String(i.code || '').split('::')[0], p = (typeof inventory !== 'undefined' ? inventory : []).find(function (x) { return x && c && String(x.code) === c; }); if (p && p.image) return p.image; } catch (e) { /* none */ }
+    return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23eee'/></svg>";
+  }
+  // click-to-edit text (code / name), like the Inventory cells
+  function textCell(id, f, v) {
+    if (editCell && editCell.id === id && editCell.f === f) return '<input class="inv-edit-input sp2-ce" data-id="' + esc(id) + '" data-f="' + f + '" value="' + esc(v) + '" aria-label="' + (f === 'code' ? 'Code' : 'Name') + '">';
+    return '<div class="inv-cell-display sp2-cell" role="button" tabindex="0" data-ce="' + esc(id) + '|' + f + '" title="Click to edit">' + (String(v || '').trim() ? esc(v) : '<span style="color:#bbb">(click to set)</span>') + '</div>';
+  }
+  function numInput(id, f, v, step) { return '<input class="inv-edit-input" type="number" min="0" step="' + step + '" inputmode="decimal" data-id="' + esc(id) + '" data-f="' + f + '" value="' + esc(f === 'qty' ? qtyTxt(v) : r2(N(v)).toFixed(2)) + '" aria-label="' + (f === 'qty' ? 'Quantity' : 'Price') + '">'; }
+  function statusPill(i) { var out = isOut(i), low = isLow(i); return '<span class="stock-pill ' + (out || low ? 'low' : 'ok') + '">' + (out ? 'OUT OF STOCK' : low ? 'LOW STOCK' : 'IN STOCK') + '</span>'; }
+  // one row per stock line - a variant is its own row, with the item name small above it (as in Inventory)
+  function stockRow(i, parent) {
+    var low = isOut(i) || isLow(i);
+    var nameCell = parent
+      ? '<div class="sp2-sm" title="Click the item name to rename it - every size updates">' + textCell(parent.id, 'name', parent.name) + '</div>' + textCell(i.id, 'variantName', i.variantName || i.name) + ' <span class="dual-unit-badge" style="background:#16a085;">🔀 Variant</span>'
+      : textCell(i.id, 'name', i.name);
+    return '<tr class="' + (low ? 'low-stock-row' : '') + '"><td><img class="inv-thumb" src="' + esc(invImage(parent || i)) + '" alt="' + esc((parent || i).name) + '"></td>'
+      + '<td>' + textCell(i.id, 'code', i.code || '') + '</td><td>' + nameCell + '</td>'
+      + '<td>' + numInput(i.id, 'price', i.price, '0.01') + '</td>'
+      + '<td>' + numInput(i.id, 'qty', i.qty, '1') + ' <span class="sp2-sm">' + esc(typeof unitLabel === 'function' ? unitLabel(i.unit) : (i.unit || 'pcs')) + '</span></td>'
+      + '<td>' + statusPill(i) + '</td>'
+      + '<td><button class="settings-small-btn" style="font-size:12px;margin-bottom:4px;" data-edit="' + esc(i.id) + '">✏️ Edit</button> '
+      + '<button class="settings-small-btn inv-move-btn" style="font-size:12px;margin-bottom:4px;" title="Move stock: Store ↔ my inventory, Store ↔ another branch" data-move="' + esc(i.id) + '">↔ Move</button> '
+      + '<button class="delete-btn" data-del="' + esc(i.id) + '">Remove</button></td></tr>';
+  }
+  function flatRows(list) {
+    var rows = [];
+    list.forEach(function (e) {
+      if (e.g) { if (e.kids.length) e.kids.forEach(function (k) { rows.push({ line: k, parent: e.g }); }); else rows.push({ line: e.g, parent: null, empty: true }); }
+      else rows.push({ line: e.s, parent: null });
+    });
+    rows.sort(function (a, b) { return String((a.parent || a.line).name || '').localeCompare(String((b.parent || b.line).name || '')) || String(a.line.variantName || '').localeCompare(String(b.line.variantName || '')); });
+    return rows;
+  }
+  function valPanel() {
+    var t = valueOf(stockLines());
+    return '<div class="sp2-valpanel"><h3>📐 Store Stock Valuation</h3><div class="sp2-valrow">'
+      + '<div>Items: <strong>' + stockLines().length + '</strong> (' + qtyTxt(t.units) + ' units)</div>'
+      + '<div>Stock Value (Cost): <strong>' + money(t.cost) + '</strong></div>'
+      + '<div>Stock Value (Retail): <strong>' + money(t.retail) + '</strong></div>'
+      + '<div>Stock Value (Wholesale): <strong>' + money(t.wholesale) + '</strong></div>'
+      + '<div>Potential profit: <strong>' + money(t.profit) + '</strong></div></div>'
+      + (t.noCost ? '<p class="sp2-note">⚠️ ' + t.noCost + ' item(s) have no cost price, so the cost value is understated.</p>' : '')
+      + '<div class="sp2-bar" style="margin:8px 0 0"><button class="settings-small-btn" data-view="value">📈 Full valuation report</button><button class="settings-small-btn" data-act="csv">⬇️ Export store (CSV)</button><button class="settings-small-btn" data-act="print">🖨️ Print valuation</button></div></div>';
+  }
+  function renderItems(root) {
+    var q = (($('store-search-input') || {}).value || '').trim().toLowerCase(); if (q !== lastQ) { lastQ = q; pg = 1; }
+    var list = filtered(), cats = {};
+    stockLines().forEach(function (i) { var c = catOf(i); if (c) cats[c] = 1; });
+    var catList = Object.keys(cats).sort();
+    var h = valPanel();
+    h += '<div class="sp2-bar"><select id="sp2-cat" aria-label="Category"><option value="">All categories</option>' + catList.map(function (c) { return '<option' + (c === cat ? ' selected' : '') + ' value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('') + '</select>'
+      + '<select id="sp2-status" aria-label="Stock level"><option value="">Any stock level</option><option value="instock"' + (status === 'instock' ? ' selected' : '') + '>In stock</option><option value="low"' + (status === 'low' ? ' selected' : '') + '>Running low</option><option value="out"' + (status === 'out' ? ' selected' : '') + '>Out of stock</option></select>'
+      + '<span class="sp2-note" style="margin-left:auto">' + stockLines().length + ' line(s), ' + all().filter(function (i) { return i.isGroup; }).length + ' with variants</span></div>';
+    var rows = flatRows(list), pages = Math.max(1, Math.ceil(rows.length / PAGE)); if (pg > pages) pg = pages; if (pg < 1) pg = 1;
+    var shown = rows.slice((pg - 1) * PAGE, pg * PAGE);
+    h += '<div class="table-scroll"><table id="store-inv-table"><thead><tr><th>Image</th><th>Code</th><th>Item Name</th><th>Price (KES)</th><th>Qty Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody>'
+      + (shown.length ? shown.map(function (r) { return stockRow(r.line, r.parent); }).join('')
+        : '<tr><td colspan="7" class="empty-state" style="text-align:center;padding:18px">' + (all().length ? 'No matches.' : 'The store is empty - tap ➕ Add Manually, import from inventory, or add via CSV.') + '</td></tr>')
+      + '</tbody></table></div>';
+    if (pages > 1) {
+      var st = Math.max(1, pg - 2), en = Math.min(pages, st + 5); st = Math.max(1, en - 5);
+      h += '<nav class="sp2-pager" aria-label="Pages"><button class="settings-small-btn" data-pg="' + (pg - 1) + '"' + (pg <= 1 ? ' disabled' : '') + '>‹ Prev</button>';
+      for (var n = st; n <= en; n++) h += '<button class="settings-small-btn' + (n === pg ? ' active' : '') + '" data-pg="' + n + '"' + (n === pg ? ' style="font-weight:800;text-decoration:underline" aria-current="page"' : '') + '>' + n + '</button>';
+      h += '<button class="settings-small-btn" data-pg="' + (pg + 1) + '"' + (pg >= pages ? ' disabled' : '') + '>Next ›</button></nav>';
+    }
+    return h;
+  }
+
+  function renderValuation() {
+    var lines = stockLines(), t = valueOf(lines), byCat = {};
+    lines.forEach(function (i) { var c = catOf(i) || 'Uncategorised'; (byCat[c] = byCat[c] || []).push(i); });
+    var h = '<div class="sp2-tiles">'
+      + '<div class="sp2-tile"><span>Items in store</span><b>' + lines.length + '</b><span>' + qtyTxt(t.units) + ' units</span></div>'
+      + '<div class="sp2-tile o"><span>Cost value</span><b>' + money(t.cost) + '</b><span>what the stock cost you</span></div>'
+      + '<div class="sp2-tile g"><span>Retail value</span><b>' + money(t.retail) + '</b><span>if all sold at retail</span></div>'
+      + '<div class="sp2-tile"><span>Wholesale value</span><b>' + money(t.wholesale) + '</b><span>if all sold wholesale</span></div>'
+      + '<div class="sp2-tile g"><span>Potential profit</span><b>' + money(t.profit) + '</b><span>' + t.margin.toFixed(1) + '% margin at retail</span></div>'
+      + '<div class="sp2-tile r"><span>Need attention</span><b>' + lines.filter(isOut).length + ' out · ' + lines.filter(isLow).length + ' low</b><span>' + t.noCost + ' with no cost price</span></div></div>';
+    if (t.noCost) h += '<p class="sp2-note">⚠️ ' + t.noCost + ' item(s) in stock have no cost price, so the cost value and profit are understated. Open Items and fill in the Cost column.</p>';
+    var rows = Object.keys(byCat).sort().map(function (c) { var v = valueOf(byCat[c]); return '<tr><td>' + esc(c) + '</td><td>' + v.lines + '</td><td>' + qtyTxt(v.units) + '</td><td>' + money(v.cost) + '</td><td>' + money(v.retail) + '</td><td>' + money(v.wholesale) + '</td><td>' + money(v.profit) + '</td></tr>'; });
+    h += '<h4>By category</h4><div class="table-scroll"><table class="sp2-t"><thead><tr><th>Category</th><th>Lines</th><th>Units</th><th>Cost value</th><th>Retail value</th><th>Wholesale value</th><th>Profit</th></tr></thead><tbody>' + (rows.join('') || '<tr><td colspan="7" class="sp2-note">Nothing in the store yet.</td></tr>')
+      + '</tbody></table></div>';
+    var top = lines.slice().sort(function (a, b) { return N(b.qty) * N(b.price) - N(a.qty) * N(a.price); }).filter(function (i) { return N(i.qty) > 0; }).slice(0, 10);
+    h += '<h4>Top 10 by retail value</h4><div class="table-scroll"><table class="sp2-t"><thead><tr><th>Item</th><th>Qty</th><th>Cost value</th><th>Retail value</th></tr></thead><tbody>'
+      + (top.map(function (i) { return '<tr><td>' + esc(i.name) + (i.code ? ' <span class="sp2-note">' + esc(i.code) + '</span>' : '') + '</td><td>' + qtyTxt(i.qty) + '</td><td>' + money(N(i.qty) * N(i.wholesalePrice)) + '</td><td>' + money(N(i.qty) * N(i.price)) + '</td></tr>'; }).join('') || '<tr><td colspan="4" class="sp2-note">-</td></tr>') + '</tbody></table></div>';
+    var need = lines.filter(function (i) { return isOut(i) || isLow(i); });
+    if (need.length) h += '<h4>Out of stock / running low</h4><div class="table-scroll"><table class="sp2-t"><thead><tr><th>Item</th><th>In store</th><th>Reorder level</th></tr></thead><tbody>'
+      + need.slice(0, 40).map(function (i) { return '<tr><td>' + esc(i.name) + '</td><td>' + qtyTxt(i.qty) + (isOut(i) ? ' <span class="sp2-tag d">out</span>' : ' <span class="sp2-tag w">low</span>') + '</td><td>' + (N(i.reorderLevel) ? qtyTxt(i.reorderLevel) : '-') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    h += '<div class="sp2-bar" style="margin-top:12px"><button class="settings-small-btn" data-act="csv">⬇️ Export store (CSV)</button><button class="settings-small-btn" data-act="print">🖨️ Print valuation</button></div>';
+    return h;
+  }
+
+  function render() {
+    var root = mountRoot(); if (!root) return;
+    var ae = document.activeElement, keep = ae && root.contains(ae) ? ae.id : '', keepSel = ae && root.contains(ae) && !ae.id && ae.dataset && ae.dataset.id && ae.dataset.f ? '[data-id="' + ae.dataset.id + '"][data-f="' + ae.dataset.f + '"]' : (ae && ae.dataset && ae.dataset.pg ? '[data-pg="' + ae.dataset.pg + '"]' : '');
+    root.innerHTML = '<div class="sp2-views"><button type="button" class="sp2-chip' + (view === 'items' ? ' on' : '') + '" data-view="items">📦 Items</button><button type="button" class="sp2-chip' + (view === 'value' ? ' on' : '') + '" data-view="value">📈 Store valuation</button></div>'
+      + (view === 'value' ? renderValuation() : renderItems(root));
+    var mc = $('store-search-input'); if (mc && mc.parentNode && mc.closest('.form-group')) mc.closest('.form-group').style.display = view === 'items' ? '' : 'none';
+    if (keep && $(keep)) { try { $(keep).focus(); } catch (e) { /* ok */ } } else if (keepSel) { var kn = root.querySelector(keepSel); if (kn && kn.focus) { try { kn.focus(); } catch (e) { /* ok */ } } }
+  }
+
+  /* ---------------- inline edits + buttons ---------------- */
+  document.addEventListener('change', async function (ev) {
+    var t = ev.target; if (!t || !t.closest || !t.closest('#sp2-root')) return;
+    if (t.id === 'sp2-cat') { cat = t.value; pg = 1; return render(); }
+    if (t.id === 'sp2-status') { status = t.value; pg = 1; return render(); }
+    if (t.id === 'sp2-sort') { sortBy = t.value; return render(); }
+    var id = t.dataset.id, f = t.dataset.f; if (!id || !f) return;
+    var it = byId(id); if (!it) return;
+    try { await saveField(it, f, t.value); } catch (e) { fail(e); }
+    render(); refreshModal();
+  });
+  // one field of one line; keeps the group name / variant names / categories consistent
+  async function saveField(it, f, raw) {
+    var v = String(raw).trim();
+    if (f === 'qty') {
+      var q = parseFloat(v); if (isNaN(q) || q < 0) throw new Error('Enter a valid quantity.');
+      await post({ action: 'setQty', storeItemId: it.id, qty: q }); return;
+    }
+    if (f === 'variantName') {
+      if (!v) throw new Error('A variant needs a name.');
+      var g = parentOf(it); await upd(it.id, { variantName: v, name: (g ? g.name : '') + ' (' + v + ')' }); return;
+    }
+    if (f === 'name') {
+      if (!v) throw new Error('Item name cannot be blank.');
+      await upd(it.id, { name: v });
+      if (it.isGroup) { var ks = kids(it); for (var i = 0; i < ks.length; i++) await upd(ks[i].id, { name: v + ' (' + (ks[i].variantName || '') + ')' }); }
+      return;
+    }
+    if (f === 'category' && it.isGroup) {
+      await upd(it.id, { category: v });
+      var kk = kids(it); if (kk.length) await post({ action: 'setExtras', entries: kk.map(function (k) { return { storeItemId: k.id, extras: { category: v } }; }) });
+      return;
+    }
+    var o = {}; o[f] = v; await upd(it.id, o);
+  }
+
+  document.addEventListener('click', async function (ev) {
+    var ce = ev.target && ev.target.closest ? ev.target.closest('#sp2-root [data-ce]') : null;
+    if (ce) { var pr = ce.dataset.ce.split('|'); editCell = { id: pr[0], f: pr[1] }; render(); var inp = root$().querySelector('.sp2-ce'); if (inp) { try { inp.focus(); inp.select(); } catch (e) { /* hidden */ } } return; }
+    var b = ev.target && ev.target.closest ? ev.target.closest('#sp2-root button') : null; if (!b) return;
+    if (b.dataset.view) { view = b.dataset.view; return render(); }
+    if (b.dataset.pg) { pg = parseInt(b.dataset.pg, 10) || 1; return render(); }
+    if (b.dataset.move) return openMove(b.dataset.move);
+    if (b.dataset.take) { try { await takeFromStore(b.dataset.take); } catch (e) { fail(e); } return; }
+    if (b.dataset.edit) { return openEdit(b.dataset.edit); }
+    if (b.dataset.del) { return delLine(b.dataset.del); }
+    if (b.dataset.delg) { return delGroup(b.dataset.delg); }
+    if (b.dataset.act === 'csv') return exportCsv();
+    if (b.dataset.act === 'print') return printValue();
+  });
+  function root$() { return $('sp2-root') || document.body; }
+  // leaving a click-to-edit cell (the change event has already saved it) or pressing Enter / Escape
+  document.addEventListener('focusout', function (ev) { var t = ev.target; if (t && t.classList && t.classList.contains('sp2-ce')) setTimeout(function () { editCell = null; render(); }, 0); });
+  document.addEventListener('keydown', function (ev) {
+    var t = ev.target; if (!t || !t.closest || !t.closest('#sp2-root')) return;
+    if (t.classList.contains('sp2-ce')) { if (ev.key === 'Enter') t.blur(); else if (ev.key === 'Escape') { t.value = t.defaultValue; t.blur(); } }
+    else if (t.dataset && t.dataset.ce && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); t.click(); }
+  });
+  /* ---------------- Move (zip 340): four ways, from one button ----------------
+       1  Store -> my inventory        (takeFromStore: the store gives it up, this till adds it)
+       2  my inventory -> Store        (opens the inventory Move screen with this Store line already chosen)
+       3  Store -> another branch      (removeFromStore with the branch as destination: in transit until THAT branch confirms it arrived)
+       4  another branch -> Store      (a REQUEST to that branch: nothing moves until its till presses Send; see requestFromBranch) */
+  function branchesList() {
+    return (typeof fetchBranchesSummary === 'function' ? Promise.resolve().then(function () { return fetchBranchesSummary(false); }) : Promise.resolve(null))
+      .then(function (d) { return ((d && d.branches) || []).filter(function (b) { return b && !b.isSelf && b.status !== 'suspended'; }); }).catch(function () { return []; });
+  }
+  function invMatches(it) {
+    var inv = (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : [], par = parentOf(it), nm = String((par ? par.name : it.name) || '').trim().toLowerCase(), code = String(it.code || '').toLowerCase(), out = [], seen = {};
+    var sv = (function () { var m = /^(.*\S)\s*\(([^()]+)\)\s*$/.exec(String(it.name || '')); return m ? { parent: m[1].trim().toLowerCase(), variant: m[2].trim().toLowerCase() } : null; })();
+    var add = function (p, v, why) { var key = p.code + '|' + (v ? v.id : ''); if (seen[key]) return; seen[key] = 1; out.push({ code: p.code, variantId: v ? v.id : '', label: p.name + (v ? ' (' + v.name + ')' : '') + ' — ' + qtyTxt(v ? v.qty : p.qty) + ' in inventory' + (why ? ' · ' + why : '') }); };
+    inv.forEach(function (p) {
+      if (!p || p.type === 'service') return;
+      if (p.hasVariants && Array.isArray(p.variants)) p.variants.forEach(function (v) {
+        if (!v) return;
+        var pc = String(p.code || '').toLowerCase(), vn = String(v.name || '').trim().toLowerCase();
+        var byCode = v.code && String(v.code).toLowerCase() === code;
+        var byLink = code === pc + '::' + String(v.id).toLowerCase();                                   // the Store line made by "Import from Inventory" / Move (PARENT::variantId)
+        var byParts = par && String(p.name).trim().toLowerCase() === nm && vn === String(it.variantName || '').trim().toLowerCase();
+        var byLabel = sv && sv.parent === String(p.name).trim().toLowerCase() && sv.variant === vn;      // "Name (Size)"
+        if (byCode || byLink || byParts || byLabel) add(p, v, 'same item');
+      });
+      else if ((code && String(p.code).toLowerCase() === code) || String(p.name || '').trim().toLowerCase() === nm) add(p, null, code && String(p.code).toLowerCase() === code ? 'same code' : 'same name');
+    });
+    return out;
+  }
+  function openMove(id) {
+    var it = byId(id); if (!it) return;
+    var m = $('sp2-move');
+    if (!m) { m = document.createElement('div'); m.id = 'sp2-move'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-labelledby', 'sp2-mv-t'); document.body.appendChild(m);
+      m.addEventListener('click', function (e) { if (e.target === m) m.classList.remove('open'); });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && m.classList.contains('open')) { e.stopPropagation(); m.classList.remove('open'); } }, true); }
+    var par = parentOf(it), label = par ? par.name + ' (' + (it.variantName || '') + ')' : it.name, u = typeof unitLabel === 'function' ? unitLabel(it.unit) : (it.unit || 'pcs');
+    var hasBranches = false; try { hasBranches = !!myBranchGroupId; } catch (e) { hasBranches = false; }
+    var opt = function (v, txt, on, dis) { return '<label class="mv-opt"><input type="radio" name="sp2-mv-dir" value="' + v + '"' + (on ? ' checked' : '') + (dis ? ' disabled' : '') + '><span>' + txt + '</span></label>'; };
+    var out = N(it.qty) > 0;
+    m.innerHTML = '<div class="mv-card"><h3 id="sp2-mv-t">↔ Move stock</h3><div style="color:#7f8c8d;font-size:13px">' + esc(label) + '</div>'
+      + '<p style="margin:8px 0 2px">In the store: <span class="mv-big">' + qtyTxt(it.qty) + '</span> ' + esc(u) + '</p>'
+      + '<div class="mv-dirs" role="radiogroup" aria-label="Where to move it">'
+      + opt('toinv', '🏬 Store &rarr; 📦 My inventory', out, !out)
+      + opt('frominv', '📦 My inventory &rarr; 🏬 Store', !out)
+      + opt('tobranch', '🏬 Store &rarr; 🏢 Another branch', false, !out || !hasBranches)
+      + opt('frombranch', '🏢 Another branch &rarr; 🏬 Store', false, !hasBranches)
+      + '</div>'
+      + '<div id="sp2-mv-branchrow" style="display:none"><label for="sp2-mv-branch" style="font-weight:700;font-size:13px">Branch</label><select id="sp2-mv-branch" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--border-color,#d5dbdf);background:transparent;color:inherit"><option value="">Loading branches…</option></select></div>'
+      + '<div id="sp2-mv-invrow" style="display:none"><label for="sp2-mv-inv" style="font-weight:700;font-size:13px">Which item in your inventory</label><select id="sp2-mv-inv" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--border-color,#d5dbdf);background:transparent;color:inherit"></select></div>'
+      + '<div id="sp2-mv-qrow"><label for="sp2-mv-q" style="font-weight:700;font-size:13px">How many?</label><input id="sp2-mv-q" type="number" min="0" step="any" inputmode="decimal" value="1"></div>'
+      + '<p class="mv-err" id="sp2-mv-e" role="alert"></p><p class="sp2-note" id="sp2-mv-note"></p>'
+      + '<div class="mv-row"><button type="button" class="mv-no" id="sp2-mv-x">Cancel</button><button type="button" class="mv-go" id="sp2-mv-go" data-id="' + esc(it.id) + '">Move</button></div></div>';
+    m.classList.add('open');
+    var dir = function () { var r = m.querySelector('[name="sp2-mv-dir"]:checked'); return r ? r.value : ''; };
+    var notes = { toinv: 'It is added to the same item in your inventory (variants go to the same size) and taken out of the store.',
+      frominv: 'Opens your inventory move screen with this store line already chosen.',
+      tobranch: 'It leaves the store now and is "in transit" until that branch confirms it arrived. Nothing is added there before then.',
+      frombranch: 'This sends the branch a request. Nothing moves until that branch presses Send on its own screen.' };
+    var branchLoaded = false, matches = invMatches(it);
+    var refresh = function () {
+      var d = dir(); if (!d) return;
+      $('sp2-mv-branchrow').style.display = (d === 'tobranch' || d === 'frombranch') ? '' : 'none';
+      $('sp2-mv-invrow').style.display = d === 'frominv' ? '' : 'none';
+      $('sp2-mv-qrow').style.display = d === 'frominv' ? 'none' : '';
+      $('sp2-mv-note').textContent = notes[d] || '';
+      $('sp2-mv-go').textContent = d === 'frominv' ? 'Next' : d === 'frombranch' ? 'Send request' : 'Move';
+      $('sp2-mv-e').textContent = '';
+      if (d === 'frominv') $('sp2-mv-inv').innerHTML = matches.length ? matches.map(function (x, i) { return '<option value="' + i + '">' + esc(x.label) + '</option>'; }).join('') : '<option value="">No matching item in your inventory</option>';
+      if ((d === 'tobranch' || d === 'frombranch') && !branchLoaded) {
+        branchLoaded = true;
+        branchesList().then(function (list) { var sel = $('sp2-mv-branch'); if (sel) sel.innerHTML = list.length ? list.map(function (b) { return '<option value="' + esc(b.id) + '">' + esc(b.hqName || b.label || b.slug || b.id) + '</option>'; }).join('') : '<option value="">No other branches</option>'; });
+      }
+    };
+    Array.prototype.forEach.call(m.querySelectorAll('[name="sp2-mv-dir"]'), function (r) { r.onchange = refresh; });
+    refresh();
+    $('sp2-mv-x').onclick = function () { m.classList.remove('open'); };
+    var q = $('sp2-mv-q'); q.onkeydown = function (e) { if (e.key === 'Enter') $('sp2-mv-go').click(); };
+    $('sp2-mv-go').onclick = async function () {
+      var d = dir(), n = parseFloat(q.value), e = $('sp2-mv-e'), btn = this;
+      e.textContent = '';
+      if (d === 'frominv') {
+        var pick = matches[parseInt($('sp2-mv-inv').value, 10)];
+        if (!pick) { e.textContent = 'Your inventory has no matching item. Add it to Inventory first, or add stock here with ✏️ Edit.'; return; }
+        m.classList.remove('open');
+        window.__spxPreStore = it.id;
+        if (typeof window.openMoveStock === 'function') window.openMoveStock(pick.code, pick.variantId || undefined); else toast('The inventory Move screen is not available here.', true);
+        return;
+      }
+      if (isNaN(n) || n <= 0) { e.textContent = 'Enter how many to move.'; return; }
+      if ((d === 'toinv' || d === 'tobranch') && n > N(it.qty)) { e.textContent = 'Only ' + qtyTxt(it.qty) + ' in the store.'; return; }
+      var br = $('sp2-mv-branch') ? $('sp2-mv-branch').value : '';
+      if ((d === 'tobranch' || d === 'frombranch') && !br) { e.textContent = 'Choose a branch.'; return; }
+      var brName = $('sp2-mv-branch') && $('sp2-mv-branch').selectedOptions[0] ? $('sp2-mv-branch').selectedOptions[0].textContent : 'the branch';
+      btn.disabled = true;
+      var key = (m.__key = m.__key || ('mv-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)));   // one key per open screen: a double press / retry cannot move it twice
+      try {
+        if (d === 'toinv') {
+          var tmp = $('store-take-qty-' + it.id) || document.createElement('input'); tmp.id = 'store-take-qty-' + it.id; tmp.type = 'hidden'; tmp.value = String(n); if (!tmp.parentNode) document.body.appendChild(tmp);
+          var before = N((byId(it.id) || {}).qty);
+          try { await takeFromStore(it.id); } catch (err) { fail(err); }
+          var after = byId(it.id) ? N(byId(it.id).qty) : 0;
+          if (tmp.parentNode) tmp.parentNode.removeChild(tmp);
+          if (after < before - 0.0000001) m.classList.remove('open'); else { e.textContent = 'It was not moved - nothing changed. Check your connection and press Move again.'; btn.disabled = false; }
+        } else if (d === 'tobranch') {
+          var r1 = await post({ action: 'removeFromStore', idemKey: key, destClientId: br, purpose: 'sent to ' + brName, items: [{ storeItemId: it.id, qty: n }] });
+          m.classList.remove('open');
+          toast('Sent ' + qtyTxt(n) + ' ' + u + ' of ' + label + ' to ' + brName + '. It shows as in transit until they confirm it arrived.');
+        } else if (d === 'frombranch') {
+          var r2 = await post({ action: 'requestFromBranch', idemKey: key, fromClientId: br, storeItemId: it.id, name: it.name, code: it.code || '', unit: it.unit || 'pcs', qty: n, price: it.price, wholesaleSellingPrice: it.wholesaleSellingPrice, wholesalePrice: it.wholesalePrice });
+          m.classList.remove('open');
+          toast('Request sent to ' + (r2.fromLabel || brName) + ': ' + qtyTxt(n) + ' ' + u + ' of ' + label + '. The store is updated when they press Send.');
+        }
+      } catch (err) { e.textContent = String(err && err.message || err); btn.disabled = false; }
+      render();
+    };
+    setTimeout(function () { try { (dir() === 'frominv' ? $('sp2-mv-go') : q).focus(); } catch (e) { /* hidden */ } }, 30);
+  }
+  async function delLine(id) {
+    var it = byId(id); if (!it) return;
+    if (!confirm('Remove "' + it.name + '" from the store' + (N(it.qty) > 0 ? ' (it still has ' + qtyTxt(it.qty) + ' ' + (it.unit || 'pcs') + ')' : '') + '? This is for correcting a mistake - to move stock into your inventory use Move.')) return;
+    try { await post({ action: 'deleteItem', storeItemId: id }); toast('Removed "' + it.name + '" from the store.'); } catch (e) { fail(e); }
+    render(); refreshModal();
+  }
+  async function delGroup(id) {
+    var g = byId(id); if (!g) return; var ks = kids(g), units = ks.reduce(function (a, k) { return a + N(k.qty); }, 0);
+    if (!confirm('Remove "' + g.name + '" and its ' + ks.length + ' variant(s)' + (units > 0 ? ' (' + qtyTxt(units) + ' in stock)' : '') + ' from the store? Their history is kept.')) return;
+    try { for (var i = 0; i < ks.length; i++) await post({ action: 'deleteItem', storeItemId: ks[i].id }); await post({ action: 'deleteItem', storeItemId: id }); toast('Removed "' + g.name + '".'); } catch (e) { fail(e); }
+    render(); closeModal();
+  }
+
+  /* ---------------- export + print ---------------- */
+  function csvRows() {
+    var rows = [['Name', 'Variant of', 'Code', 'Category', 'Unit', 'Qty', 'Cost Price', 'Price', 'Wholesale Selling Price', 'Min Price', 'Reorder Level', 'Supplier', 'Cost Value', 'Retail Value', 'Notes']];
+    stockLines().slice().sort(function (a, b) { return String(a.name).localeCompare(b.name); }).forEach(function (i) {
+      var p = parentOf(i);
+      rows.push([i.name, p ? p.name : '', i.code || '', catOf(i), i.unit || 'pcs', N(i.qty), N(i.wholesalePrice), N(i.price), N(i.wholesaleSellingPrice), N(i.minimumPrice) || '', N(i.reorderLevel) || '', i.supplier || '', r2(N(i.qty) * N(i.wholesalePrice)), r2(N(i.qty) * N(i.price)), i.notes || '']);
+    });
+    return rows;
+  }
+  function exportCsv() {
+    var txt = csvRows().map(function (r) { return r.map(function (c) { var s = String(c == null ? '' : c); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(','); }).join('\r\n');
+    try {
+      var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + txt], { type: 'text/csv' })); a.download = 'store-' + new Date().toISOString().slice(0, 10) + '.csv';
+      document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    } catch (e) { toast('Could not create the file.', true); }
+  }
+  function printValue() {
+    var w = null; try { w = window.open('', '_blank'); } catch (e) { w = null; }
+    if (!w) { toast('Allow pop-ups to print.', true); return; }
+    var biz = ''; try { biz = (JSON.parse(localStorage.getItem('pos_settings') || '{}').businessName) || ''; } catch (e) { biz = ''; }
+    w.document.write('<!doctype html><title>Store valuation</title><style>body{font-family:Arial,sans-serif;padding:20px}h2{margin:0 0 4px}table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 18px}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left}.tiles b{display:inline-block;margin-right:22px}</style><h2>Store valuation' + (biz ? ' - ' + esc(biz) : '') + '</h2><div>' + new Date().toLocaleString('en-KE') + '</div><div class="tiles">' + renderValuation().replace(/<div class="sp2-bar"[\s\S]*$/, '').replace(/class="sp2-/g, 'class="x-') + '</div>');
+    w.document.close(); try { w.focus(); w.print(); } catch (e) { /* user prints manually */ }
+  }
+
+  /* ---------------- the Add / Edit popup ---------------- */
+  function modal() {
+    var m = $('sp2-modal');
+    if (!m) {
+      m = document.createElement('div'); m.id = 'sp2-modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+      m.innerHTML = '<div class="sp2-card"><div class="sp2-head"><b id="sp2-title"></b><button type="button" class="sp2-x" aria-label="Close">✕</button></div><div class="sp2-body" id="sp2-mbody"></div></div>';
+      document.body.appendChild(m);
+      m.addEventListener('click', function (e) { if (e.target === m) closeModal(); });
+      m.querySelector('.sp2-x').addEventListener('click', closeModal);
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && m.classList.contains('open')) { e.stopPropagation(); closeModal(); } }, true);
+      m.addEventListener('change', onModalChange); m.addEventListener('click', onModalClick);
+    }
+    return m;
+  }
+  function closeModal() { var m = $('sp2-modal'); if (m) m.classList.remove('open'); cur = null; render(); }
+  function openEdit(id) { cur = { id: id || null }; modal().classList.add('open'); drawModal(); setTimeout(function () { var f = $('sp2-m-name'); if (f && !id) { try { f.focus(); } catch (e) { /* hidden */ } } }, 30); }
+  function refreshModal() { var m = $('sp2-modal'); if (m && m.classList.contains('open') && cur) { if (cur.id && !byId(cur.id)) { closeModal(); return; } drawModal(); } }
+  function unitSel(u) { return '<select id="sp2-m-unit">' + UNITS.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === (u || 'pcs') ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>'; }
+  function fld(label, id, val, attrs, hint) { return '<div><label for="' + id + '">' + label + '</label><input id="' + id + '" value="' + esc(val == null ? '' : val) + '" ' + (attrs || '') + '>' + (hint ? '<p class="sp2-hint">' + hint + '</p>' : '') + '</div>'; }
+  function drawModal() {
+    if (!cur) return;
+    var it = cur.id ? byId(cur.id) : null, add = !it, isG = !!(it && it.isGroup), isKid = !!(it && it.parentId && parentOf(it));
+    $('sp2-title').textContent = add ? '➕ Add item to the Store' : (isG ? '✏️ Edit ' + it.name + ' (with variants)' : '✏️ Edit ' + it.name);
+    var cats = {}; stockLines().forEach(function (i) { var c = catOf(i); if (c) cats[c] = 1; });
+    var h = '<datalist id="sp2-mcats">' + Object.keys(cats).sort().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist>';
+    h += '<div class="sp2-grid">'
+      + fld('Item name', 'sp2-m-name', it ? (isKid ? parentOf(it).name : it.name) : '', 'maxlength="120" placeholder="e.g. Bags of cement"')
+      + (isG ? fld('Code <span style="font-weight:400;color:#7f8c8d">(optional)</span>', 'sp2-m-code', it.code || '', 'maxlength="40"') : '<div><label for="sp2-m-code">Code <span style="font-weight:400;color:#7f8c8d">(optional)</span></label><div style="display:flex;gap:6px"><input id="sp2-m-code" value="' + esc(it ? it.code || '' : '') + '" maxlength="40" placeholder="Scan or type"><button type="button" class="settings-small-btn" data-m="scan" style="padding:0 10px">📷</button></div></div>')
+      + fld('Category', 'sp2-m-category', it ? (it.category || '') : '', 'list="sp2-mcats" maxlength="60" placeholder="e.g. Breakfast, Hardware"')
+      + (isG ? '' : '<div><label for="sp2-m-unit">Unit</label>' + unitSel(it ? it.unit : 'pcs') + '</div>');
+    if (!isG) {
+      h += (add ? fld('Starting quantity', 'sp2-m-qty', '', 'type="number" min="0" step="0.01" inputmode="decimal" placeholder="0"', 'With variants, set each variant\'s stock after saving.') : fld('Quantity in store', 'sp2-m-qty', qtyTxt(it.qty), 'type="number" min="0" step="0.01" inputmode="decimal"', 'Changing it is logged as a stock correction.'))
+        + fld('Cost price (KES)', 'sp2-m-wholesalePrice', it ? r2(N(it.wholesalePrice)).toFixed(2) : '', 'type="number" min="0" step="0.01" inputmode="decimal"', 'What it cost you - used for the valuation.')
+        + fld('Retail price (KES)', 'sp2-m-price', it ? r2(N(it.price)).toFixed(2) : '', 'type="number" min="0" step="0.01" inputmode="decimal"')
+        + fld('Wholesale price (KES)', 'sp2-m-wholesaleSellingPrice', it ? r2(N(it.wholesaleSellingPrice)).toFixed(2) : '', 'type="number" min="0" step="0.01" inputmode="decimal"')
+        + fld('Lowest price you will accept (KES)', 'sp2-m-minimumPrice', it && it.minimumPrice ? r2(N(it.minimumPrice)).toFixed(2) : '', 'type="number" min="0" step="0.01" inputmode="decimal"')
+        + fld('Reorder level', 'sp2-m-reorderLevel', it && it.reorderLevel ? qtyTxt(it.reorderLevel) : '', 'type="number" min="0" step="1" inputmode="decimal"', 'Marked "low" at or under this.');
+    }
+    h += fld('Supplier', 'sp2-m-supplier', it ? it.supplier || '' : '', 'maxlength="80"') + '</div>'
+      + '<div style="margin-top:10px"><label for="sp2-m-notes">Notes</label><textarea id="sp2-m-notes" maxlength="400" placeholder="Where it is kept, batch, anything useful">' + esc(it ? it.notes || '' : '') + '</textarea></div>';
+    // variants
+    if (!isKid) {
+      if (isG) {
+        var ks = kids(it);
+        h += '<div class="sp2-box"><h5>🧩 Variants of "' + esc(it.name) + '"</h5><div class="sp2-vscroll"><table><thead><tr><th>Name</th><th>Code</th><th>Stock</th><th>Cost</th><th>Retail</th><th>Wholesale</th><th></th></tr></thead><tbody>'
+          + (ks.map(function (k) {
+            function vi(f, v, w, t) { return '<td><input data-vid="' + esc(k.id) + '" data-vf="' + f + '" value="' + esc(v) + '" ' + (t ? 'type="number" min="0" step="0.01" inputmode="decimal" style="width:' + w + 'px"' : 'style="min-width:' + w + 'px"') + '></td>'; }
+            return '<tr>' + vi('variantName', k.variantName || '', 90) + vi('code', k.code || '', 90) + vi('qty', qtyTxt(k.qty), 70, 1) + vi('wholesalePrice', r2(N(k.wholesalePrice)).toFixed(2), 78, 1) + vi('price', r2(N(k.price)).toFixed(2), 78, 1) + vi('wholesaleSellingPrice', r2(N(k.wholesaleSellingPrice)).toFixed(2), 78, 1)
+              + '<td><button type="button" class="sp2-btn bad" data-m="delvar" data-id="' + esc(k.id) + '" title="Remove this variant" style="padding:6px 9px">✕</button></td></tr>';
+          }).join('') || '<tr><td colspan="7" class="sp2-hint">No variants yet - add some below.</td></tr>') + '</tbody></table></div>'
+          + '<div class="sp2-row"><div><label for="sp2-m-vnames">Add variants</label><input id="sp2-m-vnames" placeholder="e.g. Small, Medium, Large"></div><button type="button" class="sp2-btn alt" data-m="addvar">Add</button></div>'
+          + '<p class="sp2-hint">New variants copy the first variant\'s prices and start at 0 stock - then type their stock above.</p></div>';
+      } else {
+        h += '<div class="sp2-box"><h5>🧩 ' + (add ? 'Variants (optional)' : 'Turn this into an item with variants') + '</h5><div class="sp2-row"><div><label for="sp2-m-vnames">Variant names</label><input id="sp2-m-vnames" placeholder="e.g. Small, Medium, Large"></div>'
+          + (add ? '' : '<div><label for="sp2-m-first">What is the current stock called?</label><input id="sp2-m-first" value="Original"></div>') + (add ? '' : '<button type="button" class="sp2-btn alt" data-m="makegroup">Convert</button>') + '</div>'
+          + '<p class="sp2-hint">' + (add ? 'Each variant gets its own code, price and stock. Fill them in after saving.' : 'The current stock and prices become the first variant; the new ones start at 0 stock. Nothing is deleted.') + '</p></div>';
+      }
+    } else {
+      h += '<p class="sp2-hint">This is a variant of "' + esc(parentOf(it).name) + '". Edit its name here or in the item\'s own popup.</p>' + fld('Variant name', 'sp2-m-variantName', it.variantName || '', 'maxlength="80"');
+    }
+    h += '<p class="sp2-err" id="sp2-err" role="alert"></p><div class="sp2-row">'
+      + (add ? '<button type="button" class="sp2-btn" data-m="create">+ Add to Store</button>' : '<button type="button" class="sp2-btn" data-m="done">Done</button>')
+      + '</div>' + (add ? '' : '<p class="sp2-hint">Changes save as soon as you leave a box.</p>');
+    $('sp2-mbody').innerHTML = h;
+  }
+  function merr(t) { var e = $('sp2-err'); if (e) e.textContent = t || ''; }
+  function mval(id) { var e = $(id); return e ? e.value : ''; }
+  function baseExtras() {
+    return { category: mval('sp2-m-category'), supplier: mval('sp2-m-supplier'), notes: mval('sp2-m-notes'), reorderLevel: mval('sp2-m-reorderLevel'), minimumPrice: mval('sp2-m-minimumPrice') };
+  }
+  function parseNames(s) {
+    var out = [], seen = {};
+    String(s || '').split(/[,\n;]+/).forEach(function (x) { x = x.trim(); var k = x.toLowerCase(); if (x && !seen[k]) { seen[k] = 1; out.push(x); } });
+    return out;
+  }
+  // new variant lines under a group; codes made unique; stock 0; prices copied from `src`
+  async function addVariants(g, names, src) {
+    var base = g.code || slug(g.name), made = [];
+    for (var i = 0; i < names.length; i++) {
+      var code = uniqCode(base + '-' + slug(names[i]));
+      await post({ action: 'addManual', item: { name: g.name + ' (' + names[i] + ')', code: code, qty: 0, unit: src.unit || 'pcs', price: N(src.price), wholesaleSellingPrice: N(src.wholesaleSellingPrice), wholesalePrice: N(src.wholesalePrice) } });
+      made.push({ code: code, vn: names[i] });
+    }
+    var ex = { category: g.category || '', supplier: g.supplier || '' };
+    await post({ action: 'setExtras', entries: made.map(function (m) { return { code: m.code, extras: Object.assign({ parentId: g.id, variantName: m.vn }, ex.category ? { category: ex.category } : {}, ex.supplier ? { supplier: ex.supplier } : {}) }; }) });
+  }
+  function findNewByName(name, wantNoCode) {
+    var n = String(name).toLowerCase();
+    return all().find(function (i) { return String(i.name).toLowerCase() === n && (!wantNoCode || !i.code) && !i.isGroup && !i.parentId; }) || null;
+  }
+
+  async function onModalClick(ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('button[data-m]') : null; if (!b) return;
+    var act = b.dataset.m; merr('');
+    try {
+      if (act === 'scan') { if (typeof openBarcodeScanModal === 'function') openBarcodeScanModal(function (c) { var e = $('sp2-m-code'); if (e) { e.value = c; e.dispatchEvent(new Event('change', { bubbles: true })); } }); return; }
+      if (act === 'done') { closeModal(); return; }
+      if (act === 'create') return await create();
+      if (act === 'addvar') {
+        var g = byId(cur.id), names = parseNames(mval('sp2-m-vnames')); if (!names.length) { merr('Type at least one variant name, separated by commas.'); return; }
+        var ks = kids(g), have = {}; ks.forEach(function (k) { have[String(k.variantName).toLowerCase()] = 1; });
+        for (var i = 0; i < names.length; i++) if (have[names[i].toLowerCase()]) { merr('"' + names[i] + '" already exists as a variant.'); return; }
+        await addVariants(g, names, ks[0] || g); toast(names.length + ' variant(s) added.'); render(); drawModal(); return;
+      }
+      if (act === 'delvar') { await delLine(b.dataset.id); return; }
+      if (act === 'makegroup') {
+        var it = byId(cur.id), vn = parseNames(mval('sp2-m-vnames')), first = (mval('sp2-m-first') || 'Original').trim() || 'Original';
+        if (!vn.length) { merr('Type the new variant names, separated by commas.'); return; }
+        if (vn.some(function (x) { return x.toLowerCase() === first.toLowerCase(); })) { merr('The current stock and the new variants need different names.'); return; }
+        var gname = it.name;
+        await upd(it.id, { name: gname + ' (' + first + ')', variantName: first });
+        await post({ action: 'addManual', item: { name: gname, qty: 0, unit: it.unit || 'pcs', price: N(it.price), wholesaleSellingPrice: N(it.wholesaleSellingPrice), wholesalePrice: N(it.wholesalePrice) } });
+        var g2 = all().find(function (i) { return String(i.name).toLowerCase() === gname.toLowerCase() && !i.code && i.id !== it.id; });
+        if (!g2) throw new Error('Could not create the item group - the stock line was only renamed. Try again.');
+        await post({ action: 'setExtras', entries: [{ storeItemId: g2.id, extras: { isGroup: true, category: it.category || '', supplier: it.supplier || '', notes: it.notes || '' } }, { storeItemId: it.id, extras: { parentId: g2.id } }] });
+        g2 = byId(g2.id); await addVariants(g2, vn, it);
+        if (cur) cur.id = g2.id; toast('"' + gname + '" now has ' + (vn.length + 1) + ' variants.'); render(); drawModal(); return;
+      }
+    } catch (e) { merr(String(e && e.message || e)); }
+  }
+
+  async function create() {
+    var name = mval('sp2-m-name').trim(); if (!name) { merr('Enter an item name.'); return; }
+    var qty = mval('sp2-m-qty') === '' ? 0 : parseFloat(mval('sp2-m-qty')); if (isNaN(qty) || qty < 0) { merr('Enter a valid quantity.'); return; }
+    var code = mval('sp2-m-code').trim(); if (code && codeTaken(code)) { merr('"' + code + '" is already used by another store item.'); return; }
+    var names = parseNames(mval('sp2-m-vnames'));
+    var item = { name: name, code: names.length ? '' : code, qty: names.length ? 0 : qty, unit: mval('sp2-m-unit') || 'pcs', price: N(mval('sp2-m-price')), wholesaleSellingPrice: N(mval('sp2-m-wholesaleSellingPrice')), wholesalePrice: N(mval('sp2-m-wholesalePrice')) };
+    var ex = baseExtras();
+    if (!names.length && !code && all().some(function (i) { return String(i.name).toLowerCase() === name.toLowerCase() && !i.code; })) { merr('An item with that name and no code already exists - add a code or edit that item.'); return; }
+    await post({ action: 'addManual', item: item });
+    var made = code && !names.length ? all().find(function (i) { return i.code && i.code.toLowerCase() === code.toLowerCase(); }) : findNewByName(name, true);
+    if (!made) { merr('Added, but it could not be found to save its details - open it and press Edit.'); render(); return; }
+    var exs = { category: ex.category, supplier: ex.supplier, notes: ex.notes, reorderLevel: ex.reorderLevel, minimumPrice: ex.minimumPrice };
+    if (names.length) { exs = { isGroup: true, category: ex.category, supplier: ex.supplier, notes: ex.notes }; if (code) exs.code = undefined; }
+    await post({ action: 'setExtras', entries: [{ storeItemId: made.id, extras: exs }] });
+    if (names.length) { await addVariants(byId(made.id), names, item); if (code) { try { await upd(made.id, { code: code }); } catch (e) { /* group code is optional */ } } }
+    toast('Added "' + name + '" to the store.');
+    cur = { id: made.id }; render(); drawModal();
+  }
+
+  async function onModalChange(ev) {
+    var t = ev.target; if (!t || !cur || !cur.id) return;
+    var it = byId(cur.id); if (!it) return;
+    try {
+      if (t.dataset && t.dataset.vid) { var k = byId(t.dataset.vid); if (k) await saveField(k, t.dataset.vf, t.value); merr(''); render(); return; }
+      var m = /^sp2-m-(.+)$/.exec(t.id || ''); if (!m) return;
+      var f = m[1], v = t.value;
+      if (f === 'vnames' || f === 'first') return;   // typed for the Add / Convert button, nothing to save yet
+      if (f === 'name') { await saveField(it.parentId ? parentOf(it) : it, 'name', v); }
+      else if (f === 'variantName') { await saveField(it, 'variantName', v); }
+      else if (f === 'category') { await saveField(it, 'category', v); }
+      else if (f === 'qty') { await saveField(it, 'qty', v); }
+      else if (f === 'code' || f === 'unit' || f === 'price' || f === 'wholesalePrice' || f === 'wholesaleSellingPrice' || f === 'minimumPrice' || f === 'reorderLevel' || f === 'supplier' || f === 'notes') { var o = {}; o[f] = String(v).trim(); await upd(it.id, o); }
+      merr(''); render();
+      var tt = $('sp2-title'); var cu = cur ? byId(cur.id) : null; if (tt && cu) tt.textContent = '✏️ Edit ' + (cu.isGroup ? cu.name + ' (with variants)' : cu.name);
+    } catch (e) { var msg = String(e && e.message || e); render(); drawModal(); merr(msg); }
+  }
+
+  /* ---------------- CSV import with the extra columns ---------------- */
+  window.importStoreCsv = function (file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = async function (e) {
+      var rows; try { rows = parseCsvText(String(e.target.result)); } catch (err) { toast('Could not read that file - is it a valid CSV/Excel export?', true); return; }
+      if (rows.length < 2) { toast('That file has no data rows.', true); return; }
+      var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+      var col = function (n) { return header.indexOf(n.toLowerCase()); };
+      var ix = { code: col('Code'), name: col('Name'), qty: col('Qty'), unit: col('Unit'), price: col('Price'), ws: col('Wholesale Selling Price'), cost: col('Cost Price') !== -1 ? col('Cost Price') : col('Wholesale Price'),
+        category: col('Category'), supplier: col('Supplier'), reorder: col('Reorder Level'), minp: col('Min Price'), notes: col('Notes') };
+      if (ix.name === -1 || ix.qty === -1) { toast('That file needs at least "Name" and "Qty" columns.', true); return; }
+      var g = function (r, k) { return ix[k] !== -1 ? String(r[ix[k]] || '').trim() : ''; };
+      var data = rows.slice(1).map(function (r) { return { code: g(r, 'code'), name: g(r, 'name'), qty: parseFloat(r[ix.qty]) || 0, unit: g(r, 'unit') || 'pcs', price: parseFloat(g(r, 'price')) || 0, wholesaleSellingPrice: parseFloat(g(r, 'ws')) || 0, wholesalePrice: parseFloat(g(r, 'cost')) || 0,
+        x: { category: g(r, 'category'), supplier: g(r, 'supplier'), reorderLevel: g(r, 'reorder'), minimumPrice: g(r, 'minp'), notes: g(r, 'notes') } }; }).filter(function (x) { return x.name && x.qty > 0; });
+      if (!data.length) { toast('No valid rows found - check the Name and Qty columns.', true); return; }
+      try {
+        await post({ action: 'addFromCsv', items: data.map(function (x) { return { code: x.code, name: x.name, qty: x.qty, unit: x.unit, price: x.price, wholesaleSellingPrice: x.wholesaleSellingPrice, wholesalePrice: x.wholesalePrice }; }) });
+        var ent = [];
+        data.forEach(function (x) {
+          if (!Object.keys(x.x).some(function (k) { return x.x[k] !== ''; })) return;
+          var hit = x.code ? all().find(function (i) { return i.code && i.code.toLowerCase() === x.code.toLowerCase(); }) : all().find(function (i) { return !i.code && String(i.name).toLowerCase() === x.name.toLowerCase(); });
+          if (!hit) return; var ex = {}; Object.keys(x.x).forEach(function (k) { if (x.x[k] !== '') ex[k] = x.x[k]; });
+          ent.push({ storeItemId: hit.id, extras: ex });
+        });
+        if (ent.length) await post({ action: 'setExtras', entries: ent });
+        var inp = $('store-csv-file-input'); if (inp) inp.value = '';
+        toast('Imported ' + data.length + ' row(s) into the store.'); render();
+        if (typeof renderStoreLogTab === 'function') renderStoreLogTab();
+      } catch (err) { fail(err); }
+    };
+    reader.onerror = function () { toast('Could not read that file.', true); };
+    reader.readAsText(file);
+  };
+
+  /* ---------------- hook into the app ---------------- */
+  window.toggleStoreManualForm = function () { openEdit(null); };
+  function boot() {
+    if (typeof renderStoreTab !== 'function' || renderStoreTab.__sp2) return;
+    var w = async function () {
+      try { if (typeof storeReconcilePending === 'function') storeReconcilePending(); } catch (e) { /* retried next visit */ }
+      var none = $('store-no-group-notice'), mc = $('store-main-content');
+      if (none) none.style.display = 'none'; if (mc) mc.style.display = 'block';
+      try { await loadStoreItems(true); } catch (e) { /* offline: show what we have */ }
+      render();
+      try { if (typeof renderStoreLogTab === 'function') renderStoreLogTab(); } catch (e) { /* cosmetic */ }
+    };
+    w.__sp2 = true; window.renderStoreTab = w;
+    var addBtn = document.querySelector('#store-main-content button[onclick*="toggleStoreManualForm"]'); if (addBtn) addBtn.textContent = '➕ Add Item';
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+  window.__sp2 = { render: render, open: openEdit };
+})();
+</script>

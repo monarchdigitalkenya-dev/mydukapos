@@ -1,0 +1,130 @@
+<!-- BOOT SPLASH (zip 279, redesigned zip 281) -------------------------------------------------------------------------------------------
+     One loading screen for every app, painted by the very first bytes of <body>. Without it the browser showed the half-built till (light header, an
+     unstyled "Skip to main content" link, tabs, an empty cart) piece by piece while the 4-5 MB page was still being read, then restyled it again when the
+     styles further down the page arrived, and only then the picker.
+     zip 281 - WHY IT STILL FLASHED: the splash was removed the first time the picker / sign-up / locked screen looked "shown". While the page is still being
+     read, the styles that HIDE those screens may not have arrived yet (water's sign-up screen has no inline display:none), so the splash could disappear
+     after a few milliseconds and the half-built page showed anyway. Now nothing is removed before the whole page has been read (DOMContentLoaded).
+     THE ANIMATION ("money in, till ready", 3 s): payment pulses run in along circuit traces, a shilling coin with the shop's initial drops and spins into
+     place, a confirmation ring goes out and a receipt prints. Only transform and opacity are animated, so it keeps running smoothly on the compositor even
+     while the page's large script is still being read on a slow phone. No image, no font, no network request: it works offline, in the Android and
+     Windows apps, and in light or dark mode.
+     TIMING: the full 3 s plays the first time the app is opened in a tab (or app window); a reload in the same session leaves as soon as the app is ready
+     (at least 0.6 s, so it never blinks). Never longer than 15 s, so it can never trap anyone. -->
+<style id="boot-splash-css">
+.skip-link{position:absolute;left:12px;top:-64px}
+#boot-splash{--bs-ink:#eafff5;--bs-soft:#9fd8bf;--bs-trace:rgba(61,220,151,.22);--bs-pulse:#7dffc4;--bs-gold:#f6c453;--bs-gold-d:#c98a14;--bs-paper:#f7f3e8;
+  position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:16px;box-sizing:border-box;
+  background:radial-gradient(110% 80% at 50% 38%,#0f4a3b 0%,#0a3329 42%,#051a15 100%);color:var(--bs-ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  transition:opacity .38s ease;-webkit-user-select:none;user-select:none;overflow:hidden}
+#boot-splash *{box-sizing:border-box}
+#boot-splash.bs-out{opacity:0;pointer-events:none}
+#boot-splash.bs-out .bs-coin-wrap{transform:scale(1.18);transition:transform .38s cubic-bezier(.3,0,.2,1)}
+#boot-splash .bs-stage{position:relative;width:min(340px,calc(86vw / var(--pos-z,1)));height:230px;flex:none}
+/* circuit traces: drawn in from the edges, payment pulses running towards the coin */
+#boot-splash .bs-t{position:absolute;overflow:hidden;border-radius:2px;background:var(--bs-trace);opacity:0;animation:bs-in .3s ease-out forwards}
+#boot-splash .bs-t.h{height:2px;width:calc(50% - 58px);transform-origin:left center;animation:bs-in .3s ease-out forwards,bs-drawx .55s cubic-bezier(.3,0,.2,1) both}
+#boot-splash .bs-t.h.r{left:auto;right:0;transform-origin:right center}
+#boot-splash .bs-t.v{width:2px;height:calc(50% - 58px);top:0;transform-origin:center top;animation:bs-in .3s ease-out forwards,bs-drawy .55s cubic-bezier(.3,0,.2,1) both}
+#boot-splash .bs-t i{position:absolute;inset:0;display:block;background:linear-gradient(90deg,transparent 0%,transparent 55%,var(--bs-pulse) 82%,transparent 100%);transform:translateX(-100%);animation:bs-runx 1.15s cubic-bezier(.5,0,.5,1) infinite}
+#boot-splash .bs-t.r i{background:linear-gradient(270deg,transparent 0%,transparent 55%,var(--bs-pulse) 82%,transparent 100%);animation-name:bs-runxr}
+#boot-splash .bs-t.v i{background:linear-gradient(180deg,transparent 0%,transparent 55%,var(--bs-pulse) 82%,transparent 100%);animation-name:bs-runy}
+#boot-splash .bs-t b{position:absolute;width:6px;height:6px;border-radius:50%;background:var(--bs-pulse);box-shadow:0 0 8px var(--bs-pulse)}
+#boot-splash .bs-t.h b{left:0;top:-2px}#boot-splash .bs-t.h.r b{left:auto;right:0}#boot-splash .bs-t.v b{top:0;left:-2px}
+#boot-splash .t1{left:0;top:calc(50% - 15px);animation-delay:0s,.05s}#boot-splash .t1 i{animation-delay:.35s}
+#boot-splash .t2{left:0;top:calc(50% + 13px);animation-delay:.08s,.13s}#boot-splash .t2 i{animation-delay:.7s}
+#boot-splash .t3{top:calc(50% - 15px);animation-delay:.04s,.09s}#boot-splash .t3 i{animation-delay:.5s}
+#boot-splash .t4{top:calc(50% + 13px);animation-delay:.12s,.17s}#boot-splash .t4 i{animation-delay:.85s}
+#boot-splash .t5{left:calc(50% - 15px);animation-delay:.1s,.15s}#boot-splash .t5 i{animation-delay:.6s}
+#boot-splash .t6{left:calc(50% + 13px);animation-delay:.16s,.21s}#boot-splash .t6 i{animation-delay:.95s}
+/* the coin */
+#boot-splash .bs-coin-wrap{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-42px 0 0 -42px;perspective:500px}
+#boot-splash .bs-coin{position:relative;width:100%;height:100%;border-radius:50%;display:grid;place-items:center;
+  background:radial-gradient(circle at 34% 30%,#fff3c4 0%,var(--bs-gold) 30%,#e0a52a 62%,var(--bs-gold-d) 100%);
+  box-shadow:inset 0 0 0 4px rgba(255,236,170,.55),inset 0 0 0 7px rgba(150,95,10,.35),0 10px 26px rgba(0,0,0,.35);
+  animation:bs-drop 1.05s cubic-bezier(.25,.1,.25,1) .25s both,bs-float 2.4s ease-in-out 1.5s infinite}
+#boot-splash .bs-coin::before{content:"";position:absolute;inset:9px;border-radius:50%;border:1.5px dashed rgba(120,72,6,.45)}
+#boot-splash .bs-coin span{position:relative;font:800 36px/1 Georgia,"Times New Roman",serif;color:#6b4306;text-shadow:0 1px 0 rgba(255,240,190,.7);max-width:60px;overflow:hidden;white-space:nowrap}
+#boot-splash .bs-ring{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-42px 0 0 -42px;border-radius:50%;border:2px solid var(--bs-pulse);opacity:0;animation:bs-ring .9s ease-out 1.28s both}
+#boot-splash .bs-ring.b{animation-delay:1.45s;border-color:var(--bs-gold)}
+/* the till slot and the receipt it prints */
+#boot-splash .bs-till{position:relative;width:132px;flex:none;opacity:0;animation:bs-fade .35s ease-out .9s both}
+#boot-splash .bs-slot{height:8px;border-radius:5px;background:#03110d;box-shadow:inset 0 1px 2px rgba(0,0,0,.6),0 1px 0 rgba(125,255,196,.18)}
+#boot-splash .bs-feed{height:66px;margin:0 14px;overflow:hidden}
+#boot-splash .bs-rcpt{height:62px;padding:8px 10px 0;background:var(--bs-paper);border-radius:0 0 3px 3px;transform:translateY(-100%);animation:bs-print .95s steps(9,end) 1.4s both;
+  -webkit-mask:radial-gradient(circle at 4px 100%,transparent 3.2px,#000 3.6px) 0 0/8px 100% repeat-x;mask:radial-gradient(circle at 4px 100%,transparent 3.2px,#000 3.6px) 0 0/8px 100% repeat-x}
+#boot-splash .bs-rcpt u{display:block;height:4px;margin:0 0 6px;border-radius:2px;background:#cfc7b2;text-decoration:none}
+#boot-splash .bs-rcpt u:nth-child(2){width:70%}#boot-splash .bs-rcpt u:nth-child(3){width:84%}
+#boot-splash .bs-rcpt s{display:flex;justify-content:space-between;align-items:center;text-decoration:none;font:800 10px/1 system-ui,sans-serif;color:#0f6b4f;border-top:1px dashed #b9b09a;padding-top:5px}
+#boot-splash .bs-rcpt s em{font-style:normal;opacity:0;animation:bs-fade .3s ease-out 2.45s both}
+/* words */
+#boot-splash .bs-name{margin-top:6px;font-weight:700;font-size:20px;letter-spacing:.1px;max-width:calc(84vw / var(--pos-z,1));text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;animation:bs-fade .5s ease-out .15s both}
+#boot-splash .bs-msg{position:relative;height:18px;width:calc(84vw / var(--pos-z,1));max-width:340px;font-size:13.5px;color:var(--bs-soft);text-align:center}
+#boot-splash .bs-msg span{position:absolute;inset:0;animation:bs-fade .5s ease-out .35s both}
+#boot-splash .bs-msg span+span{opacity:0;animation:bs-swap .5s ease-out 4.5s both}
+#boot-splash .bs-msg span:first-child{animation:bs-fade .5s ease-out .35s both,bs-out .3s ease-in 4.4s forwards}
+@keyframes bs-in{to{opacity:1}}
+@keyframes bs-drawx{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes bs-drawy{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes bs-runx{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+@keyframes bs-runxr{from{transform:translateX(100%)}to{transform:translateX(-100%)}}
+@keyframes bs-runy{from{transform:translateY(-100%)}to{transform:translateY(100%)}}
+@keyframes bs-drop{0%{opacity:0;transform:translateY(-120px) rotateY(0) scale(.7)}18%{opacity:1}70%{transform:translateY(6px) rotateY(690deg) scale(1)}84%{transform:translateY(-4px) rotateY(720deg)}100%{opacity:1;transform:translateY(0) rotateY(720deg) scale(1)}}
+@keyframes bs-float{0%,100%{transform:translateY(0) rotateY(720deg)}50%{transform:translateY(-4px) rotateY(720deg)}}
+@keyframes bs-ring{0%{opacity:0;transform:scale(1)}8%{opacity:.85;transform:scale(1.08)}100%{opacity:0;transform:scale(2.3)}}
+@keyframes bs-print{to{transform:translateY(0)}}
+@keyframes bs-fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes bs-out{to{opacity:0}}
+@keyframes bs-swap{from{opacity:0}to{opacity:1}}
+@media (max-height:420px){#boot-splash .bs-stage{height:150px}#boot-splash .bs-till{display:none}}
+@media (prefers-reduced-motion:reduce){#boot-splash *,#boot-splash *::before{animation:none!important;transition:none!important}#boot-splash .bs-t,#boot-splash .bs-till,#boot-splash .bs-coin,#boot-splash .bs-msg span:first-child{opacity:1}#boot-splash .bs-t i,#boot-splash .bs-ring,#boot-splash .bs-msg span+span{display:none}#boot-splash .bs-rcpt{transform:none}#boot-splash .bs-rcpt s em{opacity:1}#boot-splash{transition:none}}
+</style>
+<div id="boot-splash" role="status" aria-live="polite" aria-label="Loading">
+  <div class="bs-stage" aria-hidden="true">
+    <div class="bs-t h t1"><i></i><b></b></div><div class="bs-t h t2"><i></i><b></b></div>
+    <div class="bs-t h r t3"><i></i><b></b></div><div class="bs-t h r t4"><i></i><b></b></div>
+    <div class="bs-t v t5"><i></i><b></b></div><div class="bs-t v t6"><i></i><b></b></div>
+    <div class="bs-ring"></div><div class="bs-ring b"></div>
+    <div class="bs-coin-wrap"><div class="bs-coin"><span id="bs-mark">M</span></div></div>
+  </div>
+  <div class="bs-till" aria-hidden="true"><div class="bs-slot"></div><div class="bs-feed"><div class="bs-rcpt"><u></u><u></u><u></u><s>KES<em>&#10003; Paid</em></s></div></div></div>
+  <div class="bs-name" id="bs-name">MyDukaPOS</div>
+  <div class="bs-msg"><span>Opening your till</span><span>Almost ready &mdash; still loading on this connection</span></div>
+</div>
+<script>
+(function () {
+    var el = document.getElementById('boot-splash'), gone = false, poll = 0, t0 = Date.now();
+    var parsed = document.readyState !== 'loading', loaded = document.readyState === 'complete', loadedAt = loaded ? Date.now() : 0;
+    var MIN = 1200;                                                                  // zip 301: was 3000 - the short animation, the first time in this tab / app window
+    try { if (sessionStorage.getItem('bs-seen') === '1') MIN = 400; sessionStorage.setItem('bs-seen', '1'); } catch (e) { /* no storage: full animation */ }
+    function remove() { try { el.remove(); } catch (e) { el.style.display = 'none'; } }
+    function done() {
+        if (gone) return; gone = true; clearInterval(poll);
+        var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); };
+        // two frames: the app's first real paint is on screen before the splash starts to fade
+        raf(function () { raf(function () { try { el.classList.add('bs-out'); setTimeout(remove, 420); } catch (e) { remove(); } }); });
+    }
+    try {
+        if (/[?&]display=customer\b/.test(location.search)) { el.style.display = 'none'; gone = true; return; }       // the second-screen customer display shows its own view
+        // a shared demo follows the visitor's device theme; doing it here (not after the 4 MB page) stops the light-to-dark flip
+        var demo = /^demo-/i.test(location.hostname) || /[?&]c=demo_/i.test(location.search);
+        if (demo && localStorage.getItem('mdp-theme') === null && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+        var n = ''; ['pos_biz_name', 'aqua_biz_name'].forEach(function (k) { try { n = n || localStorage.getItem(k) || ''; } catch (e) { /* no storage */ } });
+        n = String(n).trim();
+        if (n) { document.getElementById('bs-name').textContent = n; document.getElementById('bs-mark').textContent = n.charAt(0).toUpperCase(); }
+    } catch (e) { /* the default name stays */ }
+    function shown(id) { try { var x = document.getElementById(id); return !!x && getComputedStyle(x).display !== 'none'; } catch (e) { return false; } }
+    function ready() {
+        if (!parsed) return false;                                                   // zip 281: never while the page (and its styles) is still being read
+        if (shown('login-screen') || shown('registration-screen') || shown('license-lock-screen')) return true;
+        return loaded && Date.now() - loadedAt >= 150;                               // opens straight into the app: a moment after the page has loaded
+    }
+    poll = setInterval(function () {
+        var age = Date.now() - t0;
+        if (age >= 15000 || (age >= MIN && ready())) done();
+    }, 50);
+    document.addEventListener('DOMContentLoaded', function () { parsed = true; });
+    window.addEventListener('load', function () { parsed = true; loaded = true; loadedAt = Date.now(); });
+    setTimeout(done, 15000);                                                         // never longer than this
+})();
+</script>

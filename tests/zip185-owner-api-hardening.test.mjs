@@ -10,7 +10,7 @@ const load = (f) => import(pathToFileURL(path.join(ROOT, f)).href);
 const post = (body, headers = {}) => new Request('https://x/api/owner-lock', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
 
 async function setup() {
-  const kv = makeKV(); const env = { mydukapos_kv: kv };
+  const kv = makeKV(); const env = { mydukapos_kv: kv, OWNER_LEGACY_INCOME_FORMS: '1' };
   const oa = await load('functions/api/_owner-auth.js'), lic = await load('functions/api/_license.js');
   const acct = await oa.createOwnerAccount(env, 'owner@example.com', 'Sup3r-secret-pw');
   const sess = await oa.createOwnerSession(env, acct);

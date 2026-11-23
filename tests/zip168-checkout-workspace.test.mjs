@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
 
 const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'water/index.html'];
 
 test('every till gets the checkout-workspace structure', async () => {
   for (const a of APPS) {
-    const { d, close } = await boot(a, { wait: 3000 });
+    const { d, close } = await boot(a, { wait: 900 });
+    // the workspace is set up after start-up: wait for it (a fixed 3 s was not always enough on a busy machine)
+    await until(() => { const p = d.getElementById('active-checkout-cart-panel') || d.getElementById('cart-and-payment-panel'); return p && p.classList.contains('pos-checkout') && d.getElementById('pos-ck-count'); }, 30000);
     const panel = d.getElementById('active-checkout-cart-panel') || d.getElementById('cart-and-payment-panel');
     assert.ok(panel, a + ': panel');
     assert.ok(panel.classList.contains('pos-checkout'), a + ': pos-checkout class');

@@ -133,7 +133,7 @@ test('a patient bill put on Pay Later is not marked paid: its lines are "billed"
   w.eval(`loadPatientBill('${ref}')`);
   w.eval('confirmMedicationCarry()');
   w.eval("currentPaymentMethod = 'bill'");
-  d.getElementById('bill-customer-name-input').value = 'John Doe';
+  d.getElementById('bill-customer-name-input').value = 'John Doe'; d.getElementById('sms-checkout-phone-input').value = '0712345678';
   await w.eval('checkoutCart()');
   assert.equal(w.eval('bills.length'), 1, 'it became a Pay Later bill');
   const st = JSON.parse(w.eval('JSON.stringify(patientCharges.map(c => c.status))'));

@@ -1,0 +1,540 @@
+<!-- HMIS SLIP (zip 363) -------------------------------------------------------------------------------------------------------
+     Visit summary slip for 80 mm thermal paper (58 mm follows the receipt paper setting), with an optional sick-off (excuse from duty / school) section.
+     - Everything the patient got today on ONE slip: complaint, vitals, diagnosis, medicines, lab tests, services, what was charged / paid / still owed,
+       referral, follow-up date, advice. Built only from records that already exist (visits, patientCharges, labResults, queue); nothing new is stored
+       except the sick-off dates, which are written on the visit (and audited) when a slip with a sick-off is printed.
+     - The CASHIER no longer skips a patient who owes nothing: "Take payment" opens the summary instead of a dead-end message, and "Send to..." suggests the
+       Cashier as the last stop whenever the patient received anything, so every patient leaves with their slip.
+     - A "Print visit summary" prompt appears after a payment is taken and after a visit is finished.
+     Read-only over clinical data; every hook is guarded and falls back to the original behaviour. -->
+<style id="hslip-css">
+#hslip-ov{position:fixed;inset:0;z-index:100060;background:rgba(15,30,45,.62);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:12px 10px}
+#hslip-ov.on{display:flex}
+#hslip-ov .hs-in{background:var(--bg-surface,#fff);color:var(--dark,#2c3e50);border-radius:16px;width:100%;max-width:760px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+#hslip-ov .hs-head{background:linear-gradient(135deg,#0e7490,#1e6fd0);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px}
+#hslip-ov .hs-head h3{margin:0;font-size:18px;flex:1;color:#fff}
+#hslip-ov .hs-x{border:0;background:rgba(255,255,255,.22);color:#fff;width:38px;height:38px;border-radius:9px;font-size:18px;cursor:pointer}
+#hslip-ov .hs-body{display:flex;gap:16px;flex-wrap:wrap;padding:14px 18px 18px}
+#hslip-ov .hs-opts{flex:1 1 250px;min-width:240px}
+#hslip-ov .hs-box{border:1px solid var(--border-color,#dde3e8);border-left:5px solid #1e6fd0;border-radius:12px;padding:10px 12px;margin:0 0 10px;background:var(--bg-surface,#fff)}
+#hslip-ov .hs-box.warn{border-left-color:#e67e22;background:#fff8ec;color:#5b3a00}
+#hslip-ov .hs-box.ok{border-left-color:#27ae60;background:#eefaf3;color:#14532d}
+#hslip-ov .hs-box b{display:block;margin-bottom:4px}
+#hslip-ov label{display:flex;gap:7px;align-items:center;font-size:13.5px;margin:6px 0;cursor:pointer}
+#hslip-ov label input[type=checkbox]{width:auto;margin:0}
+#hslip-ov .hs-f{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#hslip-ov .hs-f div{min-width:0;display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#566}
+#hslip-ov .hs-f input,#hslip-ov .hs-f select{margin:3px 0 0;padding:7px;border:1px solid #cfd8dc;border-radius:8px;font-size:14px;width:100%;box-sizing:border-box}
+#hslip-ov .hs-paper{flex:0 0 auto;background:#e6eaee;border-radius:12px;padding:12px;max-height:70vh;overflow:auto}
+#hslip-ov .hs-act{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+#hslip-ov .hs-act button{width:auto;margin:0;padding:10px 15px;border-radius:10px;border:1px solid transparent;font-weight:700;cursor:pointer;background:#1e6fd0;color:#fff;min-height:42px}
+#hslip-ov .hs-act button.sec{background:var(--bg-surface,#fff);color:var(--dark,#2c3e50);border-color:#cfd6dc}
+#hslip-ov .hs-act button.org{background:#e67e22}
+.hslip-paper{background:#fff;color:#000;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,.25);padding:10px 6px}
+#hslip-offer{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:100100;background:#0e3f86;color:#fff;border-radius:14px;padding:10px 14px;display:none;align-items:center;gap:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);max-width:calc(100vw - 20px);flex-wrap:wrap}
+#hslip-offer.on{display:flex}
+#hslip-offer button{border:0;border-radius:9px;padding:9px 13px;font-weight:700;cursor:pointer;min-height:40px;background:#fff;color:#0e3f86}
+#hslip-offer button.x{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5)}
+@media (max-width:640px){#hslip-ov .hs-body{padding:12px}#hslip-ov .hs-paper{max-height:none;width:100%;box-sizing:border-box}}
+</style>
+<script id="hslip-js">
+(function () {
+    'use strict';
+    if (window.__hslip) return; window.__hslip = true;
+    var LS = 'pos_hslip_opts';
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+    function num(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+    function kes(n) { return num(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function dayStart() { var d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+    function dstr(t) { return t ? new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : ''; }
+    function tstr(t) { return t ? new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''; }
+    function ymd(t) { var d = new Date(t || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    // the app keeps its lists in top-level `let` variables (not on window), so each is read by name with a guard
+    function arr(name) {
+        try {
+            var v;
+            switch (name) {
+                case 'patients': v = typeof patients !== 'undefined' ? patients : null; break;
+                case 'queue': v = typeof queue !== 'undefined' ? queue : null; break;
+                case 'visits': v = typeof visits !== 'undefined' ? visits : null; break;
+                case 'patientCharges': v = typeof patientCharges !== 'undefined' ? patientCharges : null; break;
+                case 'labResults': v = typeof labResults !== 'undefined' ? labResults : null; break;
+                case 'hmisConfig': v = typeof hmisConfig !== 'undefined' ? hmisConfig : null; break;
+                default: v = null;
+            }
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+    function G(name) {
+        try { if (name === 'businessName') return typeof businessName !== 'undefined' ? businessName : ''; if (name === 'receiptFooterNotes') return typeof receiptFooterNotes !== 'undefined' ? receiptFooterNotes : ''; } catch (e) { /* none */ }
+        return '';
+    }
+    function opts() {
+        var o = { prices: true, sick: false, days: 2, from: '', for: '', showDx: true };
+        try { var s = JSON.parse(localStorage.getItem(LS) || '{}'); Object.keys(s).forEach(function (k) { if (k !== 'sick' && k !== 'from') o[k] = s[k]; }); } catch (e) { /* defaults */ }
+        return o;
+    }
+    function saveOpts(o) { try { localStorage.setItem(LS, JSON.stringify({ prices: o.prices, days: o.days, for: o.for, showDx: o.showDx })); } catch (e) { /* convenience only */ } }
+
+
+    /* ------------------------------------------------------------------ every printout starts 10 mm below the top edge (adjustable; 0 = no gap) */
+    var TOPK = 'pos_print_top_mm';
+    function topMm() { var v = NaN; try { var raw = localStorage.getItem(TOPK); if (raw !== null && raw !== '') v = Number(raw); } catch (e) { /* default */ } return isFinite(v) && v >= 0 && v <= 40 ? v : 10; }
+    window.hmisPrintTop = function (mm) { if (mm != null) { try { localStorage.setItem(TOPK, String(Math.max(0, Math.min(40, Number(mm) || 0)))); } catch (e) { /* none */ } } return topMm(); };
+    // zip 368: nothing prints smaller than size 10 (10 pt = 13.34 px): any text the page sets smaller is raised before it is measured and printed
+    var MINPX = 13.34;
+    var BUMP_JS = '(function(){var M=' + MINPX + ';function run(){try{var a=document.body?document.body.getElementsByTagName("*"):[];for(var i=0;i<a.length;i++){var e=a[i],t=e.tagName;if(t==="SCRIPT"||t==="STYLE"||t==="BR"||t==="IMG"||t==="HR")continue;var f=parseFloat(getComputedStyle(e).fontSize);if(f&&f<M&&(e.textContent||"").trim())e.style.setProperty("font-size",M+"px","important")}}catch(x){}}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",run);else run();window.addEventListener("beforeprint",run);window.__hmisBump=run;})();';
+    function bumpTag() { return '<scr' + 'ipt id="hmis-min10">' + BUMP_JS + '</scr' + 'ipt>'; }
+    window.hmisMinFontPx = MINPX;
+    function topStyle() { var mm = topMm(); return (mm > 0 ? '<style id="hmis-top10">html{padding-top:' + mm + 'mm !important;box-sizing:border-box}</style>' : '') + bumpTag(); }
+    (function () {
+        try {
+            var st = document.createElement('style'); st.id = 'hmis-top-main'; st.textContent = '@media print{html{padding-top:var(--hmis-top,10mm) !important}}'; document.head.appendChild(st);
+            document.documentElement.style.setProperty('--hmis-top', topMm() + 'mm');
+            // the app's own pages (reports, lists) printed straight from the window get the same minimum, and are put back afterwards
+            var bumped = [];
+            window.addEventListener('beforeprint', function () { try { var a = document.body.getElementsByTagName('*'); for (var i = 0; i < a.length; i++) { var e = a[i], t = e.tagName; if (t === 'SCRIPT' || t === 'STYLE' || t === 'BR' || t === 'IMG') continue; var f = parseFloat(getComputedStyle(e).fontSize); if (f && f < MINPX && (e.textContent || '').trim() && e.offsetParent !== null) { bumped.push([e, e.style.getPropertyValue('font-size'), e.style.getPropertyPriority('font-size')]); e.style.setProperty('font-size', MINPX + 'px', 'important'); } } } catch (x) { /* print as is */ } });
+            window.addEventListener('afterprint', function () { bumped.forEach(function (b) { try { if (b[1]) b[0].style.setProperty('font-size', b[1], b[2]); else b[0].style.removeProperty('font-size'); } catch (x) { /* gone */ } }); bumped = []; });
+            // documents written into a hidden frame or a new window (receipts, prescriptions, forms, slips) are in another window: hook each one as it is created
+            var hook = function (w) {
+                try {
+                    var D = w && w.Document && w.Document.prototype; if (!D || D.__hmisTop) return;
+                    ['write', 'writeln'].forEach(function (k) {
+                        var ow = D[k]; D[k] = function () { var a = Array.prototype.slice.call(arguments); if (this !== document && typeof a[0] === 'string' && /<\/head>/i.test(a[0]) && a[0].indexOf('hmis-min10') < 0) { var ts = topStyle(); if (ts) a[0] = a[0].replace(/<\/head>/i, function () { return ts + '</head>'; }); } return ow.apply(this, a); };
+                    });
+                    D.__hmisTop = true;
+                } catch (e) { /* cross-origin or not ready */ }
+            };
+            ['appendChild', 'insertBefore'].forEach(function (k) { var o = Node.prototype[k]; Node.prototype[k] = function (n) { var r = o.apply(this, arguments); try { if (n && n.tagName === 'IFRAME' && n.contentWindow) hook(n.contentWindow); } catch (e) { /* none */ } return r; }; });
+            var oa = Element.prototype.append; Element.prototype.append = function () { var r = oa.apply(this, arguments); try { Array.prototype.forEach.call(arguments, function (n) { if (n && n.tagName === 'IFRAME' && n.contentWindow) hook(n.contentWindow); }); } catch (e) { /* none */ } return r; };
+            var ow2 = window.open;
+            // zip 368: a print page opened as window.open('') showed an empty "about:blank" tab first. It is now written into a hidden frame and the print dialog opens straight away
+            function silentWin() {
+                var f = document.createElement('iframe'); f.setAttribute('aria-hidden', 'true'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+                document.body.appendChild(f);
+                var w = f.contentWindow, d = w.document, printed = false, autoPrints = false, timer = 0;
+                hook(w);
+                function doPrint() { if (printed) return; printed = true; try { w.focus(); w.__origPrint ? w.__origPrint() : w.print(); } catch (e) { /* user can use the browser's print */ } setTimeout(function () { printed = false; }, 2500); }
+                ['write', 'writeln'].forEach(function (k) { var o = d[k]; d[k] = function () { try { for (var i = 0; i < arguments.length; i++) if (typeof arguments[i] === 'string' && /\bprint\s*\(/.test(arguments[i])) autoPrints = true; } catch (e) { /* none */ } return o.apply(d, arguments); }; });
+                var oc = d.close; d.close = function () { var r = oc.apply(d, arguments); clearTimeout(timer); timer = setTimeout(function () { if (!autoPrints) doPrint(); }, 450); return r; };
+                w.__origPrint = w.print; w.print = function () { doPrint(); };
+                w.close = function () { setTimeout(function () { try { f.remove(); } catch (e) { /* gone */ } }, 60000); };
+                setTimeout(function () { try { f.remove(); } catch (e) { /* gone */ } }, 600000);
+                return w;
+            }
+            window.open = function (url) {
+                if (arguments.length && (url === '' || url == null || url === 'about:blank')) { try { if (document.body) return silentWin(); } catch (e) { /* normal window below */ } }
+                var w = ow2.apply(this, arguments); try { if (w && !w.closed) hook(w); } catch (e) { /* none */ } return w;
+            };
+            window.__hmisHookWin = hook;
+        } catch (e) { /* printing still works, just without the gap */ }
+    })();
+
+    /* ------------------------------------------------------------------ gather what the patient got today */
+    function gather(pid, entryId) {
+        var P = arr('patients').find(function (x) { return x.id === pid; }) || { id: pid, name: pid };
+        var Q = entryId ? arr('queue').find(function (x) { return x.id === entryId; }) : null;
+        if (!Q) { try { Q = hmisOpenEntryFor(pid); } catch (e) { Q = null; } }
+        if (!Q) { Q = arr('queue').filter(function (x) { return x.patientId === pid; }).sort(function (a, b) { return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0); })[0] || null; }
+        var from = dayStart();
+        if (Q) { var t0 = Q.createdAt || Q.arrivedAt || 0; if (t0 && t0 < from && Date.now() - t0 < 3 * 864e5) from = t0; }
+        var ids = (Q && Q.visitIds) || [];
+        var V = arr('visits').filter(function (v) { return v && !v.voided && v.patientId === pid && ((v.timestamp || 0) >= from || ids.indexOf(v.id) >= 0); }).sort(function (a, b) { return a.timestamp - b.timestamp; });
+        var refs = {}; V.forEach(function (v) { if (v.ref) refs[v.ref] = 1; });
+        var C = arr('patientCharges').filter(function (c) { return c && c.patientId === pid && c.status !== 'cancelled' && (refs[c.ref] || (c.createdAt || 0) >= from); });
+        var L = arr('labResults').filter(function (r) { return r && r.patientId === pid && ((r.requestedAt || 0) >= from || (r.visitRef && refs[r.visitRef])); });
+        return { P: P, Q: Q, V: V, C: C, L: L, from: from };
+    }
+
+    /* ------------------------------------------------------------------ the slip */
+    function paperMm() { var mm = 80; try { if (typeof receiptPaperMm === 'function') mm = Number(receiptPaperMm()) || 80; } catch (e) { /* default */ } return mm < 50 ? 58 : (mm > 90 ? 80 : mm); }
+    function facility() {
+        var name = '', addr = '', phone = '';
+        try { name = G('businessName') || ''; } catch (e) { /* none */ }
+        try {
+            var r = arr('hmisConfig').find(function (x) { return x && x.id === 'web_site'; }), s = r && r.data && r.data.settings;
+            if (s) { if (!name) name = s.name || ''; addr = s.address || ''; phone = (s.phones || []).filter(Boolean)[0] || ''; }
+        } catch (e) { /* none */ }
+        return { name: name || 'Hospital', addr: addr, phone: phone };
+    }
+    function vitalsLine(q) {
+        var v = q && q.vitals; if (!v) return '';
+        var out = [];
+        if (v.temp) out.push('Temp ' + v.temp + '°C'); if (v.bp) out.push('BP ' + v.bp); if (v.pulse) out.push('Pulse ' + v.pulse);
+        if (v.spo2) out.push('SpO2 ' + v.spo2 + '%'); if (v.weightKg) out.push('Wt ' + v.weightKg + 'kg'); if (v.heightCm) out.push('Ht ' + v.heightCm + 'cm'); if (v.bmi) out.push('BMI ' + v.bmi);
+        return out.join(' · ');
+    }
+    // Lines of money: from the bill (patient charges) when there is one, otherwise from the visit itself (paid at the visit / billed to an institution).
+    function money(D) {
+        var lines = [], paid = 0, owing = 0, acct = 0, total = 0, note = '';
+        D.C.forEach(function (c) {
+            var amt = num((Number(c.price) || 0) * (Number(c.qty) || 0));
+            lines.push({ n: c.name + (c.waiver ? (amt ? ' (discounted)' : ' (waived)') : ''), q: c.qty, amt: amt, st: c.status });
+            total += amt;
+            if (c.status === 'paid') paid += amt; else if (c.status === 'billed') acct += amt; else owing += amt;
+        });
+        if (!lines.length) {
+            D.V.forEach(function (v) {
+                var inst = v.billTo === 'institution' || v.institutionName;
+                var st = inst ? 'billed' : 'paid';
+                var add = function (n, q, p) { var amt = num((Number(p) || 0) * (Number(q) || 1)); if (!amt) return; lines.push({ n: n, q: q, amt: amt, st: st }); total += amt; if (inst) acct += amt; else paid += amt; };
+                add('Consultation fee', 1, v.consultationFee);
+                (v.services || []).forEach(function (s) { add(s.name, s.qty, s.price); });
+                (v.medications || []).forEach(function (m) { if (m.price) add(m.name, m.qty, m.price); });
+                if (inst) note = 'Billed to ' + (v.institutionName || 'institution');
+            });
+        }
+        return { lines: lines, total: num(total), paid: num(paid), owing: num(owing), acct: num(acct), note: note };
+    }
+    function slipHtml(D, o) {
+        var F = facility(), mm = paperMm(), w = mm - 8, P = D.P, Q = D.Q, last = D.V[D.V.length - 1] || null;
+        var age = ''; try { age = hmisAgeText(P); } catch (e) { age = P.age || ''; }
+        var M = money(D);
+        var S = function (t) { return '<div class="sh">' + esc(t) + '</div>'; };
+        var row = function (a, b, bold) { return '<div class="r' + (bold ? ' b' : '') + '"><span>' + a + '</span><span>' + b + '</span></div>'; };
+        var tk = ''; try { tk = Q ? hmisTicket(Q) : ''; } catch (e) { tk = ''; }
+        var h = '<div class="c"><b class="big">' + esc(F.name) + '</b>' + (F.addr ? '<br>' + esc(F.addr) : '') + (F.phone ? (F.addr ? ' · ' : '<br>') + 'Tel ' + esc(F.phone) : '') + '</div>'
+            + '<div class="c ttl">VISIT NOTE</div>'
+            + '<div><b>' + esc(P.name || '') + '</b>' + (age || P.sex ? ' <span class="mu">' + esc((age || '-') + ' / ' + (P.sex || '-')) + '</span>' : '') + '</div>'
+            + '<div class="mu">No. ' + esc(P.id || '') + (P.phone ? ' · ' + esc(P.phone) : '') + (tk ? ' · Ticket ' + esc(tk) : '') + '</div>'
+            + '<div class="mu">' + esc(dstr(Date.now()) + ' ' + tstr(Date.now())) + (last && last.seenBy ? ' · Seen by ' + esc(last.seenBy) : '') + '</div>';
+        var vl = vitalsLine(Q); if (vl) h += S('Vitals') + '<div>' + esc(vl) + '</div>';
+        var cc = D.V.map(function (v) { return v.soap && v.soap.s ? v.soap.s : ''; }).filter(Boolean).join('; ');
+        if (cc) h += S('Complaint') + '<div>' + esc(cc) + '</div>';
+        var dx = D.V.map(function (v) { return v.diagnosis ? v.diagnosis + (v.icd10Code ? ' (' + v.icd10Code + ')' : '') : ''; }).filter(Boolean).join('; ');
+        if (dx && o.showDx) h += S('Diagnosis') + '<div>' + esc(dx) + '</div>';
+        // medicines
+        var meds = [];
+        D.V.forEach(function (v) { (v.medications || []).forEach(function (m) { meds.push(m); }); });
+        if (meds.length) {
+            h += S('Medicines');
+            meds.forEach(function (m) {
+                var c = D.C.find(function (x) { return x.kind === 'medication' && ((m.code && x.code === m.code) || x.name === m.name); });
+                var tag = m.notStocked ? 'NOT IN STOCK - buy outside' : (c ? (c.dispensedAt ? 'given' : (c.status === 'unpaid' ? 'to pay' : 'to collect')) : '');
+                h += '<div class="m"><b>' + esc(m.name) + '</b> x ' + esc(m.qty) + (m.unit ? ' ' + esc(m.unit) : '') + (tag ? ' <i>[' + esc(tag) + ']</i>' : '') + (m.dosage ? '<br>&nbsp;&nbsp;' + esc(m.dosage) : '') + '</div>';
+            });
+        }
+        if (D.L.length) {
+            h += S('Laboratory');
+            D.L.forEach(function (r) {
+                var st = r.status === 'pending' || !r.resultAt ? 'result pending' : 'done';
+                var res = r.resultText ? ': ' + String(r.resultText).slice(0, 60) : '';
+                h += '<div class="m">' + esc(r.testName) + ' <i>[' + esc(st) + ']</i>' + esc(res) + '</div>';
+            });
+        }
+        var svc = []; D.V.forEach(function (v) { (v.services || []).forEach(function (s) { if (s.performed !== false) svc.push(s); }); });
+        if (svc.length) { h += S('Services / procedures'); svc.forEach(function (s) { h += '<div class="m">' + esc(s.name) + (s.qty > 1 ? ' x ' + esc(s.qty) : '') + '</div>'; }); }
+        // money
+        h += S('Charges');
+        if (!M.lines.length) h += '<div>No charges for this visit.</div>';
+        else {
+            if (o.prices) M.lines.forEach(function (l) { h += row(esc(l.n) + (l.q > 1 ? ' x' + esc(l.q) : ''), kes(l.amt)); });
+            h += '<hr>' + row('Total', 'KES ' + kes(M.total), true);
+            if (M.paid) h += row('Paid', 'KES ' + kes(M.paid));
+            if (M.acct) h += row('On account', 'KES ' + kes(M.acct));
+            h += row('Balance to pay', 'KES ' + kes(M.owing), true);
+            if (M.note) h += '<div>' + esc(M.note) + '</div>';
+        }
+        if (!M.owing && M.lines.length) h += '<div class="c"><b>** NOTHING TO PAY **</b></div>';
+        // referral, disposition, follow-up
+        var refs = []; D.V.forEach(function (v) { (v.referrals || []).forEach(function (r) { refs.push(r); }); });
+        if (refs.length) { h += S('Referral'); refs.forEach(function (r) { h += '<div class="m">To: <b>' + esc(r.to || r.facility || '') + '</b>' + (r.reason ? '<br>&nbsp;&nbsp;' + esc(r.reason) : '') + '</div>'; }); }
+        var disp = Q && Q.disposition; var fu = disp && disp.followUpDate;
+        if (disp && disp.type) h += S('Outcome') + '<div>' + esc(disp.type) + (disp.note ? ' - ' + esc(disp.note) : '') + '</div>';
+        if (fu) h += '<div><b>Come back on: ' + esc(dstr(new Date(fu + 'T09:00:00').getTime())) + '</b></div>';
+        var adv = D.V.map(function (v) { return v.soap && v.soap.p ? v.soap.p : (v.notes || ''); }).filter(Boolean).join('; ');
+        if (adv) h += S('Advice / plan') + '<div>' + esc(adv) + '</div>';
+        // sick-off
+        if (o.sick) {
+            var days = Math.max(1, parseInt(o.days, 10) || 1), f = o.from || ymd(), t0 = new Date(f + 'T12:00:00'), t1 = new Date(t0.getTime() + (days - 1) * 864e5);
+            h += '<hr><div class="c"><b class="big">SICK-OFF / EXCUSE</b></div>'
+                + '<div>This is to certify that <b>' + esc(P.name || '') + '</b> was seen at this facility on ' + esc(dstr(Date.now())) + (o.for ? ' (for ' + esc(o.for) + ')' : '') + ' and is advised to rest for <b>' + days + ' day' + (days > 1 ? 's' : '') + '</b>: from <b>' + esc(dstr(t0.getTime())) + '</b> to <b>' + esc(dstr(t1.getTime())) + '</b>.</div>'
+                + (o.showDx && dx ? '<div>Condition: ' + esc(dx) + '</div>' : '') + '<div style="margin-top:10px">Doctor: ____________________ Sign &amp; stamp</div>';
+        }
+        var foot = ''; try { foot = G('receiptFooterNotes') || ''; } catch (e) { /* none */ }
+        h += '<hr><div class="c">' + (foot ? esc(foot) + '<br>' : '') + 'Get well soon.</div>';
+        return { html: h, w: w, mm: mm, money: M };
+    }
+    // the slip's own styles: printed as they are, shown on screen only inside .hslip-paper so nothing else on the page is touched
+    var RULES = [['*', 'box-sizing:border-box'], ['.c', 'text-align:center'], ['.big', 'font-size:12.5px'], ['.ttl', 'font-weight:700;letter-spacing:.1em;margin:2px 0;font-size:10.5px'], ['hr', 'border:0;border-top:1px dashed #000;margin:3px 0'],
+        ['.sh', 'font-weight:700;text-transform:uppercase;font-size:9.5px;border-bottom:1px solid #000;margin:4px 0 1px'], ['.r', 'display:flex;justify-content:space-between;gap:6px'], ['.r span:first-child', 'flex:1;min-width:0;word-break:break-word'],
+        ['.r span:last-child', 'text-align:right;white-space:nowrap'], ['.b', 'font-weight:700'], ['.m', 'margin:1px 0;word-break:break-word'], ['small', 'font-size:9px'], ['.mu', 'font-size:10px;color:#222'],
+        ['.kv', 'display:flex;align-items:flex-end;gap:3px;margin:3px 0'], ['.kv b', 'flex:0 0 15mm;font-size:10.5px'], ['.kv i', 'flex:1;min-width:0;font-style:normal;border-bottom:1px dotted #000;min-height:4.2mm;padding:0 2px;word-break:break-word;font-size:11px'],
+        ['.sp', 'text-align:justify;margin:5px 0;font-size:11px;line-height:1.5'], ['.sp u', 'text-decoration:underline;font-weight:700'], ['.fl', 'border-bottom:1px dotted #000;padding:0 2px;font-weight:700;white-space:normal'],
+        ['.sg', 'margin-top:7mm;border-top:1px solid #000;padding-top:1px;font-size:9.5px'], ['.stp', 'border:1px dashed #000;height:19mm;margin:3px 0 0;text-align:center;color:#777;font-size:9px;padding-top:7mm'], ['.tag', 'font-style:italic;font-size:10.5px']];
+    function CSS(w, scope) {
+        var rules = RULES.map(function (r) { return (scope ? (r[0] === '*' ? scope + ' *' : scope + ' ' + r[0]) : r[0]) + '{' + r[1] + '}'; }).join('');
+        if (scope) return rules + scope + ' .p{width:auto;padding:1mm 0;font-family:Arial,Helvetica,sans-serif;color:#000;font-size:10.5px;line-height:1.2}';
+        return 'body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#000;font-size:10.5px;line-height:1.2}.p{width:' + w + 'mm;margin:0 auto;padding:1mm 0}' + rules + '@page{size:' + (w + 8) + 'mm auto;margin:0}@media print{html,body{width:' + (w + 8) + 'mm}}';
+    }
+    function printHtml(inner, w) {
+        var doc = '<!doctype html><html><head><meta charset="utf-8"><title>Visit summary</title><style>' + CSS(w) + '</style></head><body><div class="p">' + inner + '</div></body></html>';
+        var f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; document.body.appendChild(f);
+        var d = f.contentWindow.document; d.open(); d.write(doc); d.close();
+        setTimeout(function () {
+            // zip 367: the page is cut to the note: exactly as tall as the text (no blank paper after it)
+            try { var pe = d.querySelector('.p'), px = pe ? pe.getBoundingClientRect().height : 0; if (px > 0) { var st2 = d.createElement('style'); st2.textContent = '@page{size:' + (w + 8) + 'mm ' + (Math.ceil(px * 25.4 / 96) + 4 + topMm()) + 'mm;margin:0}html,body{height:auto!important;min-height:0!important}'; d.head.appendChild(st2); } } catch (e0) { /* auto height */ }
+            try { f.contentWindow.focus(); f.contentWindow.print(); }
+            catch (e) {
+                var win = window.open('', '_blank'); if (!win) { toast('Allow pop-ups to print.', true); return; }
+                win.document.write(doc); win.document.close(); setTimeout(function () { try { win.print(); } catch (e2) { /* user can print manually */ } }, 300);
+            }
+            setTimeout(function () { try { f.remove(); } catch (e3) { /* gone */ } }, 60000);
+        }, 250);
+    }
+
+    /* ------------------------------------------------------------------ the window */
+    var ST = { pid: '', eid: '', mode: '' };
+    function ensure() {
+        var el = $('hslip-ov'); if (el) return el;
+        el = document.createElement('div'); el.id = 'hslip-ov'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true');
+        el.innerHTML = '<div class="hs-in"><div class="hs-head"><h3 id="hs-title">Visit summary</h3><button type="button" class="hs-x" data-hs-close aria-label="Close">✕</button></div><div class="hs-body" id="hs-body"></div></div>';
+        el.addEventListener('click', function (e) { if (e.target === el || e.target.closest('[data-hs-close]')) el.classList.remove('on'); });
+        document.body.appendChild(el); return el;
+    }
+    function readOpts() {
+        var o = opts();
+        if ($('hs-prices')) o.prices = $('hs-prices').checked;
+        if ($('hs-dx')) o.showDx = $('hs-dx').checked;
+        o.sick = !!($('hs-sick') && $('hs-sick').checked);
+        if ($('hs-days')) o.days = $('hs-days').value;
+        if ($('hs-from')) o.from = $('hs-from').value;
+        if ($('hs-for')) o.for = $('hs-for').value.trim();
+        return o;
+    }
+    function render() {
+        var D = gather(ST.pid, ST.eid), o = readOpts(), S = slipHtml(D, o);
+        $('hs-paper').innerHTML = '<style>' + CSS(S.w, '.hslip-paper') + '</style><div class="hslip-paper" style="width:' + (S.w + 6) + 'mm;max-width:100%"><div class="p">' + S.html + '</div></div>';
+        return { D: D, S: S, o: o };
+    }
+    function banner(D) {
+        var M = money(D);
+        if (!D.V.length && !D.C.length && !D.L.length) return '<div class="hs-box warn"><b>No visit recorded today</b>This patient has no consultation, medicines, lab tests or charges today, so the slip will only show their details.</div>';
+        if (ST.mode === 'cashier' && !M.owing) return '<div class="hs-box ok"><b>✅ Nothing to pay</b>' + (M.lines.length ? 'Everything below is paid, free or on account.' : 'No charges for this visit.') + ' Print the slip, then finish the visit.</div>';
+        if (M.owing) return '<div class="hs-box warn"><b>💳 KES ' + kes(M.owing) + ' still to pay</b>Take payment at the counter first, then print the final slip.</div>';
+        return '';
+    }
+    function open(pid, eid, mode) {
+        if (!pid) return;
+        ST = { pid: pid, eid: eid || '', mode: mode || '' };
+        var el = ensure(), o = opts(), D = gather(pid, eid), P = D.P;
+        $('hs-title').textContent = '🧾 Visit summary — ' + (P.name || pid);
+        $('hs-body').innerHTML =
+            '<div class="hs-opts"><div id="hs-banner">' + banner(D) + '</div>'
+            + '<div class="hs-box"><b>What to print</b>'
+            + '<label><input type="checkbox" id="hs-prices"' + (o.prices ? ' checked' : '') + '> Show each price</label>'
+            + '<label><input type="checkbox" id="hs-dx"' + (o.showDx ? ' checked' : '') + '> Show diagnosis</label>'
+            + '<label>Printing starts <input type="number" id="hs-top" min="0" max="40" step="1" value="' + topMm() + '" style="width:64px;margin:0 4px"> mm from the top of the paper (all printouts)</label></div>'
+            + '<div class="hs-box"><b>🛌 Sick-off (excuse from duty / school)</b>'
+            + '<label><input type="checkbox" id="hs-sick"> Add a sick-off to this slip</label>'
+            + '<div class="hs-f"><div>Days off<input type="number" id="hs-days" min="1" max="90" value="' + esc(o.days) + '"></div><div>From<input type="date" id="hs-from" value="' + ymd() + '"></div></div>'
+            + '<div class="hs-f" style="grid-template-columns:1fr;margin-top:6px"><div>Addressed to (employer / school, optional)<input type="text" id="hs-for" value="' + esc(o.for) + '" placeholder="e.g. employer, school"></div></div>'
+            + '<div class="settings-hint" style="font-size:12px;color:#7f8c8d;margin-top:4px">Uncheck "Show diagnosis" to keep the condition confidential on the sick-off.</div></div>'
+            + '<div class="hs-act"><button type="button" id="hs-print">🖨 Print ' + paperMm() + ' mm slip</button>'
+            + (ST.eid ? '<button type="button" class="org" id="hs-finish">🏁 Finish visit</button><button type="button" class="sec" id="hs-route">➡️ Send to…</button>' : '')
+            + '<button type="button" class="sec" id="hs-sheet">📄 Sick-off sheet</button><button type="button" class="sec" data-hs-close>Close</button></div></div>'
+            + '<div class="hs-paper" id="hs-paper"></div>';
+        el.classList.add('on');
+        render();
+        $('hs-sheet').addEventListener('click', function () { openSheet(pid, eid || ''); });
+        el.querySelectorAll('input').forEach(function (i) { i.addEventListener('input', function () { render(); }); i.addEventListener('change', function () { render(); }); });
+        $('hs-top').addEventListener('change', function () { window.hmisPrintTop(this.value); document.documentElement.style.setProperty('--hmis-top', topMm() + 'mm');
+            // the app's own pages (reports, lists) printed straight from the window get the same minimum, and are put back afterwards
+            var bumped = [];
+            window.addEventListener('beforeprint', function () { try { var a = document.body.getElementsByTagName('*'); for (var i = 0; i < a.length; i++) { var e = a[i], t = e.tagName; if (t === 'SCRIPT' || t === 'STYLE' || t === 'BR' || t === 'IMG') continue; var f = parseFloat(getComputedStyle(e).fontSize); if (f && f < MINPX && (e.textContent || '').trim() && e.offsetParent !== null) { bumped.push([e, e.style.getPropertyValue('font-size'), e.style.getPropertyPriority('font-size')]); e.style.setProperty('font-size', MINPX + 'px', 'important'); } } } catch (x) { /* print as is */ } });
+            window.addEventListener('afterprint', function () { bumped.forEach(function (b) { try { if (b[1]) b[0].style.setProperty('font-size', b[1], b[2]); else b[0].style.removeProperty('font-size'); } catch (x) { /* gone */ } }); bumped = []; }); });
+        $('hs-print').addEventListener('click', doPrint);
+        if ($('hs-finish')) $('hs-finish').addEventListener('click', function () { el.classList.remove('on'); try { hmisOpenFinish(ST.eid); } catch (e) { toast('Could not open Finish visit.', true); } });
+        if ($('hs-route')) $('hs-route').addEventListener('click', function () { el.classList.remove('on'); try { hmisOpenRoute(ST.eid); } catch (e) { toast('Could not open Send to.', true); } });
+    }
+    function doPrint() {
+        var r = render(); saveOpts(r.o);
+        if (r.o.sick) {
+            var last = r.D.V[r.D.V.length - 1];
+            if (last) {
+                last.sickOff = { days: parseInt(r.o.days, 10) || 1, from: r.o.from || ymd(), for: r.o.for || '', by: (function () { try { return activeServerName(); } catch (e) { return ''; } })(), at: Date.now() };
+                last.updatedAt = Date.now();
+                try { safeSetItem('pos_visits', JSON.stringify(arr('visits'))); queuePush(); } catch (e) { /* the slip still prints */ }
+            }
+            try { logAudit('Sick-off issued', r.D.P.name || ST.pid, (r.o.days || 1) + ' day(s) from ' + (r.o.from || ymd())); } catch (e2) { /* best effort */ }
+        } else { try { logAudit('Visit summary printed', r.D.P.name || ST.pid, ''); } catch (e3) { /* best effort */ } }
+        printHtml(r.S.html, r.S.w);
+    }
+
+    /* ------------------------------------------------------------------ SICK OFF SHEET (80 mm): same wording and order as the hospital's paper sheet, every detail lined up */
+    var UNITS = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'], TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    function words(n) { n = Math.floor(Number(n) || 0); if (n < 1) return ''; if (n < 20) return UNITS[n]; if (n < 100) return TENS[Math.floor(n / 10)] + (n % 10 ? '-' + UNITS[n % 10].toLowerCase() : ''); return String(n); }
+    function dmy(t) { var d = new Date(t); return isFinite(d) ? String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear() : ''; }
+    function addDays(f, n) { var d = new Date(f + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d.getTime()); }
+    function facilityFull() {
+        var f = facility(), email = '', tag = '', phones = [];
+        try { var r = arr('hmisConfig').find(function (x) { return x && x.id === 'web_site'; }), s = r && r.data && r.data.settings; if (s) { email = s.email || ''; tag = s.tagline || s.slogan || ''; phones = (s.phones || []).filter(Boolean); } } catch (e) { /* none */ }
+        // the hospital's own letterhead is the fallback when the website settings do not say otherwise
+        return { name: f.name, addr: f.addr || 'Off Kangundo Road, Njiru Estate', phones: phones.length ? phones : (f.phone ? [f.phone] : ['0721 441087', '0731 828750']), email: email || 'cherish.health@gmail.com', tag: (tag && tag !== 'Compassion. Care. Cherishing Life.') ? tag : 'Your Health Our Heart' };
+    }
+    function sheetHtml(D, o) {
+        var P = D.P || {}, F = facilityFull(), days = Math.max(1, parseInt(o.days, 10) || 1), from = o.from || ymd(), to = addDays(from, days - 1), review = o.review || addDays(to, 1);
+        var sx = String(P.sex || P.gender || '').toLowerCase(), he = sx.charAt(0) === 'f' ? ['She', 'Her'] : sx.charAt(0) === 'm' ? ['He', 'His'] : ['He/She', 'His/Her'];
+        var seen = o.seen || ymd(), h = '<div class="c"><b class="big" style="font-size:13px;letter-spacing:.04em">' + esc(String(F.name).toUpperCase()) + '</b>' + (F.tag ? '<div class="tag">' + esc(F.tag) + '</div>' : '') + '</div>'
+            + '<div class="c mu" style="margin-top:1px">' + (F.addr ? esc(F.addr) + '<br>' : '') + (F.phones.length ? 'Tel: ' + esc(F.phones.join(' | ')) : '') + (F.email ? '<br>' + esc(F.email) : '') + '</div><hr>'
+            + '<div class="c"><b class="big" style="letter-spacing:.08em">SICK OFF SHEET</b></div>'
+            + '<div class="kv" style="margin-top:5px"><b>OP/NO</b><i>' + esc(o.op || P.id || '') + '</i></div>'
+            + '<div class="kv"><b>DATE</b><i>' + esc(dmy(Date.now())) + '</i></div>'
+            + '<div class="kv"><b>NAME</b><i><b>' + esc(P.name || '') + '</b></i></div>'
+            + '<div class="sp">This is to confirm that the above named person was attended in this hospital on <span class="fl">' + esc(dmy(new Date(seen + 'T12:00:00').getTime())) + '</span> and found <u>UNFIT</u> to continue with ' + he[1] + ' <u>DUTIES</u>.</div>'
+            + (o.showDx && o.dx ? '<div class="kv"><b>REASON</b><i>' + esc(o.dx) + '</i></div>' : '')
+            + '<div class="sp">I have therefore recommended off duties for <span class="fl">' + days + ' (' + esc(words(days)) + ' day' + (days > 1 ? 's' : '') + ')</span> with effect from <span class="fl">' + esc(dmy(new Date(from + 'T12:00:00').getTime())) + (days > 1 ? ' - ' + esc(dmy(new Date(to + 'T12:00:00').getTime())) : '') + '</span>. ' + he[0] + ' will be reviewed on <span class="fl">' + esc(dmy(new Date(review + 'T12:00:00').getTime())) + '</span> to ascertain whether ' + he[0] + ' will be fit to resume on duties.</div>'
+            + (o.for ? '<div class="kv"><b>TO</b><i>' + esc(o.for) + '</i></div>' : '')
+            + '<div class="stp">Official stamp</div>'
+            + '<div class="sg">' + esc(o.by ? o.by + ' - ' : '') + 'Attending clinician (sign)</div>'
+            + '<hr><div class="c mu">Not valid without the hospital stamp.</div>';
+        return { html: h, w: paperMm(), to: to, review: review, days: days, from: from };
+    }
+    function dxOf(D) { try { var v = D.V[D.V.length - 1]; var d = v && (v.diagnosis || (v.soap && v.soap.a)); if (Array.isArray(d)) d = d.map(function (x) { return x.name || x; }).join(', '); return d ? String(d) : ''; } catch (e) { return ''; } }
+    var SH = { pid: '', eid: '' };
+    function readSheet() {
+        var o = { op: ($('hsh-op') || {}).value || '', seen: ($('hsh-seen') || {}).value || ymd(), days: ($('hsh-days') || {}).value || 1, from: ($('hsh-from') || {}).value || ymd(), review: ($('hsh-rev') || {}).value || '', for: (($('hsh-for') || {}).value || '').trim(), by: (($('hsh-by') || {}).value || '').trim(), showDx: !!($('hsh-dx') || {}).checked, dx: (($('hsh-dxt') || {}).value || '').trim() };
+        return o;
+    }
+    function renderSheet() {
+        var D = gather(SH.pid, SH.eid), o = readSheet(), S = sheetHtml(D, o);
+        $('hs-paper').innerHTML = '<style>' + CSS(S.w, '.hslip-paper') + '</style><div class="hslip-paper" style="width:' + (S.w + 6) + 'mm;max-width:100%"><div class="p">' + S.html + '</div></div>';
+        return { D: D, S: S, o: o };
+    }
+    function openSheet(pid, eid) {
+        if (!pid) return; SH = { pid: pid, eid: eid || '' };
+        var el = ensure(), o = opts(), D = gather(pid, eid), P = D.P, who = ''; try { who = activeServerName() || ''; } catch (e) { /* none */ }
+        $('hs-title').textContent = '📄 Sick-off sheet — ' + (P.name || pid);
+        var from = ymd(), days = Math.max(1, parseInt(o.days, 10) || 2);
+        $('hs-body').innerHTML = '<div class="hs-opts"><div class="hs-box"><b>📄 Sick-off sheet details</b>'
+            + '<div class="hs-f"><div>OP / patient no.<input type="text" id="hsh-op" value="' + esc(P.id || '') + '"></div><div>Date attended<input type="date" id="hsh-seen" value="' + from + '"></div>'
+            + '<div>Days off<input type="number" id="hsh-days" min="1" max="90" value="' + days + '"></div><div>Off from<input type="date" id="hsh-from" value="' + from + '"></div>'
+            + '<div>Review on<input type="date" id="hsh-rev" value="' + addDays(addDays(from, days - 1), 1) + '"></div><div>Clinician name<input type="text" id="hsh-by" value="' + esc(who) + '"></div><div>Print starts (mm from top)<input type="number" id="hsh-top" min="0" max="40" value="' + topMm() + '"></div></div>'
+            + '<div class="hs-f" style="grid-template-columns:1fr;margin-top:6px"><div>Addressed to (employer / school, optional)<input type="text" id="hsh-for" value="' + esc(o.for || '') + '"></div></div>'
+            + '<label><input type="checkbox" id="hsh-dx"> Show the reason / diagnosis on the sheet</label><div class="hs-f" style="grid-template-columns:1fr"><div><input type="text" id="hsh-dxt" value="' + esc(dxOf(D)) + '" placeholder="reason (only printed when ticked)"></div></div></div>'
+            + '<div class="hs-act"><button type="button" id="hsh-print">🖨 Print ' + paperMm() + ' mm sick-off sheet</button><button type="button" class="sec" id="hsh-back">← Visit summary</button><button type="button" class="sec" data-hs-close>Close</button></div></div><div class="hs-paper" id="hs-paper"></div>';
+        el.classList.add('on'); renderSheet();
+        var chg = function (e) { if (e && e.target && (e.target.id === 'hsh-days' || e.target.id === 'hsh-from')) { var r = $('hsh-rev'); if (r) r.value = addDays(addDays($('hsh-from').value || ymd(), Math.max(1, parseInt($('hsh-days').value, 10) || 1) - 1), 1); } renderSheet(); };
+        el.querySelectorAll('input').forEach(function (i) { i.addEventListener('input', chg); i.addEventListener('change', chg); });
+        $('hsh-top').addEventListener('change', function () { window.hmisPrintTop(this.value); document.documentElement.style.setProperty('--hmis-top', topMm() + 'mm');
+            // the app's own pages (reports, lists) printed straight from the window get the same minimum, and are put back afterwards
+            var bumped = [];
+            window.addEventListener('beforeprint', function () { try { var a = document.body.getElementsByTagName('*'); for (var i = 0; i < a.length; i++) { var e = a[i], t = e.tagName; if (t === 'SCRIPT' || t === 'STYLE' || t === 'BR' || t === 'IMG') continue; var f = parseFloat(getComputedStyle(e).fontSize); if (f && f < MINPX && (e.textContent || '').trim() && e.offsetParent !== null) { bumped.push([e, e.style.getPropertyValue('font-size'), e.style.getPropertyPriority('font-size')]); e.style.setProperty('font-size', MINPX + 'px', 'important'); } } } catch (x) { /* print as is */ } });
+            window.addEventListener('afterprint', function () { bumped.forEach(function (b) { try { if (b[1]) b[0].style.setProperty('font-size', b[1], b[2]); else b[0].style.removeProperty('font-size'); } catch (x) { /* gone */ } }); bumped = []; }); });
+        $('hsh-print').addEventListener('click', function () {
+            var r = renderSheet(), last = r.D.V[r.D.V.length - 1];
+            if (last) { last.sickOff = { days: r.S.days, from: r.S.from, to: r.S.to, review: r.S.review, for: r.o.for, by: r.o.by, at: Date.now() }; last.updatedAt = Date.now(); try { safeSetItem('pos_visits', JSON.stringify(arr('visits'))); queuePush(); } catch (e) { /* prints anyway */ } }
+            try { saveOpts(Object.assign(opts(), { days: r.S.days, for: r.o.for })); logAudit('Sick-off sheet issued', r.D.P.name || SH.pid, r.S.days + ' day(s) from ' + r.S.from); } catch (e2) { /* best effort */ }
+            printHtml(r.S.html, r.S.w);
+        });
+        $('hsh-back').addEventListener('click', function () { open(SH.pid, SH.eid, ST.mode); });
+    }
+    window.hmisSickSheet = openSheet;
+    window.hslip = { open: open, gather: gather, html: function (pid, o) { return slipHtml(gather(pid), Object.assign(opts(), o || {})).html; }, money: function (pid) { return money(gather(pid)); } };
+    window.hslipOpen = open;
+
+    /* "Print visit summary?" prompt after payment / finishing a visit */
+    var offerT = null;
+    function offer(pid, eid) {
+        if (!pid) return;
+        var el = $('hslip-offer');
+        if (!el) { el = document.createElement('div'); el.id = 'hslip-offer'; document.body.appendChild(el); }
+        var nm = ''; try { nm = patientNameById(pid); } catch (e) { nm = pid; }
+        el.innerHTML = '<span>🧾 <b>' + esc(nm) + '</b> — print the visit summary slip?</span><button type="button" id="hso-go">Print summary</button><button type="button" class="x" id="hso-x">Not now</button>';
+        el.classList.add('on');
+        $('hso-go').onclick = function () { el.classList.remove('on'); open(pid, eid || ''); };
+        $('hso-x').onclick = function () { el.classList.remove('on'); };
+        clearTimeout(offerT); offerT = setTimeout(function () { el.classList.remove('on'); }, 30000);
+    }
+    window.hslipOffer = offer;
+
+    /* ------------------------------------------------------------------ hooks into the existing flow (each one falls back to the original) */
+    function wrap(name, make) {
+        var tries = 0;
+        (function go() {
+            var orig = window[name];
+            if (typeof orig !== 'function') { if (++tries < 40) setTimeout(go, 500); return; }
+            if (orig.__hslip) return;
+            var f = make(orig); f.__hslip = true;
+            try { window[name] = f; } catch (e) { /* not replaceable */ }
+        })();
+    }
+    function hasUnpaid(pid) { try { return pendingBillGroups(pid).some(function (g) { return g.patientId === pid && Number(g.total) > 0; }); } catch (e) { return false; } }
+    function anythingGiven(pid) {
+        var d = dayStart();
+        return arr('visits').some(function (v) { return v && !v.voided && v.patientId === pid && (v.timestamp || 0) >= d; })
+            || arr('patientCharges').some(function (c) { return c && c.patientId === pid && c.status !== 'cancelled' && (c.createdAt || 0) >= d; })
+            || arr('labResults').some(function (r) { return r && r.patientId === pid && (r.requestedAt || 0) >= d; });
+    }
+    function cashierOn() { try { return hmisStations().some(function (s) { return s.id === 'cashier'; }); } catch (e) { return false; } }
+    function seenCashier(q) { try { return hmisStationOf(q) === 'cashier' || (q.stageHistory || []).some(function (h) { return h && h.stage === 'cashier'; }); } catch (e) { return false; } }
+
+    function install() {
+        // the buttons on every station card
+        wrap('hmisStationActions', function (orig) {
+            return function (q, st) {
+                var html = orig.apply(this, arguments);
+                try {
+                    var id = q.id, pid = String(q.patientId).replace(/'/g, "\\'");
+                    var btn = '<button type="button" class="settings-small-btn" style="background:#0e7490; color:#fff;" onclick="hslipOpen(\'' + pid + '\',\'' + id + '\',\'' + (st && st.kind === 'cashier' ? 'cashier' : '') + '\')">🧾 Visit summary (80 mm)</button>';
+                    if (st && st.kind === 'cashier') {
+                        if (!hasUnpaid(q.patientId)) html = html.replace('💳 Take payment at the counter', '💳 Open cashier — nothing to pay');
+                        return btn + html;
+                    }
+                    return html + btn;
+                } catch (e) { return html; }
+            };
+        });
+        // the cashier opens a summary instead of a dead-end message when nothing is owed
+        wrap('hmisUiCounter', function (orig) {
+            return function (entryId) {
+                try {
+                    var q = hmisEntry(entryId);
+                    if (q && !hasUnpaid(q.patientId)) { hmisStartService(entryId); open(q.patientId, entryId, 'cashier'); try { hmisRefreshBoards(); } catch (e) { /* later */ } return; }
+                } catch (e) { /* fall through to the original */ }
+                return orig.apply(this, arguments);
+            };
+        });
+        // suggest the cashier as the last stop for anyone who received something, even when nothing is owed
+        wrap('hmisSuggestNext', function (orig) {
+            return function (q) {
+                var r = orig.apply(this, arguments);
+                try { if (r === 'discharge' && q && cashierOn() && !seenCashier(q) && anythingGiven(q.patientId)) return 'cashier'; } catch (e) { /* original answer */ }
+                return r;
+            };
+        });
+        wrap('hmisOpenFinish', function (orig) {
+            return function (entryId) {
+                var r = orig.apply(this, arguments);
+                try {
+                    var q = hmisEntry(entryId), b = $('hmis-modal-body');
+                    if (q && b && !b.querySelector('#hs-fin-btn')) b.insertAdjacentHTML('beforeend', '<button type="button" id="hs-fin-btn" class="settings-small-btn" style="margin-top:8px; background:#0e7490; color:#fff;" onclick="hmisCloseModal(); hslipOpen(\'' + String(q.patientId).replace(/'/g, "\\'") + '\',\'' + q.id + '\',\'\')">🧾 Visit summary (80 mm)</button>');
+                } catch (e) { /* the finish form works without it */ }
+                return r;
+            };
+        });
+        wrap('hmisConfirmFinish', function (orig) {
+            return function () {
+                var pid = '', eid = '';
+                try { eid = $('hmis-finish-entry').value; var q = hmisEntry(eid); pid = q ? q.patientId : ''; } catch (e) { /* none */ }
+                var r = orig.apply(this, arguments);
+                try { if (pid) setTimeout(function () { offer(pid, eid); }, 300); } catch (e2) { /* none */ }
+                return r;
+            };
+        });
+        wrap('settleLoadedCharges', function (orig) {
+            return function (sale, paid) {
+                var r = orig.apply(this, arguments);
+                try {
+                    var pids = {}; (sale && sale.chargeIds || []).forEach(function (id) { var c = arr('patientCharges').find(function (x) { return x.id === id; }); if (c) pids[c.patientId] = 1; });
+                    var list = Object.keys(pids); if (list.length === 1) setTimeout(function () { offer(list[0], ''); }, 900);
+                } catch (e) { /* the payment is already complete */ }
+                return r;
+            };
+        });
+    }
+    setTimeout(install, 1500);
+})();
+</script>

@@ -91,7 +91,7 @@ test('storefront: product page (gallery area, price emphasis, related, JSON-LD) 
   await withSite(async (browser, base) => {
     const { ctx, p, errors } = await open(browser, base, '/shop/p/p1');
     await p.waitForSelector('.info h1'); await p.waitForTimeout(400);
-    assert.equal(await p.title(), 'Thermal Printer 80mm — mydukapos');
+    assert.equal(await p.title(), 'Thermal Printer 80mm — MyDukaPOS');
     const t = await p.evaluate(() => document.querySelector('.info').textContent);
     assert.match(t, /KES 15,000/); assert.match(t, /KES 18,000/); assert.match(t, /Warranty/); assert.match(t, /SKU SKU-p1/);
     assert.equal(await p.evaluate(() => !!document.querySelector('.stage .ob')), true, 'offer badge');
@@ -111,12 +111,13 @@ test('storefront: product page (gallery area, price emphasis, related, JSON-LD) 
   });
 });
 
-test('home page shows featured products, systems and offers from the catalogue; nav gets the Products dropdown', { skip, timeout: 90000 }, async () => {
+test('home page shows featured hardware from the catalogue (systems and offers are one tap away on /shop); nav gets the Hardware dropdown', { skip, timeout: 90000 }, async () => {
   await withSite(async (browser, base) => {
     const { ctx, p, errors } = await open(browser, base, '/');
     await p.waitForSelector('#home-featured .pc'); await p.waitForTimeout(500);
-    assert.equal(await p.evaluate(() => !document.getElementById('home-offers-sec').hidden && document.querySelectorAll('#home-offers .oc').length), 2);
-    assert.equal(await p.evaluate(() => document.querySelectorAll('#home-systems .pc.sys').length), 1);
+    // zip 307: the home page is shorter - one hardware section with links to complete systems and offers on /shop
+    assert.equal(await p.evaluate(() => !document.getElementById('hardware').hidden && !!document.querySelector('#hardware a[href="/shop?view=systems"]')), true);
+    assert.match(await p.textContent('.nav-dd-btn'), /Hardware/);
     await p.hover('.nav-dd-btn'); await p.waitForTimeout(400);
     const menu = await p.evaluate(() => document.querySelector('.nav-dd-menu').textContent);
     assert.match(menu, /Printers/); assert.match(menu, /Complete systems/); assert.match(menu, /Special offers/);

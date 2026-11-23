@@ -1,0 +1,376 @@
+<!-- CASH DRAWER ----------------------------------------------------------------
+         Cash float & reconciliation on the Sales Counter (Shop). A cashier point (one physical drawer) has ONE open session at a time; every
+         staff account on a device assigned to that point shares it - one opening count, one closing count. Pure logic: src/shared/functions.js
+         (cash*). Sync + merge rules: functions/api/_merge.js (cashSessions). This block is only the screens and the checkout hooks. -->
+    <script>
+    (function () {
+        'use strict';
+        var esc = function (s) { return (typeof escapeHtml === 'function') ? escapeHtml(String(s == null ? '' : s)) : String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); };
+        var kes = function (n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        var CATS = { in: [['cash_added', 'Cash added'], ['float_top_up', 'Float top-up'], ['other_in', 'Other cash in']], out: [['petty_cash', 'Petty cash'], ['supplier_payment', 'Supplier payment'], ['safe_transfer', 'Transfer to safe'], ['bank_deposit', 'Bank deposit'], ['refund', 'Cash refund to customer'], ['expense', 'Expense paid from drawer'], ['other_out', 'Other cash out']] };
+        var ST = { view: null, opId: null, resolve: null, err: '', f: {}, corrId: null };
+
+        function settings() { return cashSettingsFrom(typeof cashConfig !== 'undefined' ? cashConfig : []); }
+        function enabled() { return typeof cashSessions !== 'undefined' && settings().enabled !== false; }
+        // zip 292: devices of this shop (names from the print-relay device list when it has been loaded), so a drawer can be assigned to another till
+        function knownDevices() { var l = (typeof lastKnownNetworkDevices !== 'undefined' && Array.isArray(lastKnownNetworkDevices)) ? lastKnownNetworkDevices : []; var out = l.filter(function (d) { return d && d.deviceId; }); if (!out.some(function (d) { return d.deviceId === deviceId(); })) out.unshift({ deviceId: deviceId(), name: 'This device' }); return out; }
+        function devName(id) { var d = knownDevices().find(function (x) { return x.deviceId === id; }); return d ? (d.deviceId === deviceId() ? 'This device' : (d.name || id)) : String(id).slice(-6); }
+        function deviceId() { try { return localStorage.getItem('pos_device_id') || ''; } catch (e) { return ''; } }
+        function who() { return { by: (typeof activeServerName === 'function' ? activeServerName() : '') || '', byId: (typeof currentServer !== 'undefined' && currentServer && currentServer.id) || '', deviceId: deviceId() }; }
+        function isManager() {
+            try {
+                if (typeof isAdminServing === 'function' && isAdminServing()) return true;
+                var me = typeof currentServer !== 'undefined' && currentServer && staff.find(function (s) { return s.id === currentServer.id; });
+                return !!(me && me.isManager);
+            } catch (e) { return false; }
+        }
+        function isAdmin() { try { return typeof isAdminServing === 'function' && isAdminServing(); } catch (e) { return false; } }
+        function save() {
+            safeSetItem('pos_cash_points', JSON.stringify(cashPoints)); safeSetItem('pos_cash_sessions', JSON.stringify(cashSessions));
+            safeSetItem('pos_cash_movements', JSON.stringify(cashMovements)); safeSetItem('pos_cash_config', JSON.stringify(cashConfig));
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next push carries it */ }
+        }
+        function ensureDefaultPoint() {
+            if (cashPoints.some(function (p) { return p && !p.removed && p.active !== false; })) return;
+            var ex = cashPoints.find(function (p) { return p && p.id === 'cp-default'; });
+            if (ex) { ex.active = true; ex.removed = false; ex.updatedAt = Date.now(); }
+            else cashPoints.push({ id: 'cp-default', name: 'Main till', isDefault: true, active: true, deviceIds: [], updatedAt: Date.now() });
+            save();
+        }
+        function resolve() { ensureDefaultPoint(); return cashResolvePoint(cashPoints, deviceId()); }
+        function activeSession() { var r = resolve(); return r.status === 'ok' ? cashOpenSessionFor(cashSessions, r.point.id) : null; }
+        function summary(s) { return cashSessionSummary(s, typeof salesLog !== 'undefined' ? salesLog : [], cashMovements, { singlePoint: cashPoints.filter(function (p) { return p && !p.removed && p.active !== false; }).length <= 1 }); }
+        function biz() { try { return localStorage.getItem('pos_biz_name') || ''; } catch (e) { return ''; } }
+        function stamp(sale) {
+            try { if (!enabled() || !sale) return; var s = activeSession(); if (s) { sale.cashSessionId = s.id; sale.cashPointId = s.pointId; } } catch (e) { /* never block a sale */ }
+        }
+
+        // ---- the checkout gate: no open session -> the opening count first (one count per session, never per login)
+        function gate() {
+            if (!enabled()) return Promise.resolve(true);
+            var r = resolve();
+            if (r.status === 'ok' && cashOpenSessionFor(cashSessions, r.point.id)) return Promise.resolve(true);
+            if (!settings().openingCount && r.status === 'ok') return Promise.resolve(true);
+            return new Promise(function (res) { ST.resolve = res; show(r.status === 'ok' ? 'open' : 'pick'); });
+        }
+
+        // ---- screens
+        function modal() {
+            var m = document.getElementById('cash-modal');
+            if (!m) {
+                m = document.createElement('div'); m.id = 'cash-modal';
+                m.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:14px;';
+                m.innerHTML = '<div id="cash-card" style="background:var(--card-bg,#fff);color:var(--text,#2c3e50);border-radius:14px;max-width:560px;width:100%;padding:16px;margin:auto;box-shadow:0 10px 40px rgba(0,0,0,.3);"></div>';
+                document.body.appendChild(m);
+                m.addEventListener('click', onClick); m.addEventListener('input', onInput); m.addEventListener('change', onInput);
+            }
+            return m;
+        }
+        function close(result) { var m = document.getElementById('cash-modal'); if (m) m.style.display = 'none'; ST.view = null; if (ST.resolve) { var f = ST.resolve; ST.resolve = null; f(!!result); } chip(); }
+        function show(view, err) { ST.view = view; ST.err = err || ''; var m = modal(); m.style.display = 'flex'; render(); }
+        function grid(denoms, prefix) {
+            return '<div class="cash-grid" style="display:grid;grid-template-columns:1fr 90px 110px;gap:6px;align-items:center;margin:8px 0;"><b>Note / coin</b><b>Qty</b><b style="text-align:right">Subtotal</b>' + denoms.map(function (d) {
+                return '<span>KES ' + Number(d).toLocaleString('en-KE') + '</span><input type="number" min="0" step="1" inputmode="numeric" data-denom="' + d + '" data-grid="' + prefix + '" style="padding:8px;"><span data-sub="' + d + '" style="text-align:right">0.00</span>';
+            }).join('') + '</div><div style="text-align:right;font-weight:700;font-size:17px;">Total counted: <span id="cash-count-total">KES 0.00</span></div>';
+        }
+        function countInputs() {
+            var c = {}; document.querySelectorAll('#cash-card input[data-denom]').forEach(function (i) { c[i.getAttribute('data-denom')] = i.value; });
+            return c;
+        }
+        function countBlock(prefix) {
+            var s = settings();
+            return s.countMode === 'total'
+                ? '<label class="label">Total cash counted (KES)</label><input type="number" min="0" step="0.01" id="cash-total-input" style="width:100%;padding:10px;">'
+                : grid(s.denoms, prefix);
+        }
+        function readCount() { return settings().countMode === 'total' ? { mode: 'total', total: (document.getElementById('cash-total-input') || {}).value } : { mode: 'denoms', counts: countInputs() }; }
+        function head(title) { return '<div style="display:flex;justify-content:space-between;align-items:center;"><h3 style="margin:0">' + title + '</h3><button type="button" data-act="dismiss" class="settings-small-btn" style="padding:6px 12px;">✕</button></div>'; }
+        function errBox() { return '<div id="cash-err" style="color:#c0392b;font-weight:600;min-height:18px;margin:6px 0;">' + esc(ST.err) + '</div>'; }
+
+        function render() {
+            var card = document.getElementById('cash-card'); if (!card) return;
+            var s = settings(), r = resolve(), h = '';
+            if (ST.view === 'pick') {
+                h = head('Which cash drawer is this device?') + '<p style="color:#7f8c8d">This device is not tied to one cashier point. Pick the drawer it uses - cash from different drawers is never mixed.</p>';
+                (r.candidates.length ? r.candidates : cashPoints.filter(function (p) { return p && !p.removed && p.active !== false; })).forEach(function (p) { h += '<button type="button" class="btn-main" data-act="assign" data-id="' + esc(p.id) + '" style="width:100%;margin:4px 0;">' + esc(p.name) + '</button>'; });
+            } else if (ST.view === 'open') {
+                var pt = r.point;
+                h = head('Open cash drawer') + '<div style="font-size:13px;color:#7f8c8d;line-height:1.6;">' + esc(biz()) + ' · <b>' + esc(pt.name) + '</b><br>Terminal ' + esc(deviceId().slice(-6) || '-') + ' (till ' + (typeof tillNumber === 'function' ? tillNumber() || '-' : '-') + ') · Opened by <b>' + esc(who().by || 'staff') + '</b> · ' + new Date().toLocaleString('en-GB') + ' · ' + esc(s.currency) + '</div>' +
+                    '<p style="margin:8px 0 0">Count the starting cash. This is your float, not sales.</p>' + countBlock('open') +
+                    '<label class="label" style="margin-top:8px;display:block">Remarks (optional)</label><input type="text" id="cash-remarks" style="width:100%;padding:10px;">' +
+                    '<label style="display:flex;gap:8px;margin:10px 0;"><input type="checkbox" id="cash-confirm" style="width:auto"> I counted this cash and confirm the amount.</label>' + errBox() +
+                    '<button type="button" class="btn-main" data-act="do-open" style="width:100%;">Open drawer</button>' + (!s.openingCount ? '<button type="button" class="settings-small-btn" data-act="skip-open" style="width:100%;margin-top:6px;">Skip count (recorded as skipped)</button>' : '');
+            } else if (ST.view === 'panel') {
+                var ses = activeSession();
+                if (!ses) { h = head('Cash drawer') + '<p>No open session for this drawer.</p><button type="button" class="btn-main" data-act="goto-open" style="width:100%;">Open drawer</button>'; }
+                else {
+                    var sm = summary(ses);
+                    if (!ST.opId) ST.opId = 'mv-' + (typeof genSaleId === 'function' ? genSaleId() : Date.now());
+                    var row = function (a, b, neg) { return '<tr><td>' + a + '</td><td style="text-align:right;' + (neg ? 'color:#c0392b' : '') + '">' + (neg ? '− ' : '') + kes(b) + '</td></tr>'; };
+                    h = head('Cash drawer · ' + esc(ses.pointName)) + '<div style="font-size:12px;color:#7f8c8d;">Session ' + esc(ses.id) + ' · opened ' + new Date(ses.openedAt).toLocaleString('en-GB') + ' by ' + esc(ses.opening.by) + ' · <b>open</b> · ' + (navigator.onLine === false ? 'offline - saved on this device' : 'synced when online') + '</div>' +
+                        '<table style="width:100%;margin:8px 0;border-collapse:collapse;">' + row('Opening float', sm.opening) + row('Cash sales (' + sm.cashSalesCount + ')', sm.cashSales) + row('Cash added', sm.cashIn) + row('Cash refunds', sm.refunds, 1) + row('Payouts & expenses', sm.payouts, 1) + row('Transfers to safe', sm.safe, 1) + row('Bank deposits', sm.bank, 1) + row('Other cash out', sm.otherOut, 1) +
+                        '<tr style="border-top:2px solid #2c3e50;font-weight:800;font-size:17px;"><td>Expected in drawer</td><td style="text-align:right">' + kes(sm.expected) + '</td></tr></table>' +
+                        '<div style="font-size:12px;color:#7f8c8d;">M-Pesa ' + kes(sm.nonCash.mpesa) + ' and card ' + kes(sm.nonCash.card) + ' are not drawer cash.</div>' +
+                        (sm.earlier && sm.earlier.cash > 0 ? '<div style="margin:8px 0;padding:10px;border-radius:10px;background:#fff4d6;border:1px solid #f0c36d;font-size:13px;line-height:1.5;">⚠ <b>' + kes(sm.earlier.cash) + '</b> cash (' + sm.earlier.count + ' sale' + (sm.earlier.count === 1 ? '' : 's') + ') was taken today <b>before this drawer was opened</b>, so it is not in "Expected". If that cash is physically in this drawer, a manager should add it to the opening count.' + (isManager() ? '<button type="button" class="btn-main" data-act="add-earlier" style="width:100%;margin-top:6px;">Add ' + kes(sm.earlier.cash) + ' to opening count</button>' : '') + '</div>' : '') +
+                        '<h4 style="margin:12px 0 4px">Record a cash movement</h4><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><select id="cash-mv-dir" style="padding:9px;"><option value="in">Cash IN</option><option value="out">Cash OUT</option></select><select id="cash-mv-cat" style="padding:9px;">' + CATS.in.map(function (c) { return '<option value="' + c[0] + '">' + c[1] + '</option>'; }).join('') + '</select><input type="number" min="0" step="0.01" id="cash-mv-amt" placeholder="Amount" style="padding:9px;"><input type="text" id="cash-mv-ref" placeholder="Reference (optional)" style="padding:9px;"></div><input type="text" id="cash-mv-reason" placeholder="Reason (required)" style="width:100%;padding:9px;margin-top:6px;">' + errBox() +
+                        '<button type="button" class="btn-main" data-act="do-move" style="width:100%;">Record movement</button>' +
+                        (isManager() ? '<button type="button" class="settings-small-btn" data-act="goto-correct-open" style="width:100%;margin-top:8px;">Correct opening count…</button>' : '') + (ses.corrections && ses.corrections.length ? '<div style="font-size:12px;color:#7f8c8d;margin-top:4px;">Opening corrected ' + ses.corrections.length + '× - last: ' + esc(ses.corrections[ses.corrections.length - 1].reason) + ' (was ' + kes(ses.corrections[ses.corrections.length - 1].before.total) + ')</div>' : '') +
+                        '<button type="button" class="settings-small-btn" data-act="goto-close" style="width:100%;margin-top:10px;background:#c0392b;color:#fff;padding:11px;">Close cash session…</button>';
+                    var mv = cashMovements.filter(function (m) { return m && m.sessionId === ses.id; }).slice(-8).reverse();
+                    if (mv.length) h += '<h4 style="margin:12px 0 4px">Movements this session</h4>' + mv.map(function (m) { return '<div style="font-size:12px;border-bottom:1px solid #eee;padding:3px 0;"><span style="' + (m.voided ? 'text-decoration:line-through;color:#7f8c8d;' : '') + '">' + (m.direction === 'in' ? '＋' : '−') + ' ' + kes(m.amount) + ' · ' + esc(m.category.replace(/_/g, ' ')) + ' · ' + esc(m.reason) + ' · ' + esc(m.by) + '</span>' + (m.voided ? ' <i>voided by ' + esc(m.voidedBy) + ': ' + esc(m.voidReason) + '</i>' : (isManager() ? ' <button type="button" class="settings-small-btn" data-act="void-move" data-id="' + esc(m.id) + '" style="padding:2px 8px;">Void</button>' : '')) + '</div>'; }).join('');
+                }
+                h += '<div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;"><button type="button" class="settings-small-btn" data-act="goto-history">Session history</button>' + (isAdmin() ? '<button type="button" class="settings-small-btn" data-act="goto-settings">Cash settings</button>' : '') + '</div>';
+            } else if (ST.view === 'close') {
+                var cs = activeSession(); if (!cs) { close(false); return; }
+                var sm2 = summary(cs);
+                h = head('Close cash session') + '<p style="margin:6px 0">Expected cash: <b style="font-size:18px">' + kes(sm2.expected) + '</b><br><span style="font-size:12px;color:#7f8c8d">Opening ' + kes(sm2.opening) + ' + sales ' + kes(sm2.cashSales) + ' + added ' + kes(sm2.cashIn) + ' − refunds ' + kes(sm2.refunds) + ' − payouts ' + kes(sm2.payouts) + ' − safe ' + kes(sm2.safe) + ' − bank ' + kes(sm2.bank) + ' − other ' + kes(sm2.otherOut) + '</span></p>' +
+                    '<p style="margin:6px 0">Count the cash in the drawer now.</p>' + countBlock('close') + '<div id="cash-var" style="font-weight:800;font-size:16px;margin:8px 0;"></div>' +
+                    '<label class="label">Reason for any difference</label><input type="text" id="cash-reason" style="width:100%;padding:10px;">' +
+                    '<label style="display:flex;gap:8px;margin:10px 0;"><input type="checkbox" id="cash-confirm" style="width:auto"> I counted this cash and confirm the amount.</label>' + errBox() +
+                    '<button type="button" class="btn-main" data-act="do-close" style="width:100%;">Close session</button>' + (isManager() ? '<button type="button" class="settings-small-btn" data-act="do-exempt" style="width:100%;margin-top:6px;" title="Manager only: needs the reason above">Exempt from counting (manager, reason required)</button>' : '') + '<button type="button" class="settings-small-btn" data-act="goto-panel" style="width:100%;margin-top:6px;">Back</button>';
+            } else if (ST.view === 'history') {
+                var F = ST.f, list = cashFilterSessions(cashSessions, F).sort(function (a, b) { return b.openedAt - a.openedAt; }).slice(0, 60);
+                var tot = { exp: 0, cnt: 0, n: 0 };
+                h = head('Cash session history') + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0;"><select id="cf-point" style="padding:8px;"><option value="">All cashier points</option>' + cashPoints.filter(function (p) { return p && !p.removed; }).map(function (p) { return '<option value="' + esc(p.id) + '"' + (F.pointId === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</select><select id="cf-status" style="padding:8px;"><option value="">Any status</option><option value="open"' + (F.status === 'open' ? ' selected' : '') + '>Open</option><option value="closed"' + (F.status === 'closed' ? ' selected' : '') + '>Closed</option></select><input type="date" id="cf-from" value="' + esc(F.from || '') + '" style="padding:8px;"><input type="date" id="cf-to" value="' + esc(F.to || '') + '" style="padding:8px;"><input type="text" id="cf-op" placeholder="Opened/closed by" value="' + esc(F.operator || '') + '" style="padding:8px;"><label style="display:flex;gap:6px;align-items:center;"><input type="checkbox" id="cf-var" style="width:auto"' + (F.varianceOnly ? ' checked' : '') + '> Differences only</label></div><button type="button" class="settings-small-btn" data-act="csv">⬇ Export CSV (' + list.length + ')</button>';
+                if (!list.length) h += '<p>No sessions yet.</p>';
+                list.forEach(function (x) {
+                    var c = x.closing, v = c && c.variance != null ? c.variance : null;
+                    if (c && c.status === 'counted') { tot.exp += c.expected; tot.cnt += c.counted; tot.n++; }
+                    h += '<div style="border:1px solid #e2e6ea;border-radius:10px;padding:8px;margin:6px 0;font-size:13px;"><b>' + esc(x.pointName) + '</b> · ' + new Date(x.openedAt).toLocaleDateString('en-GB') + ' · ' + (x.status === 'open' ? '<b style="color:#27ae60">open</b>' : 'closed') + '<br>Opened by ' + esc(x.opening.by) + ' with ' + kes(x.opening.total) + (x.opening.status === 'skipped' ? ' (count skipped)' : '') +
+                        (c ? '<br>Closed by ' + esc(c.by) + ' · expected ' + kes(c.expected) + (c.status === 'counted' ? ' · counted ' + kes(c.counted) + ' · <b style="color:' + (v === 0 ? '#27ae60' : '#c0392b') + '">' + (v === 0 ? 'balanced' : (v < 0 ? 'short ' : 'over ') + kes(Math.abs(v))) + '</b>' : c.status === 'exempted' ? ' · <b style="color:#8e44ad">exempted from counting</b> by ' + esc((c.exempt || {}).by || c.by) : ' · count skipped (not reconciled)') + (c.reason ? '<br>Reason: ' + esc(c.reason) : '') + '<br>Approval: ' + esc(c.approval.status) + (c.approval.by ? ' by ' + esc(c.approval.by) : '') : '') +
+                        ((x.conflicts || []).length ? '<br><b style="color:#c0392b">⚠ ' + x.conflicts.length + ' conflicting count(s) from another device - review</b>' : '') +
+                        (c && c.approval.status === 'pending' && isManager() ? '<br><button type="button" class="settings-small-btn" data-act="approve" data-id="' + esc(x.id) + '">Approve</button> <button type="button" class="settings-small-btn" data-act="reject" data-id="' + esc(x.id) + '">Reject</button>' : '') +
+                        ((x.corrections || []).length ? '<br><i>Corrected ' + x.corrections.length + '×; last: ' + esc(x.corrections[x.corrections.length - 1].reason) + ' (was ' + kes(x.corrections[x.corrections.length - 1].before.counted) + ')</i>' : '') +
+                        (c && c.status === 'counted' && isManager() ? ' <button type="button" class="settings-small-btn" data-act="goto-correct" data-id="' + esc(x.id) + '">Correct count</button>' : '') +
+                        (c ? ' <button type="button" class="settings-small-btn" data-act="print" data-id="' + esc(x.id) + '">Print</button>' : '') + '</div>';
+                });
+                if (tot.n) h += '<div style="font-weight:700;margin-top:8px;">All closed counted sessions: expected ' + kes(tot.exp) + ' · counted ' + kes(tot.cnt) + ' · net ' + kes(tot.cnt - tot.exp) + '</div>';
+                h += '<button type="button" class="settings-small-btn" data-act="goto-panel" style="margin-top:8px;">Back</button>';
+            } else if (ST.view === 'correct-open') {
+                var os = activeSession();
+                h = head('Correct opening count') + (os ? '<p style="margin:6px 0">' + esc(os.pointName) + ' · opening counted <b>' + kes(os.opening.total) + '</b> by ' + esc(os.opening.by) + '. The original count stays on record.</p>' + countBlock('copen') + '<label class="label">Reason for the correction (required)</label><input type="text" id="cash-reason" style="width:100%;padding:10px;">' + errBox() + '<button type="button" class="btn-main" data-act="do-correct-open" style="width:100%;">Save correction</button>' : '<p>No open session.</p>') + '<button type="button" class="settings-small-btn" data-act="goto-panel" style="width:100%;margin-top:6px;">Back</button>';
+            } else if (ST.view === 'correct') {
+                var cx = cashSessions.find(function (q) { return q.id === ST.corrId; });
+                h = head('Correct finished count') + (cx ? '<p style="margin:6px 0">' + esc(cx.pointName) + ' · expected <b>' + kes(cx.closing.expected) + '</b> · counted ' + kes(cx.closing.counted) + '. The original count stays on record.</p>' + countBlock('corr') + '<label class="label">Reason for the correction (required)</label><input type="text" id="cash-reason" style="width:100%;padding:10px;">' + errBox() + '<button type="button" class="btn-main" data-act="do-correct" style="width:100%;">Save correction</button>' : '<p>Session not found.</p>') + '<button type="button" class="settings-small-btn" data-act="goto-history" style="width:100%;margin-top:6px;">Back</button>';
+            } else if (ST.view === 'settings') {
+                h = head('Cash settings') + '<label style="display:flex;gap:8px;margin:8px 0"><input type="checkbox" id="cs-enabled" style="width:auto" ' + (s.enabled ? 'checked' : '') + '> Cash float &amp; reconciliation on (turning it off never deletes past counts)</label>' +
+                    '<label style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" id="cs-open" style="width:auto" ' + (s.openingCount ? 'checked' : '') + '> Opening count required</label>' +
+                    '<label style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" id="cs-close" style="width:auto" ' + (s.closingCount ? 'checked' : '') + '> Closing count required</label>' +
+                    '<label style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" id="cs-reason" style="width:auto" ' + (s.reasonRequired ? 'checked' : '') + '> Reason required for any difference</label>' +
+                    '<label class="label">Count by</label><select id="cs-mode" style="width:100%;padding:9px;"><option value="denoms"' + (s.countMode === 'denoms' ? ' selected' : '') + '>Notes &amp; coins (recommended)</option><option value="total"' + (s.countMode === 'total' ? ' selected' : '') + '>Total only</option></select>' +
+                    '<label class="label">Manager approval above (KES difference)</label><input type="number" min="0" id="cs-thr" value="' + esc(s.approvalThreshold) + '" style="width:100%;padding:9px;">' +
+                    '<label class="label">Denominations (comma separated)</label><input type="text" id="cs-denoms" value="' + esc(s.denoms.join(', ')) + '" style="width:100%;padding:9px;">' +
+                    '<h4 style="margin:12px 0 4px">Cashier points (cash drawers)</h4>' + cashPoints.filter(function (p) { return p && !p.removed; }).map(function (p) {
+                        return '<div style="display:flex;gap:6px;align-items:center;margin:4px 0;"><input type="text" data-pname="' + esc(p.id) + '" value="' + esc(p.name) + '" style="flex:1;padding:8px;"><button type="button" class="settings-small-btn" data-act="p-toggle" data-id="' + esc(p.id) + '">' + (p.active === false ? 'Activate' : 'Deactivate') + '</button><button type="button" class="settings-small-btn" data-act="assign" data-id="' + esc(p.id) + '">' + ((p.deviceIds || []).indexOf(deviceId()) >= 0 ? '✓ this device' : 'Use on this device') + '</button></div>' +
+                            '<div style="display:flex;gap:6px;align-items:center;margin:0 0 8px 12px;flex-wrap:wrap;font-size:12px;">Branch <input type="text" data-pbranch="' + esc(p.id) + '" value="' + esc(p.branch || '') + '" placeholder="e.g. Westlands" style="width:130px;padding:6px;"> Devices: ' + ((p.deviceIds || []).length ? (p.deviceIds || []).map(function (d) { return '<span style="background:#eaf2f8;border-radius:10px;padding:2px 8px;">' + esc(devName(d)) + ' <a href="#" data-act="unassign" data-id="' + esc(p.id) + '" data-dev="' + esc(d) + '" style="text-decoration:none;color:#c0392b;">✕</a></span>'; }).join(' ') : '<i>any device</i>') +
+                            ' <select data-padd="' + esc(p.id) + '" style="padding:5px;"><option value="">＋ assign a device…</option>' + knownDevices().filter(function (d) { return (p.deviceIds || []).indexOf(d.deviceId) < 0; }).map(function (d) { return '<option value="' + esc(d.deviceId) + '">' + esc(d.name || d.deviceId) + '</option>'; }).join('') + '</select></div>';
+                    }).join('') + '<button type="button" class="settings-small-btn" data-act="p-add" style="margin-top:4px;">＋ Add cashier point</button>' + errBox() +
+                    '<button type="button" class="btn-main" data-act="save-settings" style="width:100%;">Save</button><button type="button" class="settings-small-btn" data-act="goto-panel" style="width:100%;margin-top:6px;">Back</button>';
+            }
+            card.innerHTML = h; updateTotals();
+        }
+        function updateTotals() {
+            var s = settings(), tot = 0;
+            document.querySelectorAll('#cash-card input[data-denom]').forEach(function (i) {
+                var d = Number(i.getAttribute('data-denom')), q = Number(i.value) || 0, sub = (q > 0 ? q : 0) * d; tot += sub;
+                var el = document.querySelector('#cash-card [data-sub="' + d + '"]'); if (el) el.textContent = sub.toFixed(2);
+            });
+            var t = document.getElementById('cash-count-total'); if (t) t.textContent = kes(tot);
+            var v = document.getElementById('cash-var'), ses = ST.view === 'close' ? activeSession() : null;
+            if (v && ses) {
+                var counted = s.countMode === 'total' ? Number((document.getElementById('cash-total-input') || {}).value) : tot;
+                if (!isFinite(counted) || (s.countMode === 'total' && !(document.getElementById('cash-total-input') || {}).value)) { v.textContent = ''; return; }
+                var d = cashR2(counted - summary(ses).expected);
+                v.style.color = d === 0 ? '#27ae60' : '#c0392b'; v.textContent = d === 0 ? 'Balanced' : (d < 0 ? 'Shortage of ' : 'Surplus of ') + kes(Math.abs(d)) + ' (' + (d < 0 ? '−' : '+') + Math.abs(d).toFixed(2) + ')';
+            }
+        }
+        function onInput(e) {
+            var t = e.target;
+            if (t.matches && t.matches('input[data-denom], #cash-total-input')) updateTotals();
+            if (ST.view === 'history' && /^cf-/.test(t.id || '') && e.type === 'change') {
+                ST.f = { pointId: document.getElementById('cf-point').value, status: document.getElementById('cf-status').value, from: document.getElementById('cf-from').value, to: document.getElementById('cf-to').value, operator: document.getElementById('cf-op').value, varianceOnly: document.getElementById('cf-var').checked }; render();
+            }
+            if (e.type === 'change' && t.matches && t.matches('select[data-padd]') && t.value) {
+                if (!isAdmin()) { t.value = ''; return fail('Only the business owner / admin can change which devices use a drawer.'); }
+                var tp = t.getAttribute('data-padd'), dv2 = t.value, nowT = Date.now();
+                cashPoints.forEach(function (p) { var had = (p.deviceIds || []).indexOf(dv2) >= 0; if (p.id === tp && !had) { p.deviceIds = (p.deviceIds || []).concat([dv2]); p.updatedAt = nowT; } else if (p.id !== tp && had) { p.deviceIds = p.deviceIds.filter(function (d) { return d !== dv2; }); p.updatedAt = nowT; } });
+                save(); return show('settings');
+            }
+            if (t.id === 'cash-mv-dir') { var c = document.getElementById('cash-mv-cat'); c.innerHTML = CATS[t.value].map(function (x) { return '<option value="' + x[0] + '">' + x[1] + '</option>'; }).join(''); }
+        }
+        function fail(msg) { ST.err = msg; var e = document.getElementById('cash-err'); if (e) e.textContent = msg; }
+        function reportHtml(x, width) {
+            var c = x.closing || {}, b = c.breakdown || {}, rows = [['Opening float', b.opening], ['Cash sales', b.cashSales], ['Cash added', b.cashIn], ['Refunds', -b.refunds], ['Payouts & expenses', -b.payouts], ['To safe', -b.safe], ['Bank deposits', -b.bank], ['Other out', -b.otherOut], ['Expected cash', c.expected], ['Counted cash', c.counted], ['Variance', c.variance]];
+            var den = c.counts ? Object.keys(c.counts).sort(function (a, z) { return z - a; }).map(function (k) { return '<tr><td>' + k + ' x ' + c.counts[k] + '</td><td align="right">' + (k * c.counts[k]).toFixed(2) + '</td></tr>'; }).join('') : '';
+            var w = width === 'a4' ? '190mm' : width === '58' ? '48mm' : '72mm';
+            return '<html><head><title>Cash report</title><style>@page{margin:4mm}body{font:12px monospace;width:' + w + '}td{padding:1px 0}</style></head><body><h3>' + esc(biz()) + '</h3>Cash session report<br>' + esc(x.pointName) + ' · ' + esc(x.id) + '<br>Opened ' + new Date(x.openedAt).toLocaleString('en-GB') + ' by ' + esc(x.opening.by) + '<br>Closed ' + (c.at ? new Date(c.at).toLocaleString('en-GB') : '-') + ' by ' + esc(c.by || '-') + '<hr><table width="100%">' + rows.map(function (r) { return '<tr><td>' + r[0] + '</td><td align="right">' + (r[1] == null ? '-' : Number(r[1]).toFixed(2)) + '</td></tr>'; }).join('') + '</table>' + (den ? '<hr>Denominations<table width="100%">' + den + '</table>' : '') + (c.reason ? '<hr>Reason: ' + esc(c.reason) : '') + '<br>Approval: ' + esc((c.approval || {}).status || '-') + (c.approval && c.approval.by ? ' by ' + esc(c.approval.by) : '') + '</body></html>';
+        }
+        function onClick(e) {
+            var b = e.target.closest ? e.target.closest('[data-act]') : null;
+            if (!b) { if (e.target.id === 'cash-modal') close(false); return; }
+            var act = b.getAttribute('data-act'), id = b.getAttribute('data-id'), r, res, now = Date.now(), w = who();
+            if (b.tagName === 'A') e.preventDefault();
+            if (act === 'dismiss') return close(false);
+            if (act === 'goto-correct') { ST.corrId = id; return show('correct'); }
+            if (act === 'goto-correct-open') return show('correct-open');
+            if (act === 'add-earlier') {
+                var oe = activeSession(); if (!oe) return;
+                var se = summary(oe); var addc = se.earlier ? se.earlier.cash : 0;
+                if (!(addc > 0)) return;
+                if (!window.confirm('Add ' + kes(addc) + ' (cash taken earlier today) to the opening count of this drawer?\nThe original opening count stays on record.')) return;
+                res = cashCorrectOpening(oe, Object.assign({ settings: settings(), isManager: isManager(), mode: 'total', total: cashR2((oe.opening.total || 0) + addc), reason: 'Added cash taken earlier today before this drawer was opened (' + se.earlier.count + ' sales, ' + addc.toFixed(2) + ')', now: now }, w));
+                if (!res.ok) return fail(res.error);
+                oe.opening = res.opening; oe.corrections = (oe.corrections || []).concat([res.correction]); oe.updatedAt = now; save(); return show('panel');
+            }
+            if (act === 'do-correct-open') {
+                var os2 = activeSession();
+                res = cashCorrectOpening(os2, Object.assign({ settings: settings(), isManager: isManager(), reason: (document.getElementById('cash-reason') || {}).value, now: now }, w, readCount()));
+                if (!res.ok) return fail(res.error);
+                os2.opening = res.opening; os2.corrections = (os2.corrections || []).concat([res.correction]); os2.updatedAt = now; save(); return show('panel');
+            }
+            if (act === 'void-move') {
+                var mv0 = cashMovements.find(function (m) { return m.id === id; });
+                var why = window.prompt('Reason for voiding this movement (required):', '') || '';
+                res = cashVoidMovement(mv0, activeSession(), { isManager: isManager(), reason: why, by: w.by, now: now });
+                if (!res.ok) { try { showToast(res.error, true); } catch (x) { /* toast only */ } return; }
+                cashMovements[cashMovements.indexOf(mv0)] = res.movement; save(); return render();
+            }
+            if (act === 'csv') {
+                var csv = cashSessionsCsv(cashFilterSessions(cashSessions, ST.f)), blob = new Blob([csv], { type: 'text/csv' }), a = document.createElement('a');
+                a.href = URL.createObjectURL(blob); a.download = 'cash-sessions-' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); a.remove(); return;
+            }
+            if (act === 'do-correct') {
+                var tx = cashSessions.find(function (q) { return q.id === ST.corrId; });
+                res = cashCorrectClosing(tx, Object.assign({ settings: settings(), isManager: isManager(), reason: (document.getElementById('cash-reason') || {}).value, now: now }, w, readCount()));
+                if (!res.ok) return fail(res.error);
+                tx.closing = res.closing; tx.corrections = (tx.corrections || []).concat([res.correction]); tx.updatedAt = now; save(); return show('history');
+            }
+            if (act === 'goto-panel') return show('panel'); if (act === 'goto-open') return show('open'); if (act === 'goto-close') return show('close');
+            if (act === 'goto-history') return show('history'); if (act === 'goto-settings') return show('settings');
+            if (act === 'assign') {
+                cashPoints.forEach(function (p) { var had = (p.deviceIds || []).indexOf(deviceId()) >= 0; if (p.id === id && !had) { p.deviceIds = (p.deviceIds || []).concat([deviceId()]); p.updatedAt = now; } else if (p.id !== id && had) { p.deviceIds = p.deviceIds.filter(function (d) { return d !== deviceId(); }); p.updatedAt = now; } });
+                save(); return show(ST.view === 'settings' ? 'settings' : (activeSession() ? 'panel' : 'open'));
+            }
+            if (act === 'do-open' || act === 'skip-open') {
+                r = resolve(); if (r.status !== 'ok') return show('pick');
+                var rc = act === 'skip-open' ? { skip: true } : readCount();
+                res = cashOpenSession(cashSessions, r.point, Object.assign({ settings: settings(), confirmed: !!(document.getElementById('cash-confirm') || {}).checked, remarks: (document.getElementById('cash-remarks') || {}).value, now: now }, w, rc));
+                if (!res.ok) return fail(res.error);
+                if (res.created) { cashSessions.push(res.session); save(); }
+                return close(true);
+            }
+            if (act === 'do-move') {
+                var ses = activeSession();
+                var dir = document.getElementById('cash-mv-dir').value;
+                res = cashMakeMovement(cashMovements, ses, Object.assign({ opId: ST.opId, direction: dir, category: document.getElementById('cash-mv-cat').value, amount: document.getElementById('cash-mv-amt').value, reason: document.getElementById('cash-mv-reason').value, ref: (document.getElementById('cash-mv-ref').value || '').trim() ? { type: 'text', id: document.getElementById('cash-mv-ref').value.trim() } : null, now: now }, w));
+                if (!res.ok) return fail(res.error);
+                if (res.created) { cashMovements.push(res.movement); save(); }
+                ST.opId = null; return show('panel');
+            }
+            if (act === 'do-close') {
+                var cur = activeSession(); if (!cur) return close(false);
+                res = cashCloseSession(cur, summary(cur), Object.assign({ settings: settings(), confirmed: !!document.getElementById('cash-confirm').checked, reason: document.getElementById('cash-reason').value, now: now }, w, readCount()));
+                if (!res.ok) return fail(res.error);
+                cur.closing = res.closing; cur.status = 'closed'; cur.updatedAt = now; save();
+                var cc = res.closing, msg = cc.variance === 0 ? 'Session closed - balanced.' : 'Session closed - ' + (cc.variance < 0 ? 'short ' : 'over ') + kes(Math.abs(cc.variance)) + (cc.approval.status === 'pending' ? ' (awaiting manager approval).' : '.');
+                try { if (typeof showToast === 'function') showToast(msg); } catch (x) { /* toast only */ }
+                return show('history');
+            }
+            if (act === 'do-exempt') {
+                var ce = activeSession(); if (!ce) return close(false);
+                res = cashCloseSession(ce, summary(ce), Object.assign({ settings: settings(), exempt: true, isManager: isManager(), reason: document.getElementById('cash-reason').value, now: now }, w));
+                if (!res.ok) return fail(res.error);
+                ce.closing = res.closing; ce.status = 'closed'; ce.updatedAt = now; save();
+                try { if (typeof showToast === 'function') showToast('Session closed - exempted from counting.'); } catch (x) { /* toast only */ }
+                return show('history');
+            }
+            if (act === 'approve' || act === 'reject') {
+                var sx = cashSessions.find(function (s) { return s.id === id; });
+                var note = act === 'reject' ? (window.prompt('Reason for rejecting (required):', '') || '') : '';
+                res = cashDecideApproval(sx, { isManager: isManager(), approve: act === 'approve', note: note, by: w.by, now: now });
+                if (!res.ok) { try { showToast(res.error, true); } catch (x) { /* toast only */ } return; }
+                sx.closing = Object.assign({}, sx.closing, { approval: res.approval }); sx.updatedAt = now; save(); return render();
+            }
+            if (act === 'print') {
+                var px = cashSessions.find(function (s) { return s.id === id; }); if (!px) return;
+                var size = window.prompt('Paper: 58, 80 or a4', '80') || '80';
+                var win = window.open('', '_blank'); if (win) { win.document.write(reportHtml(px, String(size).toLowerCase())); win.document.close(); win.focus(); win.print(); }
+                return;
+            }
+            if (act === 'unassign') {
+                var up = cashPoints.find(function (p) { return p.id === id; }), dv = b.getAttribute('data-dev');
+                if (up && !isAdmin()) return fail('Only the business owner / admin can change which devices use a drawer.');
+                if (up) { up.deviceIds = (up.deviceIds || []).filter(function (d) { return d !== dv; }); up.updatedAt = now; save(); } return show('settings');
+            }
+            if (act === 'p-add') { cashPoints.push({ id: 'cp-' + (typeof genSaleId === 'function' ? genSaleId() : now), name: 'Till ' + (cashPoints.filter(function (p) { return !p.removed; }).length + 1), active: true, deviceIds: [], updatedAt: now }); save(); return render(); }
+            if (act === 'p-toggle') {
+                var pp = cashPoints.find(function (p) { return p.id === id; });
+                if (pp && pp.active !== false && cashOpenSessionFor(cashSessions, pp.id)) return fail('Close this point\'s open session before deactivating it.');
+                if (pp) { pp.active = pp.active === false; pp.updatedAt = now; save(); } return render();
+            }
+            if (act === 'save-settings') {
+                if (!isAdmin()) return fail('Only the business owner / admin can change cash settings.');
+                var den = (document.getElementById('cs-denoms').value || '').split(',').map(function (x) { return Number(String(x).trim()); });
+                if (den.some(function (x) { return !(x > 0); })) return fail('Denominations must be positive numbers.');
+                var rec = Object.assign({}, settings(), { enabled: document.getElementById('cs-enabled').checked, openingCount: document.getElementById('cs-open').checked, closingCount: document.getElementById('cs-close').checked, reasonRequired: document.getElementById('cs-reason').checked, countMode: document.getElementById('cs-mode').value, approvalThreshold: Math.max(0, Number(document.getElementById('cs-thr').value) || 0), denoms: den, updatedAt: now });
+                var i = cashConfig.findIndex(function (c) { return c && c.id === 'cfg'; }); if (i >= 0) cashConfig[i] = rec; else cashConfig.push(rec);
+                document.querySelectorAll('#cash-card input[data-pbranch]').forEach(function (inp) { var p = cashPoints.find(function (q) { return q.id === inp.getAttribute('data-pbranch'); }); if (p && (p.branch || '') !== inp.value.trim()) { p.branch = inp.value.trim(); p.updatedAt = now; } });
+                document.querySelectorAll('#cash-card input[data-pname]').forEach(function (inp) { var p = cashPoints.find(function (q) { return q.id === inp.getAttribute('data-pname'); }); if (p && inp.value.trim() && p.name !== inp.value.trim()) { p.name = inp.value.trim(); p.updatedAt = now; } });
+                save(); chip(); return show('panel');
+            }
+        }
+        // the chip above the cart: tap for the drawer panel
+        function chip() {
+            var table = document.getElementById('cart-table'); if (!table) return;
+            var el = document.getElementById('cash-chip');
+            if (!enabled()) { if (el) el.style.display = 'none'; return; }
+            if (!el) {
+                el = document.createElement('button'); el.type = 'button'; el.id = 'cash-chip'; el.className = 'settings-small-btn';
+                el.style.cssText = 'margin:4px 0 8px;padding:8px 14px;background:#16a085;color:#fff;';
+                el.addEventListener('click', function () { var r = resolve(); show(r.status !== 'ok' ? 'pick' : (activeSession() ? 'panel' : 'open')); });
+                var wrap = table.closest('.table-scroll') || table; wrap.parentNode.insertBefore(el, wrap);
+            }
+            el.style.display = '';
+            var ses = null; try { ses = activeSession(); } catch (e) { /* none */ }
+            el.textContent = ses ? '💵 ' + ses.pointName + ' · expected ' + kes(summary(ses).expected) : '💵 Open cash drawer';
+        }
+        // zip 292: a purchase paid out of the cash drawer. ONE cash movement per expense: the id comes from the expense id, so a retry or a second device cannot make another.
+        function purchasePaid(exp, order) {
+            if (!enabled() || !exp || !(Number(exp.amount) > 0)) return null;
+            var ses = activeSession(); if (!ses) return null;
+            var ok = true; try { ok = window.confirm('Was ' + kes(exp.amount) + ' for ' + (order && order.orderNo ? order.orderNo : 'this purchase') + ' paid in cash from the drawer (' + ses.pointName + ')?\n\nOK = record it as a drawer payout (supplier payment).'); } catch (e) { ok = false; }
+            if (!ok) return null;
+            var res = cashMakeMovement(cashMovements, ses, Object.assign({ opId: 'purexp-' + exp.id, direction: 'out', category: 'supplier_payment', amount: exp.amount, reason: 'Purchase ' + (order && order.orderNo ? order.orderNo : '') + (order && order.supplierName ? ' - ' + order.supplierName : ''), ref: { type: 'expense', id: exp.id } }, who()));
+            if (!res.ok) { try { showToast(res.error, true); } catch (x) { /* toast only */ } return null; }
+            if (res.created) { cashMovements.push(res.movement); save(); }
+            return res.movement.id;
+        }
+        window.cashPurchasePaid = purchasePaid;
+        // Reports > Cash drawer: sessions in the chosen period, per cashier point / branch, with the shortage / surplus kept apart from skipped and exempted sessions
+        function reportCash(range) {
+            var list = cashSessions.filter(function (x) { return x && x.openedAt >= range.from.getTime() && x.openedAt <= range.to.getTime(); }).sort(function (a, b) { return b.openedAt - a.openedAt; });
+            var pt = function (id) { return cashPoints.find(function (p) { return p && p.id === id; }) || {}; };
+            var rows = list.map(function (x) { var c = x.closing || {}; return [new Date(x.openedAt).toLocaleDateString('en-GB'), x.pointName || '', pt(x.pointId).branch || '', (x.opening || {}).by || '', x.status === 'open' ? 'open' : (c.status === 'counted' ? 'counted' : c.status === 'exempted' ? 'exempted' : 'skipped'), c.expected != null ? c.expected : '', c.counted != null ? c.counted : '', c.variance != null ? c.variance : '']; });
+            var counted = list.filter(function (x) { return x.closing && x.closing.status === 'counted'; }), short = 0, over = 0;
+            counted.forEach(function (x) { var v = x.closing.variance || 0; if (v < 0) short += -v; else over += v; });
+            var money = typeof reportMoney === 'function' ? reportMoney : kes;
+            var html = reportCards([['Sessions', String(list.length)], ['Counted', String(counted.length)], ['Shortage', money(short)], ['Surplus', money(over)], ['Exempted', String(list.filter(function (x) { return x.closing && x.closing.status === 'exempted'; }).length)], ['Skipped counts', String(list.filter(function (x) { return x.closing && x.closing.status === 'skipped'; }).length)]])
+                + reportTable(['Date', 'Cashier point', 'Branch', 'Opened by', 'Result', 'Expected', 'Counted', 'Difference'], rows.map(function (r) { return r.map(function (v, i) { return i >= 5 && v !== '' ? money(v) : String(v); }); }), { right: [5, 6, 7] });
+            return { title: 'Cash drawer', html: html, csv: [['Date', 'Cashier point', 'Branch', 'Opened by', 'Result', 'Expected', 'Counted', 'Difference']].concat(rows) };
+        }
+        try {
+            window.reportExtraBuilders = window.reportExtraBuilders || {}; window.reportExtraBuilders.cashdrawer = reportCash;
+            var rb = function () { var host = document.querySelector('#reports-tab .report-kind-btn'); if (!host || document.querySelector('[data-kind="cashdrawer"]')) return; var b = document.createElement('button'); b.type = 'button'; b.className = 'report-kind-btn'; b.setAttribute('data-kind', 'cashdrawer'); b.textContent = '💵 Cash drawer'; b.addEventListener('click', function () { reportsGenerate('cashdrawer'); }); host.parentNode.appendChild(b); };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', rb); else rb();
+        } catch (e) { /* the report button is optional */ }
+        window.cashGate = gate; window.cashStampSale = stamp; window.cashChipRefresh = chip; window.cashDrawerOpen = function () { show('panel'); };
+        window.cashDrawerInternals = { settings: settings, activeSession: activeSession, summary: summary, resolve: resolve, save: save };
+        function install() {
+            if (window.__cashInstalled) return; window.__cashInstalled = true;
+            var orig = window.renderCart;
+            if (typeof orig === 'function') window.renderCart = function () { var r = orig.apply(this, arguments); try { chip(); } catch (e) { /* extra */ } return r; };
+            try { chip(); } catch (e) { /* extra */ }
+        }
+        try { install(); } catch (e) { /* the drawer is optional UI */ }
+    })();
+    </script>

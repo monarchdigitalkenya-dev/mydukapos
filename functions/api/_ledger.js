@@ -20,6 +20,7 @@ import { LPG_SCHEMA } from './_lpg-schema.js';
 import { lpgMovementStatements, lpgSaleStatements } from './_lpg.js';
 import { LEDGER_SCHEMA, LEDGER_SCHEMA_0007, LEDGER_SCHEMA_VERSION, VOLATILE_FIELDS, sqlStripVolatile } from './_ledger-schema.js';
 import { withRetry, isStorageFull } from './_retry.js';
+import { resetTimeOf, coveredByEpoch, nextEpoch, sanitizeEpoch } from './_merge.js';
 import { auditDb, writeAuditRows, detachMainAuditTriggers, snapshotOf } from './_audit-db.js';
 
 export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -65,8 +66,14 @@ export function canon(v) {
 export function saleTotal(s) {
   return round2((Array.isArray(s && s.items) ? s.items : []).reduce((n, it) => n + num(it.price) * num(it.qty), 0));
 }
+// zip 390: the same rule as the tills' moneyLineCost - a payment line (bill payment, instalment) costs the goods it pays for (costShare);
+// any other line the cost recorded on it when it was sold. (Before, a payment line cost 0 here, so branch / HQ profit was higher than the till's.)
 function saleCost(s) {
-  return round2((Array.isArray(s && s.items) ? s.items : []).reduce((n, it) => (it.unit === 'payment' || it.isPayment ? n : n + num(it.wholesalePrice) * num(it.qty)), 0));
+  return round2((Array.isArray(s && s.items) ? s.items : []).reduce((n, it) => {
+    if (!it) return n;
+    if (it.unit === 'payment' || it.isPayment || it.type === 'payment') return n + (typeof it.costShare === 'number' && Number.isFinite(it.costShare) ? it.costShare : 0);
+    return n + num(it.wholesalePrice) * num(it.qty);
+  }, 0));
 }
 const METHODS = new Set(['cash', 'mpesa', 'card', 'bank', 'credit']);
 
@@ -394,6 +401,62 @@ function splitBad(body) {
   return { body: out || body, rejected };
 }
 
+
+// ---------- RESET EPOCH (zip 327) ----------
+// A deliberate "reset" (see parseResetRequest in _merge.js). Money rows are never deleted: the sales it covers become REMOVED and their payments
+// REVERSED (so every report - which counts COMPLETED / CONFIRMED only - stops counting them) and the audit trail stays. The instruction itself is kept in
+// ledger_meta so a push from a device that was offline and still holds older sales cannot put them back into the money record.
+const resetCache = new WeakMap();                                   // db -> Map(clientId -> { at, v })
+const resetMetaKey = (clientId) => 'reset:' + clientId;
+async function readResetMeta(db, clientId, force) {
+  let m = resetCache.get(db); if (!m) { m = new Map(); resetCache.set(db, m); }
+  const hit = m.get(clientId);
+  if (!force && hit && Date.now() - hit.at < 15000) return hit.v;
+  let v = null;
+  try { const r = await db.prepare('SELECT v FROM ledger_meta WHERE k = ?').bind(resetMetaKey(clientId)).first(); if (r && r.v) v = JSON.parse(r.v); } catch (e) { v = null; }
+  m.set(clientId, { at: Date.now(), v });
+  return v;
+}
+export async function ledgerReset(env, clientId, req) {
+  const db = ledgerDb(env);
+  if (!db) return { ok: true, skipped: 'no_db' };
+  try {
+    await ensureLedgerSchema(db);
+    const prev = await readResetMeta(db, clientId, true);
+    const now = Date.now();
+    const stmts = [];
+    if (!prev || prev.id !== req.id) {
+      // a "delete voided sales" reset only touches sales that are already VOIDED - which no report counts - so nothing to change in the money rows
+      if (!req.voided) {
+        stmts.push(db.prepare(`UPDATE ledger_sales SET status = 'REMOVED', version = version + 1, updated_at = ? WHERE client_id = ? AND ts <= ? AND status IN ('COMPLETED','DUPLICATE','REFUNDED')`).bind(now, clientId, req.at));
+        stmts.push(db.prepare(`UPDATE ledger_payments SET status = 'REVERSED' WHERE client_id = ? AND ts <= ? AND status = 'CONFIRMED'`).bind(clientId, req.at));
+        stmts.push(db.prepare(`UPDATE ledger_bills SET status = 'REMOVED', version = version + 1, updated_at = ? WHERE client_id = ? AND opened_at <= ? AND status NOT IN ('REMOVED','VOIDED')`).bind(now, clientId, req.at));
+      }
+      const epoch = nextEpoch(sanitizeEpoch(prev), req);
+      stmts.push(db.prepare(`INSERT INTO ledger_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(resetMetaKey(clientId), JSON.stringify({ ...epoch, doneAt: now })));
+      await withRetry(() => db.batch(stmts), { tries: 3, baseMs: 40, env });
+      clearLedgerSeen(db);
+      resetCache.get(db).set(clientId, { at: Date.now(), v: epoch });
+    }
+    return { ok: true };
+  } catch (e) {
+    try { console.error('ledger reset failed:', e && e.message); } catch (x) { /* log only */ }
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+// Drop, from a push, the records the shop's last reset covers (an offline device re-sending old history).
+export async function dropResetCovered(db, clientId, body) {
+  const meta = sanitizeEpoch(await readResetMeta(db, clientId, false));
+  if (!meta || !body) return body;
+  let out = body;
+  for (const f of Object.keys(meta.floors || {})) {
+    if (!Array.isArray(body[f]) || !body[f].length) continue;
+    const keep = body[f].filter((r) => !coveredByEpoch(f, r, meta));
+    if (keep.length !== body[f].length) { if (out === body) out = { ...body }; out[f] = keep; }
+  }
+  return out;
+}
+
 // Write a push's money records. Returns { ok:true, records } | { ok:true, skipped:'no_db' } | { ok:false, error, code?, status?, retryAfter? }.
 // Reliability (zip 159): each batch is an atomic transaction of idempotent upserts, so a transient D1 failure (network blip, overloaded primary) is
 // retried twice with backoff + jitter before the push is refused (503, the till keeps the sale and sends it again — unchanged).
@@ -411,6 +474,7 @@ export async function recordPush(env, clientId, body, opt = {}) {
     const auditOn = !!adb && !killed && !(await auditFlagOff(db));
     if (adb) await detachMainAuditTriggers(db);
     await drainOutboxThrottled(env, clientId, db).catch(() => {});
+    body = await dropResetCovered(db, clientId, body);
     const split = splitBad(body);
     const groups = buildGroups(db, clientId, split.body, { ...opt, stampGuard: stampGuardOn(env) });      // zip 251: see UPSERT_RECORD_GUARDED
     let rejected = split.rejected;

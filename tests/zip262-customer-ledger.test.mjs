@@ -63,7 +63,7 @@ for (const app of APPS) {
     const txt = w.eval('buildCustomerStatementText().text'); assert.match(txt, /Closing balance: KES 1,350\.00 owed/);
     w.eval('printCustomerInvoice()');
     const inv = d.getElementById('sales-report-body').textContent;
-    assert.match(inv, /INVOICE/); assert.match(inv, /TOTAL OUTSTANDING: KES 1,400\.00/);
+    assert.match(inv, /INVOICE/); assert.match(inv, /Total outstanding:?\s*KES 1,400\.00/i);   // zip 356: the new invoice look (amount-due box)
     assert.match(inv, /BL-1/); assert.match(inv, /BL-2/); assert.doesNotMatch(inv, /BL-3/, 'settled bill is not on the invoice'); assert.doesNotMatch(inv, /BL-4/, 'voided bill is not on the invoice');
     // closing 1350 = outstanding 1400 - 50 store credit: the two views reconcile
     assert.equal(L.outstandingTotal - 50, L.closing);

@@ -1,0 +1,196 @@
+<!-- STAFF COMMISSION (zip 394) ----------------------------------------------------------------------------------------------------------
+     The admin sets, for each worker, the commission paid on every sale that worker makes: a percent of the sale (5 %) or a fixed amount per
+     sale (KSh 50). The earnings are worked out from the sales automatically. Whole shillings.
+     Data: staff[i].commission = { type: 'pct' | 'fixed' | '', value }, staff[i].commissionHistory = [{ at, type, value }] - a change applies
+     from its date on, so changing a rate never rewrites what was earned before.
+     Who earns a sale: the staff member named as having served it (servedBy), otherwise the till user who rang it (ctx.cashierId). Sales rung
+     by the admin earn no commission. Voided sales earn nothing. A bill paid in parts: a percent is earned on each payment as it comes in; a
+     fixed amount once per bill.
+     Profit: the commission of the period is taken off profit (Profits tab, the printed Profit Report, Reports > Expenses & Profit) next to
+     the cash surplus / shortage, in the "Final profit".
+     Screen: Staff tab > Commission (admin only): the rate of each worker, and the earnings for a period (printable). -->
+<style>
+#sc-panel { margin-top: 16px; }
+#sc-panel .sc-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 10px; margin-bottom: 10px; }
+#sc-panel .sc-head h3 { margin: 0; }
+#sc-panel .sc-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#sc-panel .sc-tools select, #sc-panel .sc-tools input { width: auto; margin: 0; padding: 7px 10px; border-radius: 10px; }
+#sc-panel .sc-tools button { width: auto; margin: 0; }
+#sc-panel .sc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 4px 0 14px; }
+#sc-panel .sc-card { border-radius: 14px; padding: 12px 14px; color: #fff; background-color: #1e3a5f;
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px); }
+#sc-panel .sc-card.b { background-color: #14532d; } #sc-panel .sc-card.c { background-color: #7c2d12; }
+#sc-panel .sc-card span { display: block; font-size: 12px; opacity: .9; } #sc-panel .sc-card b { display: block; font-size: 21px; margin-top: 2px; }
+#sc-panel .sc-box { border: 1px solid var(--border-color, #e1e6ea); border-radius: 14px; overflow-x: auto; background: var(--bg-surface, #fff); margin-bottom: 14px; }
+#sc-panel table { width: 100%; border-collapse: collapse; font-size: 14px; }
+#sc-panel th, #sc-panel td { padding: 9px 10px; border-bottom: 1px solid var(--border-color, #eef1f4); text-align: left; vertical-align: middle; }
+#sc-panel th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted, #6b7c8a); background: rgba(127,140,160,.08); }
+#sc-panel td.n, #sc-panel th.n { text-align: right; white-space: nowrap; }
+#sc-panel tr.sc-tot td { font-weight: 700; border-top: 2px solid currentColor; }
+#sc-panel td select, #sc-panel td input { width: auto; min-width: 90px; margin: 0; padding: 6px 8px; border-radius: 8px; }
+#sc-panel td input[type=number] { width: 90px; }
+#sc-panel td button { width: auto; margin: 0; padding: 6px 12px; }
+#sc-panel .sc-note { font-size: 12px; color: var(--muted, #6b7c8a); margin: 4px 0 10px; }
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.StaffCommission) return;
+  var DAY = 86400000;
+  function list() { try { return typeof staff !== 'undefined' && Array.isArray(staff) ? staff : []; } catch (e) { return []; } }
+  function sales() { try { return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } }
+  function admin() { try { return typeof isAdminServing === 'function' ? !!isAdminServing() : false; } catch (e) { return false; } }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { return 'KES ' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
+  function ts(s) { var t = new Date(s && s.timestamp).getTime(); return isFinite(t) ? t : 0; }
+  function saleTotal(s) {
+    if (typeof s.total === 'number' && isFinite(s.total)) return s.total;
+    try { if (typeof reportSaleTotal === 'function') return Number(reportSaleTotal(s)) || 0; } catch (e) { /* below */ }
+    return (s.items || []).reduce(function (a, it) { return a + (Number(it.price) || 0) * (Number(it.qty) || 0); }, 0);
+  }
+  function norm(n) { return String(n || '').trim().toLowerCase(); }
+
+  // the rate in force for a worker at a moment
+  function rateAt(st, at) {
+    var h = Array.isArray(st && st.commissionHistory) ? st.commissionHistory : [];
+    var best = null;
+    h.forEach(function (r) { if (r && Number(r.at) <= at && (!best || Number(r.at) >= Number(best.at))) best = r; });
+    if (!best) return null;
+    var v = Number(best.value) || 0;
+    if (!(best.type === 'pct' || best.type === 'fixed') || !(v > 0)) return null;
+    return { type: best.type, value: v };
+  }
+  // who earns a sale
+  function earnerOf(s, byName, byId) {
+    var n = norm(s.servedBy);
+    if (n && byName[n]) return byName[n];
+    var id = s.ctx && s.ctx.cashierId;
+    if (id && id !== 'admin' && byId[id]) return byId[id];
+    return null;
+  }
+  // earnings in [from, to] (Date objects or ms)
+  function between(from, to) {
+    var a = +new Date(from), b = +new Date(to);
+    var byName = {}, byId = {};
+    list().forEach(function (st) { if (!st || st.removed || st.deleted) return; if (st.id) byId[st.id] = st; if (st.name) byName[norm(st.name)] = st; });
+    var all = sales().filter(function (s) { return s && !s.voided; });
+    var firstOfBill = {};
+    all.forEach(function (s) { if (!s.billId) return; var t = ts(s); if (!(s.billId in firstOfBill) || t < firstOfBill[s.billId].t) firstOfBill[s.billId] = { t: t, id: s.id }; });
+    var rows = {};
+    all.forEach(function (s) {
+      var t = ts(s); if (t < a || t > b) return;
+      var st = earnerOf(s, byName, byId); if (!st) return;
+      var r = rateAt(st, t); if (!r) return;
+      var row = rows[st.id || st.name] || (rows[st.id || st.name] = { id: st.id, name: st.name || 'Staff', sales: 0, value: 0, raw: 0 });
+      var v = saleTotal(s);
+      row.sales++; row.value += v;
+      if (r.type === 'pct') row.raw += v * r.value / 100;
+      else if (!s.billId || (firstOfBill[s.billId] && firstOfBill[s.billId].id === s.id)) row.raw += r.value;
+    });
+    var out = Object.keys(rows).map(function (k) { var r = rows[k]; r.value = Math.round(r.value); r.commission = Math.round(r.raw); delete r.raw; return r; })
+      .sort(function (x, y) { return y.commission - x.commission || String(x.name).localeCompare(String(y.name)); });
+    var total = out.reduce(function (t, r) { return t + r.commission; }, 0);
+    return { rows: out, total: total };
+  }
+
+  function setRate(id, type, value, fromDay) {
+    if (!admin()) { try { showToast('Only the admin can set commission.', true); } catch (e) { /* */ } return false; }
+    var st = list().find(function (x) { return x && x.id === id; }); if (!st) return false;
+    var v = type ? Number(value) : 0;
+    if (type && !(v > 0)) { try { showToast('Type a commission above 0.', true); } catch (e) { /* */ } return false; }
+    if (type === 'fixed' && Math.round(v) !== v) { try { showToast('A fixed commission is whole shillings.', true); } catch (e) { /* */ } return false; }
+    if (type === 'pct' && v > 100) { try { showToast('A percent cannot be above 100.', true); } catch (e) { /* */ } return false; }
+    var at = fromDay ? new Date(fromDay + 'T00:00:00').getTime() : Date.now();
+    if (!isFinite(at)) at = Date.now();
+    var h = Array.isArray(st.commissionHistory) ? st.commissionHistory.slice() : [];
+    h = h.filter(function (r) { return Number(r.at) !== at; });
+    h.push({ at: at, type: type || '', value: type ? v : 0, by: (typeof activeServerName === 'function' ? activeServerName() : 'Admin') });
+    h.sort(function (x, y) { return x.at - y.at; });
+    st.commissionHistory = h;
+    var cur = rateAt(st, Date.now());
+    st.commission = cur ? { type: cur.type, value: cur.value } : { type: '', value: 0 };
+    st.updatedAt = Date.now();
+    try { if (typeof saveAllLocal === 'function') saveAllLocal(); else safeSetItem('pos_staff', JSON.stringify(staff)); } catch (e) { /* */ }
+    try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* */ }
+    return true;
+  }
+
+  // ---------- screen ----------
+  var period = 'month', from = '', to = '';
+  function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function range() {
+    var now = new Date(), s = new Date(now.getFullYear(), now.getMonth(), now.getDate()), e = new Date(s.getTime() + DAY - 1);
+    if (period === 'week') { var dow = (s.getDay() + 6) % 7; s = new Date(s.getTime() - dow * DAY); }
+    else if (period === 'month') s = new Date(now.getFullYear(), now.getMonth(), 1);
+    else if (period === 'lastmonth') { s = new Date(now.getFullYear(), now.getMonth() - 1, 1); e = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, -1); }
+    else if (period === 'custom' && from && to) { s = new Date(from + 'T00:00:00'); e = new Date(to + 'T23:59:59.999'); }
+    return { from: s, to: e, text: ymd(s) + ' to ' + ymd(e) };
+  }
+  function label(r) { return !r ? 'None' : r.type === 'pct' ? r.value + ' % of each sale' : kes(r.value) + ' per sale'; }
+  function draw() {
+    var host = document.getElementById('staff-roster-list'); if (!host) return;
+    var box = document.getElementById('sc-panel');
+    if (!admin()) { if (box) box.remove(); return; }
+    if (!box) { box = document.createElement('div'); box.id = 'sc-panel'; box.className = 'panel'; host.closest('.panel') ? host.closest('.panel').insertAdjacentElement('afterend', box) : host.insertAdjacentElement('afterend', box); }
+    var rg = range(), d = between(rg.from, rg.to), today = ymd(new Date());
+    var people = list().filter(function (s) { return s && !s.removed && !s.deleted; });
+    var rateRows = people.map(function (st) {
+      var r = rateAt(st, Date.now());
+      return '<tr><td>' + esc(st.name || 'Staff') + '</td><td>' + esc(label(r)) + '</td>'
+        + '<td><select data-sc-type="' + esc(st.id) + '"><option value="">None</option><option value="pct"' + (r && r.type === 'pct' ? ' selected' : '') + '>% of each sale</option><option value="fixed"' + (r && r.type === 'fixed' ? ' selected' : '') + '>KSh per sale</option></select></td>'
+        + '<td><input type="number" min="0" step="any" inputmode="decimal" data-sc-val="' + esc(st.id) + '" value="' + (r ? r.value : '') + '"></td>'
+        + '<td><input type="date" data-sc-from="' + esc(st.id) + '" value="' + today + '"></td>'
+        + '<td><button class="btn-main" data-sc-save="' + esc(st.id) + '">Save</button></td></tr>';
+    }).join('');
+    var earnRows = d.rows.map(function (r) { return '<tr><td>' + esc(r.name) + '</td><td class="n">' + r.sales + '</td><td class="n">' + kes(r.value) + '</td><td class="n">' + kes(r.commission) + '</td></tr>'; }).join('');
+    var tSales = d.rows.reduce(function (t, r) { return t + r.sales; }, 0), tVal = d.rows.reduce(function (t, r) { return t + r.value; }, 0);
+    box.innerHTML = '<div class="sc-head"><h3>Commission</h3><div class="sc-tools">'
+      + '<select id="sc-period"><option value="today">Today</option><option value="week">This week</option><option value="month">This month</option><option value="lastmonth">Last month</option><option value="custom">Custom</option></select>'
+      + '<input type="date" id="sc-from" value="' + esc(from) + '"' + (period === 'custom' ? '' : ' style="display:none"') + '><input type="date" id="sc-to" value="' + esc(to) + '"' + (period === 'custom' ? '' : ' style="display:none"') + '>'
+      + '<button class="btn-main" id="sc-print">Print</button></div></div>'
+      + '<div class="sc-cards"><div class="sc-card"><span>Commission to pay</span><b>' + kes(d.total) + '</b></div><div class="sc-card b"><span>Sales that earn commission</span><b>' + tSales + '</b></div><div class="sc-card c"><span>Value of those sales</span><b>' + kes(tVal) + '</b></div></div>'
+      + '<div class="sc-box"><table><tr><th>Worker</th><th class="n">Sales</th><th class="n">Sales value</th><th class="n">Commission</th></tr>'
+      + (earnRows || '<tr><td colspan="4">No commission earned in this period.</td></tr>')
+      + (d.rows.length ? '<tr class="sc-tot"><td>Total</td><td class="n">' + tSales + '</td><td class="n">' + kes(tVal) + '</td><td class="n">' + kes(d.total) + '</td></tr>' : '') + '</table></div>'
+      + '<h4 style="margin:6px 0">Commission rates</h4><p class="sc-note">A new rate counts from the date you choose; sales before it keep the old rate.</p>'
+      + '<div class="sc-box"><table><tr><th>Worker</th><th>Now</th><th>Type</th><th>Amount</th><th>From</th><th></th></tr>' + (rateRows || '<tr><td colspan="6">No staff yet.</td></tr>') + '</table></div>';
+    var sel = document.getElementById('sc-period'); sel.value = period;
+    sel.onchange = function () { period = sel.value; if (period === 'custom' && !from) { from = ymd(rg.from); to = ymd(rg.to); } draw(); };
+    var f = document.getElementById('sc-from'), t = document.getElementById('sc-to');
+    f.onchange = function () { from = f.value; if (to) draw(); }; t.onchange = function () { to = t.value; if (from) draw(); };
+    document.getElementById('sc-print').onclick = function () { print(rg, d); };
+    box.querySelectorAll('[data-sc-save]').forEach(function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute('data-sc-save');
+        var q = function (a) { return box.querySelector('[' + a + '="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]'); };
+        if (setRate(id, q('data-sc-type').value, q('data-sc-val').value, q('data-sc-from').value)) { try { showToast('Commission saved.'); } catch (e) { /* */ } draw(); }
+      };
+    });
+  }
+  function print(rg, d) {
+    var biz = ''; try { biz = (typeof businessName !== 'undefined' && businessName) || localStorage.getItem('pos_biz_name') || ''; } catch (e) { /* */ }
+    var rows = d.rows.map(function (r) { return '<tr><td>' + esc(r.name) + '</td><td class="n">' + r.sales + '</td><td class="n">' + kes(r.value) + '</td><td class="n">' + kes(r.commission) + '</td></tr>'; }).join('');
+    var html = '<!doctype html><html><head><meta charset="utf-8"><title>Commission</title><style>@page{size:A4;margin:14mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:20px;margin:0}p{margin:4px 0 14px;color:#444}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}.n{text-align:right}tfoot td{font-weight:700;border-top:2px solid #111}</style></head><body>'
+      + '<h1>' + esc(biz || 'Commission') + ' - Staff commission</h1><p>' + esc(rg.text) + '</p><table><thead><tr><th>Worker</th><th class="n">Sales</th><th class="n">Sales value</th><th class="n">Commission</th></tr></thead><tbody>'
+      + (rows || '<tr><td colspan="4">No commission earned in this period.</td></tr>') + '</tbody><tfoot><tr><td>Total</td><td></td><td></td><td class="n">' + kes(d.total) + '</td></tr></tfoot></table></body></html>';
+    var fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(fr);
+    var w = fr.contentWindow; w.document.open(); w.document.write(html); w.document.close();
+    setTimeout(function () { try { w.focus(); w.print(); } catch (e) { /* */ } setTimeout(function () { fr.remove(); }, 2000); }, 300);
+  }
+  function wrap(name, test) {
+    var f = window[name];
+    if (typeof f !== 'function' || f.__sc) return;
+    var w = function () { var x = f.apply(this, arguments); try { if (!test || test(arguments)) draw(); } catch (e) { /* */ } return x; };
+    w.__sc = true; window[name] = w;
+  }
+  function hook() {
+    wrap('renderStaffPanel'); wrap('staffPanelRefresh');
+    wrap('switchTab', function (a) { return a[0] === 'staff-tab' || a[1] === 'staff-tab'; });
+    wrap('performTabSwitch', function (a) { return a[0] === 'staff-tab' || a[1] === 'staff-tab'; });
+  }
+  window.StaffCommission = { between: between, rateAt: rateAt, setRate: setRate, draw: draw };
+  hook(); setTimeout(hook, 1500);
+})();
+</script>
+<!-- /STAFF COMMISSION -->

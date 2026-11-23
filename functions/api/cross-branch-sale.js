@@ -86,6 +86,19 @@ export async function onRequestPost(context) {
   const memberIds = await getBranchGroupMembers(env, callerRecord.branchGroupId);
 
   if (body.action === 'searchOtherBranches') {
+    // zip 327: the same matching rules as the till (see posSearchHit): any part of the name / code / piece code / SKU / barcode, any capitals or spacing,
+    // punctuation ignored, and several words in any order. A nameless record can no longer break the search.
+    const norm = (v) => String(v == null ? '' : v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+    const searchMatches = (item, q) => {
+      const parts = [item.name, item.code, item.pieceCode, item.sku, item.barcode].map(norm).filter(Boolean);
+      const hay = parts.join(' '); const qn = norm(q); if (!qn) return false;
+      if (hay.includes(qn)) return true;
+      const comp = parts.map((x) => x.replace(/[^a-z0-9]/g, ''));
+      const qc = qn.replace(/[^a-z0-9]/g, '');
+      if (qc && comp.some((c) => c.includes(qc))) return true;
+      const words = qn.split(' ');
+      return words.length > 1 && words.every((w) => hay.includes(w) || (w.replace(/[^a-z0-9]/g, '') && comp.some((c) => c.includes(w.replace(/[^a-z0-9]/g, '')))));
+    };
     const query = String(body.query || '').trim().toLowerCase();
     if (!query) return jsonResponse({ results: [] });
 
@@ -101,8 +114,8 @@ export async function onRequestPost(context) {
       const matches = [];
       items.forEach((item) => {
         if (item.type === 'service' || item.type === 'ingredient') return; // never sold directly
-        const haystack = `${item.name} ${item.code}`.toLowerCase();
-        if (!haystack.includes(query)) return;
+        if (item.archived || item._deleted) return;
+        if (!searchMatches(item, query)) return;
         const available = getAvailableQty(item, undefined);
         if (available <= 0 && !(item.dualUnit && getAvailableQty(item, 'piece') > 0)) return;
         matches.push({
@@ -121,7 +134,7 @@ export async function onRequestPost(context) {
       return matches;
     }));
     const results = perBranch.flat();
-    return jsonResponse({ results: results.slice(0, 30) });
+    return jsonResponse({ results: results.slice(0, 30), total: results.length, truncated: results.length > 30 });
   }
 
   if (body.action === 'sellBatch') {
@@ -175,8 +188,10 @@ export async function onRequestPost(context) {
         return sum + unitPrice * r.qty;
       }, 0);
 
-      const cashAmount = typeof body.cashAmount === 'number' ? body.cashAmount : (body.paymentMethod === 'mpesa' ? 0 : total);
+      const cashAmount = typeof body.cashAmount === 'number' ? body.cashAmount : (body.paymentMethod === 'mpesa' || body.paymentMethod === 'card' ? 0 : total);
       const mpesaAmount = typeof body.mpesaAmount === 'number' ? body.mpesaAmount : (body.paymentMethod === 'mpesa' ? total : 0);
+      // zip 269: a card sale carried to the other branch keeps its card amount (it arrived with all three amounts zero, so that branch's reports missed the revenue)
+      const cardAmount = typeof body.cardAmount === 'number' ? body.cardAmount : (body.paymentMethod === 'card' ? total : 0);
 
       const saleRecord = {
         id: saleId,
@@ -185,6 +200,7 @@ export async function onRequestPost(context) {
         paid: true,
         cashAmount,
         mpesaAmount,
+        cardAmount,
         amountTendered: total,
         change: 0,
         servedBy: body.servedBy || '?',

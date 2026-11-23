@@ -39,6 +39,7 @@
 
 import { requireValidLicense, getLicense, saveLicense, createClient, getBranchGroupMembers, addToBranchGroup, removeFromBranchGroup, randomToken, pickNextBranchSlug, getGroupMainRecord, deleteClient } from './_license.js';
 import { seedInitialState } from './pos-sync.js';
+import { pushToBranch, ensureOrgSchema, groupIdOf, upsertPerson, endAssignments, addAssignment, audit as orgAudit } from './_org.js';
 import { readState } from './_state-store.js';
 import { linkNewClientToSameAccount, removeClientLink } from './account-recovery.js';
 import { deviceGuard } from './_device-auth.js';
@@ -119,6 +120,35 @@ function computeBranchStats(state) {
 
 // zip 263: the creation of a branch, shared by the "Add Branch" button (below) and by "Get my own link" (get-my-link.js, when a buyer who already has a shop
 // buys another one). `record` is a permanent client already in (or about to found) a branch group; `contact` = { phone, email } of the person the branch is for.
+// zip 309: the limits on creating a branch (a daily cap per business, and the plan's branch allowance when billing is enforced), shared by the
+// Branches panel ('create' below) and the Business HQ (org.js). -> null when allowed, or the Response to send.
+export async function branchCreateCap(env, record) {
+  // zip 185: a cap per group per day (default 20, BRANCH_CREATE_DAILY_LIMIT) so a leaked link cannot mint unlimited permanent licences.
+  const capped = await secLimit(env, 'branch-create', record.branchGroupId || record.id, secNum(env.BRANCH_CREATE_DAILY_LIMIT, 20), 86400, 'branches created', CORS_HEADERS);
+  if (capped) return capped;
+
+  // Branch limit removed: any client holding a permanent link (the only
+  // way to reach this point — demos are blocked above) can create as
+  // many branches as they want. branchAllowance/branchAddonClaimed are
+  // left in place on the license record and still returned by the
+  // 'summary' action below for any UI that reads them, but they no
+  // longer gate creation here — there used to be a tiered-billing check
+  // (base tier included 1 branch, KES 1,500 per additional one) that
+  // returned a 402 'branch_limit' error once the group's member count
+  // reached the main record's branchAllowance; that cap no longer applies.
+  // zip 267: a SUBSCRIBED shop (bought after the billing launch date) has the branches its plan includes plus any it bought; a shop that predates billing, or any
+  // shop while billing enforcement is off, is unlimited exactly as before. The owner sets the numbers in Owner Console -> Billing.
+  const bs = await getBillingSettings(env);
+  if (enforcementOn(bs)) {
+    const mainRec = await getGroupMainRecord(env, record), mb = mainRec && mainRec.billing;
+    if (mb && mb.cohort === 'new' && mb.exempt !== true && mb.comped !== true) {
+    const have = record.branchGroupId ? (await getBranchGroupMembers(env, record.branchGroupId)).length : 1, cap = allowances(mb, bs).branches;
+    if (have >= cap) return jsonResponse({ error: `Your plan includes ${cap} branches and you have ${have}. Add a branch from My plan (KES ${bs.prices.extraBranch.toLocaleString('en-KE')} one-time, or ${bs.bundleBranches} for KES ${bs.prices.branchBundle.toLocaleString('en-KE')}).`, code: 'branch_limit', allowed: cap, used: have, price: bs.prices.extraBranch, bundlePrice: bs.prices.branchBundle, bundleQty: bs.bundleBranches }, 402);
+    }
+  }
+  return null;
+}
+
 export async function createBranchFor(env, record, branchName, contact, opts = {}) {
   if (!record.branchGroupId) {
     record.branchGroupId = randomToken(12);
@@ -261,29 +291,8 @@ export async function onRequestPost(context) {
       await addToBranchGroup(env, record.branchGroupId, record.id);
     }
 
-    // zip 185: a cap per group per day (default 20, BRANCH_CREATE_DAILY_LIMIT) so a leaked link cannot mint unlimited permanent licences.
-    const capped = await secLimit(env, 'branch-create', record.branchGroupId, secNum(env.BRANCH_CREATE_DAILY_LIMIT, 20), 86400, 'branches created', CORS_HEADERS);
-    if (capped) return capped;
-
-    // Branch limit removed: any client holding a permanent link (the only
-    // way to reach this point — demos are blocked above) can create as
-    // many branches as they want. branchAllowance/branchAddonClaimed are
-    // left in place on the license record and still returned by the
-    // 'summary' action below for any UI that reads them, but they no
-    // longer gate creation here — there used to be a tiered-billing check
-    // (base tier included 1 branch, KES 1,500 per additional one) that
-    // returned a 402 'branch_limit' error once the group's member count
-    // reached the main record's branchAllowance; that cap no longer applies.
-    // zip 267: a SUBSCRIBED shop (bought after the billing launch date) has the branches its plan includes plus any it bought; a shop that predates billing, or any
-    // shop while billing enforcement is off, is unlimited exactly as before. The owner sets the numbers in Owner Console -> Billing.
-    const bs = await getBillingSettings(env);
-    if (enforcementOn(bs)) {
-      const mainRec = await getGroupMainRecord(env, record), mb = mainRec && mainRec.billing;
-      if (mb && mb.cohort === 'new' && mb.exempt !== true && mb.comped !== true) {
-        const have = (await getBranchGroupMembers(env, record.branchGroupId)).length, cap = allowances(mb, bs).branches;
-        if (have >= cap) return jsonResponse({ error: `Your plan includes ${cap} branches and you have ${have}. Add a branch from My plan (KES ${bs.prices.extraBranch.toLocaleString('en-KE')} one-time, or ${bs.bundleBranches} for KES ${bs.prices.branchBundle.toLocaleString('en-KE')}).`, code: 'branch_limit', allowed: cap, used: have, price: bs.prices.extraBranch, bundlePrice: bs.prices.branchBundle, bundleQty: bs.bundleBranches }, 402);
-      }
-    }
+    const capErr = await branchCreateCap(env, record);
+    if (capErr) return capErr;
     const made = await createBranchFor(env, record, String(body.branchName || '').trim().slice(0, 80));
     const branch = made.branch, branchLabel = made.branchLabel;
 
@@ -303,7 +312,14 @@ export async function onRequestPost(context) {
       const memberRecord = await getLicense(env, memberId);
       if (!memberRecord) continue;
       const shouldBeMain = memberId === targetClientId;
-      if (memberRecord.isMainBranch !== shouldBeMain) {
+      // zip 269: a subscribed group's plan lives on its MAIN shop and the other shops follow it (billing.followsMain). Promoting a branch must move that link too, or owner edits on the
+      // new main are redirected to the old main (now a branch) and a suspended group can never be reactivated.
+      let billingMoved = false;
+      if (memberRecord.billing && memberRecord.billing.cohort) {
+        if (shouldBeMain && memberRecord.billing.followsMain) { const { followsMain, ...rest } = memberRecord.billing; memberRecord.billing = rest; billingMoved = true; }
+        else if (!shouldBeMain && memberRecord.billing.followsMain !== targetClientId) { memberRecord.billing = { ...memberRecord.billing, followsMain: targetClientId }; billingMoved = true; }
+      }
+      if (memberRecord.isMainBranch !== shouldBeMain || billingMoved) {
         memberRecord.isMainBranch = shouldBeMain;
         await saveLicense(env, memberRecord);
       }
@@ -320,6 +336,9 @@ export async function onRequestPost(context) {
     const mainRecordForSummary = await getGroupMainRecord(env, record);
     const members = await getBranchGroupMembers(env, record.branchGroupId);
     const branches = [];
+    // zip 309: the Business HQ profile (code, name, status) where the owner has set one
+    let profiles = new Map();
+    try { const db = await ensureOrgSchema(env); profiles = new Map((await db.prepare('SELECT client_id, code, name, status FROM org_branch WHERE group_id = ?').bind(record.branchGroupId).all()).results.map((r) => [r.client_id, r])); } catch (e) { /* no HQ profiles yet */ }
     for (const memberId of members) {
       const memberRecord = await getLicense(env, memberId);
       if (!memberRecord) continue;
@@ -331,8 +350,11 @@ export async function onRequestPost(context) {
         slug: memberRecord.slug,
         isMainBranch: !!memberRecord.isMainBranch,
         isSelf: memberId === clientId,
+        code: (profiles.get(memberId) || {}).code || null,
+        hqName: (profiles.get(memberId) || {}).name || null,
+        status: (profiles.get(memberId) || {}).status || (memberRecord.branchSuspended ? 'suspended' : 'active'),
         staff: Array.isArray(state && state.staff)
-          ? state.staff.map((s) => ({ name: s.name, roles: s.roles || [] }))
+          ? state.staff.filter((s) => s && !s.removed).map((s) => ({ name: s.name, roles: s.roles || [] }))      // zip 309: people who moved away are not listed
           : [],
         ...stats,
       });
@@ -455,20 +477,27 @@ export async function onRequestPost(context) {
 
     const sourceState = await getSyncedState(env, clientId);
     const sourceStaff = Array.isArray(sourceState && sourceState.staff) ? sourceState.staff : [];
-    const member = sourceStaff.find((s) => s.id === staffId);
+    const member = sourceStaff.find((s) => s.id === staffId && !s.removed);
     if (!member) return jsonResponse({ error: 'Could not find that staff member here.' }, 404);
 
     const targetState = await getSyncedState(env, targetClientId);
     const targetStaff = Array.isArray(targetState && targetState.staff) ? targetState.staff : [];
-    if (targetStaff.some((s) => s.id === member.id)) {
+    if (targetStaff.some((s) => s.id === member.id && !s.removed)) {
       return jsonResponse({ error: 'That staff member is already at the destination branch.' }, 400);
     }
 
-    const newSourceStaff = sourceStaff.filter((s) => s.id !== staffId);
-    const newTargetStaff = [...targetStaff, member];
-
-    await seedInitialState(env, clientId, { staff: newSourceStaff });
-    await seedInitialState(env, targetClientId, { staff: newTargetStaff });
+    // zip 309: written the way a device's push is (the record moves with the same id; at the old branch it is marked removed, never cut out of
+    // the list - a list without it was not a deletion the sync understands, so a device at the old branch pushed the person straight back).
+    const now = Date.now();
+    await pushToBranch(env, targetClientId, { staff: [{ ...member, removed: false, updatedAt: now }] });
+    await pushToBranch(env, clientId, { staff: [{ ...member, removed: true, updatedAt: now + 1 }] });
+    try {
+      const db = await ensureOrgSchema(env), g = groupIdOf(record);
+      await upsertPerson(db, g, String(member.id), { name: member.name }, null);
+      await endAssignments(db, g, String(member.id), clientId, 'moved permanently');
+      await addAssignment(db, g, { person_id: String(member.id), client_id: targetClientId, kind: 'permanent' }, 'branch-admin');
+      await orgAudit(db, g, 'branch-admin', 'staff.assign.permanent', 'person:' + member.id, { branch: clientId }, { branch: targetClientId }, 'Staff tab: Move to branch');
+    } catch (e) { /* the move itself is done; the HQ history needs the transaction database */ }
 
     return jsonResponse({ ok: true });
   }

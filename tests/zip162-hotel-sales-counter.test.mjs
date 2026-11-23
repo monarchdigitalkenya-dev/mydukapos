@@ -27,11 +27,11 @@ test('import: a dash / blank / N/A price is importable (price 0), real garbage i
   b.close();
 });
 
-test('payment methods: all five by default; owner can hide some; the current method moves to a shown one', async () => {
+test('payment methods: all six by default; owner can hide some; the current method moves to a shown one', async () => {
   const b = await app(); const { w, d } = b;
-  const shown = () => ['cash', 'mpesa', 'split', 'bill', 'tab'].filter((k) => d.getElementById('pay-' + k + '-btn').style.display !== 'none');
+  const shown = () => ['cash', 'mpesa', 'card', 'split', 'bill', 'tab'].filter((k) => d.getElementById('pay-' + k + '-btn').style.display !== 'none');
   w.eval('hospApplyPayMethods()');
-  assert.deepEqual(shown(), ['cash', 'mpesa', 'split', 'bill', 'tab']);
+  assert.deepEqual(shown(), ['cash', 'mpesa', 'card', 'split', 'bill', 'tab']);
   const setMethods = (list) => {
     d.querySelectorAll('.pos-paym').forEach((c) => { c.checked = list.includes(c.value); });
     w.eval('posSavePayMethods()');
@@ -41,11 +41,11 @@ test('payment methods: all five by default; owner can hide some; the current met
   assert.deepEqual(shown(), ['mpesa', 'bill']);
   assert.equal(w.eval('currentPaymentMethod'), 'mpesa', 'cash was hidden, so the counter moved to a shown method');
   const set = [...d.querySelectorAll('#tab-settle-pay-toggle button')].filter((x) => x.style.display !== 'none').length;
-  assert.equal(set, 2, 'settle shows M-Pesa and Card only (Card is always offered when settling)');
+  assert.equal(set, 1, 'settle follows the same choice: only M-Pesa');
   setMethods([]);
   assert.deepEqual(shown(), ['mpesa', 'bill'], 'cannot hide every method');
   setMethods(['cash', 'mpesa', 'card', 'split', 'bill', 'tab']);
-  assert.deepEqual(shown(), ['cash', 'mpesa', 'split', 'bill', 'tab']);
+  assert.deepEqual(shown(), ['cash', 'mpesa', 'card', 'split', 'bill', 'tab']);
   b.close();
 });
 

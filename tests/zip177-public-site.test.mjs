@@ -161,13 +161,21 @@ test('public pages: one h1, a title, a description, canonical, skip link, labell
   for (const id of ['cf-name', 'cf-contact', 'cf-msg']) assert.match(c, new RegExp(`<label for="${id}"`));
 });
 
-test('the sign-up form on the public site asks for Terms consent and a strong password; the dashboard keeps the sign-in when offline', () => {
+test('sign-up asks for Terms consent (every app, and the server refuses without it); the dashboard keeps the sign-in when offline', () => {
   const a = fs.readFileSync(path.join(ROOT, 'public-site/app.html'), 'utf8'), d = fs.readFileSync(path.join(ROOT, 'public-site/dashboard.html'), 'utf8');
-  assert.match(a, /id="demo-accept-terms"/); assert.match(a, /acceptTerms: true/); assert.match(a, /channel: 'website'/); assert.match(a, /<!--@seo-->/);
+  // zip 307 turned public-site/app.html into the product page with a no-sign-up demo; accounts are created from the apps' own sign-up form
+  for (const app of ['index.html', 'hotel/index.html', 'water/index.html', 'pharmacy/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html']) {
+    const h = fs.readFileSync(path.join(ROOT, app), 'utf8');
+    assert.match(h, /id="signup-accept-terms"/, app + ': Terms tick box'); assert.match(h, /acceptTerms: true/, app);
+    assert.match(h, /getElementById\('signup-accept-terms'\); if \(!tc \|\| !tc\.checked\)/, app + ': refused until ticked');
+  }
+  assert.match(fs.readFileSync(path.join(ROOT, 'functions/api/demo-account.js'), 'utf8'), /body\.acceptTerms !== true\) return jsonResponse\(\{ error: 'Please accept the Terms/, 'the server refuses a sign-up without consent');
+  assert.match(a, /<!--@seo-->/);
   assert.doesNotMatch(a, /href="dashboard\.html"|href="app\.html/, 'links are absolute so /products/<key> works');
   assert.match(d, /e instanceof TypeError/); assert.match(d, /Your sign-in is kept/);
   const i = fs.readFileSync(path.join(ROOT, 'public-site/index.html'), 'utf8');
-  for (const x of ['href="/terms"', 'href="/privacy"', 'rel="canonical"', 'application/ld+json', 'id="proof-fees"']) assert.ok(i.includes(x), x);
+  for (const x of ['href="/terms"', 'href="/privacy"', 'rel="canonical"', 'application/ld+json', 'id="pricing"', 'id="price-subscription"'])   // zip 307: the fees block became the one pricing section
+   assert.ok(i.includes(x), x);
 });
 
 test('analytics: only known public paths are counted per day, nothing personal is stored, and the report is owner-only', async () => {

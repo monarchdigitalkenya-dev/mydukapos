@@ -8,7 +8,9 @@
   var api = function (extra) { return '/api/qr-order?t=' + encodeURIComponent(T) + (C ? '&c=' + encodeURIComponent(C) : '') + (extra || ''); };
   var post = function (body) { return fetch('/api/qr-order' + (C ? '?c=' + encodeURIComponent(C) : ''), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); };
   var main = document.getElementById('main'), bar = document.getElementById('bar'), sheet = document.getElementById('sheet'), panel = document.getElementById('sheet-panel');
-  var menu = null, pay = null, cart = [], cat = '', q = '';
+  var menu = null, pay = null, cart = [], cat = '', q = '', kind = '', SHOP = false;   // SHOP: a shop / pharmacy / water seller (not a restaurant): the words say "shop" and "staff", never "restaurant" or "waiter"
+  function W(food, shop) { return SHOP ? shop : food; }
+  function BIZ() { return (menu && menu.business && String(menu.business).trim()) || 'the shop'; }   // zip 376: the customer sees the real name ("Nadia Beauty"), never a guessed "the restaurant"
   var store = { get: function (k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: function (k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* private mode */ } } };
   var money = function (n) { return 'KES ' + (Math.round(n * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   function el(tag, attrs, kids) {
@@ -25,10 +27,12 @@
     fetch(api()).then(function (r) { return r.text().then(function (t) { var d = {}; try { d = JSON.parse(t); } catch (e) { d = {}; } return { ok: r.ok && !!d.location, d: d }; }); }).then(function (x) {
       if (!x.ok) { fail(x.d.error || 'This code is not valid. Please ask a member of staff.'); return; }
       document.getElementById('biz').textContent = x.d.business || 'Menu';
-      document.getElementById('loc').textContent = '📍 ' + x.d.location.label;
+      kind = x.d.location.kind || '';
+      document.getElementById('loc').textContent = (kind === 'online' ? '🏠 ' : '📍 ') + x.d.location.label;
       document.title = (x.d.business || 'Menu') + ' — ' + x.d.location.label;
       if (!x.d.open || !x.d.menu) { fail('Ordering by phone is closed right now. Please ask a member of staff.'); return; }
-      menu = x.d.menu; pay = x.d.payment || null;
+      menu = x.d.menu; pay = x.d.payment || null; SHOP = menu.style !== 'food';
+      if (SHOP) { LABEL.CLAIMED = '👍 Confirmed — we have your order'; LABEL.PREPARING = '🔥 Being got ready'; LABEL.READY = '✅ Ready'; LABEL.SERVED = '✅ Done — thank you!'; }
       // a NEW session at this table / room (the previous guests left): nothing of theirs — cart, order — carries over
       if (store.get('qr-session') && store.get('qr-session') !== x.d.session) { store.set('qr-last-order', ''); store.set('qr-key', ''); cart = []; }
       store.set('qr-session', x.d.session || '');
@@ -40,7 +44,7 @@
   function groupsFor(it) { return (it.modifierGroupIds || []).map(function (id) { return menu.modifierGroups.find(function (g) { return g.id === id; }); }).filter(Boolean); }
   function render() {
     main.textContent = '';
-    var search = el('input', { type: 'search', placeholder: 'Search the menu…', value: q, on: { input: function (e) { q = e.target.value.toLowerCase(); list(); } } });
+    var search = el('input', { type: 'search', placeholder: W('Search the menu…', 'Search items…'), value: q, on: { input: function (e) { q = e.target.value.toLowerCase(); list(); } } });
     var chips = el('div', { class: 'chips' }, [''].concat(menu.categories).map(function (c) {
       return el('button', { type: 'button', class: 'chip' + (c === cat ? ' on' : ''), text: c || 'All', on: { click: function () { cat = c; render(); } } });
     }));
@@ -114,22 +118,37 @@
         el('div', { class: 'price', text: money(l.price * l.qty) })]));
     });
     panel.appendChild(el('div', { class: 'row' }, [el('strong', { text: 'Total' }), el('strong', { text: money(total()) })]));
-    var name = el('input', { type: 'text', placeholder: 'Your name (optional)', maxlength: '60', value: store.get('qr-name') || '' });
-    var note = el('input', { type: 'text', placeholder: 'Anything else? (optional)', maxlength: '200' });
-    var err = el('div', { class: 'err' });
+    var online = kind === 'online';
+    var name = el('input', { type: 'text', placeholder: online ? 'Your name' : 'Your name (optional)', maxlength: '60', value: store.get('qr-name') || '', autocomplete: 'name', 'aria-label': 'Your name' });
+    name.addEventListener('input', function () { store.set('qr-name', name.value.trim()); });
+    var phone = el('input', { type: 'tel', inputmode: 'tel', placeholder: 'Your phone number (e.g. 0712 345 678)', maxlength: '20', value: store.get('qr-phone') || '', autocomplete: 'tel', 'aria-label': 'Your phone number' });
+    var mode = el('select', { 'aria-label': 'Delivery or pickup' }, [el('option', { value: 'delivery', text: '🛵 Deliver to me' }), el('option', { value: 'pickup', text: '🏃 I will collect it' })]);
+    var addr = el('input', { type: 'text', placeholder: 'Where to deliver (area, building, landmark)', maxlength: '140', value: store.get('qr-addr') || '', autocomplete: 'street-address', 'aria-label': 'Delivery address' });
+    phone.addEventListener('input', function () { store.set('qr-phone', phone.value.trim()); }); addr.addEventListener('input', function () { store.set('qr-addr', addr.value.trim()); });
+    mode.addEventListener('change', function () { addr.hidden = mode.value !== 'delivery'; });
+    var note = el('input', { type: 'text', placeholder: 'Anything else? (optional)', maxlength: '200', 'aria-label': 'Anything else? (optional)', value: store.get('qr-onote') || '' });
+    note.addEventListener('input', function () { store.set('qr-onote', note.value); });
+    var err = el('div', { class: 'err', role: 'alert' });
     var go = el('button', { type: 'button', class: 'go', text: 'Send order', style: 'width:100%; margin-top:10px; border:0; background:var(--brand); color:#fff; border-radius:10px; padding:14px; font-weight:700;' });
     go.addEventListener('click', function () {
-      go.disabled = true; go.textContent = 'Sending…'; err.textContent = '';
-      store.set('qr-name', name.value.trim());
-      post({ action: 'order', t: T, key: key(), name: name.value.trim(), note: note.value.trim(), items: cart.map(function (l) { return { code: l.code, qty: l.qty, modifiers: l.modifiers, note: l.note, name: l.name }; }) })
+      err.textContent = '';
+      if (online) {
+        var digits = phone.value.replace(/\D/g, '');
+        if (name.value.trim().length < 2) { err.textContent = 'Please enter your name.'; name.focus(); return; }
+        if (digits.length < 9) { err.textContent = 'Please enter a phone number we can reach you on.'; phone.focus(); return; }
+        if (mode.value === 'delivery' && addr.value.trim().length < 3) { err.textContent = 'Please tell us where to deliver.'; addr.focus(); return; }
+      }
+      go.disabled = true; go.textContent = 'Sending…';
+      store.set('qr-name', name.value.trim()); if (online) { store.set('qr-phone', phone.value.trim()); store.set('qr-addr', addr.value.trim()); }
+      post({ action: 'order', t: T, key: key(), name: name.value.trim(), phone: online ? phone.value.trim() : '', mode: online ? mode.value : '', address: online ? addr.value.trim() : '', note: note.value.trim(), items: cart.map(function (l) { return { code: l.code, qty: l.qty, modifiers: l.modifiers, note: l.note, name: l.name }; }) })
         .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
         .then(function (x) {
           if (!x.ok) { err.textContent = x.d.error || 'Could not send the order.'; go.disabled = false; go.textContent = 'Send order'; return; }
-          store.set('qr-key', ''); store.set('qr-last-order', x.d.orderId); cart = []; close(); updateBar(); track(x.d.orderId);
+          store.set('qr-key', ''); store.set('qr-onote', ''); store.set('qr-last-order', x.d.orderId); cart = []; close(); updateBar(); track(x.d.orderId);
         }).catch(function () { err.textContent = 'No connection — your order was not sent yet. Tap again to retry (it will not be sent twice).'; go.disabled = false; go.textContent = 'Send order'; });
     });
-    [name, note, err, go].forEach(function (x) { panel.appendChild(x); });
-    panel.appendChild(el('p', { class: 'muted', text: 'Nothing is charged now. Staff confirm your order, and you pay on your bill.' }));
+    (online ? [el('p', { class: 'muted', text: 'Your details, so ' + BIZ() + ' can reach you:' }), name, phone, mode, addr, note, err, go] : [name, note, err, go]).forEach(function (x) { panel.appendChild(x); });
+    panel.appendChild(el('p', { class: 'muted', text: online ? 'Nothing is charged now. ' + BIZ() + ' confirms your order, then you pay on delivery or pickup (cash or M-Pesa).' : 'Nothing is charged now. Staff confirm your order, and you pay on your bill.' }));
     sheet.classList.add('open');
   }
   // zip 153: statuses follow the server (D1). Everything is built with textContent; nothing from the server is ever parsed as HTML.
@@ -146,14 +165,20 @@
       var o = x.d.order, editing = sheet.classList.contains('open');
       main.textContent = '';
       main.appendChild(el('div', { class: 'status', text: LABEL[o.status] || o.status }));
-      if (o.owner && ['CLAIMED', 'PREPARING', 'READY', 'SERVED', 'BILLED'].indexOf(o.status) >= 0) main.appendChild(el('p', { class: 'muted', text: 'Your waiter: ' + o.owner }));
+      if (o.owner && ['CLAIMED', 'PREPARING', 'READY', 'SERVED', 'BILLED'].indexOf(o.status) >= 0) main.appendChild(el('p', { class: 'muted', text: W('Your waiter: ', 'Looked after by: ') + o.owner }));
       if (o.billNo) main.appendChild(el('p', { class: 'muted', text: 'Bill no. ' + o.billNo }));
       if (o.cancelRequested) main.appendChild(el('p', { class: 'muted', text: '⏳ You asked to cancel — waiting for the staff to confirm.' }));
       (o.requests || []).filter(function (r) { return r.status === 'PENDING' && r.type === 'EXCHANGE'; }).forEach(function () { main.appendChild(el('p', { class: 'muted', text: '⏳ You asked to swap an item — waiting for the staff to confirm.' })); });
-      o.items.filter(function (i) { return !i.removed; }).forEach(function (i) {
+      var pendingLine = function (i) { return (o.requests || []).some(function (r) { return r.status === 'PENDING' && r.type === 'CANCEL' && r.payload && r.payload.line === i.line; }); };
+      o.items.forEach(function (i) {
+        if (i.removed) { main.appendChild(el('div', { class: 'row', style: 'opacity:.6;' }, [el('span', { style: 'text-decoration:line-through;', text: i.qty + '× ' + i.name }), el('span', { class: 'muted', text: 'Cancelled' })])); return; }
         main.appendChild(el('div', { class: 'row' }, [el('span', { text: i.qty + '× ' + i.name }), el('span', {}, [el('span', { text: money(i.price * i.qty) + ' ' }),
-          o.canExchange ? el('button', { type: 'button', class: 'chip', text: 'Swap', on: { click: function () { swap(o, i); } } }) : null])]));
+          o.canExchange ? el('button', { type: 'button', class: 'chip', text: 'Swap', on: { click: function () { swap(o, i); } } }) : null,
+          pendingLine(i) ? el('span', { class: 'muted', text: ' ⏳ cancel requested' }) : (o.canCancelItem && o.items.filter(function (x) { return !x.removed; }).length > 1 ? el('button', { type: 'button', class: 'chip', text: 'Cancel', on: { click: function () { cancelItem(o, i); } } }) : null)])]));
+        if (i.note) main.appendChild(el('p', { class: 'muted', style: 'margin:0 0 4px 12px;', text: 'Note: ' + i.note }));
       });
+      if (o.kind === 'online' && o.phone) main.appendChild(el('p', { class: 'muted', text: 'We will call ' + o.phone + ' if we need to.' }));
+      if (o.note) main.appendChild(el('p', { class: 'muted', text: 'Order note: ' + o.note }));
       main.appendChild(el('div', { class: 'row' }, [el('strong', { text: 'Total' }), el('strong', { text: money(o.total) })]));
       if (o.paid > 0) main.appendChild(el('div', { class: 'row' }, [el('span', { text: 'Paid so far' }), el('span', { text: money(o.paid) })]));
       if (o.paid > 0 && o.outstanding > 0) main.appendChild(el('div', { class: 'row' }, [el('strong', { text: 'Still to pay' }), el('strong', { text: money(o.outstanding) })]));
@@ -167,16 +192,31 @@
       main.appendChild(el('button', { type: 'button', class: 'add', style: 'margin-top:14px;', text: 'Order something else', on: { click: function () { clearTimeout(timer); store.set('qr-last-order', ''); render(); } } }));
       clearTimeout(timer);
       if (['PAID', 'REJECTED', 'CANCELLED'].indexOf(o.status) < 0) timer = setTimeout(function () { if (!sheet.classList.contains('open') && !document.activeElement.matches('input')) track(orderId); else timer = setTimeout(function () { track(orderId); }, 4000); }, 6000);
-    }).catch(function () { clearTimeout(timer); timer = setTimeout(function () { track(orderId); }, 10000); });
+    }).catch(function () { clearTimeout(timer); if (!document.getElementById('conn-lost')) main.insertBefore(el('p', { id: 'conn-lost', class: 'err', role: 'status', text: '⚠️ Connection lost - retrying. What you see may be out of date.' }), main.firstChild); timer = setTimeout(function () { track(orderId); }, 10000); });
   }
   function cancelOrder(o) {
     panel.textContent = '';
     panel.appendChild(el('h3', { text: o.cancelMode === 'now' ? 'Cancel your order?' : 'Ask the staff to cancel?' }));
-    panel.appendChild(el('p', { class: 'muted', text: o.cancelMode === 'now' ? 'Nobody has started it yet, so it is cancelled straight away.' : 'A waiter already has your order (it may be in preparation). We will ask them — they confirm.' }));
+    panel.appendChild(el('p', { class: 'muted', text: o.cancelMode === 'now' ? 'Nobody has started it yet, so it is cancelled straight away.' : W('A waiter already has your order (it may be in preparation). We will ask them — they confirm.', 'We already have your order (it may be getting ready). We will ask the staff — they confirm.') }));
     var err = el('div', { class: 'err' });
     panel.appendChild(err);
+    var why = el('input', { type: 'text', maxlength: '120', placeholder: 'Reason (optional)', 'aria-label': 'Reason for cancelling' });
+    panel.insertBefore(why, err);
     panel.appendChild(el('button', { type: 'button', class: 'add', text: 'Yes, cancel it', on: { click: function () {
-      send({ action: 'cancel' }, 'cancel-' + o.id, o.id).then(function (x) { if (!x.ok) { err.textContent = x.d.error || 'Could not cancel.'; done('cancel-' + o.id); return; } done('cancel-' + o.id); close(); track(o.id); }).catch(function () { err.textContent = 'No connection — tap again (it will not be cancelled twice).'; });
+      send({ action: 'cancel', reason: why.value.trim() }, 'cancel-' + o.id, o.id).then(function (x) { if (!x.ok) { err.textContent = x.d.error || 'Could not cancel.'; done('cancel-' + o.id); return; } done('cancel-' + o.id); close(); track(o.id); }).catch(function () { err.textContent = 'No connection — tap again (it will not be cancelled twice).'; });
+    } } }));
+    panel.appendChild(el('button', { type: 'button', class: 'chip', text: 'No, keep it', on: { click: close } }));
+    sheet.classList.add('open');
+  }
+  function cancelItem(o, it) {
+    panel.textContent = '';
+    panel.appendChild(el('h3', { text: 'Cancel ' + it.name + '?' }));
+    panel.appendChild(el('p', { class: 'muted', text: o.cancelMode === 'now' ? 'Nobody has started your order yet, so this item comes off straight away.' : W('A waiter already has your order (it may be in preparation). We will ask the staff - they confirm.', 'We already have your order (it may be getting ready). We will ask the staff - they confirm.') }));
+    var err = el('div', { class: 'err' }), why = el('input', { type: 'text', maxlength: '120', placeholder: 'Reason (optional)', 'aria-label': 'Reason for cancelling' });
+    var nm = 'cancel-' + o.id + '-' + it.line;
+    [why, err].forEach(function (x) { panel.appendChild(x); });
+    panel.appendChild(el('button', { type: 'button', class: 'add', text: 'Yes, cancel this item', on: { click: function () {
+      send({ action: 'cancel', line: it.line, reason: why.value.trim() }, nm, o.id).then(function (x) { if (!x.ok) { err.textContent = x.d.error || 'Could not cancel.'; done(nm); return; } done(nm); close(); track(o.id); }).catch(function () { err.textContent = 'No connection - tap again (it will not be cancelled twice).'; });
     } } }));
     panel.appendChild(el('button', { type: 'button', class: 'chip', text: 'No, keep it', on: { click: close } }));
     sheet.classList.add('open');
@@ -184,7 +224,7 @@
   function swap(o, line) {
     panel.textContent = '';
     panel.appendChild(el('h3', { text: 'Swap ' + line.name }));
-    panel.appendChild(el('p', { class: 'muted', text: o.exchangeMode === 'now' ? 'Pick what you would like instead.' : 'A waiter already has your order — we will ask them to swap it.' }));
+    panel.appendChild(el('p', { class: 'muted', text: o.exchangeMode === 'now' ? 'Pick what you would like instead.' : W('A waiter already has your order — we will ask them to swap it.', 'We already have your order — we will ask the staff to swap it.') }));
     var err = el('div', { class: 'err' }), box = el('div', {});
     var s = el('input', { type: 'search', placeholder: 'Search…', on: { input: function (e) { fill(e.target.value.toLowerCase()); } } });
     function fill(qq) {
@@ -213,8 +253,8 @@
       if (pay.accountName) lines.push('Name shown: ' + pay.accountName);
       if (pay.instructions) lines.push(pay.instructions);
       lines.forEach(function (t) { main.appendChild(el('div', { class: 'muted', text: t })); });
-    } else main.appendChild(el('div', { class: 'muted', text: 'Please pay your waiter or the cashier.' }));
-    var method = el('select', {}, [el('option', { value: 'mpesa', text: 'M-Pesa' }), el('option', { value: 'cash', text: 'Cash (I will pay the waiter / cashier)' })]);
+    } else main.appendChild(el('div', { class: 'muted', text: W('Please pay your waiter or the cashier.', 'Please pay the cashier.') }));
+    var method = el('select', {}, [el('option', { value: 'mpesa', text: 'M-Pesa' }), el('option', { value: 'cash', text: W('Cash (I will pay the waiter / cashier)', 'Cash (I will pay the cashier)') })]);
     var amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.5', value: String(due) });
     var code = el('input', { type: 'text', placeholder: 'M-Pesa code (optional)', maxlength: '14', autocapitalize: 'characters' });
     var err = el('div', { class: 'err' });

@@ -56,8 +56,13 @@ export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel,
   y -= 110;
 
   if (renewalNote) { text(M, y, 10.5, renewalNote, false, [0.3, 0.37, 0.38]); y -= 16; }
-  text(M, y, 10.5, heading ? 'Keep this receipt for your records.' : 'This licence is issued for the link above.', false, [0.3, 0.37, 0.38]);
-  text(M, y - 16, 10.5, 'Keep this page and your link safe. Anyone with the link can open the shop, so share it only with your staff.', false, [0.3, 0.37, 0.38]);
+  // zip 306: a reassuring note instead of a warning (the old line read "Anyone with the link can open the shop", which alarmed buyers). Every claim
+  // here is true of the system: HTTPS only, Cloudflare stores KV / D1 / Durable Objects / R2 encrypted at rest, scheduled backups, sign-in needs the
+  // shop password or a staff PIN.
+  const note = [0.3, 0.37, 0.38];
+  text(M, y, 10.5, heading ? 'Keep this receipt for your records.' : 'This licence is issued to you for the link above.', false, note);
+  text(M, y - 18, 10.5, 'Your data is safe: it travels over a secure connection, is stored encrypted and is backed up regularly.', true, [0.07, 0.42, 0.27]);
+  text(M, y - 34, 10.5, 'Only you and the staff you add can sign in, with your password or their own PIN. Keep your password private.', false, note);
   text(M, 70, 9, 'Issued ' + day(Date.now()) + ' by ' + (issuer || 'MyDukaPOS') + '. This document was generated automatically and is valid without a signature.', false, [0.5, 0.55, 0.55]);
 
   const content = ops.join('\n');

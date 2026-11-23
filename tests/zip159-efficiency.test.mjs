@@ -345,7 +345,7 @@ test('_headers: valid Pages syntax; icons cached a day, service workers always r
   assert.match(rules['/icons/*']['Cache-Control'], /max-age=86400/);
   assert.equal(rules['/sw.js']['Cache-Control'], 'no-cache');
   assert.equal(rules['/*/sw.js']['Cache-Control'], 'no-cache');
-  for (const [p, h] of Object.entries(rules)) if (h['Cache-Control'] && !/no-cache/.test(h['Cache-Control'])) assert.ok(p.startsWith('/icons/'), 'only icons may be cached: ' + p);
+  for (const [p, h] of Object.entries(rules)) if (h['Cache-Control'] && !/no-cache|no-store/.test(h['Cache-Control'])) assert.ok(p.startsWith('/icons/') || p.startsWith('/demo-img/') || p.startsWith('/img/demo-') || p.startsWith('/img/card-') || /^\/(favicon[\w.-]*|apple-touch-icon)\.(ico|svg|png)$/.test(p), 'only icons may be cached: ' + p);   // zip 282: the favicon set is reused for a day too
   assert.equal(Object.entries(rules).some(([p, h]) => h['Cache-Control'] && (p === '/*' || (/\.(js|css|html)$/.test(p) && !/(^|\/)sw\.js$/.test(p)))), false, 'no blanket or per-app-file caching');
 });
 

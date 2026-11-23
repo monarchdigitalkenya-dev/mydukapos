@@ -28,7 +28,7 @@ for (const app of APPS) {
   test(`${app}: a past sale can be recorded as cash, M-Pesa, card and split`, async () => {
     const b = await session(app);
     const { w, d, errors } = b;
-    const noCard = app === 'hotel/index.html';   // zip 153: the hotel takes cash and M-Pesa only
+    const noCard = false;   // every app, the hotel included (hidden in the hotel from zip 153 to 268), takes card
     assert.equal(d.getElementById('past-sale-payment-select').options.length, noCard ? 4 : 5, noCard ? 'cash, M-Pesa, split, bill (no card)' : 'cash, M-Pesa, card, split, bill');
     assert.equal(fill(b, 'cash'), '');
     let s = last(w);

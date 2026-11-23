@@ -1,0 +1,142 @@
+<!-- SALES PAYMENTS (zip 333) ---------------------------------------------------------------------------------------------------------
+     A "Payments collected" panel on the Daily Sales / Sales Record screen of every app: Cash, M-Pesa, Card, Other, Total collected,
+     Sales value, Unpaid (credit / bills) and Voided - for the period and branch being viewed, worked out from the real sale records.
+       * a SPLIT sale counts each leg once (cashAmount / mpesaAmount / cardAmount): KES 600 cash + KES 400 M-Pesa on a KES 1,000 sale
+         is KES 1,000 of sales value and KES 1,000 collected, never 2,000;
+       * a voided sale is shown on its own line and counted nowhere else; an unpaid (bill / pay-later) sale is "Unpaid", not collected;
+       * the panel ignores the on-screen payment-method chip (it always shows the whole period) so the method totals add up;
+       * if collected money and sales value differ (change / rounding, a cross-branch share, a part-paid sale) the panel says so
+         instead of hiding it. Refunds come from the Returns list when the app has one and are shown, never netted away silently.
+     Nothing here changes a sale. Pure maths: window.SalesPay.totals(sales). -->
+<style>
+#spc-panel{margin:0 0 14px;padding:14px;border-radius:14px;border:1px solid var(--border-color,#e2ded1);background:linear-gradient(135deg,var(--bg-surface,#fff),var(--bg-surface-alt,#f7f5ef))}
+#spc-panel h4{margin:0 0 4px;font-size:16px}
+#spc-panel .spc-sub{margin:0 0 10px;font-size:12px;color:var(--muted,#6b7a7d)}
+#spc-panel .spc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+#spc-panel .spc-t{border-radius:10px;padding:9px 11px;background:var(--bg-surface,#fff);border:1px solid var(--border-color,#e2ded1);border-left:5px solid var(--c,#0b7a5f)}
+#spc-panel .spc-t small{display:block;font-size:11.5px;color:var(--muted,#6b7a7d);font-weight:600}
+#spc-panel .spc-t b{display:block;font-size:17px;margin-top:2px;font-variant-numeric:tabular-nums}
+#spc-panel .spc-big{--c:#0b7a5f;grid-column:1/-1;background:var(--accent-soft,#e6f4ef)}
+#spc-panel .spc-big b{font-size:22px}
+#spc-panel .spc-note{margin:8px 0 0;font-size:12px;color:#7a5c00;background:#fff8e1;border:1px solid #ffe69c;border-radius:8px;padding:6px 9px}
+#spc-panel .spc-act{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+#spc-panel .spc-act button{min-height:38px;padding:0 14px;border-radius:10px;border:1px solid var(--border-color,#cfc9b8);background:transparent;color:inherit;font:700 13px system-ui,sans-serif;cursor:pointer}
+html[data-theme="dark"] #spc-panel .spc-note{background:#3a3200;color:#ffe69c;border-color:#6b5b00}
+</style>
+<script>
+(function () {
+    'use strict';
+    var n = function (v) { var x = Number(v); return isFinite(x) ? x : 0; };
+    var r2 = function (v) { return Math.round((n(v) + (v < 0 ? -1e-9 : 1e-9)) * 100) / 100; };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var KES = function (v) { return 'KES ' + n(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+
+    /* the value of one sale: its own total when it has one (Aqua), else the items + delivery fee as the Sales Record screen shows it */
+    function saleValue(s) {
+        if (typeof s.total === 'number' && isFinite(s.total)) return s.total;
+        var v = (Array.isArray(s.items) ? s.items : []).reduce(function (a, it) { return a + n(it && it.price) * n(it && it.qty); }, 0);
+        try { if (typeof saleDeliveryFee === 'function') v += n(saleDeliveryFee(s)); } catch (e) { /* no fee */ }
+        return v;
+    }
+    function totals(sales) {
+        var o = { count: 0, value: 0, cash: 0, mpesa: 0, card: 0, other: 0, unpaidCount: 0, unpaid: 0, voidedCount: 0, voided: 0 };
+        (Array.isArray(sales) ? sales : []).forEach(function (s) {
+            if (!s) return;
+            var v = saleValue(s);
+            if (s.voided) { o.voidedCount++; o.voided += v; return; }
+            o.count++;
+            if (s.paid === false) { o.unpaidCount++; o.unpaid += v; return; }
+            o.value += v;
+            var c = n(s.cashAmount), m = n(s.mpesaAmount), k = n(s.cardAmount), t = n(s.otherAmount);
+            try { if (typeof salePaymentParts === 'function') { var pp = salePaymentParts(s); c = pp.cash; m = pp.mpesa; k = pp.card; t = pp.other; } else throw 0; } catch (e) {
+                if (c + m + k + t <= 0.004 && v > 0) {                       // an older sale with no per-method amounts: go by its method
+                    var meth = String(s.paymentMethod || 'cash').toLowerCase();
+                    if (meth === 'cash') c = v; else if (meth === 'mpesa') m = v; else if (meth === 'card') k = v; else t = v;
+                }
+            }
+            o.cash += c; o.mpesa += m; o.card += k; o.other += t;
+        });
+        ['value', 'cash', 'mpesa', 'card', 'other', 'unpaid', 'voided'].forEach(function (k) { o[k] = r2(o[k]); });
+        o.collected = r2(o.cash + o.mpesa + o.card + o.other);
+        o.difference = r2(o.value - o.collected);
+        return o;
+    }
+
+    function periodSales() {
+        var range = null, rows = null;
+        try {
+            if (typeof salesPeriodRange === 'function' && typeof getDailySalesEntriesForRange === 'function') {          // Aqua POS
+                range = salesPeriodRange(); rows = getDailySalesEntriesForRange(range.from, range.to);
+            } else if (typeof salesTablePeriodRange === 'function' && typeof salesLog !== 'undefined') {
+                range = salesTablePeriodRange();
+                rows = salesLog.filter(function (s) { var k = dateKey(new Date(s.timestamp)); return k >= range.from && k <= range.to; });
+            }
+        } catch (e) { return null; }
+        return range && rows ? { range: range, rows: rows } : null;
+    }
+    function refundsFor(range) {
+        try {
+            if (typeof returns === 'undefined' || !Array.isArray(returns)) return null;
+            var any = false, sum = 0, cnt = 0;
+            returns.forEach(function (r) {
+                if (!r || r._deleted || r.voided) return;
+                var k = dateKey(new Date(r.timestamp || r.date || r.createdAt)); if (!(k >= range.from && k <= range.to)) return;
+                cnt++; var a = typeof r.refundAmount === 'number' ? r.refundAmount : (typeof r.amount === 'number' ? r.amount : null);
+                if (a != null) { any = true; sum += a; }
+            });
+            return cnt ? { count: cnt, amount: any ? r2(sum) : null } : null;
+        } catch (e) { return null; }
+    }
+    function labelOf(range) {
+        try { if (typeof salesTablePeriodLabel === 'function') return salesTablePeriodLabel(range); if (typeof salesPeriodLabel === 'function') return salesPeriodLabel(range); } catch (e) { /* plain */ }
+        return range.from === range.to ? range.from : range.from + ' to ' + range.to;
+    }
+    var last = null;
+    function tile(label, val, col, icon) { return '<div class="spc-t" style="--c:' + col + '"><small>' + icon + ' ' + label + '</small><b>' + KES(val) + '</b></div>'; }
+    function html(t, label, ref) {
+        var h = '<h4>💳 Payments collected</h4><p class="spc-sub">' + esc(label) + ' · ' + t.count + ' sale' + (t.count === 1 ? '' : 's') + ' · whole period, every payment method</p>' +
+            '<div class="spc-grid"><div class="spc-t spc-big"><small>💰 Total collected (cash + M-Pesa + card + other)</small><b>' + KES(t.collected) + '</b></div>' +
+            tile('Cash', t.cash, '#27ae60', '💵') + tile('M-Pesa', t.mpesa, '#16a085', '📱') + tile('Card', t.card, '#2980b9', '💳') + tile('Other', t.other, '#8e44ad', '🏦') +
+            tile('Sales value (paid sales)', t.value, '#0b7a5f', '🧾') + tile('Unpaid / on credit (' + t.unpaidCount + ')', t.unpaid, '#e67e22', '⏳') +
+            tile('Voided, not counted (' + t.voidedCount + ')', t.voided, '#7f8c8d', '🚫') + (ref ? tile('Refunds (' + ref.count + ')', ref.amount == null ? 0 : ref.amount, '#c0392b', '↩️') : '') + '</div>';
+        if (Math.abs(t.difference) > 0.009) h += '<p class="spc-note">Sales value and money collected differ by ' + KES(Math.abs(t.difference)) + ' (' + (t.difference > 0 ? 'less collected than the sales value' : 'more collected than the sales value') + '). This happens with change/rounding, a branch share of a cross-branch sale, or a sale that was only part-paid. Nothing is hidden: each tile above is the real recorded amount.</p>';
+        if (ref && ref.amount == null) h += '<p class="spc-note">' + ref.count + ' return(s) in this period have no refund amount recorded, so the refund tile shows 0.</p>';
+        h += '<div class="spc-act"><button type="button" onclick="SalesPay.print()">🖨️ Print payments summary</button></div>';
+        return h;
+    }
+    function render() {
+        try {
+            var table = document.getElementById('daily-sales-table'); if (!table) return;
+            var ps = periodSales(); if (!ps) return;
+            var panel = document.getElementById('spc-panel');
+            if (!panel) { panel = document.createElement('div'); panel.id = 'spc-panel'; var anchor = table.closest('.table-scroll') || table; anchor.parentNode.insertBefore(panel, anchor); }
+            var t = totals(ps.rows); last = { t: t, label: labelOf(ps.range), ref: refundsFor(ps.range) };
+            panel.innerHTML = html(t, last.label, last.ref);
+        } catch (e) { /* a cosmetic panel never breaks the sales screen */ }
+    }
+    function print() {
+        if (!last) render(); if (!last || typeof printHTMLDirect !== 'function') return;
+        var t = last.t, biz = ''; try { biz = typeof businessName !== 'undefined' ? businessName : ''; } catch (e) { /* none */ }
+        var row = function (a, b, bold) { return '<tr' + (bold ? ' style="font-weight:700"' : '') + '><td>' + a + '</td><td style="text-align:right">' + KES(b) + '</td></tr>'; };
+        printHTMLDirect('<div style="font-family:Arial,sans-serif;padding:8px"><h2 style="margin:0 0 4px">' + esc(biz || 'Daily Sales') + '</h2><div>Payments summary · ' + esc(last.label) + '</div><div style="font-size:12px;color:#555">Printed ' + esc(new Date().toLocaleString('en-GB')) + '</div>' +
+            '<table style="width:100%;border-collapse:collapse;margin-top:10px" border="0">' + row('Cash', t.cash) + row('M-Pesa', t.mpesa) + row('Card', t.card) + row('Other', t.other) + row('Total collected', t.collected, true) +
+            '<tr><td colspan="2"><hr></td></tr>' + row('Sales value (paid sales, ' + t.count + ' sales incl. unpaid)', t.value) + row('Unpaid / on credit (' + t.unpaidCount + ')', t.unpaid) + row('Voided, not counted (' + t.voidedCount + ')', t.voided) +
+            (last.ref ? row('Refunds (' + last.ref.count + ')', last.ref.amount == null ? 0 : last.ref.amount) : '') + '</table></div>', 'td{padding:4px 2px;border-bottom:1px solid #ddd;font-size:14px}');
+    }
+    window.SalesPay = { totals: totals, render: render, print: print, saleValue: saleValue };
+
+    /* run after every redraw of the sales screen (it redraws on every filter / date change) */
+    var installed = false;
+    function install() {
+        if (installed) return;
+        try {
+            if (typeof renderDailySales === 'function') {
+                var _r = renderDailySales;
+                window.renderDailySales = renderDailySales = function () { var x = _r.apply(this, arguments); render(); return x; };
+                installed = true;
+            }
+        } catch (e) { /* retried below */ }
+    }
+    install(); document.addEventListener('DOMContentLoaded', install); window.addEventListener('load', function () { install(); setTimeout(install, 400); setTimeout(install, 1500); });
+})();
+</script>

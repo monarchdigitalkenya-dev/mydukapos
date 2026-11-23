@@ -1,0 +1,454 @@
+<!-- CW BOOKS (zip 394) -------------------------------------------------------------------------------------------------------------------
+     Car Wash & Cleaning: the money side of the business.
+       Expenses        - record an expense (date, category, amount, how it was paid, note); the owner can void one (with a reason, never deleted).
+       Daily cash-up   - for a day: opening float + cash received - cash refunds - cash expenses - supplies bought from the till = expected cash;
+                         the cash counted is typed in and the surplus / shortage is kept.
+       Supplies        - shampoo, wax, chemicals...: stock in (quantity, cost), use, count; the quantity is the sum of the movements, so every
+                         device agrees; low-stock levels; the cost of what was used goes into Profit & Loss (average buying cost).
+       Commission      - the owner sets each worker's commission (a % of the job or a fixed KSh per job, from a date); a job earns it when it is
+                         finished and paid (a free loyalty job earns the fixed part); the job's commission is SPLIT equally between the workers
+                         assigned to it.
+       Profit & Loss   - collections - refunds - expenses - supplies used - commission = net profit; + cash-up surplus - shortage = final profit.
+                         Printable.
+     Money is whole shillings everywhere. Data: cwExpenses, cwCashups, cwSupplies, cwSupplyMoves (synced, merged per record by id), and the
+     commission rates on each staff record (commissionHistory, the same field the other apps use). -->
+<style>
+.cw-on .cwb-tot td { font-weight: 750; border-top: 2px solid #0f172a; }
+.cw-on .cwb-pl { max-width: 640px; }
+.cw-on .cwb-pl .ln { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px; border-bottom: 1px solid #e2e8f0; font-size: 14.5px; }
+.cw-on .cwb-pl .ln.sub { padding-left: 18px; font-size: 13px; color: #475569; }
+.cw-on .cwb-pl .ln.big { font-size: 17px; font-weight: 800; border-bottom: 0; border-top: 2px solid #0f172a; margin-top: 4px; }
+.cw-on .cwb-pl .ln b { font-variant-numeric: tabular-nums; }
+.cw-on .cwb-neg { color: #b91c1c; } .cw-on .cwb-pos { color: #15803d; }
+.cw-on .cwb-low { background: #fef2f2; }
+.cw-on .cwb-cu .ln { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #e2e8f0; }
+.cw-on .cwb-cu .ln.big { font-weight: 800; font-size: 16px; border-bottom: 0; }
+.cw-on .cwb-inline { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.cw-on .cwb-inline .cw-f { min-width: 150px; flex: 1; }
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.CwBooks || typeof CW_NAV === 'undefined' || typeof CW_UI === 'undefined') return;
+
+  /* ---------- menu, screens, permissions ---------- */
+  var at = CW_NAV.findIndex(function (n) { return n.g === 'Management'; }); if (at < 0) at = CW_NAV.length;
+  CW_NAV.splice(at, 0, { g: 'Money' },
+    { r: 'expenses', l: 'Expenses', i: 'pay', p: 'expenses' },
+    { r: 'cashup', l: 'Daily Cash-up', i: 'pay', p: 'cashup' },
+    { r: 'supplies', l: 'Supplies Stock', i: 'tag', p: 'supplies' },
+    { r: 'commission', l: 'Commission', i: 'staff', p: 'books' },
+    { r: 'pnl', l: 'Profit & Loss', i: 'chart', p: 'books' });
+  [['expenses', 'Expenses', 'expenses'], ['cashup', 'Daily Cash-up', 'cashup'], ['supplies', 'Supplies Stock', 'supplies'], ['commission', 'Commission', 'books'], ['pnl', 'Profit & Loss', 'books']].forEach(function (t) {
+    if (!CW_TABS.some(function (x) { return x.r === t[0]; })) CW_TABS.push({ r: t[0], l: t[1], p: t[2] });
+    CW_TITLES[t[0]] = t[1];
+  });
+  function grant(role, perms) { var l = CW_PERMS[role]; if (!l || l.indexOf('*') !== -1) return; perms.forEach(function (p) { if (l.indexOf(p) === -1) l.push(p); }); }
+  grant('manager', ['expenses', 'cashup', 'supplies']);
+  grant('cashier', ['expenses', 'cashup']);
+
+  /* ---------- helpers ---------- */
+  var DAY = CW_DAY;
+  function W(n) { return Math.round(cwNum(n)); }
+  function kes(n) { var v = W(n); return (v < 0 ? '-' : '') + 'KES ' + String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function live(r) { return r && !r._deleted && !r.voidedAt; }
+  function inR(ms, a, b) { ms = cwNum(ms); return ms >= a && ms < b; }
+  function today() { return cwDayKey(cwNow()); }
+  function me() { return cwMe(); }
+  function can(p) { return cwCan(p, me()); }
+  var CATS = ['Water', 'Electricity', 'Rent', 'Fuel', 'Repairs & maintenance', 'Salaries & wages', 'Transport', 'Airtime & internet', 'Licences & permits', 'Equipment', 'Other'];
+  var METHODS = [['cash', 'Cash'], ['mpesa', 'M-Pesa'], ['bank', 'Bank'], ['card', 'Card']];
+  function methodL(k) { var m = METHODS.filter(function (x) { return x[0] === k; })[0]; return m ? m[1] : (typeof cwMethodLabel === 'function' ? cwMethodLabel(k) : k); }
+  function amountOk(v) { var n = Number(String(v).replace(/,/g, '')); return isFinite(n) && n > 0 && Math.round(n) === n ? n : null; }
+  function qtyOk(v) { var n = Number(String(v).replace(/,/g, '')); return isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : null; }
+
+  /* ---------- periods ---------- */
+  CW_UI.bk = CW_UI.bk || { per: 'month', from: '', to: '', day: '' };
+  function period() {
+    var p = CW_UI.bk.per, t = cwDayStart(today()), d = new Date(t + 3 * 3600000), a = t, b = t + DAY;
+    if (p === 'week') { var dow = (d.getUTCDay() + 6) % 7; a = t - dow * DAY; }
+    else if (p === 'month') a = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - 3 * 3600000;
+    else if (p === 'lastmonth') { a = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1) - 3 * 3600000; b = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - 3 * 3600000; }
+    else if (p === 'custom' && CW_UI.bk.from && CW_UI.bk.to) { a = cwDayStart(CW_UI.bk.from); b = cwDayStart(CW_UI.bk.to) + DAY; }
+    return { from: a, to: b, text: cwFmtDate(a) + ' to ' + cwFmtDate(b - 1) };
+  }
+  function perChips() {
+    var c = [['today', 'Today'], ['week', 'This week'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom']];
+    return '<div class="cw-row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px"><div class="cw-chips">' + c.map(function (x) { return '<button class="cw-chip ' + (CW_UI.bk.per === x[0] ? 'on' : '') + '" data-cwb="per" data-v="' + x[0] + '">' + x[1] + '</button>'; }).join('') + '</div>'
+      + (CW_UI.bk.per === 'custom' ? '<input type="date" data-cwb-ch="from" value="' + cwEsc(CW_UI.bk.from) + '" style="width:auto"> <input type="date" data-cwb-ch="to" value="' + cwEsc(CW_UI.bk.to) + '" style="width:auto">' : '') + '</div>';
+  }
+
+  /* ---------- money in ---------- */
+  function collections(a, b) {
+    var out = { gross: 0, refunds: 0, net: 0, by: {}, count: 0 };
+    cwPayments.forEach(function (p) {
+      if (!p || p._deleted || p.reversedAt || !inR(p.at, a, b)) return;
+      var v = Math.abs(cwNum(p.amount)), m = p.method || 'cash';
+      if (p.type === 'refund') { out.refunds += v; out.by[m] = (out.by[m] || 0) - v; }
+      else { out.gross += v; out.by[m] = (out.by[m] || 0) + v; out.count++; }
+    });
+    out.gross = W(out.gross); out.refunds = W(out.refunds); out.net = out.gross - out.refunds;
+    Object.keys(out.by).forEach(function (k) { out.by[k] = W(out.by[k]); });
+    return out;
+  }
+  /* ---------- expenses ---------- */
+  function expensesIn(a, b) { return cwExpenses.filter(function (e) { return live(e) && inR(e.at, a, b); }); }
+  function addExpense(o) {
+    if (!can('expenses')) return { ok: false, error: 'You cannot record expenses.' };
+    var amt = amountOk(o.amount); if (!amt) return { ok: false, error: 'Type the amount in whole shillings.' };
+    var day = o.day || today(), at = cwDayStart(day) + (day === today() ? (cwNow() - cwDayStart(day)) : 12 * 3600000);
+    var m = me(), r = { id: cwRid('cwx-'), at: at, day: day, category: cwStr(o.category) || 'Other', amount: amt, method: o.method || 'cash', note: cwStr(o.note).slice(0, 200), by: m.name, byId: m.id, createdAt: cwNow() };
+    cwStamp(r); cwExpenses.push(r);
+    cwCommit('cwExpenses', { act: 'expense.add', ref: r.category, detail: kes(amt) + ' ' + methodL(r.method) + (r.note ? ' - ' + r.note : '') });
+    return { ok: true, rec: r };
+  }
+  function voidExpense(id, reason) {
+    if (!me().owner) return { ok: false, error: 'Only the owner can void an expense.' };
+    var e = cwFind(cwExpenses, id); if (!e || !live(e)) return { ok: false, error: 'Expense not found.' };
+    if (!cwStr(reason).trim()) return { ok: false, error: 'Give a reason.' };
+    e.voidedAt = cwNow(); e.voidedBy = me().name; e.voidReason = cwStr(reason).slice(0, 200); cwStamp(e);
+    cwCommit('cwExpenses', { act: 'expense.void', ref: e.category, detail: kes(e.amount) + ' - ' + e.voidReason });
+    return { ok: true };
+  }
+  /* ---------- supplies ---------- */
+  function movesOf(id) { return cwSupplyMoves.filter(function (x) { return live(x) && x.supplyId === id; }); }
+  function stockOf(sup) {
+    var q = 0, inQ = 0, inC = 0;
+    movesOf(sup.id).forEach(function (x) {
+      if (x.type === 'in') { q += cwNum(x.qty); inQ += cwNum(x.qty); inC += cwNum(x.qty) * cwNum(x.unitCost); }
+      else if (x.type === 'use') q -= cwNum(x.qty);
+      else if (x.type === 'count') q += cwNum(x.delta);
+    });
+    q = Math.round(q * 1000) / 1000;
+    var avg = inQ > 0 ? inC / inQ : 0;
+    return { qty: q, avg: avg, value: W(Math.max(0, q) * avg) };
+  }
+  function addSupply(o) {
+    if (!can('supplies')) return { ok: false, error: 'You cannot manage supplies.' };
+    var name = cwStr(o.name).trim(); if (!name) return { ok: false, error: 'Type the supply name.' };
+    if (cwSupplies.some(function (s) { return s && !s._deleted && cwStr(s.name).toLowerCase() === name.toLowerCase(); })) return { ok: false, error: 'That supply is already on the list.' };
+    var r = { id: cwRid('cws-'), name: name.slice(0, 80), unit: cwStr(o.unit).trim().slice(0, 20) || 'litre', low: Math.max(0, cwNum(o.low)), createdAt: cwNow() };
+    cwStamp(r); cwSupplies.push(r);
+    cwCommit('cwSupplies', { act: 'supply.add', ref: r.name, detail: r.unit });
+    return { ok: true, rec: r };
+  }
+  function editSupply(id, o) {
+    if (!can('supplies')) return { ok: false, error: 'You cannot manage supplies.' };
+    var s = cwFind(cwSupplies, id); if (!s || s._deleted) return { ok: false, error: 'Supply not found.' };
+    if (o.name != null && cwStr(o.name).trim()) s.name = cwStr(o.name).trim().slice(0, 80);
+    if (o.unit != null && cwStr(o.unit).trim()) s.unit = cwStr(o.unit).trim().slice(0, 20);
+    if (o.low != null) s.low = Math.max(0, cwNum(o.low));
+    cwStamp(s); cwCommit('cwSupplies', { act: 'supply.edit', ref: s.name, detail: '' });
+    return { ok: true };
+  }
+  function moveSupply(id, type, o) {
+    if (!can('supplies') && !(type === 'use' && can('cashup'))) return { ok: false, error: 'You cannot change supplies stock.' };
+    var s = cwFind(cwSupplies, id); if (!s || s._deleted) return { ok: false, error: 'Supply not found.' };
+    var st = stockOf(s), m = me(), r = { id: cwRid('cwm-'), supplyId: s.id, name: s.name, type: type, at: cwNow(), day: today(), note: cwStr(o.note).slice(0, 200), by: m.name, byId: m.id };
+    if (type === 'in') {
+      var q = qtyOk(o.qty); if (!q) return { ok: false, error: 'Type the quantity received.' };
+      var tot = amountOk(o.total); if (!tot) return { ok: false, error: 'Type what it cost in total, in whole shillings.' };
+      r.qty = q; r.total = tot; r.unitCost = tot / q; r.fromTill = !!o.fromTill;
+    } else if (type === 'use') {
+      var u = qtyOk(o.qty); if (!u) return { ok: false, error: 'Type the quantity used.' };
+      if (u > st.qty + 1e-9) return { ok: false, error: 'Only ' + st.qty + ' ' + s.unit + ' in stock.' };
+      r.qty = u; r.unitCost = st.avg; r.total = W(u * st.avg);
+    } else if (type === 'count') {
+      var c = Number(String(o.qty).replace(/,/g, '')); if (!isFinite(c) || c < 0) return { ok: false, error: 'Type the quantity counted.' };
+      c = Math.round(c * 1000) / 1000;
+      r.counted = c; r.delta = Math.round((c - st.qty) * 1000) / 1000; r.unitCost = st.avg; r.total = W(-r.delta * st.avg);
+      if (!r.delta) return { ok: false, error: 'The count matches the stock - nothing to change.' };
+    } else return { ok: false, error: 'Unknown movement.' };
+    cwStamp(r); cwSupplyMoves.push(r);
+    cwCommit('cwSupplyMoves', { act: 'supply.' + type, ref: s.name, detail: type === 'count' ? 'counted ' + r.counted + ' (' + (r.delta > 0 ? '+' : '') + r.delta + ')' : r.qty + ' ' + s.unit + (r.total ? ' ' + kes(r.total) : '') });
+    return { ok: true, rec: r };
+  }
+  // the cost of supplies used in a period: what was used, and what a count found missing (a count that found MORE gives it back)
+  function suppliesUsed(a, b) {
+    var t = 0;
+    cwSupplyMoves.forEach(function (x) {
+      if (!live(x) || !inR(x.at, a, b)) return;
+      if (x.type === 'use') t += cwNum(x.total);
+      else if (x.type === 'count') t += cwNum(x.total);
+    });
+    return W(t);
+  }
+  function suppliesBoughtFromTill(a, b) { return W(cwSupplyMoves.reduce(function (t, x) { return t + (live(x) && x.type === 'in' && x.fromTill && inR(x.at, a, b) ? cwNum(x.total) : 0); }, 0)); }
+
+  /* ---------- commission ---------- */
+  function rateAt(st, at) {
+    var h = cwArr(st && st.commissionHistory), best = null;
+    h.forEach(function (r) { if (r && cwNum(r.at) <= at && (!best || cwNum(r.at) >= cwNum(best.at))) best = r; });
+    if (!best || !(best.type === 'pct' || best.type === 'fixed') || !(cwNum(best.value) > 0)) return null;
+    return { type: best.type, value: cwNum(best.value) };
+  }
+  function setRate(id, type, value, fromDay) {
+    if (!me().owner) return { ok: false, error: 'Only the owner can set commission.' };
+    var st = cwFind(cwStaffAll(), id); if (!st) return { ok: false, error: 'Worker not found.' };
+    var v = type ? Number(value) : 0;
+    if (type && !(v > 0)) return { ok: false, error: 'Type a commission above 0.' };
+    if (type === 'fixed' && Math.round(v) !== v) return { ok: false, error: 'A fixed commission is whole shillings.' };
+    if (type === 'pct' && v > 100) return { ok: false, error: 'A percent cannot be above 100.' };
+    var at = fromDay ? cwDayStart(fromDay) : cwNow();
+    var h = cwArr(st.commissionHistory).filter(function (r) { return cwNum(r.at) !== at; });
+    h.push({ at: at, type: type || '', value: type ? v : 0, by: me().name });
+    h.sort(function (x, y) { return x.at - y.at; });
+    st.commissionHistory = h;
+    var cur = rateAt(st, cwNow()); st.commission = cur ? { type: cur.type, value: cur.value } : { type: '', value: 0 };
+    cwStamp(st);
+    try { if (typeof cwSaveStaff === 'function') cwSaveStaff(); else if (typeof safeSetItem === 'function') safeSetItem('pos_staff', JSON.stringify(staff)); } catch (e) { /* */ }
+    cwPush(); cwLogRow({ act: 'commission.rate', ref: st.name, detail: type ? (type === 'pct' ? v + ' %' : kes(v)) + ' per job from ' + (fromDay || today()) : 'none' }); cwSave('cwAudit'); cwEmit('cwStaff');
+    return { ok: true };
+  }
+  // a job earns commission when it is finished and paid (or free); its commission is split equally between the workers on it
+  function commission(a, b) {
+    var rows = {}, jobs = 0;
+    cwJobs.forEach(function (j) {
+      if (!j || j._deleted || cwIsCancelled(j) || !j.completedAt || !inR(j.completedAt, a, b)) return;
+      var t = cwTotals(j); if (!(t.status === 'paid' || t.free)) return;
+      var who = cwStaffOnJob(j); if (!who.length) return;
+      var counted = false;
+      who.forEach(function (as) {
+        var st = cwFind(cwStaffAll(), as.staffId); if (!st) return;
+        var r = rateAt(st, cwNum(j.completedAt)); if (!r) return;
+        var share = r.type === 'pct' ? cwNum(t.total) * r.value / 100 / who.length : r.value / who.length;
+        var row = rows[st.id] || (rows[st.id] = { id: st.id, name: st.name || as.name || 'Worker', jobs: 0, value: 0, raw: 0 });
+        row.jobs++; row.value += cwNum(t.total) / who.length; row.raw += share; counted = true;
+      });
+      if (counted) jobs++;
+    });
+    var out = Object.keys(rows).map(function (k) { var r = rows[k]; return { id: r.id, name: r.name, jobs: r.jobs, value: W(r.value), commission: W(r.raw) }; })
+      .sort(function (x, y) { return y.commission - x.commission || cwStr(x.name).localeCompare(cwStr(y.name)); });
+    return { rows: out, total: out.reduce(function (t, r) { return t + r.commission; }, 0), jobs: jobs };
+  }
+
+  /* ---------- daily cash-up ---------- */
+  function cashFor(day) {
+    var a = cwDayStart(day), b = a + DAY, inC = 0, outC = 0;
+    cwPayments.forEach(function (p) {
+      if (!p || p._deleted || p.reversedAt || (p.method || 'cash') !== 'cash' || !inR(p.at, a, b)) return;
+      if (p.type === 'refund') outC += Math.abs(cwNum(p.amount)); else inC += Math.abs(cwNum(p.amount));
+    });
+    var exp = W(cwExpenses.reduce(function (t, e) { return t + (live(e) && e.method === 'cash' && inR(e.at, a, b) ? cwNum(e.amount) : 0); }, 0));
+    return { received: W(inC), refunds: W(outC), expenses: exp, supplies: suppliesBoughtFromTill(a, b) };
+  }
+  function cashupOf(day) { return cwFind(cwCashups, 'cwcu-' + day); }
+  function saveCashup(day, o) {
+    if (!can('cashup')) return { ok: false, error: 'You cannot do the cash-up.' };
+    var old = cashupOf(day), m = me();
+    if (old && !old._deleted && !(m.owner || m.role === 'manager')) return { ok: false, error: 'This day is already cashed up. Ask the owner or a manager to change it.' };
+    var fl = Number(String(o.float == null ? '' : o.float).replace(/,/g, '') || 0), cnt = Number(String(o.counted == null ? '' : o.counted).replace(/,/g, ''));
+    if (!isFinite(fl) || fl < 0 || Math.round(fl) !== fl) return { ok: false, error: 'The opening float is whole shillings.' };
+    if (o.counted === '' || o.counted == null || !isFinite(cnt) || cnt < 0 || Math.round(cnt) !== cnt) return { ok: false, error: 'Type the cash counted, in whole shillings.' };
+    var c = cashFor(day), expected = fl + c.received - c.refunds - c.expenses - c.supplies;
+    var r = old || { id: 'cwcu-' + day, day: day, createdAt: cwNow() };
+    r.float = fl; r.received = c.received; r.refunds = c.refunds; r.expenses = c.expenses; r.supplies = c.supplies;
+    r.expected = expected; r.counted = cnt; r.diff = cnt - expected; r.note = cwStr(o.note).slice(0, 200); r.by = m.name; r.byId = m.id; r.at = cwNow();
+    delete r._deleted; cwStamp(r);
+    if (!old) cwCashups.push(r);
+    cwCommit('cwCashups', { act: 'cashup.save', ref: day, detail: 'expected ' + kes(expected) + ', counted ' + kes(cnt) + ' (' + (r.diff > 0 ? 'surplus ' : r.diff < 0 ? 'shortage ' : '') + kes(Math.abs(r.diff)) + ')' });
+    return { ok: true, rec: r };
+  }
+  function cashDiffs(a, b) {
+    var o = { surplus: 0, shortage: 0, count: 0 };
+    cwCashups.forEach(function (c) { if (!c || c._deleted) return; var t = cwDayStart(c.day); if (!inR(t, a, b)) return; var d = cwNum(c.diff); if (d > 0) o.surplus += d; else if (d < 0) o.shortage += -d; o.count++; });
+    o.surplus = W(o.surplus); o.shortage = W(o.shortage); return o;
+  }
+
+  /* ---------- profit & loss ---------- */
+  function pnl(a, b) {
+    var col = collections(a, b), ex = expensesIn(a, b), byCat = {};
+    ex.forEach(function (e) { byCat[e.category] = (byCat[e.category] || 0) + cwNum(e.amount); });
+    var expT = W(ex.reduce(function (t, e) { return t + cwNum(e.amount); }, 0)), sup = suppliesUsed(a, b), com = commission(a, b), cd = cashDiffs(a, b);
+    var net = col.net - expT - sup - com.total;
+    return { collections: col, expenses: expT, byCat: byCat, supplies: sup, commission: com.total, net: net, cash: cd, final: net + cd.surplus - cd.shortage };
+  }
+
+  /* ================= screens ================= */
+  function tbl(head, rows, foot) {
+    return '<div class="cw-tblw"><table class="cw-tbl"><thead><tr>' + head.map(function (h) { return '<th' + (h.n ? ' class="cw-num"' : '') + '>' + h.l + '</th>'; }).join('') + '</tr></thead><tbody>'
+      + (rows.length ? rows.join('') : '<tr><td colspan="' + head.length + '" class="cw-empty">Nothing here yet.</td></tr>') + (foot || '') + '</tbody></table></div>';
+  }
+  CW_UI.pages.expenses = function () {
+    var p = period(), list = expensesIn(p.from, p.to).sort(function (x, y) { return cwNum(y.at) - cwNum(x.at); }), tot = W(list.reduce(function (t, e) { return t + cwNum(e.amount); }, 0));
+    var owner = me().owner, h = perChips();
+    h += '<div class="cw-kpis">' + cwKpi('Expenses', kes(tot), p.text, '#b91c1c') + cwKpi('Entries', list.length, '', '#0891b2') + '</div>';
+    h += '<div class="cw-card" style="margin-bottom:14px"><h3>Record an expense</h3><div class="cwb-inline">'
+      + '<div class="cw-f"><label>Date</label><input type="date" id="cwb-x-day" value="' + today() + '" max="' + today() + '"></div>'
+      + '<div class="cw-f"><label>Category</label><select id="cwb-x-cat">' + CATS.map(function (c) { return '<option>' + cwEsc(c) + '</option>'; }).join('') + '</select></div>'
+      + '<div class="cw-f"><label>Amount (KES)</label><input id="cwb-x-amt" inputmode="numeric" placeholder="0"></div>'
+      + '<div class="cw-f"><label>Paid by</label><select id="cwb-x-m">' + METHODS.map(function (m) { return '<option value="' + m[0] + '">' + m[1] + '</option>'; }).join('') + '</select></div>'
+      + '<div class="cw-f" style="flex:2"><label>Note</label><input id="cwb-x-note" maxlength="200" placeholder="What it was for"></div>'
+      + '<div><button class="cw-btn" data-cwb="xadd">Save expense</button></div></div>'
+      + '<p class="cw-small cw-mut" style="margin:8px 0 0">Buy shampoo, wax and other supplies under Supplies Stock (Stock in), not here, so they are not counted twice.</p></div>';
+    var rows = list.map(function (e) {
+      return '<tr><td>' + cwFmtDate(e.at) + '</td><td>' + cwEsc(e.category) + '</td><td>' + cwEsc(e.note || '') + '</td><td>' + cwEsc(methodL(e.method)) + '</td><td>' + cwEsc(e.by || '') + '</td><td class="cw-num">' + kes(e.amount) + '</td><td>'
+        + (owner ? '<button class="cw-btn sec" data-cwb="xvoid" data-id="' + cwEsc(e.id) + '">Void</button>' : '') + '</td></tr>';
+    });
+    h += tbl([{ l: 'Date' }, { l: 'Category' }, { l: 'Note' }, { l: 'Paid by' }, { l: 'Recorded by' }, { l: 'Amount', n: 1 }, { l: '' }], rows, list.length ? '<tr class="cwb-tot"><td colspan="5">Total</td><td class="cw-num">' + kes(tot) + '</td><td></td></tr>' : '');
+    var voided = cwExpenses.filter(function (e) { return e && e.voidedAt && inR(e.at, p.from, p.to); });
+    if (voided.length) h += '<div class="cw-sec">Voided</div>' + tbl([{ l: 'Date' }, { l: 'Category' }, { l: 'Amount', n: 1 }, { l: 'Voided by' }, { l: 'Reason' }], voided.map(function (e) { return '<tr><td>' + cwFmtDate(e.at) + '</td><td>' + cwEsc(e.category) + '</td><td class="cw-num">' + kes(e.amount) + '</td><td>' + cwEsc(e.voidedBy || '') + '</td><td>' + cwEsc(e.voidReason || '') + '</td></tr>'; }));
+    return h;
+  };
+  CW_UI.pages.cashup = function () {
+    var day = CW_UI.bk.day || today(), c = cashFor(day), saved = cashupOf(day), m = me(), locked = saved && !saved._deleted && !(m.owner || m.role === 'manager');
+    var fl = saved ? saved.float : 0, exp0 = fl + c.received - c.refunds - c.expenses - c.supplies;
+    var h = '<div class="cw-row" style="margin-bottom:12px;gap:10px"><div class="cw-f" style="max-width:220px"><label>Day</label><input type="date" data-cwb-ch="day" value="' + cwEsc(day) + '" max="' + today() + '"></div></div>';
+    h += '<div class="cw-grid cw-g2"><div class="cw-card cwb-cu"><h3>Cash-up for ' + cwFmtDate(cwDayStart(day)) + '</h3>'
+      + '<div class="cw-f"><label>Opening float (KES)</label><input id="cwb-cu-float" inputmode="numeric" value="' + (saved ? saved.float : '') + '"' + (locked ? ' readonly' : '') + ' placeholder="0"></div>'
+      + '<div class="ln"><span>+ Cash received from customers</span><b>' + kes(c.received) + '</b></div>'
+      + '<div class="ln"><span>&minus; Cash refunds</span><b>' + kes(c.refunds) + '</b></div>'
+      + '<div class="ln"><span>&minus; Expenses paid in cash</span><b>' + kes(c.expenses) + '</b></div>'
+      + '<div class="ln"><span>&minus; Supplies bought from the till</span><b>' + kes(c.supplies) + '</b></div>'
+      + '<div class="ln big"><span>Expected cash</span><b id="cwb-cu-exp" data-base="' + (c.received - c.refunds - c.expenses - c.supplies) + '">' + kes(exp0) + '</b></div>'
+      + '<div class="cw-f" style="margin-top:10px"><label>Cash counted (KES)</label><input id="cwb-cu-count" inputmode="numeric" value="' + (saved ? saved.counted : '') + '"' + (locked ? ' readonly' : '') + ' placeholder="0"></div>'
+      + '<div class="ln big"><span>Difference</span><b id="cwb-cu-diff">' + (saved ? diffTxt(saved.counted - exp0) : '—') + '</b></div>'
+      + '<div class="cw-f"><label>Note</label><input id="cwb-cu-note" maxlength="200" value="' + cwEsc(saved ? saved.note || '' : '') + '"' + (locked ? ' readonly' : '') + '></div>'
+      + (locked ? '<p class="cw-small cw-mut">Cashed up by ' + cwEsc(saved.by) + ' at ' + cwFmtTime(saved.at) + '.</p>' : '<button class="cw-btn" data-cwb="cusave">' + (saved ? 'Update cash-up' : 'Save cash-up') + '</button>')
+      + (saved && saved.expected !== exp0 && !locked ? '<p class="cw-small cw-mut">Payments or expenses changed since it was saved (saved expected ' + kes(saved.expected) + '). Save again to update.</p>' : '')
+      + '</div>';
+    var hist = cwCashups.filter(function (x) { return x && !x._deleted; }).sort(function (x, y) { return cwStr(y.day).localeCompare(cwStr(x.day)); }).slice(0, 31);
+    h += '<div class="cw-card"><h3>Recent cash-ups</h3>' + tbl([{ l: 'Day' }, { l: 'Expected', n: 1 }, { l: 'Counted', n: 1 }, { l: 'Difference', n: 1 }, { l: 'By' }], hist.map(function (x) {
+      return '<tr class="cw-click" data-cwb="cuday" data-v="' + cwEsc(x.day) + '"><td>' + cwFmtDate(cwDayStart(x.day)) + '</td><td class="cw-num">' + kes(x.expected) + '</td><td class="cw-num">' + kes(x.counted) + '</td><td class="cw-num ' + (x.diff > 0 ? 'cwb-pos' : x.diff < 0 ? 'cwb-neg' : '') + '">' + diffTxt(x.diff) + '</td><td>' + cwEsc(x.by || '') + '</td></tr>';
+    })) + '</div></div>';
+    return h;
+  };
+  function diffTxt(d) { d = W(d); return d > 0 ? 'Surplus ' + kes(d) : d < 0 ? 'Shortage ' + kes(-d) : 'Balanced'; }
+  CW_UI.pages.supplies = function () {
+    var list = cwSupplies.filter(function (s) { return s && !s._deleted; }).sort(function (x, y) { return cwStr(x.name).localeCompare(cwStr(y.name)); });
+    var low = 0, value = 0, ed = can('supplies');
+    var rows = list.map(function (s) {
+      var st = stockOf(s), isLow = st.qty <= cwNum(s.low); if (isLow) low++; value += st.value;
+      return '<tr' + (isLow ? ' class="cwb-low"' : '') + '><td><b>' + cwEsc(s.name) + '</b></td><td>' + cwEsc(s.unit) + '</td><td class="cw-num">' + st.qty + '</td><td class="cw-num">' + (st.avg ? kes(st.avg) : '—') + '</td><td class="cw-num">' + kes(st.value) + '</td><td class="cw-num">' + cwNum(s.low) + '</td><td>' + (isLow ? '<b class="cwb-neg">Low</b>' : 'OK') + '</td><td style="white-space:nowrap">'
+        + (ed ? '<button class="cw-btn" data-cwb="sin" data-id="' + cwEsc(s.id) + '">Stock in</button> ' : '')
+        + '<button class="cw-btn sec" data-cwb="suse" data-id="' + cwEsc(s.id) + '">Use</button> '
+        + (ed ? '<button class="cw-btn sec" data-cwb="scount" data-id="' + cwEsc(s.id) + '">Count</button> <button class="cw-btn ghost" data-cwb="sedit" data-id="' + cwEsc(s.id) + '">Edit</button>' : '') + '</td></tr>';
+    });
+    var h = '<div class="cw-kpis">' + cwKpi('Supplies', list.length, '', '#0891b2') + cwKpi('Low stock', low, '', low ? '#dc2626' : '#16a34a') + cwKpi('Stock value', kes(value), 'at average buying cost', '#7c3aed') + '</div>';
+    if (ed) h += '<div class="cw-card" style="margin-bottom:14px"><h3>Add a supply</h3><div class="cwb-inline">'
+      + '<div class="cw-f" style="flex:2"><label>Name</label><input id="cwb-s-name" maxlength="80" placeholder="e.g. Car shampoo"></div>'
+      + '<div class="cw-f"><label>Unit</label><input id="cwb-s-unit" maxlength="20" placeholder="litre"></div>'
+      + '<div class="cw-f"><label>Low-stock level</label><input id="cwb-s-low" inputmode="decimal" placeholder="0"></div>'
+      + '<div><button class="cw-btn" data-cwb="sadd">Add supply</button></div></div></div>';
+    h += tbl([{ l: 'Supply' }, { l: 'Unit' }, { l: 'In stock', n: 1 }, { l: 'Avg cost', n: 1 }, { l: 'Value', n: 1 }, { l: 'Low level', n: 1 }, { l: 'Status' }, { l: '' }], rows);
+    var mv = cwSupplyMoves.filter(live).sort(function (x, y) { return cwNum(y.at) - cwNum(x.at); }).slice(0, 200);
+    h += '<div class="cw-sec">Movements</div>' + tbl([{ l: 'When' }, { l: 'Supply' }, { l: 'Movement' }, { l: 'Quantity', n: 1 }, { l: 'Cost', n: 1 }, { l: 'By' }, { l: 'Note' }], mv.map(function (x) {
+      var t = x.type === 'in' ? 'Stock in' + (x.fromTill ? ' (paid from till)' : '') : x.type === 'use' ? 'Used' : 'Count';
+      var q = x.type === 'count' ? 'counted ' + x.counted + ' (' + (x.delta > 0 ? '+' : '') + x.delta + ')' : (x.type === 'use' ? '-' : '+') + x.qty;
+      return '<tr><td>' + cwFmtDT(x.at) + '</td><td>' + cwEsc(x.name) + '</td><td>' + t + '</td><td class="cw-num">' + q + '</td><td class="cw-num">' + kes(x.total) + '</td><td>' + cwEsc(x.by || '') + '</td><td>' + cwEsc(x.note || '') + '</td></tr>';
+    }));
+    return h;
+  };
+  CW_UI.pages.commission = function () {
+    var p = period(), d = commission(p.from, p.to), owner = me().owner, h = perChips();
+    h += '<div class="cw-row" style="justify-content:flex-end;margin:-6px 0 10px"><button class="cw-btn sec" data-cwb="cprint">Print</button></div>';
+    h += '<div class="cw-kpis">' + cwKpi('Commission to pay', kes(d.total), p.text, '#7c3aed') + cwKpi('Jobs that earn commission', d.jobs, '', '#0891b2') + '</div>';
+    h += tbl([{ l: 'Worker' }, { l: 'Jobs', n: 1 }, { l: 'Share of job value', n: 1 }, { l: 'Commission', n: 1 }], d.rows.map(function (r) { return '<tr><td><b>' + cwEsc(r.name) + '</b></td><td class="cw-num">' + r.jobs + '</td><td class="cw-num">' + kes(r.value) + '</td><td class="cw-num">' + kes(r.commission) + '</td></tr>'; }),
+      d.rows.length ? '<tr class="cwb-tot"><td>Total</td><td></td><td></td><td class="cw-num">' + kes(d.total) + '</td></tr>' : '');
+    h += '<p class="cw-small cw-mut">A job earns commission when it is finished and paid (a free loyalty job earns only a fixed amount). When several workers are on a job, the commission is split equally between them.</p>';
+    if (owner) {
+      var t = today(), people = cwStaffAll().filter(function (m) { return m && !m.removed; });
+      h += '<div class="cw-sec">Commission rates</div>' + tbl([{ l: 'Worker' }, { l: 'Now' }, { l: 'Type' }, { l: 'Amount' }, { l: 'From' }, { l: '' }], people.map(function (st) {
+        var r = rateAt(st, cwNow());
+        return '<tr><td><b>' + cwEsc(st.name) + '</b></td><td>' + (r ? (r.type === 'pct' ? r.value + ' % of each job' : kes(r.value) + ' per job') : 'None') + '</td>'
+          + '<td><select data-cwr="type" data-id="' + cwEsc(st.id) + '"><option value="">None</option><option value="pct"' + (r && r.type === 'pct' ? ' selected' : '') + '>% of each job</option><option value="fixed"' + (r && r.type === 'fixed' ? ' selected' : '') + '>KSh per job</option></select></td>'
+          + '<td><input data-cwr="val" data-id="' + cwEsc(st.id) + '" inputmode="decimal" style="width:100px" value="' + (r ? r.value : '') + '"></td>'
+          + '<td><input type="date" data-cwr="from" data-id="' + cwEsc(st.id) + '" value="' + t + '"></td>'
+          + '<td><button class="cw-btn" data-cwb="rsave" data-id="' + cwEsc(st.id) + '">Save</button></td></tr>';
+      }));
+      h += '<p class="cw-small cw-mut">A new rate counts from the date you choose; jobs before it keep the old rate.</p>';
+    }
+    return h;
+  };
+  CW_UI.pages.pnl = function () {
+    var p = period(), r = pnl(p.from, p.to), h = perChips();
+    h += '<div class="cw-row" style="justify-content:flex-end;margin:-6px 0 10px"><button class="cw-btn sec" data-cwb="pprint">Print</button></div>';
+    h += '<div class="cw-kpis">' + cwKpi('Collected', kes(r.collections.net), p.text, '#0891b2') + cwKpi('Costs', kes(r.expenses + r.supplies + r.commission), 'expenses, supplies, commission', '#b91c1c') + cwKpi('Final profit', kes(r.final), '', r.final >= 0 ? '#16a34a' : '#dc2626') + '</div>';
+    h += '<div class="cw-card cwb-pl">' + pnlLines(r) + '</div>';
+    return h;
+  };
+  function pnlLines(r) {
+    var ln = function (l, v, cls) { return '<div class="ln' + (cls ? ' ' + cls : '') + '"><span>' + l + '</span><b>' + kes(v) + '</b></div>'; };
+    var h = ln('Money collected', r.collections.gross);
+    Object.keys(r.collections.by).forEach(function (k) { if (r.collections.by[k]) h += ln(cwEsc(methodL(k)), r.collections.by[k], 'sub'); });
+    h += ln('&minus; Refunds', r.collections.refunds) + ln('Net collections', r.collections.net, 'big');
+    h += ln('&minus; Expenses', r.expenses);
+    Object.keys(r.byCat).sort(function (a, b) { return r.byCat[b] - r.byCat[a]; }).forEach(function (k) { h += ln(cwEsc(k), r.byCat[k], 'sub'); });
+    h += ln('&minus; Supplies used', r.supplies) + ln('&minus; Staff commission', r.commission) + ln('Net profit', r.net, 'big');
+    if (r.cash.count) h += ln('+ Cash-up surplus', r.cash.surplus) + ln('&minus; Cash-up shortage', r.cash.shortage);
+    h += ln('Final profit', r.final, 'big');
+    return h;
+  }
+  function printTable(title, sub, body) {
+    var b = cwCfg().business || {};
+    var css = '@page{size:A4;margin:14mm}body{font-family:Arial,sans-serif;color:#111;font-size:13px}h1{font-size:19px;margin:0}.s{color:#444;margin:3px 0 14px}.ln{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #ddd}.ln.sub{padding-left:16px;color:#444;font-size:12px}.ln.big{font-weight:700;border-top:2px solid #111;border-bottom:0}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #ccc;padding:6px;text-align:left}th{background:#eee}.n{text-align:right}';
+    cwPrintDoc(title, '<h1>' + cwEsc(b.name || 'Car Wash') + ' - ' + cwEsc(title) + '</h1><div class="s">' + cwEsc(sub) + '</div>' + body, css);
+  }
+
+  /* ---------- events ---------- */
+  function v(id) { var e = cwEl(id); return e ? e.value : ''; }
+  function done(res, msg) { if (!res || !res.ok) { cwToast((res && res.error) || 'Could not save.', true); return false; } if (msg) cwToast(msg); cwCloseModal(); cwRender(); return true; }
+  function moveForm(id, type) {
+    var s = cwFind(cwSupplies, id); if (!s) return;
+    var st = stockOf(s), t = { in: 'Stock in', use: 'Use', count: 'Count' }[type];
+    var body = '<div class="cw-pb"><div class="cw-card"><p class="cw-mut" style="margin-top:0">In stock: <b>' + st.qty + ' ' + cwEsc(s.unit) + '</b></p>'
+      + '<div class="cw-f"><label>' + (type === 'count' ? 'Quantity counted' : 'Quantity') + ' (' + cwEsc(s.unit) + ')</label><input id="cwb-m-q" inputmode="decimal"></div>'
+      + (type === 'in' ? '<div class="cw-f"><label>Total cost (KES)</label><input id="cwb-m-t" inputmode="numeric"></div><label style="display:flex;gap:8px;align-items:center;margin:6px 0 10px"><input type="checkbox" id="cwb-m-till" style="width:auto"> Paid with cash from the till</label>' : '')
+      + '<div class="cw-f"><label>Note</label><input id="cwb-m-n" maxlength="200"></div>'
+      + '<button class="cw-btn" data-cwb="msave" data-id="' + cwEsc(id) + '" data-v="' + type + '">' + t + '</button></div></div>';
+    cwOpenModal(cwPH(t + ': ' + cwEsc(s.name)) + body, true);
+  }
+  function editForm(id) {
+    var s = cwFind(cwSupplies, id); if (!s) return;
+    cwOpenModal(cwPH('Edit ' + cwEsc(s.name)) + '<div class="cw-pb"><div class="cw-card">'
+      + '<div class="cw-f"><label>Name</label><input id="cwb-e-name" value="' + cwEsc(s.name) + '"></div><div class="cw-f"><label>Unit</label><input id="cwb-e-unit" value="' + cwEsc(s.unit) + '"></div>'
+      + '<div class="cw-f"><label>Low-stock level</label><input id="cwb-e-low" inputmode="decimal" value="' + cwNum(s.low) + '"></div>'
+      + '<button class="cw-btn" data-cwb="esave" data-id="' + cwEsc(id) + '">Save</button></div></div>', true);
+  }
+  function onClick(e) {
+    var t = e.target.closest ? e.target.closest('[data-cwb]') : null; if (!t) return;
+    var a = t.getAttribute('data-cwb'), id = t.getAttribute('data-id'), val = t.getAttribute('data-v');
+    e.stopPropagation();
+    switch (a) {
+      case 'per': CW_UI.bk.per = val; if (val === 'custom' && !CW_UI.bk.from) { var p = period(); CW_UI.bk.from = cwDayKey(p.from); CW_UI.bk.to = cwDayKey(p.to - 1); } cwRender(); return;
+      case 'xadd': if (done(addExpense({ day: v('cwb-x-day'), category: v('cwb-x-cat'), amount: v('cwb-x-amt'), method: v('cwb-x-m'), note: v('cwb-x-note') }), 'Expense saved.')) return; return;
+      case 'xvoid': { var why = ''; try { why = window.prompt('Why is this expense being voided?') || ''; } catch (x) { why = ''; } if (!why) return; done(voidExpense(id, why), 'Expense voided.'); return; }
+      case 'cuday': CW_UI.bk.day = val; cwRender(); return;
+      case 'cusave': done(saveCashup(CW_UI.bk.day || today(), { float: v('cwb-cu-float'), counted: v('cwb-cu-count'), note: v('cwb-cu-note') }), 'Cash-up saved.'); return;
+      case 'sadd': done(addSupply({ name: v('cwb-s-name'), unit: v('cwb-s-unit'), low: v('cwb-s-low') }), 'Supply added.'); return;
+      case 'sin': moveForm(id, 'in'); return;
+      case 'suse': moveForm(id, 'use'); return;
+      case 'scount': moveForm(id, 'count'); return;
+      case 'sedit': editForm(id); return;
+      case 'esave': done(editSupply(id, { name: v('cwb-e-name'), unit: v('cwb-e-unit'), low: v('cwb-e-low') }), 'Saved.'); return;
+      case 'msave': { var till = cwEl('cwb-m-till'); done(moveSupply(id, val, { qty: v('cwb-m-q'), total: v('cwb-m-t'), fromTill: !!(till && till.checked), note: v('cwb-m-n') }), 'Saved.'); return; }
+      case 'rsave': { var q = function (k) { var el = document.querySelector('[data-cwr="' + k + '"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]'); return el ? el.value : ''; }; done(setRate(id, q('type'), q('val'), q('from')), 'Commission saved.'); return; }
+      case 'cprint': { var p2 = period(), d = commission(p2.from, p2.to);
+        printTable('Staff commission', p2.text, '<table><thead><tr><th>Worker</th><th class="n">Jobs</th><th class="n">Share of job value</th><th class="n">Commission</th></tr></thead><tbody>' + d.rows.map(function (r) { return '<tr><td>' + cwEsc(r.name) + '</td><td class="n">' + r.jobs + '</td><td class="n">' + kes(r.value) + '</td><td class="n">' + kes(r.commission) + '</td></tr>'; }).join('') + '<tr><td><b>Total</b></td><td></td><td></td><td class="n"><b>' + kes(d.total) + '</b></td></tr></tbody></table>'); return; }
+      case 'pprint': { var p3 = period(); printTable('Profit & Loss', p3.text, pnlLines(pnl(p3.from, p3.to))); return; }
+      default: return;
+    }
+  }
+  function onChange(e) {
+    var t = e.target; if (!t || !t.getAttribute) return;
+    var k = t.getAttribute('data-cwb-ch');
+    if (k === 'from' || k === 'to') { CW_UI.bk[k] = t.value; if (CW_UI.bk.from && CW_UI.bk.to) cwRender(); }
+    else if (k === 'day') { CW_UI.bk.day = t.value; cwRender(); }
+  }
+  function onInput(e) {
+    var t = e.target; if (!t || (t.id !== 'cwb-cu-float' && t.id !== 'cwb-cu-count')) return;
+    var ex = cwEl('cwb-cu-exp'), df = cwEl('cwb-cu-diff'); if (!ex || !df) return;
+    var fl = Number(String(v('cwb-cu-float') || 0).replace(/,/g, '')) || 0, expected = cwNum(ex.getAttribute('data-base')) + fl;
+    ex.textContent = kes(expected);
+    var c = v('cwb-cu-count'); df.textContent = c === '' ? '—' : diffTxt((Number(String(c).replace(/,/g, '')) || 0) - expected);
+  }
+  function wire() {
+    ['cw-main', 'cw-panel'].forEach(function (id) { var el = cwEl(id); if (!el || el.__cwb) return; el.__cwb = true; el.addEventListener('click', onClick, true); el.addEventListener('change', onChange); el.addEventListener('input', onInput); });
+  }
+  wire(); setTimeout(wire, 800); setTimeout(wire, 3000);
+
+  window.CwBooks = { collections: collections, expensesIn: expensesIn, addExpense: addExpense, voidExpense: voidExpense, addSupply: addSupply, editSupply: editSupply, moveSupply: moveSupply, stockOf: stockOf, suppliesUsed: suppliesUsed,
+    rateAt: rateAt, setRate: setRate, commission: commission, cashFor: cashFor, saveCashup: saveCashup, cashDiffs: cashDiffs, pnl: pnl, period: period };
+})();
+</script>
+<!-- /CW BOOKS -->

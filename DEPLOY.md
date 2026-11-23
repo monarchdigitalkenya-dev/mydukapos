@@ -1,3 +1,14 @@
+# Zip 298 - read `DEPLOY_298.md` (Delivery button fixed, hospital date of birth, lab technician lab-history view, less scrolling; no migration; full Windows cmd steps from mkdir to the end)
+
+# Zip 291 - read `DEPLOY_291.md` (Cash float & reconciliation for the Shop + inventory groundwork; no migration, no router; full Windows cmd steps from unzip to deploy)
+
+# Zip 287 - read `DEPLOY_287.md` (Till watcher no longer announces an STK payment as a direct Till payment)
+
+# Zip 284 - read `DEPLOY_284.md` (switch-account --pages-host now works together with the ids; correct deploy order for the new account)
+
+# Moving to a NEW Cloudflare account - read `docs/MIGRATION_TO_NEW_ACCOUNT.md` (zip 269)
+`node tools\switch-account.mjs --show | --kv .. --ledger .. --audit .. --owner .. | --noroute | --back` points the two wrangler files at another account's ids. Never mirror the zip over the folder after switching.
+
 # Deploying an update (Windows CMD) — the same every time
 
 Work folder: `C:\dev\mydukapos` (the clone). Replace `zipNN` with the folder you unzip the new zip into.

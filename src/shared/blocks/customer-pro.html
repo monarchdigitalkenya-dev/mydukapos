@@ -1,0 +1,325 @@
+<!-- CUSTOMER PRO (zip 328) -----------------------------------------------------------------------------------------------------------------
+     One customer = one profile with many transactions. The logic (matching, merge, history) is in src/shared/functions.js (cust*, upsertCustomer,
+     mergeCustomers, findDuplicateCustomerGroups, customerTransactions); the customer search at checkout, the customers list and the profile are in
+     first-run-customers (zip 258). This block adds what is around them, the same in every app:
+       1. RECEIPT DETAILS  - optional "name on the receipt" + ID number under the Customer box (a customer who gives only a name is fine); a Bill needs name + phone.
+       2. ASK, DON'T GUESS - when a phone / ID matches a different person (a shared phone, another ID) the cashier picks "use X" or "a different person".
+       3. + ADD CUSTOMER   - phone is optional, ID number + notes added, an existing person is never saved twice.
+       4. EDIT PROFILE     - name / phone / notes (and the ID number for the Admin or a manager); every change is written to the profile's history.
+       5. DUPLICATES       - the Admin / managers review "same phone / same ID" groups, pick who to keep and merge; no transaction is deleted.
+     Every entry point is wrapped: a failure here only loses the extra, never a sale. -->
+<style id="cust-pro-css">
+    .cp-box { margin-top: 8px; border: 1px dashed var(--border-color, #c9d1d8); border-radius: 10px; background: var(--bg-surface, #fff); }
+    .cp-box > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; font-weight: 600; color: #1a5f8a; }
+    .cp-box .cp-in { padding: 0 12px 10px; }
+    .cp-box label { display: block; font-size: 12px; font-weight: 600; margin: 6px 0 2px; }
+    .cp-box input { width: 100%; box-sizing: border-box; }
+    .cp-chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #e8f4fd; color: #1a5f8a; margin-left: 6px; }
+    .cp-chip.warn { background: #fdecea; color: #a83228; }
+    .cp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 14px; }
+    .cp-dialog { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 14px; max-width: 560px; width: 100%; max-height: 88vh; overflow: auto; padding: 18px 20px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+    .cp-dialog h3 { margin: 0 0 6px; }
+    .cp-dialog label { display: block; font-size: 12px; font-weight: 600; margin: 8px 0 2px; }
+    .cp-dialog input[type=text], .cp-dialog input:not([type]) { width: 100%; box-sizing: border-box; }
+    .cp-dialog .cp-row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--light, #eef1f3); flex-wrap: wrap; }
+    .cp-dialog .cp-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .cp-btn { width: auto; margin: 0; padding: 9px 14px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600; }
+    .cp-card { border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 12px 14px; margin: 12px 0; background: var(--bg-surface, #fff); }
+    .cp-card h4 { margin: 0 0 8px; }
+    .cp-warnbar { background: #fff4e0; border: 1px solid #f0c36d; color: #7a5200; padding: 9px 12px; border-radius: 10px; margin-bottom: 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
+</style>
+<script>
+(function () {
+    'use strict';
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return typeof escapeHtml === 'function' ? escapeHtml(String(s == null ? '' : s)) : String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+    function mgr() { try { return custIsManager(); } catch (e) { return false; } }
+    function refreshLists() { try { if (typeof renderCustomersList === 'function') renderCustomersList(); } catch (e) { /* list not open */ } }
+
+    /* ---- 2. ASK, DON'T GUESS: resolves to 'use:<id>' | 'new' | null (cancelled) ---- */
+    function chooseCustomer(candidates, reason, details) {
+        return new Promise(function (resolve) {
+            var ov = document.createElement('div'); ov.className = 'cp-overlay'; ov.id = 'cp-choose';
+            var rows = (candidates || []).map(function (c) {
+                return '<div class="cp-row"><div style="flex:1;min-width:180px"><b>' + esc(c.name || 'Unnamed') + '</b> <small>' + esc(c.phone || 'no phone') + (c.idNumber ? ' · ID ' + esc(custMaskId(c.idNumber)) : '') + '</small></div>'
+                    + '<button type="button" class="cp-btn" data-use="' + esc(c.id) + '" style="background:#1f8a70;color:#fff">Use this customer</button></div>';
+            }).join('');
+            ov.innerHTML = '<div class="cp-dialog" role="dialog" aria-modal="true" aria-label="Is this the same customer?"><h3>🤔 Is this the same customer?</h3>'
+                + '<p class="settings-hint" style="margin:0 0 8px">' + esc(reason || 'A saved customer looks similar.') + '</p>'
+                + '<p style="margin:0 0 6px;font-size:13px">You entered: <b>' + esc((details && details.name) || '—') + '</b> · ' + esc((details && details.phone) || 'no phone') + (details && details.idNumber ? ' · ID ' + esc(custMaskId(details.idNumber)) : '') + '</p>'
+                + rows + '<div class="cp-actions"><button type="button" class="cp-btn" data-new="1" style="background:#2980b9;color:#fff">➕ A different person</button><button type="button" class="cp-btn" data-cancel="1" style="background:#95a5a6;color:#fff">Cancel</button></div></div>';
+            document.body.appendChild(ov);
+            function done(v) { try { ov.remove(); } catch (e) { /* gone */ } resolve(v); }
+            ov.addEventListener('click', function (ev) {
+                var t = ev.target.closest && ev.target.closest('button'); if (!t) return;
+                if (t.getAttribute('data-use')) done('use:' + t.getAttribute('data-use'));
+                else if (t.getAttribute('data-new')) done('new');
+                else if (t.getAttribute('data-cancel')) done(null);
+            });
+        });
+    }
+    window.custChooseDialog = chooseCustomer;
+
+    /* ---- 1. RECEIPT DETAILS under the Customer box ---- */
+    function ensureCheckout() {
+        var anchor = $('fr-cust') || ($('sms-checkout-phone-input') && ($('sms-checkout-phone-input').closest('.form-group') || $('sms-checkout-phone-input').parentNode));
+        if (anchor && !$('cp-co-box')) {
+            var box = document.createElement('details'); box.id = 'cp-co-box'; box.className = 'cp-box';
+            box.innerHTML = '<summary>🧾 Name / ID number on the receipt <span style="font-weight:normal;color:#7f8c8d">(optional)</span></summary><div class="cp-in">'
+                + '<label for="cp-co-name">Customer name</label><input type="text" id="cp-co-name" autocomplete="off" placeholder="e.g. John Kamau">'
+                + '<label for="cp-co-id">ID number</label><input type="text" id="cp-co-id" autocomplete="off" inputmode="numeric" placeholder="e.g. 12345678">'
+                + '<p class="settings-hint" style="margin:6px 0 0">Printed on the receipt when filled in. A customer saved above fills these in for you.</p></div>';
+            (anchor.parentNode || document.body).insertBefore(box, anchor.nextSibling);
+            ['cp-co-name', 'cp-co-id'].forEach(function (id) { $(id).addEventListener('input', function () { if (window.__checkoutCustomerId && !mgr()) { /* a non-manager never overwrites a saved profile's ID from here */ } }); });
+        }
+        var bn = $('bill-customer-name-input');
+        if (bn && !bn.__cp) {
+            bn.__cp = true;
+            var lab = bn.previousElementSibling; if (lab && lab.tagName === 'LABEL') lab.innerHTML = 'Customer Name <span style="font-weight:normal;color:#c0392b">(required for a bill)</span>';
+            var hint = bn.nextElementSibling;
+            if (hint && hint.classList && hint.classList.contains('settings-hint')) hint.innerHTML = 'A bill needs the customer\'s <strong>name</strong> here and their <strong>phone number</strong> in the Customer box above (the ID number is optional). They are saved on the customer\'s profile and printed on the bill.';
+        }
+    }
+    window.custOnAttach = function (c, nw) {
+        var n = $('cp-co-name'), i = $('cp-co-id'), b = $('bill-customer-name-input');
+        var name = c ? (c.name || '') : (nw ? nw.name || '' : ''), idn = c ? (mgr() ? (c.idNumber || '') : '') : (nw ? nw.idNumber || '' : '');
+        if (n) n.value = name; if (i) i.value = idn; if (b && name) b.value = name;
+        if (!c && !nw) { if (b && b.value && b.__cpFilled) b.value = ''; }
+        if (b) b.__cpFilled = !!name;
+    };
+
+    // Called by the checkout. -> { ok, error?, name, phone, idNumber, customerId?, choice?, skipProfile? }
+    window.custCheckoutCapture = async function (isBill) {
+        var billName = $('bill-customer-name-input') ? $('bill-customer-name-input').value.trim() : '';
+        var recName = $('cp-co-name') ? $('cp-co-name').value.trim() : '';
+        var name = isBill ? (billName || recName) : (recName || billName);
+        var phone = $('sms-checkout-phone-input') ? $('sms-checkout-phone-input').value.trim() : '';
+        var idNumber = $('cp-co-id') ? $('cp-co-id').value.trim() : '';
+        var picked = window.__checkoutCustomerId ? custResolve(window.__checkoutCustomerId) : null;
+        var nw = window.__checkoutNew || null;
+        if (nw && !picked) { name = name || nw.name || ''; idNumber = idNumber || nw.idNumber || ''; phone = phone || nw.phone || ''; }
+        var out = { ok: true, name: name, phone: phone, idNumber: idNumber, customerId: picked ? picked.id : null };
+        if (picked && !idNumber && picked.idNumber && !mgr()) idNumber = '';
+        if (isBill) {
+            if (!name) return { ok: false, error: 'A bill needs the customer\'s name.' };
+            if (!phone) return { ok: false, error: 'A bill needs the customer\'s phone number.' };
+            if (!custPhoneValid(phone)) return { ok: false, error: 'That phone number does not look right - use a Kenyan number like 0712345678 or +254712345678.' };
+        } else if (phone && !custPhoneValid(phone)) {
+            out.skipProfile = true;               // an ordinary sale is never blocked by a typo: it is kept as typed, just not turned into a profile
+        }
+        if (idNumber && !custIdKey(idNumber)) return { ok: false, error: 'The ID number looks too short.' };
+        if (!out.customerId && !out.skipProfile && (custPhoneKey(phone) || idNumber)) {
+            var probe = upsertCustomer({ name: name, phone: phone, idNumber: idNumber }, { create: false });
+            if (probe.status === 'ambiguous') {
+                var choice = await chooseCustomer(probe.candidates, probe.reason, out);
+                if (choice === null) return { ok: false, error: 'Sale not completed - choose the customer (or cancel).', cancelled: true };
+                out.choice = choice;
+            }
+        }
+        return out;
+    };
+    window.custCheckoutClear = function () {
+        window.__checkoutCustomerId = null; window.__checkoutNew = null;
+        ['cp-co-name', 'cp-co-id'].forEach(function (id) { var e = $(id); if (e) e.value = ''; });
+    };
+    // Called with the finished sale record(s): links the ONE profile (creating it only when nobody matches) and stamps the snapshot fields.
+    window.custLinkSale = function (cap) {
+        var recs = Array.prototype.slice.call(arguments, 1).filter(Boolean);
+        if (!cap || !recs.length) return null;
+        var c = null;
+        if (!cap.skipProfile && (cap.customerId || cap.choice || custIdKey(cap.idNumber) || custPhoneKey(cap.phone))) {
+            var opts = cap.customerId ? { customerId: cap.customerId, update: mgr() } : (cap.choice ? { choice: cap.choice } : { onConflict: 'reuse' });
+            var r = upsertCustomer({ name: cap.name, phone: cap.phone, idNumber: cap.idNumber }, opts);
+            c = r.customer || null;
+        }
+        recs.forEach(function (rec) {
+            if (c) rec.customerId = c.id;
+            if (cap.idNumber) rec.customerIdNumber = cap.idNumber;
+            else if (c && c.idNumber && (rec.customerPhone || rec.customerName)) rec.customerIdNumber = c.idNumber;
+            if (cap.name && !rec.customerName) rec.customerName = cap.name;
+            else if (c && c.name && !rec.customerName) rec.customerName = c.name;
+            if (cap.phone && !rec.customerPhone) rec.customerPhone = cap.phone;
+        });
+        return c;
+    };
+
+    /* ---- 3. + ADD CUSTOMER ---- */
+    function ensureAddModal() {
+        var m = $('add-customer-modal'); if (!m || $('add-customer-id-input')) return;
+        var ph = $('add-customer-phone-input'); if (!ph) return;
+        var lab = ph.previousElementSibling; if (lab && lab.tagName === 'LABEL') lab.innerHTML = 'Phone <span style="font-weight:normal;color:#7f8c8d">(optional)</span>';
+        var g = ph.closest('.form-group') || ph.parentNode;
+        var d = document.createElement('div'); d.className = 'form-group';
+        d.innerHTML = '<label class="label">ID number <span style="font-weight:normal;color:#7f8c8d">(optional)</span></label><input type="text" id="add-customer-id-input" autocomplete="off" placeholder="e.g. 12345678">'
+            + '<label class="label" style="margin-top:8px">Notes <span style="font-weight:normal;color:#7f8c8d">(optional)</span></label><input type="text" id="add-customer-notes-input" placeholder="e.g. prefers WhatsApp">';
+        g.parentNode.insertBefore(d, g.nextSibling);
+    }
+    window.saveNewCustomer = async function () {
+        var errEl = $('add-customer-error'); if (errEl) errEl.textContent = '';
+        var d = { name: $('add-customer-name-input').value.trim(), phone: $('add-customer-phone-input').value.trim(), idNumber: $('add-customer-id-input') ? $('add-customer-id-input').value.trim() : '', notes: $('add-customer-notes-input') ? $('add-customer-notes-input').value.trim() : '' };
+        if (!d.name && !d.phone && !d.idNumber) { errEl.textContent = 'Enter a name, a phone number or an ID number.'; return; }
+        if (d.phone && !custPhoneValid(d.phone)) { errEl.textContent = 'That phone number does not look right.'; return; }
+        if (d.idNumber && !custIdKey(d.idNumber)) { errEl.textContent = 'The ID number looks too short.'; return; }
+        var r = upsertCustomer(d, {});
+        if (r.status === 'ambiguous') {
+            var ch = await chooseCustomer(r.candidates, r.reason, d);
+            if (ch === null) return;
+            r = upsertCustomer(d, { choice: ch, update: false });
+        }
+        if (r.status === 'invalid') { errEl.textContent = r.reason || 'Could not save.'; return; }
+        try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ }
+        if (typeof closeAddCustomerModal === 'function') closeAddCustomerModal();
+        refreshLists();
+        toast(r.status === 'created' ? 'Customer added.' : 'That customer was already saved - details updated, no duplicate made.');
+    };
+    var oldOpenAdd = window.openAddCustomerModal;
+    window.openAddCustomerModal = function () { if (typeof oldOpenAdd === 'function') oldOpenAdd(); ensureAddModal(); ['add-customer-id-input', 'add-customer-notes-input'].forEach(function (id) { var e = $(id); if (e) e.value = ''; }); };
+
+    /* ---- 4. EDIT PROFILE ---- */
+    window.custEditProfile = function (id, after) {
+        var c = custResolve(id); if (!c) return;
+        var ov = document.createElement('div'); ov.className = 'cp-overlay';
+        ov.innerHTML = '<div class="cp-dialog"><h3>✏️ Edit customer</h3><p class="settings-hint">Receipts and contracts already printed keep the details they were issued with; only new documents use these.</p>'
+            + '<label>Name</label><input id="cp-e-name" value="' + esc(c.name || '') + '"><label>Phone</label><input id="cp-e-phone" value="' + esc(c.phone || '') + '">'
+            + (mgr() ? '<label>ID number</label><input id="cp-e-id" value="' + esc(c.idNumber || '') + '">' : '<p class="settings-hint">Changing an ID number is for the Admin or a manager.</p>')
+            + '<label>Notes</label><input id="cp-e-notes" value="' + esc(c.notes || '') + '"><p id="cp-e-err" style="color:#c0392b;min-height:16px"></p>'
+            + '<div class="cp-actions"><button type="button" class="cp-btn" id="cp-e-save" style="background:#1f8a70;color:#fff">Save</button><button type="button" class="cp-btn" id="cp-e-cancel" style="background:#95a5a6;color:#fff">Cancel</button></div></div>';
+        document.body.appendChild(ov);
+        $('cp-e-cancel').onclick = function () { ov.remove(); };
+        $('cp-e-save').onclick = function () {
+            var d = { name: $('cp-e-name').value.trim(), phone: $('cp-e-phone').value.trim(), idNumber: $('cp-e-id') ? $('cp-e-id').value.trim() : '', notes: $('cp-e-notes').value.trim() };
+            if (d.phone && !custPhoneValid(d.phone)) { $('cp-e-err').textContent = 'That phone number does not look right.'; return; }
+            if (d.idNumber && !custIdKey(d.idNumber)) { $('cp-e-err').textContent = 'The ID number looks too short.'; return; }
+            var clash = d.phone && custActive().find(function (x) { return x.id !== c.id && custPhoneKey(x.phone) === custPhoneKey(d.phone); });
+            if (clash && !confirm('Another customer (' + (clash.name || 'unnamed') + ') already has this phone number. Save anyway? You can merge the two later from the customers screen.')) return;
+            var upd = upsertCustomer(d, { customerId: c.id, update: true });
+            if (upd.status === 'invalid') { $('cp-e-err').textContent = upd.reason; return; }
+            [['name', d.name], ['notes', d.notes]].forEach(function (p) { if (!p[1] && c[p[0]]) { custLog(c, p[0], c[p[0]], ''); c[p[0]] = ''; c.updatedAt = Date.now(); custSave(['customers']); } });
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ }
+            ov.remove(); refreshLists(); if (typeof after === 'function') after(); toast('Customer saved.');
+        };
+    };
+
+    /* ---- 5. DUPLICATES (Admin / managers) ---- */
+    window.custDupBar = function () {
+        if (!mgr()) return '';
+        var dups; try { dups = findDuplicateCustomerGroups(); } catch (e) { return ''; }
+        if (!dups.length) return '';
+        return '<div class="cp-warnbar"><span>⚠ <b>' + dups.length + '</b> possible duplicate' + (dups.length === 1 ? '' : 's') + ' — the same phone number or ID number is saved on more than one profile.</span><button type="button" class="cp-btn" style="background:#e67e22;color:#fff" onclick="custOpenDuplicates()">Review &amp; merge</button></div>';
+    };
+    window.custOpenDuplicates = function () {
+        if (!mgr()) { toast('Only the Admin or a manager can merge customers.', true); return; }
+        var old = $('cp-dups'); if (old) old.remove();
+        var groups = findDuplicateCustomerGroups();
+        var ov = document.createElement('div'); ov.className = 'cp-overlay'; ov.id = 'cp-dups';
+        var body = groups.length ? groups.map(function (g, gi) {
+            var best = g.counts.slice().sort(function (a, b) { return b.n - a.n; })[0].id;
+            return '<div class="cp-card" data-g="' + gi + '"><h4>Group ' + (gi + 1) + (g.sameName ? '' : ' <span class="cp-chip warn">different names — check carefully</span>') + '</h4>'
+                + g.customers.map(function (c) { var n = g.counts.find(function (x) { return String(x.id) === String(c.id); }).n; return '<label class="cp-row" style="cursor:pointer"><input type="radio" name="keep' + gi + '" value="' + esc(c.id) + '" ' + (String(c.id) === String(best) ? 'checked' : '') + ' style="width:auto"> <span style="flex:1"><b>' + esc(c.name || 'Unnamed') + '</b> <small>' + esc(c.phone || 'no phone') + (c.idNumber ? ' · ID ' + esc(custMaskId(c.idNumber)) : '') + ' · ' + n + ' transaction' + (n === 1 ? '' : 's') + '</small></span></label>'; }).join('')
+                + '<div class="cp-actions"><button type="button" class="cp-btn" data-merge="' + gi + '" style="background:#e67e22;color:#fff">Keep the selected one &amp; merge the rest into it</button></div></div>';
+        }).join('') : '<p class="empty-state">No duplicates found. ✅</p>';
+        ov.innerHTML = '<div class="cp-dialog" style="max-width:680px"><h3>🔗 Review duplicate customers</h3><p class="settings-hint">These profiles share a phone number or ID number. Pick the profile to <b>keep</b>: every sale, bill and contract of the others is moved onto it. No transaction is deleted, its reference and receipt stay as issued, and the merge is written to the history.</p>' + body + '<div class="cp-actions"><button type="button" class="cp-btn" id="cp-d-close" style="background:#95a5a6;color:#fff">Close</button></div></div>';
+        document.body.appendChild(ov);
+        $('cp-d-close').onclick = function () { ov.remove(); };
+        ov.addEventListener('click', function (ev) {
+            var b = ev.target.closest && ev.target.closest('button[data-merge]'); if (!b) return;
+            var gi = +b.getAttribute('data-merge'), g = groups[gi]; if (!g) return;
+            var keep = ov.querySelector('input[name="keep' + gi + '"]:checked'); if (!keep) return;
+            var dupIds = g.customers.filter(function (c) { return String(c.id) !== String(keep.value); }).map(function (c) { return c.id; });
+            if (!confirm('Merge ' + dupIds.length + ' profile' + (dupIds.length === 1 ? '' : 's') + ' into the one you selected? Their transactions move to it; nothing is deleted.')) return;
+            var r = mergeCustomers(keep.value, dupIds);
+            if (!r.ok) { toast(r.error, true); return; }
+            toast('Merged. ' + (r.moved.sales + r.moved.bills + r.moved.contracts + r.moved.debts + r.moved.returns) + ' record(s) moved.');
+            refreshLists(); window.custOpenDuplicates();
+        });
+    };
+
+
+    /* ---- 6. ISSUE ITEMS UNDER CONTRACT: the extra fields, the unit choice on a line, and the stock record when items come back ---- */
+    var CREQ = { name: 'Name only', phone: 'Name + phone number', id: 'Name + ID number', either: 'Name + phone OR ID number', both: 'Name + phone AND ID number' };
+    function ensureContractFields() {
+        var nm = $('contract-name-input'); if (!nm) return;
+        var panel = nm.closest('.panel');
+        if (panel) {
+            var h = panel.querySelector('h3'); if (h && /New Contract/.test(h.textContent)) h.textContent = '📑 Issue Items Under Contract';
+            panel.querySelectorAll('button').forEach(function (b) { if (/saveContract/.test(b.getAttribute('onclick') || '') && !/Deduct Stock/.test(b.textContent)) b.textContent = '💾 Save Contract and Deduct Stock'; });
+        }
+        var req = 'either'; try { req = contractRequirement(); } catch (e) { /* default */ }
+        var hint = $('contract-req-hint'); if (hint) hint.textContent = 'Required: ' + (CREQ[req] || CREQ.either) + ' (Settings > Receipts).';
+        if ($('contract-id-input')) return;
+        var row = nm.closest('.split-amounts-row') || nm.parentNode.parentNode;
+        var box = document.createElement('div'); box.id = 'contract-extra'; box.className = 'cp-card';
+        box.innerHTML = '<h4>Recipient &amp; agreement</h4><p class="settings-hint" id="contract-req-hint" style="margin-top:0"></p>'
+            + '<div class="split-amounts-row"><div class="form-group"><label>ID number</label><input type="text" id="contract-id-input" autocomplete="off" placeholder="e.g. 12345678" onblur="window.checkExistingContractMatch &amp;&amp; window.checkExistingContractMatch()"></div>'
+            + '<div class="form-group"><label>Address / organisation</label><input type="text" id="contract-address-input" placeholder="e.g. Kisumu Road, Nakuru"></div></div>'
+            + '<div class="split-amounts-row"><div class="form-group"><label>Contract reference <span style="font-weight:normal;color:#7f8c8d">(blank = automatic)</span></label><input type="text" id="contract-ref-input" placeholder="e.g. CT-2026-0001"></div>'
+            + '<div class="form-group"><label>Expected return date</label><input type="date" id="contract-expected-input"></div></div>'
+            + '<div class="form-group"><label>Terms / conditions</label><textarea id="contract-terms-input" rows="2" style="width:100%;box-sizing:border-box" placeholder="e.g. Return unsold items within 7 days."></textarea></div>'
+            + '<div class="form-group"><label>Approved by</label><input type="text" id="contract-approver-input" placeholder="Name of the person who authorised this issue"></div>';
+        row.parentNode.insertBefore(box, row.nextSibling);
+        var hint2 = $('contract-req-hint'); if (hint2) hint2.textContent = 'Required: ' + (CREQ[req] || CREQ.either) + ' (Settings > Receipts).';
+    }
+    function decorateContractRows() {
+        var tb = $('contract-rows-tbody'); if (!tb || typeof contractDraft === 'undefined') return;
+        var trs = tb.querySelectorAll('tr');
+        contractDraft.forEach(function (r, i) {
+            var tr = trs[i]; if (!tr || tr.querySelector('.cp-unit')) return;
+            var p; try { p = contractRowProduct(r); } catch (e) { p = null; }
+            if (!p || !p.dualUnit) return;
+            var td = tr.children[1]; if (!td) return;
+            var sel = document.createElement('select'); sel.className = 'cp-unit'; sel.style.marginTop = '4px';
+            sel.innerHTML = '<option value="box">Whole ' + esc(unitLabel(p.unit) || 'box') + '</option><option value="piece">Loose pieces</option>';
+            sel.value = r.mode === 'piece' ? 'piece' : 'box';
+            sel.onchange = function () { r.mode = sel.value; try { renderContractRows(); } catch (e) { /* redrawn next time */ } };
+            td.appendChild(sel);
+        });
+    }
+    if (typeof window.renderContractRows === 'function') {
+        var origRows = window.renderContractRows;
+        window.renderContractRows = function () { var o = origRows.apply(this, arguments); try { decorateContractRows(); } catch (e) { /* cosmetic */ } return o; };
+    }
+    if (typeof window.confirmContractReturn === 'function') {
+        var origRet = window.confirmContractReturn;
+        window.confirmContractReturn = function () {
+            var c = null, before = {};
+            try { c = (contracts || []).find(function (x) { return x.id === pendingContractReturnId; }); if (c) Object.keys(c.items || {}).forEach(function (k) { before[k] = c.items[k].qtyReturned || 0; }); } catch (e) { c = null; }
+            var out = origRet.apply(this, arguments);
+            try { if (c) contractAfterReturn(c, before); } catch (e) { toast('The return was saved but its stock record could not be written - check Stock History.', true); }
+            return out;
+        };
+    }
+    if (typeof window.renderContractsTab === 'function') {
+        var origCt = window.renderContractsTab;
+        window.renderContractsTab = function () {
+            var o = origCt.apply(this, arguments);
+            try {
+                document.querySelectorAll('#contracts-table tbody tr').forEach(function (tr) {
+                    if (tr.querySelector('.cp-open')) return;
+                    var td = tr.lastElementChild; if (!td) return;
+                    var m = (td.innerHTML.match(/openContractReturnModal\('([^']+)'\)/) || [])[1]; if (!m) return;
+                    var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-small-btn cp-open'; b.style.background = '#2980b9'; b.textContent = '📄 Open';
+                    b.onclick = function () { contractOpen(m); }; td.insertBefore(b, td.firstChild);
+                });
+            } catch (e) { /* cosmetic */ }
+            return o;
+        };
+    }
+
+    /* ---- 7. RECORD A BILL: the optional ID number field (name + phone are required by saveRecordBillModal) ---- */
+    function ensureBillFields() {
+        var ph = $('record-bill-phone'); if (!ph || $('record-bill-id')) return;
+        var lab = ph.previousElementSibling; if (lab && lab.tagName === 'LABEL') lab.innerHTML = 'Phone Number <span style="font-weight:normal;color:#c0392b">(required)</span>';
+        var nm = $('record-bill-customer-name'); var nl = nm && nm.previousElementSibling; if (nl && nl.tagName === 'LABEL') nl.innerHTML = 'Customer Name <span style="font-weight:normal;color:#c0392b">(required)</span>';
+        var g = ph.closest('.form-group') || ph.parentNode;
+        var d = document.createElement('div'); d.className = 'form-group';
+        d.innerHTML = '<label class="label">ID number <span style="font-weight:normal;color:#7f8c8d">(optional)</span></label><input type="text" id="record-bill-id" autocomplete="off" placeholder="e.g. 12345678">';
+        g.parentNode.insertBefore(d, g.nextSibling);
+    }
+    var oldOpenRb = window.openRecordBillModal;
+    if (typeof oldOpenRb === 'function') window.openRecordBillModal = function () { var o = oldOpenRb.apply(this, arguments); try { ensureBillFields(); if ($('record-bill-id')) $('record-bill-id').value = ''; } catch (e) { /* cosmetic */ } return o; };
+    function boot() { try { ensureCheckout(); ensureAddModal(); ensureContractFields(); ensureBillFields(); } catch (e) { /* cosmetic */ } }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    setInterval(function () { try { ensureCheckout(); ensureContractFields(); ensureBillFields(); } catch (e) { /* cosmetic */ } }, 2000);
+})();
+</script>

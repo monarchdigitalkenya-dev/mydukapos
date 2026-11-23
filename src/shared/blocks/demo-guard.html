@@ -1,0 +1,149 @@
+<!-- DEMO GUARD (zip 327) ---------------------------------------------------------------------------------------------------------
+     Rules for the PRE-FILLED PUBLIC SAMPLE SHOPS only (the server-confirmed shared demos: window.__sharedDemo). A normal shop never loads any of this
+     (the first line returns) and nothing here changes how it works.
+       * ONE NEW PRODUCT per hourly session. Every way of creating a product (the add form, bulk add, duplicate, quick add, variants, photo list, ...)
+         ends in one write of the product list, so that single write is checked: the first new product is accepted and remembered (sd_new_codes);
+         any further new product is taken out of the list again (in memory and in storage) with a message. The hourly restore (demo-reset block)
+         wipes sd_new_codes together with the visitor's data, so the next hour starts again with one allowed.
+       * ORIGINAL PRODUCTS KEEP THEIR NAMES. The sample's products and their names are recorded once the sample has been pulled (sd_orig: it survives
+         the restores). An attempt to rename an original product is undone (name, and variant names) with a message.
+       * IMPORTS ARE OFF. File imports (CSV / spreadsheet products, customers, shop data, catalogue, batches, serial numbers) are blocked: buttons are
+         disabled, file pickers refuse to open and the import functions return at once. Picture pickers stay as they were.
+       * HONEST LIMIT: the server stores nothing from a shared demo (it refuses every write, including picture uploads - see _license.js), so these rules
+         are enforced in the browser, on this device, for this visitor. They stop normal use and accidents; they cannot stop someone who edits the page code or
+         clears this site's storage - which only ever affects that visitor's own device. -->
+<script>
+(function () {
+    'use strict';
+    var host = String(location.hostname || '').toLowerCase();
+    var cid = ''; try { cid = new URLSearchParams(location.search).get('c') || ''; } catch (e) { /* none */ }
+    if (!(host.split('.')[0].indexOf('demo-') === 0 || cid.indexOf('demo_') === 0)) return;      // a normal shop: nothing at all
+    var LS; try { LS = window.localStorage; } catch (e) { return; }
+    var ORIG = 'sd_orig', NEWK = 'sd_new_codes', LIMIT = 1;
+    var LIST_KEY = /(^|_)(inventory|products)$/;
+    function active() { return window.__sharedDemo === true; }
+    function getJ(k) { try { return JSON.parse(LS.getItem(k) || 'null'); } catch (e) { return null; } }
+    function setJ(k, v) { try { LS.setItem(k, JSON.stringify(v)); } catch (e) { /* kept in memory only */ } }
+    function say(m) { try { if (typeof showToast === 'function') showToast(m, true); else if (window.console) console.warn(m); } catch (e) { /* none */ } }
+    var G = window.DemoGuard = { limit: LIMIT, isOriginal: isOriginal, newCount: function () { return (getJ(NEWK) || []).length; }, canAddProduct: canAdd, blockedImport: blockedImport };
+
+    function listOf() { try { if (typeof inventory !== 'undefined' && Array.isArray(inventory)) return inventory; } catch (e) { /* none */ } try { if (typeof products !== 'undefined' && Array.isArray(products)) return products; } catch (e) { /* none */ } return null; }
+    function codeOf(p) { return p && p.code != null ? String(p.code) : (p && p.id != null ? 'id:' + p.id : null); }
+    function orig() { var o = getJ(ORIG); return o && o.names && typeof o.names === 'object' ? o : null; }
+    function isOriginal(p) { var o = orig(), c = codeOf(p); return !!(o && c != null && Object.prototype.hasOwnProperty.call(o.names, c)); }
+    function canAdd() { return !active() || G.newCount() < LIMIT; }
+
+    // the sample as it arrived (kept once; the restores keep it - see KEEP in the demo-reset block)
+    function captureOrig() {
+        if (!active() || orig()) return !!orig();
+        var l = listOf(); if (!l || !l.length) return false;
+        var names = {}, vn = {};
+        l.forEach(function (p) {
+            var c = codeOf(p); if (c == null || p._deleted) return;
+            names[c] = String(p.name == null ? '' : p.name);
+            if (Array.isArray(p.variants)) p.variants.forEach(function (v) { if (v && v.id != null) vn[c + '|' + v.id] = String(v.name == null ? '' : v.name); });
+        });
+        setJ(ORIG, { at: Date.now(), names: names, variants: vn });
+        return true;
+    }
+    (function wait(n) {
+        if (!active()) { if (n < 120) setTimeout(function () { wait(n + 1); }, 500); return; }
+        if (window.SharedDemo && window.SharedDemo.pulled && captureOrig()) return;
+        if (n < 240) setTimeout(function () { wait(n + 1); }, 500);
+    })(0);
+
+    // the one choke point: every save of the product list
+    function screen(raw) {
+        var arr; try { arr = JSON.parse(raw); } catch (e) { return raw; }
+        if (!Array.isArray(arr)) return raw;
+        var o = orig(); if (!o) return raw;                                               // the sample has not been recorded yet: nothing to compare with
+        var allowed = getJ(NEWK) || [], changed = false, msgs = [], dropped = {}, out = [];
+        arr.forEach(function (p) {
+            var c = codeOf(p);
+            if (c == null || !p || typeof p !== 'object') { out.push(p); return; }
+            if (Object.prototype.hasOwnProperty.call(o.names, c)) {                       // an original product
+                var q = p;
+                if (!p._deleted && String(p.name == null ? '' : p.name) !== o.names[c]) { q = Object.assign({}, p, { name: o.names[c] }); changed = true; msgs.push('The sample products keep their names.'); }
+                if (Array.isArray(q.variants) && o.variants) {
+                    var vv = q.variants.map(function (v) { var k = c + '|' + (v && v.id); if (v && v.id != null && Object.prototype.hasOwnProperty.call(o.variants, k) && String(v.name == null ? '' : v.name) !== o.variants[k]) { changed = true; return Object.assign({}, v, { name: o.variants[k] }); } return v; });
+                    if (vv.some(function (v, i) { return v !== q.variants[i]; })) q = Object.assign({}, q, { variants: vv });
+                }
+                out.push(q); return;
+            }
+            if (p._deleted) { out.push(p); return; }
+            if (allowed.indexOf(c) >= 0) { out.push(p); return; }                           // the one new product, edited again: fine
+            if (allowed.length < LIMIT) { allowed.push(c); setJ(NEWK, allowed); out.push(p); return; }
+            dropped[c] = 1; changed = true; msgs.push('The sample shop allows one new product per hour. It is cleared when the sample resets.');
+        });
+        if (!changed) return raw;
+        // bring the running page back in line with what was kept
+        try {
+            var l = listOf();
+            if (l) {
+                var keepByCode = {}; out.forEach(function (p) { var c = codeOf(p); if (c != null) keepByCode[c] = p; });
+                for (var i = l.length - 1; i >= 0; i--) { var c2 = codeOf(l[i]); if (c2 != null && dropped[c2]) l.splice(i, 1); else if (c2 != null && keepByCode[c2] && keepByCode[c2] !== l[i] && keepByCode[c2].name !== l[i].name) l[i].name = keepByCode[c2].name; }
+            }
+            setTimeout(function () { ['renderInventoryTable', 'renderItemImageGrid', 'renderServicesTable'].forEach(function (f) { try { if (typeof window[f] === 'function') window[f](); } catch (e) { /* cosmetic */ } }); }, 0);
+        } catch (e) { /* the stored list is already right */ }
+        say(msgs[0]);
+        return JSON.stringify(out);
+    }
+    function hook() {
+        if (typeof window.safeSetItem !== 'function' || window.safeSetItem.__demoGuard) return !!(window.safeSetItem && window.safeSetItem.__demoGuard);
+        var orig0 = window.safeSetItem;
+        var w = function (key, value) {
+            try { if (active() && typeof value === 'string' && LIST_KEY.test(String(key).replace(/:prev$/, '')) && !/:prev$/.test(String(key))) value = screen(value); } catch (e) { /* never block a save */ }
+            return orig0.apply(this, [key, value].concat([].slice.call(arguments, 2)));
+        };
+        w.__demoGuard = true; window.safeSetItem = w; return true;
+    }
+    if (!hook()) { var t = 0, iv = setInterval(function () { if (hook() || ++t > 60) clearInterval(iv); }, 250); }
+
+    // ---------- imports ----------
+    var IMPORT_FNS = ['importInventoryCsv', 'importStoreCsv', 'startBizDataImport', 'commitBizDataImport', 'beginInventoryFileImport', 'beginInventoryFileImportInner', 'finishInventoryFileImport',
+        'importApply', 'catalogueApply', 'batchApply', 'confirmStoreImportFromInventory', 'importCustomersFromPhonebook', 'restoreFromBackupFile', 'importBackupFile'];
+    var MSG = 'Importing is turned off in the sample shop. Add products one at a time, or get your own link to import your real data.';
+    function blockedImport() { say(MSG); return false; }
+    function wrapImports() {
+        IMPORT_FNS.forEach(function (n) {
+            try {
+                var f = window[n]; if (typeof f !== 'function' || f.__demoGuard) return;
+                var w = function () { if (active()) { blockedImport(); return n.indexOf('apply') >= 0 || /Apply/.test(n) ? { applied: 0, blocked: true } : undefined; } return f.apply(this, arguments); };
+                w.__demoGuard = true; window[n] = w;
+            } catch (e) { /* not on this page */ }
+        });
+    }
+    var IMPORT_ATTR = /import|restoreFromBackup|catalogueApply|batchApply|serialImport/i;
+    function isImportControl(el) {
+        if (!el || !el.getAttribute) return false;
+        var oc = el.getAttribute('onclick') || '';
+        if (IMPORT_ATTR.test(oc)) return true;
+        if (el.tagName === 'INPUT' && el.type === 'file') { var a = String(el.accept || ''); return !/^\s*image\//i.test(a) || /csv|xls|txt|json/i.test(a); }
+        return false;
+    }
+    function mark() {
+        if (!active()) return;
+        try {
+            document.documentElement.setAttribute('data-demo-guard', '1');
+            [].forEach.call(document.querySelectorAll('[onclick],input[type=file]'), function (el) {
+                if (!isImportControl(el) || el.getAttribute('data-dg') === '1') return;
+                el.setAttribute('data-dg', '1'); el.setAttribute('aria-disabled', 'true'); el.title = 'Importing is turned off in the sample shop';
+                if ('disabled' in el) el.disabled = true;
+            });
+        } catch (e) { /* cosmetic */ }
+    }
+    var mt = 0; function markSoon() { if (mt) return; mt = setTimeout(function () { mt = 0; wrapImports(); mark(); }, 400); }
+    document.addEventListener('click', function (e) {
+        if (!active()) return;
+        var el = e.target && e.target.closest ? e.target.closest('[onclick],label,input[type=file],button,a') : null;
+        if (!el) return;
+        var hit = isImportControl(el);
+        if (!hit && el.tagName === 'LABEL' && el.htmlFor) { var inp = document.getElementById(el.htmlFor); hit = !!(inp && isImportControl(inp)); }
+        if (hit) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); blockedImport(); }
+    }, true);
+    document.addEventListener('change', function (e) { if (active() && e.target && e.target.type === 'file' && isImportControl(e.target)) { e.stopPropagation(); e.stopImmediatePropagation(); try { e.target.value = ''; } catch (x) { /* none */ } blockedImport(); } }, true);
+    try { new MutationObserver(markSoon).observe(document.documentElement, { childList: true, subtree: true }); } catch (e) { /* the timer below covers it */ }
+    setInterval(function () { wrapImports(); mark(); }, 3000);
+    document.addEventListener('DOMContentLoaded', markSoon);
+})();
+</script>

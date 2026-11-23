@@ -11,6 +11,8 @@
 // The key is created the moment new URLs are handed out: every STK prompt (the URL is sent with each prompt), "Register Till URLs"
 // (C2B), and saving KCB settings. From then on an unsigned callback for that rail is not trusted.
 import { getLicenseCached } from './_license.js';
+import { checkRateLimit } from './_ratelimit.js';
+import { secEvent } from './_sec-events.js';
 
 const KEY = (rail, clientId) => `callback-key:${rail}:${clientId}`;
 
@@ -89,6 +91,14 @@ export async function ensureShopCallbackKeys(env, clientId) {
 
 // -> { ok: true, legacy: boolean } | { ok: false, keyCreatedAt }
 export async function checkCallback(env, clientId, rail, url) {
+  // zip 273: a flood of callbacks for one shop + rail is ignored (real callbacks are a handful an hour; the limit is far above that)
+  const rlw = await checkRateLimit(env, 'webhook', `${rail}:${clientId}`);
+  if (!rlw.ok) return { ok: false, limited: true, keyCreatedAt: 0 };
+  const res = await checkCallbackKey(env, clientId, rail, url);
+  if (!res.ok && !res.limited) await secEvent(env, 'callback_rejected', { route: rail, shop: clientId });
+  return res;
+}
+async function checkCallbackKey(env, clientId, rail, url) {
   const rec = await getCallbackKey(env, clientId, rail);
   if (!rec) return legacyStillAllowed(env, rail) ? { ok: true, legacy: true } : { ok: false, keyCreatedAt: 0 };
   const k = new URL(url).searchParams.get('k') || '';

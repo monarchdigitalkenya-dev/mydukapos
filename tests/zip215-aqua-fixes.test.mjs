@@ -39,7 +39,9 @@ test('2. the plain link lists everyone (zip 248); #production is Production; rem
   assert.match(list, /Nelly/); assert.match(list, /Plant/); assert.doesNotMatch(list, /Gone/);   // zip 248: the plain link shows all staff
   b.close();
   b = await open('', { aqua_active_site_id: PROD }); w = b.w; quiet(w);
-  assert.equal(w.eval('activeSiteId'), SHOP, 'a remembered production site does not take over the plain link');
+  assert.equal(w.eval('activeSiteId'), PROD, 'zip 356: a device last used in Production opens in Production again (the picker still lists everyone)');
+  w.eval('renderLoginPicker()');
+  assert.match(w.eval("document.getElementById('login-picker-list').textContent"), /Nelly/, 'shop staff still listed on the plain link');
   b.close();
   b = await open('#production'); w = b.w; quiet(w);
   assert.equal(w.eval('activeSiteId'), PROD);

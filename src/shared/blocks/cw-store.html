@@ -1,0 +1,853 @@
+<!-- CW STORE ---------------------------------------------------------------------------------------
+     Car Wash & Cleaning app, block "cw-store". Written ONLY into carwash/index.html; never hand-edit it there.
+     KIND: state + storage + network (NOT pure). Plain global functions, ES2018 max, every global name starts with cw / Cw / CW_.
+     OWNS: the synced lists (cwCustomers cwVehicles cwJobs cwPayments cwLoyalty cwSms cwAudit cwComplaints cwConfig), their local copies
+     (pos_cw_*), the sync hooks (cwSyncCollect / cwSyncApply, called from collectSyncPayload / applyRemotePayload), every mutation (customers,
+     vehicles, jobs, status, assignments, payments, loyalty ledger, SMS queue, complaints, staff), photos, and the one-time import of the
+     car wash jobs a shop kept in the Services app (cwMigrateFromServices).
+     RULES: records are never hard-deleted; every write stamps updatedAt; money and loyalty are recomputed (cw-core) from the records.
+     After editing run `npm run sync`; `npm run check` fails if carwash/index.html differs from this file. -->
+<script>
+/* ===================================================================================================================
+   CAR WASH STORE
+   =================================================================================================================== */
+var CW_LISTS = ['cwCustomers', 'cwVehicles', 'cwJobs', 'cwPayments', 'cwLoyalty', 'cwSms', 'cwAudit', 'cwComplaints', 'cwConfig', 'cwExpenses', 'cwCashups', 'cwSupplies', 'cwSupplyMoves'];   // zip 394: expenses, daily cash-ups, supplies and their stock movements
+var CW_KEYS = { cwCustomers: 'pos_cw_customers', cwVehicles: 'pos_cw_vehicles', cwJobs: 'pos_cw_jobs', cwPayments: 'pos_cw_payments', cwLoyalty: 'pos_cw_loyalty', cwSms: 'pos_cw_sms', cwAudit: 'pos_cw_audit', cwComplaints: 'pos_cw_complaints', cwConfig: 'pos_cw_config' , cwExpenses: 'pos_cw_expenses', cwCashups: 'pos_cw_cashups', cwSupplies: 'pos_cw_supplies', cwSupplyMoves: 'pos_cw_supply_moves' };
+var CW_AUDIT_CAP = 5000;
+var CW_SMS_MAX_TRIES = 4;
+var CW_LISTENERS = [];
+var CW_ST = { smsFlushing: false, smsCfg: null, smsCfgAt: 0, smsTimer: null, emitT: null, migrating: false, photoUrls: {} };
+
+let cwCustomers = [];
+let cwVehicles = [];
+let cwJobs = [];
+let cwPayments = [];
+let cwLoyalty = [];
+let cwSms = [];
+let cwAudit = [];
+let cwComplaints = [];
+let cwConfig = [];
+let cwExpenses = [];
+let cwCashups = [];
+let cwSupplies = [];
+let cwSupplyMoves = [];
+
+function cwList(n) {
+  switch (n) {
+    case 'cwCustomers': return cwCustomers; case 'cwVehicles': return cwVehicles; case 'cwJobs': return cwJobs; case 'cwPayments': return cwPayments;
+    case 'cwLoyalty': return cwLoyalty; case 'cwSms': return cwSms; case 'cwAudit': return cwAudit; case 'cwComplaints': return cwComplaints; case 'cwConfig': return cwConfig;
+    case 'cwExpenses': return cwExpenses; case 'cwCashups': return cwCashups; case 'cwSupplies': return cwSupplies; case 'cwSupplyMoves': return cwSupplyMoves;
+    default: return null;
+  }
+}
+function cwSetList(n, a) {
+  switch (n) {
+    case 'cwCustomers': cwCustomers = a; break; case 'cwVehicles': cwVehicles = a; break; case 'cwJobs': cwJobs = a; break; case 'cwPayments': cwPayments = a; break;
+    case 'cwLoyalty': cwLoyalty = a; break; case 'cwSms': cwSms = a; break; case 'cwAudit': cwAudit = a; break; case 'cwComplaints': cwComplaints = a; break; case 'cwConfig': cwConfig = a; break;
+    case 'cwExpenses': cwExpenses = a; break; case 'cwCashups': cwCashups = a; break; case 'cwSupplies': cwSupplies = a; break; case 'cwSupplyMoves': cwSupplyMoves = a; break;
+    default: break;
+  }
+}
+function cwIsRec(r) { return !!r && typeof r === 'object' && !Array.isArray(r) && r.id != null && r.id !== ''; }
+function cwNow() { return Date.now(); }
+function cwRid(prefix) {
+  var r = '', i, b = null;
+  try { if (typeof crypto !== 'undefined' && crypto.getRandomValues) { b = new Uint8Array(6); crypto.getRandomValues(b); } } catch (e) { b = null; }
+  for (i = 0; i < 6; i++) r += ((b ? b[i] : Math.floor(Math.random() * 256)) % 36).toString(36);
+  return prefix + Date.now().toString(36) + r;
+}
+function cwDevice() { try { return typeof getOrCreateDeviceId === 'function' ? String(getOrCreateDeviceId() || '') : ''; } catch (e) { return ''; } }
+function cwStamp(r) { r.updatedAt = Math.max(cwNow(), cwNum(r.updatedAt) + 1); return r; }
+
+/* ---- load / save / push ---- */
+function cwSave(n) {
+  if (n === undefined) { CW_LISTS.forEach(function (x) { cwSave(x); }); return true; }
+  var k = CW_KEYS[n], a = cwList(n), s;
+  if (!k || !Array.isArray(a)) return false;
+  try { s = JSON.stringify(a); } catch (e) { return false; }
+  try { if (typeof safeSetItem === 'function') return safeSetItem(k, s) !== false; localStorage.setItem(k, s); return true; } catch (e2) { return false; }
+}
+function cwLoad() {
+  CW_LISTS.forEach(function (n) {
+    var raw = [];
+    try { if (typeof safeJSONParse === 'function') raw = safeJSONParse(CW_KEYS[n], []); else { var t = localStorage.getItem(CW_KEYS[n]); raw = t ? JSON.parse(t) : []; } } catch (e) { raw = []; }
+    cwSetList(n, (Array.isArray(raw) ? raw : []).filter(cwIsRec));
+  });
+  cwJobs.forEach(function (j) { cwDerive(j); });
+  return true;
+}
+function cwPush() { try { if (typeof queuePush === 'function') queuePush(); else if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* the record is saved on this device either way */ } }
+function cwOn(fn) { if (typeof fn === 'function') CW_LISTENERS.push(fn); }
+function cwEmit(why) {
+  clearTimeout(CW_ST.emitT);
+  CW_ST.emitT = setTimeout(function () { CW_LISTENERS.forEach(function (fn) { try { fn(why || 'change'); } catch (e) { /* a screen never breaks the store */ } }); }, 30);
+}
+/* the ONE write path: stamp, save the list(s), audit, push, tell the screens */
+function cwCommit(names, auditRow) {
+  if (auditRow) cwLogRow(auditRow);
+  (Array.isArray(names) ? names : [names]).concat(auditRow ? ['cwAudit'] : []).forEach(function (n) { cwSave(n); });
+  cwPush(); cwEmit(names);
+}
+function cwState() {
+  return { customers: cwCustomers, vehicles: cwVehicles, jobs: cwJobs, payments: cwPayments, loyalty: cwLoyalty, complaints: cwComplaints, staff: cwStaffAll(), cfg: cwCfg() };
+}
+
+/* ---- sync hooks ---- */
+function cwSyncCollect() {
+  var out = {};
+  CW_LISTS.forEach(function (n) { var a = cwList(n); if (Array.isArray(a) && a.length) out[n] = a.map(function (r) { if (!r || !r._s) return r; var c = Object.assign({}, r); delete c._s; return c; }); });
+  return out;
+}
+/* merge what a pull carries into the local lists: per record, the newer updatedAt wins; records this device has that the pull lacks stay
+   (they are on their way to the server). Jobs are re-derived after a merge. Also runs the one-time import from Services when the pull carries it. */
+/* zip 362: the server never sends deleted records back (it strips tombstones from a pull), and a pull always carries the whole Car Wash list.
+   So a record this device got from the server before (_s) that is missing from the server's list now was DELETED on another device: it becomes
+   a local tombstone. A record the server has never had (created here, still on its way) has no _s and stays. */
+function cwMergeList(local, incoming, full) {
+  var by = {}, out = [], i, r, seen = {};
+  for (i = 0; i < local.length; i++) { r = local[i]; if (cwIsRec(r)) by[String(r.id)] = r; }
+  if (full) {
+    for (i = 0; i < incoming.length; i++) { if (cwIsRec(incoming[i])) seen[String(incoming[i].id)] = 1; }
+    Object.keys(by).forEach(function (k) { var x = by[k]; if (x._s && !seen[k] && x._deleted !== true) { var t = Object.assign({}, x, { _deleted: true, deletedAt: cwNow() }); delete t._s; by[k] = t; } });
+  }
+  for (i = 0; i < incoming.length; i++) {
+    r = incoming[i]; if (!cwIsRec(r)) continue;
+    var cur = by[String(r.id)];
+    /* zip 362: a deletion is final (ids are never re-used): a newer stale copy from a device that had not seen it yet cannot bring the record back */
+    if (cur && cur._deleted === true && r._deleted !== true) continue;
+    if (!cur || r._deleted === true || cwNum(r.updatedAt) >= cwNum(cur.updatedAt)) { if (full && r._deleted !== true && !r._s) { r = Object.assign({}, r, { _s: 1 }); } by[String(r.id)] = r; }
+    else if (full && !cur._s) { cur._s = 1; }
+  }
+  Object.keys(by).forEach(function (k) { out.push(by[k]); });
+  return out;
+}
+function cwSyncApply(data) {
+  if (!data || typeof data !== 'object') return false;
+  var any = false;
+  CW_LISTS.forEach(function (n) {
+    if (!Array.isArray(data[n])) return;
+    var merged = cwMergeList(cwList(n) || [], data[n], n !== 'cwAudit');   /* the audit log may be capped on the server: never infer deletions from it */
+    if (n === 'cwJobs') merged.sort(function (a, b) { return cwNum(a.createdAt) - cwNum(b.createdAt); });
+    cwSetList(n, merged); cwSave(n); any = true;
+  });
+  if (any) cwJobs.forEach(function (j) { cwDerive(j); });
+  try { if (Array.isArray(data.svcJobs) && data.svcJobs.length) cwMigrateFromServices(data); } catch (e) { /* the import is retried on the next pull */ }
+  if (any) cwEmit('sync');
+  return any;
+}
+
+/* ---- configuration ---- */
+function cwCfg() { var c = cwFind(cwConfig, 'cfg'); var out = cwCompleteConfig(c); if (!out.business.name) { try { out.business.name = typeof businessName !== 'undefined' && businessName ? String(businessName) : ''; } catch (e) { /* none */ } } return out; }
+function cwSaveCfg(patch, what) {
+  var cur = cwFind(cwConfig, 'cfg'), base = cwCompleteConfig(cur), next = Object.assign({}, base, patch || {});
+  cwStamp(next);
+  if (cur) cwConfig = cwConfig.map(function (r) { return r && r.id === 'cfg' ? next : r; }); else cwConfig = cwConfig.concat([next]);
+  cwCommit('cwConfig', { act: 'settings', ref: what || 'Settings', detail: Object.keys(patch || {}).join(', ') });
+  return next;
+}
+
+/* ---- who is using the app ---- */
+function cwStaffAll() { try { return typeof staff !== 'undefined' && Array.isArray(staff) ? staff : []; } catch (e) { return []; } }
+function cwMemberRole(m) {
+  if (!m) return 'owner';
+  if (m.cwActive === false || m.removed) return 'none';
+  var r = String(m.cwRole || '');
+  if (CW_PERMS[r] && r !== 'owner') return r;
+  return m.isManager ? 'manager' : 'cashier';
+}
+function cwMe() {
+  var cs = null; try { cs = typeof currentServer !== 'undefined' ? currentServer : null; } catch (e) { cs = null; }
+  if (!cs) return { id: 'owner', name: 'Admin', role: 'owner', owner: true };
+  var m = cwFind(cwStaffAll(), cs.id) || { id: cs.id, name: cs.name };
+  return { id: String(cs.id), name: String(m.name || cs.name || 'Staff'), role: cwMemberRole(m), owner: false, member: m };
+}
+/* the staff member's own screens (null = the role's screens) */
+function cwTabsOf(me) { if (!me || me.owner || !me.member || me.role === 'none') return null; return cwCleanTabs(me.member.cwTabs); }
+function cwCan(perm, me) {
+  me = me || cwMe();
+  var list = CW_PERMS[me.role] || [];
+  if (list.indexOf('*') !== -1) return true;
+  var tabs = cwTabsOf(me);
+  if (tabs) {
+    var navPerm = CW_TABS.some(function (t) { return t.p === perm; });
+    if (navPerm) return CW_TABS.some(function (t) { return t.p === perm && tabs.indexOf(t.r) !== -1; });
+    if (perm === 'jobs.view') return tabs.indexOf('jobs') !== -1 || tabs.indexOf('cleaning') !== -1 || tabs.indexOf('myjobs') !== -1;
+  }
+  if (list.indexOf(perm) !== -1) return true;
+  if (perm === 'jobs.view') return list.indexOf('jobs.all') !== -1 || list.indexOf('jobs.mine') !== -1;
+  return false;
+}
+function cwStaffName(id) { var m = cwFind(cwStaffAll(), id); return m ? String(m.name || '') : ''; }
+function cwActiveStaff() { return cwStaffAll().filter(function (m) { return m && !m.removed && m.cwActive !== false; }); }
+
+/* ---- audit ---- */
+function cwLogRow(o) {
+  var me = cwMe();
+  var row = { id: cwRid('cwa-'), at: cwNow(), by: me.name, byId: me.id, role: me.role, act: cwStr(o.act), ref: cwStr(o.ref).slice(0, 80), jobId: o.jobId || '', detail: cwStr(o.detail).slice(0, 300) };
+  cwStamp(row);
+  cwAudit.push(row);
+  if (cwAudit.length > CW_AUDIT_CAP) cwAudit = cwAudit.slice(cwAudit.length - CW_AUDIT_CAP);
+  return row;
+}
+function cwLog(act, ref, detail, jobId) { cwLogRow({ act: act, ref: ref, detail: detail, jobId: jobId }); cwSave('cwAudit'); cwPush(); }
+
+/* ---- customers / vehicles ---- */
+function cwCustomerByPhone(phone) { var p = cwNormPhone(phone); if (!p) return null; var i; for (i = 0; i < cwCustomers.length; i++) { var c = cwCustomers[i]; if (c && !c._deleted && c.phone === p) return c; } return null; }
+function cwVehicleByPlate(plate) { var p = cwNormPlate(plate); if (!p) return null; var i; for (i = 0; i < cwVehicles.length; i++) { var v = cwVehicles[i]; if (v && !v._deleted && v.plate === p) return v; } return null; }
+var CW_CUST_FIELDS = ['name', 'altPhone', 'email', 'gender', 'contactPref', 'type', 'location', 'estate', 'town', 'building', 'house', 'floor', 'notes'];
+/* one customer per phone number: an existing number updates that customer (only the fields given), never a second record */
+function cwUpsertCustomer(o, opts) {
+  o = o || {}; opts = opts || {};
+  var phone = cwNormPhone(o.phone), name = cwStr(o.name).trim();
+  if (o.phone && !phone) return { ok: false, error: 'Enter a valid Kenyan mobile number (07XX or 01XX).' };
+  if (o.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cwStr(o.email).trim())) return { ok: false, error: 'That email address does not look right.' };
+  if (!phone && !name) return { ok: false, error: 'Enter the customer\'s name or phone number.' };
+  var c = (o.id && cwFind(cwCustomers, o.id)) || (phone && cwCustomerByPhone(phone)) || null;
+  if (c && phone && c.phone !== phone) { var other = cwCustomerByPhone(phone); if (other && other.id !== c.id) return { ok: false, error: 'That phone number already belongs to ' + (other.name || 'another customer') + '.' }; }
+  var created = false;
+  if (!c) { c = { id: cwRid('cwc-'), createdAt: cwNow(), createdBy: cwMe().name, type: CW_CUST_TYPES.some(function (t) { return t.k === o.defaultType; }) ? o.defaultType : 'car_owner' }; cwCustomers.push(c); created = true; }
+  if (phone) c.phone = phone;
+  CW_CUST_FIELDS.forEach(function (k) {
+    if (o[k] === undefined) return;
+    var v = k === 'altPhone' ? (cwNormPhone(o[k]) || cwStr(o[k]).trim()) : cwStr(o[k]).trim();
+    if (k === 'type' && !CW_CUST_TYPES.some(function (t) { return t.k === v; })) return;
+    if (k === 'gender' && !CW_GENDERS.some(function (t) { return t.k === v; })) return;
+    if (k === 'contactPref' && !CW_CONTACT_PREFS.some(function (t) { return t.k === v; })) return;
+    if (k === 'email') v = v.toLowerCase();
+    if (v === '' && !created && opts.keepBlank !== false && (k === 'name')) return;   /* a blank name never wipes a known one */
+    c[k] = v;
+  });
+  if (!c.name) c.name = phone ? cwFmtPhone(phone) : 'Walk-in';
+  cwStamp(c);
+  if (!opts.noCommit) cwCommit('cwCustomers', { act: created ? 'customer.add' : 'customer.edit', ref: c.name, detail: cwFmtPhone(c.phone) });
+  return { ok: true, customer: c, created: created };
+}
+function cwUpsertVehicle(o, opts) {
+  o = o || {}; opts = opts || {};
+  var plate = cwNormPlate(o.plate);
+  if (!cwValidPlate(plate)) return { ok: false, error: 'Enter the registration number (e.g. KDA 123X).' };
+  var v = (o.id && cwFind(cwVehicles, o.id)) || cwVehicleByPlate(plate), created = false;
+  if (v && v.plate !== plate) { var dup = cwVehicleByPlate(plate); if (dup && dup.id !== v.id) return { ok: false, error: cwFmtPlate(plate) + ' is already registered.' }; }
+  if (v && o.customerId && v.customerId && v.customerId !== o.customerId) {
+    if (!opts.transfer) return { ok: false, code: 'owner', vehicle: v, error: cwFmtPlate(plate) + ' is registered to another customer.' };
+    v.ownerHistory = cwArr(v.ownerHistory).concat([{ id: cwRid('oh-'), from: v.customerId, to: o.customerId, at: cwNow(), by: cwMe().name }]);
+  }
+  if (o.year != null && o.year !== '' && !/^(19[5-9]\d|20\d\d)$/.test(cwStr(o.year).trim())) return { ok: false, error: 'Enter the year of manufacture as 4 digits (e.g. 2014).' };
+  if (!v) { v = { id: cwRid('cwv-'), createdAt: cwNow(), category: cwDefaultCat(cwCfg()) }; cwVehicles.push(v); created = true; }
+  v.plate = plate;
+  ['make', 'model', 'year', 'colour', 'category', 'notes', 'customerId'].forEach(function (k) { if (o[k] !== undefined && (o[k] !== '' || k === 'notes' || k === 'year')) v[k] = cwStr(o[k]).trim(); });
+  if (!v.category) v.category = cwDefaultCat(cwCfg());
+  cwStamp(v);
+  if (!opts.noCommit) cwCommit('cwVehicles', { act: created ? 'vehicle.add' : 'vehicle.edit', ref: cwFmtPlate(plate), detail: [v.make, v.model].filter(Boolean).join(' ') });
+  return { ok: true, vehicle: v, created: created };
+}
+/* zip 362: remove a customer / a vehicle. The record stays as a tombstone (synced, so every device drops it) and every past job, payment,
+   invoice and report keeps its name and plate. A customer or vehicle with a job still in progress cannot be removed. */
+function cwOpenJobsOf(pred) { return cwJobs.filter(function (j) { return j && !j._deleted && pred(j) && !cwIsCancelled(j) && cwNum(j.phase) < 3 && !j.closedAt; }); }   /* phase 3 = collected / delivered / on-site done */
+function cwDeleteCustomer(id) {
+  var c = cwFind(cwCustomers, id); if (!c || c._deleted) return { ok: false, error: 'Customer not found.' };
+  if (!cwCan('customers.delete')) return { ok: false, error: 'Only the owner or a manager can remove a customer.' };
+  var open = cwOpenJobsOf(function (j) { return j.customerId === id; });
+  if (open.length) return { ok: false, error: c.name + ' has ' + open.length + ' job(s) still in progress (' + open.slice(0, 3).map(function (j) { return j.no; }).join(', ') + '). Finish or cancel them first.' };
+  var at = cwNow(), vs = cwVehiclesOf(id);
+  c._deleted = true; c.deletedAt = at; c.deletedBy = cwMe().name; cwStamp(c);
+  vs.forEach(function (v) { v._deleted = true; v.deletedAt = at; cwStamp(v); });
+  cwSave('cwVehicles');
+  cwCommit('cwCustomers', { act: 'customer.delete', ref: c.name, detail: cwFmtPhone(c.phone) + (vs.length ? ' · ' + vs.map(function (v) { return cwFmtPlate(v.plate); }).join(', ') : '') });
+  return { ok: true, vehicles: vs.length };
+}
+function cwDeleteVehicle(id) {
+  var v = cwFind(cwVehicles, id); if (!v || v._deleted) return { ok: false, error: 'Vehicle not found.' };
+  if (!cwCan('customers.edit')) return { ok: false, error: 'You are not allowed to change customers.' };
+  var open = cwOpenJobsOf(function (j) { return j.vehicleId === id; });
+  if (open.length) return { ok: false, error: cwFmtPlate(v.plate) + ' has a job still in progress (' + open[0].no + ').' };
+  v._deleted = true; v.deletedAt = cwNow(); cwStamp(v);
+  cwCommit('cwVehicles', { act: 'vehicle.delete', ref: cwFmtPlate(v.plate), detail: [v.make, v.model].filter(Boolean).join(' ') });
+  return { ok: true };
+}
+function cwVehiclesOf(customerId) { return cwVehicles.filter(function (v) { return v && !v._deleted && v.customerId === customerId; }); }
+function cwJobsOf(customerId) { return cwJobs.filter(function (j) { return j && !j._deleted && j.customerId === customerId; }).sort(function (a, b) { return cwNum(b.receivedAt || b.createdAt) - cwNum(a.receivedAt || a.createdAt); }); }
+
+/* ---- job numbers: <prefix>-YYMMDD-<n>, with the till number when the shop runs more than one till, never re-used ---- */
+function cwNextNo(kind, at) {
+  var cfg = cwCfg(), pre = cwStr(kind === 'clean' ? cfg.numbering.clean : cfg.numbering.car).replace(/[^A-Za-z0-9]/g, '').toUpperCase() || (kind === 'clean' ? 'CL' : 'CW');
+  var day = cwDayKey(at || cwNow()).replace(/-/g, '').slice(2), till = 0;
+  try { till = typeof tillNumber === 'function' ? Number(tillNumber()) || 0 : 0; } catch (e) { till = 0; }
+  var stem = pre + '-' + day + '-' + (till > 1 ? till + '-' : ''), n = 0, taken = {};
+  cwJobs.forEach(function (j) { if (j && j.no) { taken[j.no] = true; if (String(j.no).indexOf(stem) === 0) { var k = parseInt(String(j.no).slice(stem.length), 10); if (k > n) n = k; } } });
+  var no = stem + cwPad(n + 1, 3);
+  while (taken[no]) { n++; no = stem + cwPad(n + 1, 3); }
+  return no;
+}
+function cwInvoiceNo(job) { var cfg = cwCfg(); return (cwStr(cfg.numbering.invoice).replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'INV') + '-' + cwStr(job.no).replace(/^[A-Za-z]+-/, ''); }
+
+/* ---- loyalty for a job about to be created / an existing job ---- */
+function cwLoyaltyFor(kind, customer, vehicle, cleanType) {
+  var cfg = cwCfg(), fake = { kind: kind, customerId: customer && customer.id, cleaning: { type: cleanType } };
+  var key = cwLoyaltyKey(fake, customer && customer.phone, vehicle && vehicle.plate, cfg);
+  return cwLoyaltyAccount(cwLoyalty, key, cfg, cwJobs);
+}
+
+/* ---- jobs ---- */
+function cwHist(job, s, note, at) {
+  var me = cwMe();
+  job.statusHistory = cwArr(job.statusHistory).concat([{ id: cwRid('sh-'), s: s, at: at || cwNow(), by: me.name, byId: me.id, note: cwStr(note).slice(0, 200) }]);
+}
+function cwItemLines(items) {
+  return cwArr(items).map(function (it) {
+    if (!it) return null;
+    var name = cwStr(it.name).trim(); if (!name) return null;
+    var price = cwNum(it.price), qty = it.qty == null || it.qty === '' ? 1 : cwNum(it.qty);
+    return { id: it.id || cwRid('li-'), serviceId: it.serviceId || '', name: name, price: price < 0 ? 0 : cwRound(price), qty: qty > 0 ? qty : 1 };
+  }).filter(Boolean);
+}
+/* input: {kind, customer{...}, vehicle{...}, items[], discount, staffIds[], teamId, estMinutes, receivedAt, dueAt, instructions, condition,
+   cleaning{type, dims, qty, pickup{location, estate, building, house, floor, landmark}, scheduledAt, expectedAt, delivery}, useFree, transfer} */
+function cwCreateJob(input) {
+  input = input || {};
+  var me = cwMe();
+  if (!cwCan('checkin', me)) return { ok: false, error: 'You are not allowed to create jobs.' };
+  var kind = input.kind === 'clean' ? 'clean' : 'car';
+  var items = cwItemLines(input.items);
+  if (!items.length) return { ok: false, error: 'Choose at least one service.' };
+  var cr = cwUpsertCustomer(Object.assign({ defaultType: kind === 'clean' ? 'home' : 'car_owner' }, input.customer || {}), { noCommit: true });
+  if (!cr.ok) return cr;
+  var cust = cr.customer, veh = null;
+  if (kind === 'car') {
+    var vr = cwUpsertVehicle(Object.assign({}, input.vehicle || {}, { customerId: cust.id }), { noCommit: true, transfer: !!input.transfer });
+    if (!vr.ok) return vr;
+    veh = vr.vehicle;
+  }
+  var cfg = cwCfg(), now = cwNow(), recv = cwNum(input.receivedAt) || now;
+  var cleaning = null;
+  if (kind === 'clean') {
+    var c0 = input.cleaning || {}, p0 = c0.pickup || {};
+    cleaning = { type: cwCleanType(c0.type).k, dims: cwStr(c0.dims).trim(), qty: cwNum(c0.qty) > 0 ? cwNum(c0.qty) : 1, delivery: Math.max(0, cwRound(c0.delivery)),
+      pickup: { location: cwStr(p0.location || cust.location).trim(), estate: cwStr(p0.estate || cust.estate).trim(), building: cwStr(p0.building || cust.building).trim(), house: cwStr(p0.house || cust.house).trim(), floor: cwStr(p0.floor || cust.floor).trim(), landmark: cwStr(p0.landmark).trim() },
+      scheduledAt: cwNum(c0.scheduledAt) || null, expectedAt: cwNum(c0.expectedAt) || null, deliveredAt: null, deliveryConfirmedBy: '' };
+  }
+  var job = {
+    id: cwRid('cwj-'), no: cwNextNo(kind, recv), kind: kind, customerId: cust.id, vehicleId: veh ? veh.id : '',
+    items: items, discount: Math.max(0, cwRound(input.discount)), instructions: cwStr(input.instructions).trim().slice(0, 600), condition: cwStr(input.condition).trim().slice(0, 600),
+    estMinutes: Math.max(0, Math.round(cwNum(input.estMinutes))), receivedAt: recv, createdAt: now, createdBy: me.name, createdById: me.id, device: cwDevice(),
+    dueAt: null, cleaning: cleaning, assignments: [], statusHistory: [], photos: [], teamId: cwStr(input.teamId), free: false, loyaltyKey: '', collection: null
+  };
+  job.dueAt = kind === 'car' ? (job.estMinutes ? recv + job.estMinutes * 60000 : null) : (cleaning.expectedAt || (cleaning.scheduledAt && job.estMinutes ? cleaning.scheduledAt + job.estMinutes * 60000 : null));
+  job.loyaltyKey = cwLoyaltyKey(job, cust.phone, veh && veh.plate, cfg);
+  var acc = cwLoyaltyAccount(cwLoyalty, job.loyaltyKey, cfg, cwJobs);
+  var eligibleLine = items.some(function (it) { var s = cwFind(cfg.services, it.serviceId); return !s || s.loyalty !== false; });
+  var loyaltyOn = cfg.loyalty.enabled !== false && !(kind === 'clean' && cfg.loyalty.cleanEnabled === false);
+  if (loyaltyOn && eligibleLine && acc.available > 0 && input.useFree !== false) job.free = true;
+  job.invoiceNo = cwInvoiceNo(job);
+  cwHist(job, 'received', input.note || '', recv);
+  var ids = cwArr(input.staffIds).filter(Boolean);
+  var team = input.teamId ? cwFind(cfg.teams, input.teamId) : null;
+  if (team) cwArr(team.memberIds).forEach(function (id) { if (ids.indexOf(id) === -1) ids.push(id); });
+  ids.forEach(function (sid) { job.assignments.push({ id: cwRid('as-'), staffId: String(sid), name: cwStaffName(sid) || 'Staff', teamId: team && cwArr(team.memberIds).indexOf(sid) !== -1 ? team.id : '', at: now, by: me.name, removedAt: null, rev: 0 }); });
+  if (kind === 'car') cwHist(job, ids.length ? 'assigned' : 'awaiting_assignment', '', recv + 1);
+  else if (cwCleanType(cleaning.type).flow === 'onsite' && ids.length) cwHist(job, 'assigned', '', recv + 1);
+  cwDerive(job); cwStamp(job);
+  cwJobs.push(job);
+  cwSave('cwCustomers'); if (veh) cwSave('cwVehicles');
+  cwCommit('cwJobs', { act: 'job.create', ref: job.no, jobId: job.id, detail: (job.free ? 'FREE (loyalty) · ' : '') + items.map(function (i) { return i.name; }).join(' + ') + (ids.length ? ' · assigned ' + ids.map(cwStaffName).join(', ') : '') });
+  if (kind === 'car') cwSmsQueue('checkin', job);
+  return { ok: true, job: job, customer: cust, vehicle: veh, loyalty: acc };
+}
+function cwGetJob(id) { return id == null ? null : (cwById(cwJobs)[String(id)] || null); }
+function cwJobCustomer(job) { return job ? (cwById(cwCustomers)[String(job.customerId)] || null) : null; }
+function cwJobVehicle(job) { return job && job.vehicleId ? (cwById(cwVehicles)[String(job.vehicleId)] || null) : null; }
+function cwJobPayments(job) { return job ? cwJobPays({ payments: cwPayments }, job.id) : []; }
+function cwTotals(job) { return cwJobTotals(job, cwJobPayments(job)); }
+function cwMayTouch(job, me) {
+  me = me || cwMe();
+  if (cwCan('jobs.all', me)) return true;
+  return cwCan('jobs.mine', me) && cwStaffOnJob(job).some(function (a) { return a.staffId === me.id; });
+}
+/* status change. opts: {note, collection:{releasedBy, confirmed, note}, delivery:{confirmedBy}} */
+function cwSetStatus(id, s, opts) {
+  opts = opts || {};
+  var job = cwGetJob(id), me = cwMe();
+  if (!job) return { ok: false, error: 'Job not found.' };
+  if (!cwCan('status', me) || !cwMayTouch(job, me)) return { ok: false, error: 'You can only update jobs assigned to you.' };
+  if (cwIsClosed(job)) return { ok: false, error: 'This job is already closed.' };
+  var def = cwStatuses(job).filter(function (x) { return x.k === s; })[0];
+  if (!def) return { ok: false, error: 'Unknown status.' };
+  if (s === job.status) return { ok: true, job: job, same: true };
+  if (s === 'cancelled' && !(cwCan('jobs.edit', me))) return { ok: false, error: 'Only the cashier, a manager or the owner can cancel a job.' };
+  if (s === 'cancelled' && !cwStr(opts.note).trim()) return { ok: false, error: 'Give a reason for cancelling.' };
+  if ((s === 'collected' || s === 'delivered') && !cwCan('collect', me) && !cwCan('jobs.mine', me)) return { ok: false, error: 'Not allowed.' };
+  var now = cwNow(), before = job.status;
+  cwHist(job, s, opts.note, now);
+  if (job.kind === 'car' && s === 'completed') cwHist(job, 'ready', 'Moved to Ready for Collection automatically', now + 1);
+  if (s === 'collected' || s === 'delivered') {
+    var t = cwTotals(job), col = opts.collection || {};
+    job.collection = { at: now, releasedBy: cwStr(col.releasedBy || me.name).trim(), releasedById: me.id, confirmed: !!col.confirmed, note: cwStr(col.note).trim().slice(0, 200), payStatus: t.status, balance: t.balance };
+    if (s === 'delivered' && job.cleaning) { job.cleaning.deliveredAt = now; job.cleaning.deliveryConfirmedBy = cwStr((opts.delivery && opts.delivery.confirmedBy) || col.confirmedName || '').trim(); }
+  }
+  cwDerive(job); cwStamp(job);
+  cwCommit('cwJobs', { act: 'job.status', ref: job.no, jobId: job.id, detail: cwStatusDef(job, before).l + ' → ' + cwStatusDef(job, s).l + (opts.note ? ' (' + opts.note + ')' : '') });
+  var flow = cwFlowOf(job);
+  if (flow === 'car' && (s === 'completed' || s === 'ready')) cwSmsQueue('completed', job);   /* one message per job (deterministic id), whichever of the two is pressed */
+  if (flow === 'pickup' && s === 'picked_up') cwSmsQueue('pickup', job);
+  if (flow === 'pickup' && s === 'ready_delivery') cwSmsQueue('delivery', job);
+  if (flow === 'onsite' && s === 'completed') cwSmsQueue('onsite_done', job);
+  cwEvalLoyalty(job.id);
+  return { ok: true, job: job };
+}
+function cwAssign(id, staffIds, opts) {
+  opts = opts || {};
+  var job = cwGetJob(id), me = cwMe();
+  if (!job) return { ok: false, error: 'Job not found.' };
+  if (!cwCan('assign', me)) return { ok: false, error: 'You cannot assign jobs.' };
+  if (cwIsClosed(job)) return { ok: false, error: 'This job is closed.' };
+  var want = cwArr(staffIds).map(String), now = cwNow(), added = [], removed = [];
+  cwStaffOnJob(job).forEach(function (a) { if (want.indexOf(a.staffId) === -1 && !opts.addOnly) { a.removedAt = now; a.removedBy = me.name; a.rev = cwNum(a.rev) + 1; removed.push(a.name); } });
+  want.forEach(function (sid) { if (!cwStaffOnJob(job).some(function (a) { return a.staffId === sid; })) { job.assignments = cwArr(job.assignments).concat([{ id: cwRid('as-'), staffId: sid, name: cwStaffName(sid) || 'Staff', teamId: opts.teamId || '', at: now, by: me.name, removedAt: null, rev: 0 }]); added.push(cwStaffName(sid)); } });
+  if (!added.length && !removed.length) return { ok: true, job: job, same: true };
+  if (opts.teamId !== undefined) job.teamId = cwStr(opts.teamId);
+  if (cwStaffOnJob(job).length && (job.status === 'awaiting_assignment' || (job.status === 'received' && (job.kind === 'car' || cwFlowOf(job) === 'onsite')))) cwHist(job, 'assigned', '', now);
+  if (!cwStaffOnJob(job).length && job.kind === 'car' && job.status === 'assigned') cwHist(job, 'awaiting_assignment', 'Everyone was taken off the job', now);
+  cwDerive(job); cwStamp(job);
+  cwCommit('cwJobs', { act: 'job.assign', ref: job.no, jobId: job.id, detail: (added.length ? 'Assigned ' + added.join(', ') : '') + (removed.length ? (added.length ? '; ' : '') + 'Removed ' + removed.join(', ') : '') });
+  return { ok: true, job: job };
+}
+var CW_JOB_EDIT = ['items', 'discount', 'instructions', 'condition', 'estMinutes', 'dueAt', 'cleaning', 'free'];
+function cwEditJob(id, patch) {
+  var job = cwGetJob(id), me = cwMe();
+  if (!job) return { ok: false, error: 'Job not found.' };
+  if (!cwCan('jobs.edit', me)) return { ok: false, error: 'You cannot edit jobs.' };
+  if (cwIsClosed(job)) return { ok: false, error: 'This job is closed.' };
+  var keys = Object.keys(patch || {}).filter(function (k) { return CW_JOB_EDIT.indexOf(k) !== -1; });
+  if (patch.free !== undefined && !me.owner && me.role !== 'manager' && patch.free !== true) return { ok: false, error: 'Only a manager or the owner can take the free reward off a job.' };
+  keys.forEach(function (k) {
+    if (k === 'items') { var l = cwItemLines(patch.items); if (l.length) job.items = l; return; }
+    if (k === 'discount') { job.discount = Math.max(0, cwRound(patch.discount)); return; }
+    if (k === 'cleaning') { job.cleaning = Object.assign({}, job.cleaning || {}, patch.cleaning || {}); return; }
+    if (k === 'free') { job.free = !!patch.free; return; }
+    if (k === 'estMinutes') { job.estMinutes = Math.max(0, Math.round(cwNum(patch.estMinutes))); if (job.kind === 'car') job.dueAt = job.estMinutes ? cwNum(job.receivedAt) + job.estMinutes * 60000 : null; return; }
+    job[k] = patch[k];
+  });
+  cwStamp(job);
+  cwCommit('cwJobs', { act: 'job.edit', ref: job.no, jobId: job.id, detail: keys.join(', ') });
+  cwEvalLoyalty(job.id);
+  return { ok: true, job: job };
+}
+
+/* ---- payments (each job has its own invoice and payment records; revenue = these records) ---- */
+function cwRecordPayment(o) {
+  o = o || {};
+  var job = cwGetJob(o.jobId), me = cwMe();
+  if (!job) return { ok: false, error: 'Job not found.' };
+  var refund = o.type === 'refund';
+  if (!cwCan(refund ? 'refund' : 'payments', me)) return { ok: false, error: refund ? 'Only the owner can refund.' : 'You cannot take payments.' };
+  var amt = cwRound(o.amount);
+  if (!(amt > 0)) return { ok: false, error: 'Enter an amount above zero.' };
+  var t = cwTotals(job);
+  if (refund && amt > t.net + 0.009) return { ok: false, error: 'You can refund at most ' + cwMoney(t.net) + '.' };
+  if (!refund && job.free && t.total <= 0) return { ok: false, error: 'This is a FREE loyalty service — there is nothing to pay.' };
+  if (!refund && cwIsCancelled(job)) return { ok: false, error: 'This job was cancelled — it takes no payments.' };
+  var method = cwStr(o.method) || 'cash', ref = cwStr(o.ref).trim().toUpperCase().slice(0, 40);
+  if (method === 'mpesa' && !refund && ref && !/^[A-Z0-9]{8,12}$/.test(ref)) return { ok: false, error: 'An M-Pesa code is 10 letters and numbers (e.g. SGH7K2LMNP).' };
+  if (ref && !refund) { var dupe = cwPayments.filter(function (p) { return p && !p.reversedAt && p.ref === ref && p.method === method && p.type !== 'refund'; })[0]; if (dupe) return { ok: false, error: 'That reference was already used on ' + (dupe.jobNo || 'another job') + '.' }; }
+  var type = refund ? 'refund' : (o.type === 'deposit' || (cwPhase(job) < 2 && amt < t.balance - 0.009) ? 'deposit' : 'payment');
+  var p = { id: o.id || cwRid('cwp-'), jobId: job.id, jobNo: job.no, customerId: job.customerId, amount: refund ? -amt : amt, method: method, ref: ref, type: type, at: cwNum(o.at) || cwNow(), by: me.name, byId: me.id, byName: me.name, note: cwStr(o.note).trim().slice(0, 200), device: cwDevice() };
+  if (cwFind(cwPayments, p.id)) return { ok: true, payment: cwFind(cwPayments, p.id), duplicate: true };
+  cwStamp(p);
+  cwPayments.push(p);
+  cwCommit('cwPayments', { act: refund ? 'payment.refund' : 'payment.add', ref: job.no, jobId: job.id, detail: cwMethodLabel(method) + ' ' + cwMoney(amt) + (ref ? ' · ' + ref : '') + (p.note ? ' · ' + p.note : '') });
+  cwEvalLoyalty(job.id);
+  return { ok: true, payment: p, totals: cwTotals(job) };
+}
+/* a payment typed by mistake is reversed (kept, marked), never deleted */
+function cwReversePayment(payId, reason) {
+  var p = cwFind(cwPayments, payId), me = cwMe();
+  if (!p) return { ok: false, error: 'Payment not found.' };
+  if (!me.owner) return { ok: false, error: 'Only the owner can reverse a payment.' };
+  if (p.reversedAt) return { ok: true, payment: p };
+  if (!cwStr(reason).trim()) return { ok: false, error: 'Give a reason.' };
+  p.reversedAt = cwNow(); p.reversedBy = me.name; p.reverseReason = cwStr(reason).trim().slice(0, 200); cwStamp(p);
+  cwCommit('cwPayments', { act: 'payment.reverse', ref: p.jobNo, jobId: p.jobId, detail: cwMoney(Math.abs(p.amount)) + ' · ' + p.reverseReason });
+  cwEvalLoyalty(p.jobId);
+  return { ok: true, payment: p };
+}
+
+/* ---- loyalty ledger: idempotent; the same award is never written twice (deterministic ids) ---- */
+function cwLedgerOf(jobId) { return cwLoyalty.filter(function (t) { return t && t.jobId === jobId; }); }
+function cwLedgerAdd(job, type, n) {
+  var id = 'cwl-' + type + '-' + job.id + '-' + n;
+  if (cwFind(cwLoyalty, id)) return null;
+  var me = cwMe(), row = { id: id, key: job.loyaltyKey, type: type, jobId: job.id, jobNo: job.no, at: cwNow(), by: me.name };
+  cwStamp(row); cwLoyalty.push(row); return row;
+}
+function cwEvalLoyalty(jobId) {
+  var job = cwGetJob(jobId); if (!job || !job.loyaltyKey) return null;
+  var cfg = cwCfg(), t = cwTotals(job), led = cwLedgerOf(job.id), cnt = { earn: 0, reverse: 0, redeem: 0, unredeem: 0 };
+  led.forEach(function (r) { if (cnt[r.type] !== undefined) cnt[r.type]++; });
+  var earned = cnt.earn - cnt.reverse, redeemed = cnt.redeem - cnt.unredeem, changed = [], events = [];
+  var shouldEarn = cwJobQualifies(job, cfg, t) && t.status === 'paid' && t.net > 0;
+  if (shouldEarn && earned <= 0) { if (cwLedgerAdd(job, 'earn', cnt.earn)) changed.push('earn'); }
+  if (!shouldEarn && earned > 0) { if (cwLedgerAdd(job, 'reverse', cnt.reverse)) changed.push('reverse'); }
+  var shouldRedeem = !!job.free && !cwIsCancelled(job) && cwPhase(job) >= 2;
+  if (shouldRedeem && redeemed <= 0) { if (cwLedgerAdd(job, 'redeem', cnt.redeem)) changed.push('redeem'); }
+  if (!shouldRedeem && redeemed > 0 && (cwIsCancelled(job) || !job.free)) { if (cwLedgerAdd(job, 'unredeem', cnt.unredeem)) changed.push('unredeem'); }
+  if (!changed.length) return null;
+  cwCommit('cwLoyalty', { act: 'loyalty.' + changed.join('+'), ref: job.no, jobId: job.id, detail: job.loyaltyKey });
+  if (changed.indexOf('earn') !== -1) {
+    var acc = cwLoyaltyAccount(cwLoyalty, job.loyaltyKey, cfg, cwJobs);
+    if (acc.current_cycle_count === 0 && acc.free_visits_earned > 0 && acc.available > 0) cwSmsQueue('reward', job, { ledgerN: acc.free_visits_earned, acc: acc });
+    else if (acc.current_cycle_count === acc.n - 1 && cfg.loyalty.remind !== false) cwSmsQueue('loyalty', job, { ledgerN: acc.paid_visits, acc: acc });
+    events.push(acc);
+  }
+  return changed;
+}
+
+/* ---- complaints / rework: every person who worked on the job is listed as involved; who is responsible is a decision a manager records ---- */
+function cwAddComplaint(o) {
+  o = o || {};
+  var job = cwGetJob(o.jobId), me = cwMe();
+  if (!job) return { ok: false, error: 'Job not found.' };
+  if (!cwCan('complaints', me)) return { ok: false, error: 'You cannot record complaints.' };
+  var text = cwStr(o.text).trim(); if (!text) return { ok: false, error: 'Describe the complaint.' };
+  var involved = []; cwArr(job.assignments).forEach(function (a) { if (a && involved.indexOf(a.staffId) === -1) involved.push(a.staffId); });
+  cwArr(job.statusHistory).forEach(function (h) { if (h && h.byId && h.byId !== 'owner' && involved.indexOf(h.byId) === -1) involved.push(h.byId); });
+  var c = { id: cwRid('cwk-'), jobId: job.id, jobNo: job.no, customerId: job.customerId, kind: o.kind === 'rework' ? 'rework' : o.kind === 'note' ? 'note' : 'complaint', text: text.slice(0, 600), involved: involved, attributedTo: cwArr(o.attributedTo).filter(function (x) { return involved.indexOf(x) !== -1; }), at: cwNow(), by: me.name, resolved: false };
+  cwStamp(c); cwComplaints.push(c);
+  cwCommit('cwComplaints', { act: 'complaint.' + c.kind, ref: job.no, jobId: job.id, detail: text.slice(0, 120) });
+  return { ok: true, complaint: c };
+}
+function cwUpdateComplaint(id, patch) {
+  var c = cwFind(cwComplaints, id), me = cwMe();
+  if (!c) return { ok: false, error: 'Not found.' };
+  if (!(me.owner || me.role === 'manager')) return { ok: false, error: 'Only a manager or the owner decides who is responsible.' };
+  if (patch.attributedTo) c.attributedTo = cwArr(patch.attributedTo).filter(function (x) { return cwArr(c.involved).indexOf(x) !== -1; });
+  if (patch.resolved !== undefined) { c.resolved = !!patch.resolved; c.resolvedAt = c.resolved ? cwNow() : null; c.resolution = cwStr(patch.resolution).trim().slice(0, 300); }
+  cwStamp(c);
+  cwCommit('cwComplaints', { act: 'complaint.update', ref: c.jobNo, jobId: c.jobId, detail: (c.resolved ? 'resolved' : 'open') + (c.attributedTo.length ? ' · responsible: ' + c.attributedTo.map(cwStaffName).join(', ') : '') });
+  return { ok: true, complaint: c };
+}
+
+/* ---- SMS: event-driven, one record per event and job (deterministic id = no duplicates), sent by the device that raised it ---- */
+function cwSmsVars(job, extra) {
+  var cfg = cwCfg(), c = cwJobCustomer(job) || {}, v = cwJobVehicle(job), t = cwTotals(job);
+  var names = cwStaffOnJob(job).map(function (a) { return a.name; }).filter(Boolean);
+  var unit = cwUnitOf(job.kind), acc = (extra && extra.acc) || cwLoyaltyAccount(cwLoyalty, job.loyaltyKey, cfg, cwJobs);
+  var pay = cfg.payments || {}, payLine = pay.till ? 'Pay via M-Pesa Till: ' + pay.till + '.' : pay.paybill ? 'Pay via M-Pesa Paybill ' + pay.paybill + (pay.account ? ', Account ' + pay.account : '') + '.' : '';
+  var cl = job.cleaning || {}, ct = cwCleanType(cl.type), pk = cl.pickup || {};
+  var item = job.kind === 'clean' ? ((ct.dims && cl.dims ? cl.dims + ' ' : '') + (ct.flow === 'onsite' ? ct.l.toLowerCase() : ct.l.toLowerCase())) : '';
+  var visitLine = '';
+  if (cfg.loyalty.enabled !== false && !(job.kind === 'clean' && cfg.loyalty.cleanEnabled === false)) {
+    if (job.free) visitLine = 'This ' + unit + ' is FREE - thank you for your loyalty!';
+    else visitLine = 'Your visit: ' + Math.min(acc.n, acc.current_cycle_count + 1) + '/' + acc.n + ' towards your FREE ' + unit + '.';
+  }
+  var first = cwStr(c.name).trim().split(/\s+/)[0] || 'Customer';
+  return {
+    name: first, fullname: cwStr(c.name), plate: v ? cwFmtPlate(v.plate) : '', plate_part: v ? ' for ' + cwFmtPlate(v.plate) : '',
+    services: cwArr(job.items).map(function (i) { return i.name; }).join(' + '), amount: cwAmt(t.total), total: cwAmt(t.total), balance: cwAmt(Math.max(0, t.balance)),
+    cleaning: cwAmt(Math.max(0, t.subtotal - t.discount)), delivery: cwAmt(t.delivery), staff: names.length ? names.join(' & ') : 'our team',
+    eta: cwDur(job.estMinutes), expected: cl.expectedAt ? cwFmtDT(cl.expectedAt) : (job.estMinutes ? cwDur(job.estMinutes) : 'soon'),
+    business: cfg.business.name || 'us', visit_line: visitLine, pay_line: payLine, till: pay.till || '', item: item || 'items',
+    location: [pk.location || pk.estate, pk.building, pk.house ? 'House ' + pk.house : '', pk.floor ? 'Floor ' + pk.floor : ''].filter(Boolean).join(', ') || 'your place',
+    count: acc.current_cycle_count, unit: unit, unit_plural: cwPlural(unit), job: job.no
+  };
+}
+function cwSmsQueue(event, job, extra) {
+  var cfg = cwCfg();
+  if (!job || cfg.sms.enabled === false || cfg.sms.events[event] === false) return null;
+  var c = cwJobCustomer(job); if (!c || !cwNormPhone(c.phone)) return null;
+  var id = 'cws-' + event + '-' + job.id + (extra && extra.ledgerN != null ? '-' + extra.ledgerN : '');
+  if (cwFind(cwSms, id)) return null;
+  var tpl = cfg.sms.templates[event] || CW_DEFAULT_TEMPLATES[event] || '';
+  var msg = cwFill(tpl, cwSmsVars(job, extra)); if (!msg) return null;
+  var me = cwMe(), r = { id: id, event: event, jobId: job.id, jobNo: job.no, customerId: c.id, to: c.phone, message: msg.slice(0, 640), status: 'pending', tries: 0, at: cwNow(), by: me.name, dev: cwDevice(), error: '' };
+  cwStamp(r); cwSms.push(r); cwSave('cwSms'); cwPush(); cwEmit('sms');
+  setTimeout(cwSmsFlush, 60);
+  return r;
+}
+function cwSmsOnline() { try { return typeof window.posNetOffline === 'function' ? !window.posNetOffline() : navigator.onLine !== false; } catch (e) { return true; } }
+function cwApi(p) { try { return typeof apiUrl === 'function' ? apiUrl(p) : p; } catch (e) { return p; } }
+function cwSmsConfigured() {
+  if (CW_ST.smsCfg !== null && cwNow() - CW_ST.smsCfgAt < 300000) return Promise.resolve(CW_ST.smsCfg);
+  return fetch(cwApi('/api/sms-config?status=1')).then(function (r) { return r.json(); }).then(function (d) { CW_ST.smsCfg = !!(d && d.configured); CW_ST.smsCfgAt = cwNow(); return CW_ST.smsCfg; });
+}
+function cwSmsSendOne(r) {
+  return fetch(cwApi('/api/sms-send'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: r.to, message: r.message }) })
+    .then(function (res) { return res.json().catch(function () { return {}; }).then(function (d) { return { ok: res.ok && d && d.success !== false && !d.error, error: (d && d.error) || (res.ok ? '' : 'HTTP ' + res.status) }; }); });
+}
+function cwSmsFlush() {
+  if (CW_ST.smsFlushing || !cwSmsOnline()) return Promise.resolve(0);
+  var dev = cwDevice();
+  var mine = cwSms.filter(function (r) { return r && r.status === 'pending' && (!r.dev || r.dev === dev) && cwNum(r.tries) < CW_SMS_MAX_TRIES; });
+  if (!mine.length) return Promise.resolve(0);
+  CW_ST.smsFlushing = true;
+  var sent = 0;
+  return cwSmsConfigured().then(function (ok) {
+    if (!ok) {
+      mine.forEach(function (r) { r.status = 'failed'; r.error = 'SMS is not set up (Settings ▸ SMS gateway).'; cwStamp(r); });
+      cwSave('cwSms'); cwPush(); cwEmit('sms'); return 0;
+    }
+    var chain = Promise.resolve();
+    mine.forEach(function (r) {
+      chain = chain.then(function () {
+        return cwSmsSendOne(r).then(function (res) {
+          r.tries = cwNum(r.tries) + 1;
+          if (res.ok) { r.status = 'sent'; r.sentAt = cwNow(); r.error = ''; sent++; }
+          else { r.error = cwStr(res.error).slice(0, 160); if (r.tries >= CW_SMS_MAX_TRIES || /not set up|invalid|recipient|blocked|not active/i.test(r.error)) r.status = 'failed'; }
+          cwStamp(r);
+        }, function () { /* no answer: stays pending, tried again later */ });
+      });
+    });
+    return chain.then(function () { cwSave('cwSms'); cwPush(); cwEmit('sms'); return sent; });
+  }, function () { return 0; }).then(function (n) { CW_ST.smsFlushing = false; return n; }, function () { CW_ST.smsFlushing = false; return 0; });
+}
+function cwSmsResend(id) {
+  var r = cwFind(cwSms, id), me = cwMe();
+  if (!r) return { ok: false, error: 'Message not found.' };
+  if (!cwCan('sms.resend', me)) return { ok: false, error: 'You cannot resend messages.' };
+  if (r.status === 'sent') return { ok: false, error: 'Already sent.' };
+  r.status = 'pending'; r.tries = 0; r.dev = cwDevice(); r.error = ''; r.resentBy = me.name; r.resentAt = cwNow(); cwStamp(r);
+  CW_ST.smsCfg = null;
+  cwCommit('cwSms', { act: 'sms.resend', ref: r.jobNo, jobId: r.jobId, detail: r.event + ' → ' + cwFmtPhone(r.to) });
+  setTimeout(cwSmsFlush, 30);
+  return { ok: true };
+}
+
+/* ---- staff (the app's own staff list; PINs are created here, hashed exactly like the rest of the system) ---- */
+function cwSaveStaff() {
+  try { if (typeof safeSetItem === 'function') safeSetItem('pos_staff', JSON.stringify(staff)); } catch (e) { /* kept in memory */ }
+  try { if (typeof renderServerPickList === 'function') renderServerPickList(); } catch (e2) { /* login list refreshes on next open */ }
+  cwPush(); cwEmit('staff');
+}
+function cwNextStaffNo() { var n = 0; cwStaffAll().forEach(function (m) { var k = parseInt(cwStr(m && m.cwNo).replace(/\D/g, ''), 10); if (k > n) n = k; }); return 'ST' + cwPad(n + 1, 3); }
+function cwAddStaff(o) {
+  o = o || {};
+  var me = cwMe();
+  if (!me.owner) return Promise.resolve({ ok: false, error: 'Only the owner adds staff.' });
+  var name = cwStr(o.name).trim(), pin = cwStr(o.pin).trim();
+  if (!name) return Promise.resolve({ ok: false, error: 'Enter the staff member\'s name.' });
+  if (!/^\d{4,8}$/.test(pin)) return Promise.resolve({ ok: false, error: 'The PIN must be 4 to 8 digits.' });
+  if (cwStaffAll().some(function (m) { return m && !m.removed && cwStr(m.name).toLowerCase() === name.toLowerCase(); })) return Promise.resolve({ ok: false, error: 'There is already a staff member called ' + name + '.' });
+  var role = CW_PERMS[o.role] && o.role !== 'owner' ? o.role : 'attendant';
+  return Promise.resolve(hashPassword(pin)).then(function (h) { return typeof sealHash === 'function' ? sealHash(h) : h; }).then(function (pinHash) {
+    var m = { id: cwRid('st-'), name: name, pinHash: pinHash, roles: [], lockedDates: [], isManager: role === 'manager', salesTabMigrated: true, cwRole: role, cwPhone: cwNormPhone(o.phone) || cwStr(o.phone).trim(), cwNo: cwNextStaffNo(), cwDuties: cwStr(o.duties).trim().slice(0, 200), cwActive: true, createdAt: cwNow() };
+    var tl = cwCleanTabs(o.tabs); if (tl && tl.length && tl.slice().sort().join() !== cwRoleTabs(role).slice().sort().join()) m.cwTabs = tl;
+    cwStamp(m);
+    staff.push(m);
+    cwSaveStaff();
+    cwLog('staff.add', name, CW_ROLES.filter(function (r) { return r.k === role; })[0].l + ' · ' + m.cwNo);
+    return { ok: true, member: m };
+  });
+}
+function cwUpdateStaff(id, patch) {
+  var me = cwMe(), m = cwFind(cwStaffAll(), id);
+  if (!m) return { ok: false, error: 'Staff member not found.' };
+  if (!me.owner) return { ok: false, error: 'Only the owner changes staff accounts.' };
+  var parts = [];
+  if (patch.role !== undefined && CW_PERMS[patch.role] && patch.role !== 'owner') { m.cwRole = patch.role; m.isManager = patch.role === 'manager'; parts.push('role ' + patch.role); }
+  if (patch.phone !== undefined) { m.cwPhone = cwNormPhone(patch.phone) || cwStr(patch.phone).trim(); parts.push('phone'); }
+  if (patch.duties !== undefined) { m.cwDuties = cwStr(patch.duties).trim().slice(0, 200); parts.push('duties'); }
+  if (patch.active !== undefined) { m.cwActive = !!patch.active; parts.push(patch.active ? 'activated' : 'deactivated'); }
+  if (patch.tabs !== undefined) {
+    var tl = patch.tabs === null ? null : cwCleanTabs(patch.tabs);
+    if (tl && !tl.length) return { ok: false, error: 'Tick at least one screen, or switch the account to Inactive.' };
+    if (tl && tl.slice().sort().join() === cwRoleTabs(m.cwRole && CW_PERMS[m.cwRole] ? m.cwRole : cwMemberRole(m)).slice().sort().join()) tl = null;   /* same as the role: follow the role (and its future changes) */
+    if (JSON.stringify(tl) !== JSON.stringify(cwCleanTabs(m.cwTabs))) { if (tl) m.cwTabs = tl; else delete m.cwTabs; parts.push(tl ? 'screens: ' + tl.join(', ') : 'screens: role default'); }
+  }
+  if (!m.cwNo) m.cwNo = cwNextStaffNo();
+  cwStamp(m); cwSaveStaff();
+  cwLog('staff.edit', m.name, parts.join(', '));
+  return { ok: true, member: m };
+}
+function cwSetStaffPin(id, pin) {
+  var me = cwMe(), m = cwFind(cwStaffAll(), id);
+  if (!m || !me.owner) return Promise.resolve({ ok: false, error: 'Only the owner resets a PIN.' });
+  if (!/^\d{4,8}$/.test(cwStr(pin))) return Promise.resolve({ ok: false, error: 'The PIN must be 4 to 8 digits.' });
+  return Promise.resolve(hashPassword(cwStr(pin))).then(function (h) { return typeof sealHash === 'function' ? sealHash(h) : h; }).then(function (ph) { m.pinHash = ph; cwStamp(m); cwSaveStaff(); cwLog('staff.pin', m.name, 'PIN reset'); return { ok: true }; });
+}
+function cwSaveTeam(o) {
+  var me = cwMe(); if (!me.owner && me.role !== 'manager') return { ok: false, error: 'Only a manager or the owner manages teams.' };
+  var name = cwStr(o.name).trim(); if (!name) return { ok: false, error: 'Name the team.' };
+  var cfg = cwCfg(), teams = cwArr(cfg.teams).map(function (t) { return Object.assign({}, t); }), t = o.id ? cwFind(teams, o.id) : null;
+  if (!t) { t = { id: cwRid('tm-') }; teams.push(t); }
+  t.name = name; t.memberIds = cwArr(o.memberIds).map(String); t.active = o.active !== false;
+  cwSaveCfg({ teams: teams }, 'Team ' + name);
+  return { ok: true, team: t };
+}
+
+/* ---- photos: compressed on the device, queued in IndexedDB, stored privately on the server (/api/media kind "ref"); a job keeps only the ids ---- */
+var CW_PH = { db: null, mem: {}, flushing: false };
+function cwPhDb() {
+  if (CW_PH.db) return CW_PH.db;
+  CW_PH.db = new Promise(function (res) {
+    try {
+      if (typeof indexedDB === 'undefined') return res(null);
+      var rq = indexedDB.open('cw_photos', 1);
+      rq.onupgradeneeded = function () { try { rq.result.createObjectStore('p', { keyPath: 'id' }); } catch (e) { /* exists */ } };
+      rq.onsuccess = function () { res(rq.result); }; rq.onerror = function () { res(null); };
+    } catch (e) { res(null); }
+  });
+  return CW_PH.db;
+}
+function cwPhOp(mode, fn) {
+  return cwPhDb().then(function (db) {
+    if (!db) return null;
+    return new Promise(function (res) { try { var tx = db.transaction('p', mode), st = tx.objectStore('p'), rq = fn(st); tx.oncomplete = function () { res(rq && rq.result); }; tx.onerror = function () { res(null); }; } catch (e) { res(null); } });
+  });
+}
+function cwPhHash(dataUrl) {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle) return crypto.subtle.digest('SHA-256', new TextEncoder().encode(dataUrl)).then(function (b) { return 'cw-' + Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('').slice(0, 20); });
+  } catch (e) { /* fall through */ }
+  return Promise.resolve(cwRid('cw-'));
+}
+function cwAddPhoto(jobId, file, kind) {
+  var job = cwGetJob(jobId), me = cwMe();
+  if (!job) return Promise.resolve({ ok: false, error: 'Job not found.' });
+  if (!cwCan('photos', me) || !cwMayTouch(job, me)) return Promise.resolve({ ok: false, error: 'You cannot add photos to this job.' });
+  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type || '')) return Promise.resolve({ ok: false, error: 'Use a JPEG, PNG or WebP picture.' });
+  if (file.size > 15 * 1024 * 1024) return Promise.resolve({ ok: false, error: 'That picture is too big (over 15 MB).' });
+  if (typeof compressImageToTarget !== 'function') return Promise.resolve({ ok: false, error: 'Pictures are not available on this device.' });
+  return Promise.resolve(compressImageToTarget(file, { maxW: 1400, maxH: 1400, maxBytes: 300 * 1024 })).then(function (r) {
+    return cwPhHash(r.dataUrl).then(function (id) {
+      CW_PH.mem[id] = r.dataUrl;
+      return cwPhOp('readwrite', function (st) { return st.put({ id: id, dataUrl: r.dataUrl, tries: 0, at: cwNow() }); }).then(function () {
+        var entry = { id: id, kind: ['before', 'after', 'condition', 'delivery', 'other'].indexOf(kind) !== -1 ? kind : 'other', at: cwNow(), by: me.name, state: 'pending' };
+        job.photos = cwArr(job.photos).filter(function (p) { return p && p.id !== id; }).concat([entry]);
+        cwStamp(job);
+        cwCommit('cwJobs', { act: 'job.photo', ref: job.no, jobId: job.id, detail: entry.kind });
+        setTimeout(cwPhotoFlush, 50);
+        return { ok: true, photo: entry };
+      });
+    });
+  }).catch(function (e) { return { ok: false, error: (e && e.message) || 'Could not read the picture.' }; });
+}
+function cwPhotoFlush() {
+  if (CW_PH.flushing || !cwSmsOnline()) return Promise.resolve(0);
+  CW_PH.flushing = true;
+  return cwPhOp('readonly', function (st) { return st.getAll(); }).then(function (rows) {
+    var chain = Promise.resolve(), sent = 0;
+    cwArr(rows).forEach(function (row) {
+      chain = chain.then(function () {
+        if (!row || !row.dataUrl || cwNum(row.tries) >= 5) return null;
+        return fetch(cwApi('/api/media'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k: 'ref', id: row.id, dataUrl: row.dataUrl }) }).then(function (res) {
+          if (res.ok) { sent++; return cwPhOp('readwrite', function (st) { return st.delete(row.id); }).then(function () { cwPhMarkUploaded(row.id); }); }
+          row.tries = cwNum(row.tries) + (res.status >= 400 && res.status < 500 ? 5 : 1); return cwPhOp('readwrite', function (st) { return st.put(row); });
+        }, function () { row.tries = cwNum(row.tries) + 1; return cwPhOp('readwrite', function (st) { return st.put(row); }); });
+      });
+    });
+    return chain.then(function () { return sent; });
+  }).then(function (n) { CW_PH.flushing = false; return n; }, function () { CW_PH.flushing = false; return 0; });
+}
+function cwPhMarkUploaded(id) {
+  var ch = false;
+  cwJobs.forEach(function (j) { if (!j) return; cwArr(j.photos).forEach(function (p) { if (p && p.id === id && p.state === 'pending') { p.state = 'uploaded'; ch = true; cwStamp(j); } }); });
+  if (ch) { cwSave('cwJobs'); cwPush(); }
+}
+function cwPhotoUrl(id) {
+  if (!id) return Promise.resolve('');
+  if (CW_PH.mem[id]) return Promise.resolve(CW_PH.mem[id]);
+  if (CW_ST.photoUrls[id]) return Promise.resolve(CW_ST.photoUrls[id]);
+  return cwPhOp('readonly', function (st) { return st.get(id); }).then(function (row) {
+    if (row && row.dataUrl) { CW_PH.mem[id] = row.dataUrl; return row.dataUrl; }
+    if (!cwSmsOnline()) return '';
+    return fetch(cwApi('/api/media?k=ref&id=' + encodeURIComponent(id))).then(function (r) { if (!r.ok) throw new Error('missing'); return r.blob(); }).then(function (b) { var u = URL.createObjectURL(b); CW_ST.photoUrls[id] = u; return u; });
+  }).catch(function () { return ''; });
+}
+
+/* ---- one-time import of the car wash jobs a shop kept in the Services app (nothing in Services is changed or deleted) ---- */
+function cwMapVehCat(t) { return cwCatFromText(t, cwCfg()); }
+var CW_SVC_STATUS = { waiting: 'received', received: 'received', in_progress: 'washing', ready: 'ready', completed: 'collected', collected: 'collected', cancelled: 'cancelled', no_show: 'cancelled' };
+var CW_SVC_CLEAN_STATUS = { waiting: 'received', received: 'received', in_progress: 'in_cleaning', ready: 'ready_delivery', completed: 'delivered', collected: 'delivered', cancelled: 'cancelled', no_show: 'cancelled' };
+function cwMigrateFromServices(data) {
+  var src = cwArr(data && data.svcJobs).filter(function (j) { return j && !j._deleted && j.serviceType === 'car_wash'; });
+  if (!src.length) return { jobs: 0 };
+  var assets = cwArr(data.svcAssets), made = { jobs: 0, customers: 0, vehicles: 0, payments: 0 }, cfg = cwCfg();
+  src.forEach(function (sj) {
+    var jid = 'cwj-m-' + sj.id;
+    if (cwFind(cwJobs, jid)) return;
+    var cu = sj.customer || {}, phone = cwNormPhone(cu.phone), cust = phone ? cwCustomerByPhone(phone) : null;
+    if (!cust) cust = cwCustomers.filter(function (c) { return c && !c._deleted && !c.phone && cwStr(c.name).toLowerCase() === cwStr(cu.name).trim().toLowerCase() && cwStr(cu.name).trim(); })[0] || null;
+    if (!cust) { cust = { id: 'cwc-m-' + (phone || sj.id), name: cwStr(cu.name).trim() || (phone ? cwFmtPhone(phone) : 'Walk-in'), phone: phone, altPhone: cwNormPhone(cu.altPhone), type: 'car_owner', createdAt: cwMs(sj.createdAt) || cwNow(), createdBy: 'Imported from Services', migrated: true }; cwStamp(cust); cwCustomers.push(cust); made.customers++; }
+    var snap = sj.assetSnap || {}, asset = sj.assetId ? cwFind(assets, sj.assetId) : null, attrs = (asset && asset.attrs) || {};
+    var plate = cwNormPlate(snap.plate || attrs.plate), vtype = cwStr(snap.type || attrs.type || (sj.data && sj.data.veh_type)), motor = !!plate || /car|saloon|suv|van|bus|pick|motor|bike|tuk|matatu|lorry|truck/i.test(vtype);
+    var veh = null;
+    if (plate && cwValidPlate(plate)) {
+      veh = cwVehicleByPlate(plate);
+      if (!veh) { veh = { id: 'cwv-m-' + plate, plate: plate, make: cwStr(snap.make || attrs.make), model: cwStr(snap.model || attrs.model), colour: cwStr(snap.color || attrs.color), category: cwMapVehCat(vtype), customerId: cust.id, createdAt: cwMs(sj.createdAt) || cwNow(), migrated: true }; cwStamp(veh); cwVehicles.push(veh); made.vehicles++; }
+    }
+    var kind = motor || veh ? 'car' : 'clean';
+    var created = cwMs(sj.createdAt) || cwNow();
+    var items = cwArr(sj.jobServices).map(function (l) { return l && { id: 'li-m-' + l.id, serviceId: '', name: cwStr(l.name), price: cwNum(l.price), qty: cwNum(l.qty) || 1 }; }).filter(function (x) { return x && x.name; });
+    if (!items.length) items = [{ id: 'li-m-' + sj.id, serviceId: '', name: 'Car wash (imported)', price: 0, qty: 1 }];
+    var map = kind === 'car' ? CW_SVC_STATUS : CW_SVC_CLEAN_STATUS;
+    var hist = cwArr(sj.statusHistory).map(function (h) { return h && h.s ? { id: 'sh-m-' + h.id, s: map[h.s] || 'received', at: cwNum(h.at) || created, by: cwStr(h.by), byId: cwStr(h.byId), note: 'Imported from Services' } : null; }).filter(Boolean);
+    if (!hist.length) hist = [{ id: 'sh-m-' + sj.id, s: map[sj.status] || 'received', at: created, by: '', byId: '', note: 'Imported from Services' }];
+    var job = {
+      id: jid, no: cwStr(sj.no) || ('CW-M-' + sj.id), kind: kind, customerId: cust.id, vehicleId: veh ? veh.id : '', items: items,
+      discount: cwNum(sj.discount && (sj.discount.amount || sj.discount.value)) || 0, instructions: cwStr(sj.notes), condition: '',
+      estMinutes: 0, receivedAt: created, createdAt: created, createdBy: cwStr(sj.createdBy && sj.createdBy.name) || 'Services', device: cwStr(sj.device),
+      dueAt: cwNum(sj.dueAt) || null, assignments: cwArr(sj.jobStaff).map(function (s) { return s && s.staffId ? { id: 'as-m-' + s.id, staffId: cwStr(s.staffId), name: cwStr(s.name) || cwStaffName(s.staffId) || 'Staff', at: cwNum(s.assignedAt) || created, by: cwStr(s.assignedBy), removedAt: s.removedAt || null, rev: 0 } : null; }).filter(Boolean),
+      statusHistory: hist, photos: cwArr(sj.photos).map(function (p) { return p && p.id ? { id: p.id, kind: p.kind === 'condition' ? 'condition' : p.kind === 'after' ? 'after' : 'before', at: cwNum(p.at), by: cwStr(p.by), state: 'uploaded' } : null; }).filter(Boolean),
+      teamId: '', free: false, collection: null, migratedFrom: { app: 'services', id: sj.id, no: sj.no }
+    };
+    if (kind === 'clean') job.cleaning = { type: 'carpet', dims: '', qty: 1, delivery: 0, pickup: { location: '', estate: '', building: '', house: '', floor: '', landmark: '' }, scheduledAt: null, expectedAt: null, deliveredAt: null, deliveryConfirmedBy: '' };
+    job.loyaltyKey = cwLoyaltyKey(job, cust.phone, veh && veh.plate, cfg);
+    job.invoiceNo = cwInvoiceNo(job);
+    cwDerive(job); cwStamp(job);
+    cwJobs.push(job); made.jobs++;
+    cwArr(sj.payments).forEach(function (p) {
+      if (!p || !p.id || p.voidedAt) return;
+      var pid = 'cwp-m-' + p.id; if (cwFind(cwPayments, pid)) return;
+      var amt = cwNum(p.amount), refund = p.kind === 'refund' || amt < 0;
+      var row = { id: pid, jobId: job.id, jobNo: job.no, customerId: cust.id, amount: refund ? -Math.abs(amt) : Math.abs(amt), method: p.method === 'mpesa' || p.method === 'cash' ? p.method : (p.method ? 'x:' + p.method : 'cash'), ref: cwStr(p.ref), type: refund ? 'refund' : p.kind === 'deposit' ? 'deposit' : 'payment', at: cwNum(p.at) || created, by: cwStr(p.by), byId: cwStr(p.byId), byName: cwStr(p.by), note: 'Imported from Services', migrated: true };
+      cwStamp(row); cwPayments.push(row); made.payments++;
+    });
+  });
+  if (!made.jobs) return made;
+  cwJobs.sort(function (a, b) { return cwNum(a.createdAt) - cwNum(b.createdAt); });
+  /* loyalty history for the imported paid jobs (deterministic ids: re-running never counts twice) */
+  cwJobs.forEach(function (j) { if (j && j.migratedFrom) { var t = cwTotals(j); if (cwJobQualifies(j, cfg, t) && t.status === 'paid' && t.net > 0) { var id = 'cwl-earn-' + j.id + '-0'; if (!cwFind(cwLoyalty, id)) { var r = { id: id, key: j.loyaltyKey, type: 'earn', jobId: j.id, jobNo: j.no, at: cwNum(j.completedAt || j.receivedAt), by: 'Imported from Services', migrated: true }; cwStamp(r); cwLoyalty.push(r); } } } });
+  var cur = cwFind(cwConfig, 'cfg'), next = Object.assign({}, cwCompleteConfig(cur));
+  next.migration = { at: cwNow(), jobs: cwNum(cur && cur.migration && cur.migration.jobs) + made.jobs, customers: cwNum(cur && cur.migration && cur.migration.customers) + made.customers, vehicles: cwNum(cur && cur.migration && cur.migration.vehicles) + made.vehicles, payments: cwNum(cur && cur.migration && cur.migration.payments) + made.payments };
+  cwStamp(next);
+  cwConfig = cur ? cwConfig.map(function (r) { return r && r.id === 'cfg' ? next : r; }) : cwConfig.concat([next]);
+  cwLogRow({ act: 'migration', ref: 'Services', detail: made.jobs + ' jobs, ' + made.customers + ' customers, ' + made.vehicles + ' vehicles, ' + made.payments + ' payments imported' });
+  cwSave(); cwPush(); cwEmit('migration');
+  return made;
+}
+/* a shop kept on the server database only sends recent history in a pull; older Services jobs are read page by page once */
+function cwMigrateHistory() {
+  if (CW_ST.migrating) return Promise.resolve(0);
+  try { if (localStorage.getItem('pos_cw_hist_import') === '1') return Promise.resolve(0); } catch (e) { return Promise.resolve(0); }
+  if (!cwSmsOnline()) return Promise.resolve(0);
+  CW_ST.migrating = true;
+  var got = [], after = '', page = 0;
+  function next() {
+    if (page++ > 60) return Promise.resolve();
+    return fetch(cwApi('/api/history?col=svcJobs&from=0&to=' + cwNow() + '&limit=1000' + (after ? '&after=' + encodeURIComponent(after) : ''))).then(function (r) {
+      if (!r.ok) throw new Error('history ' + r.status);
+      return r.json();
+    }).then(function (d) { got = got.concat(cwArr(d && d.records)); if (d && d.next) { after = d.next; return next(); } return null; });
+  }
+  return next().then(function () {
+    var r = got.length ? cwMigrateFromServices({ svcJobs: got, svcAssets: [] }) : { jobs: 0 };
+    try { localStorage.setItem('pos_cw_hist_import', '1'); } catch (e) { /* tried again next session */ }
+    CW_ST.migrating = false; return r.jobs || 0;
+  }, function () { CW_ST.migrating = false; return 0; });
+}
+/* zip 362: a catalogue still exactly the zip 361 starter list (never edited) becomes the standard price list; an edited one is left alone */
+function cwUpgradeCatalog() {
+  var cur = cwFind(cwConfig, 'cfg'); if (!cur || cur.catalog) return false;
+  if (!cwIsV1Catalog(cur.services)) return false;
+  var vc = cwArr(cur.vehicleCats), legacy = !vc.length || vc.every(function (x) { return x && (CW_VEH_LEGACY[x.k] || x.k === 'suv'); });
+  /* vehicles already saved as small / saloon / van keep that type (it still has a label); new ones use the intake-form types */
+  cwSaveCfg(Object.assign({ services: cwDefaultServices(), catalog: CW_CATALOG_V }, legacy ? { vehicleCats: CW_VEH_CATS.map(function (x) { return { k: x.k, l: x.l }; }) } : {}), 'Standard price list');
+  return true;
+}
+function cwBootStore() {
+  cwLoad();
+  try { cwUpgradeCatalog(); } catch (e) { /* keep the catalogue as it is */ }
+  try { var j = typeof safeJSONParse === 'function' ? safeJSONParse('pos_svc_jobs', []) : []; if (Array.isArray(j) && j.length) cwMigrateFromServices({ svcJobs: j, svcAssets: safeJSONParse('pos_svc_assets', []) }); } catch (e) { /* nothing kept from Services on this device */ }
+  setInterval(function () { cwSmsFlush(); cwPhotoFlush(); }, 20000);
+  try { window.addEventListener('online', function () { setTimeout(function () { cwSmsFlush(); cwPhotoFlush(); }, 1500); }); } catch (e) { /* no window */ }
+}
+</script>

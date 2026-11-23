@@ -8,6 +8,7 @@
 //   secLimit()      a per-shop KV counter (a throttle, not an exact meter — KV is eventually consistent), generous enough that no real shop
 //                   reaches it. Never blocks because the limiter itself failed. Limits can be changed with env vars (see callers).
 import { staffGuard, readMode } from './_staff-auth.js';
+import { atomicHit } from './_atomic-counter.js';
 
 export async function managerGuard(request, env, clientId, cors = {}) {
   const sg = await staffGuard(request, env, clientId, null, cors);
@@ -28,13 +29,15 @@ export async function secLimit(env, name, key, limit, windowSec, what, cors = {}
   const bucket = Math.floor(now / (windowSec * 1000));
   const k = `rl185:${name}:${key}:${bucket}`;
   let used = 0;
-  try { used = Number(await env.mydukapos_kv.get(k)) || 0; } catch (e) { return null; }
+  const atomic = await atomicHit(env, k, 1, windowSec * 2);          // zip 273: atomic where the database is bound, KV otherwise
+  if (atomic !== null) used = atomic - 1;
+  else { try { used = Number(await env.mydukapos_kv.get(k)) || 0; } catch (e) { return null; } }
   if (used >= limit) {
     const retry = Math.max(1, Math.ceil(((bucket + 1) * windowSec * 1000 - now) / 1000));
     return new Response(JSON.stringify({ error: `Too many ${what} from this shop just now (limit ${limit}). Try again in about ${Math.ceil(retry / 60)} minute(s), or contact support if this is expected.`, code: 'rate_limited', limit, retryAfter: retry }),
       { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(retry), ...cors } });
   }
-  try { await env.mydukapos_kv.put(k, String(used + 1), { expirationTtl: windowSec * 2 }); } catch (e) { /* ignore */ }
+  if (atomic === null) { try { await env.mydukapos_kv.put(k, String(used + 1), { expirationTtl: windowSec * 2 }); } catch (e) { /* ignore */ } }
   return null;
 }
 export { num as secNum };

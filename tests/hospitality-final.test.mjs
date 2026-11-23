@@ -108,7 +108,9 @@ test('M-PESA: a typed code is checked against M-Pesa\'s own records — verified
   assert.deepEqual(J(w, "salesLog.map(s => s.id + ':' + s.mpesaCheck.status)"), ['s1:verified', 's9:duplicate', 's5:not_found']);
   w.eval(`document.querySelector('.tab-link[data-tab="daily-sales-tab"]').click(); mpesaVerifyBanner()`);
   const banner = d.getElementById('mpesa-verify-banner').textContent;
-  assert.match(banner, /2 M-Pesa payments not verified[\s\S]*R9 QWE1234567 — code already used for another sale[\s\S]*R5 FAKE000000 — no M-Pesa record found yet/);
+  // zip 378: only real problems are shown (a code used twice / paid less); "no M-Pesa record found yet" is not shown - it caused needless panic
+  assert.match(banner, /1 M-Pesa payment to check:[\s\S]*R9 QWE1234567 — code already used for another sale/);
+  assert.doesNotMatch(banner, /FAKE000000|no M-Pesa record/);
   assert.equal(await w.eval('mpesaVerifyNow()'), 0, 'final answers are not re-asked; "not found" waits before it is asked again');
   b.close();
 });

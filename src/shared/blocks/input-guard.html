@@ -1,0 +1,50 @@
+<!-- INPUT GUARD (zip 269) ---------------------------------------------------------------------------------------------------
+     Typing must never be interrupted. Many screens redraw part of themselves on a timer, or when another device's change arrives. If the
+     redraw includes the box a person is typing in, the box is thrown away and a new, empty one takes its place: the cursor is gone and what
+     was typed is lost, so the box seems to take one character at a time. This keeps the box: when a piece of the page that holds the focused
+     text box is redrawn by the page itself, the same box in the new drawing gets back its text, its cursor and the focus.
+     Redraws that the person caused (Enter, Tab, Escape, a tap, a change, a submit) are left alone for 1.5 s, so a form can still clear itself
+     after saving. Nothing else about the page changes; every step is guarded and falls back to the plain redraw. -->
+<script>
+(function () {
+    if (window.__inputGuard) return; window.__inputGuard = true;
+    var intentUntil = 0;
+    var composing = false;       // a keyboard (Gboard, an IME) is in the middle of building a word: never touch the box then
+    document.addEventListener('compositionstart', function () { composing = true; }, true);
+    document.addEventListener('compositionend', function () { composing = false; }, true);
+    function intent() { intentUntil = Date.now() + 1500; }
+    ['click', 'change', 'submit', 'touchend', 'pointerup'].forEach(function (n) { document.addEventListener(n, intent, true); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') intent(); }, true);
+    var d = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    if (!d || !d.set) return;
+    function textBox(el) { return !!el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|number|tel|email|url|password)$/i.test(el.type || 'text'))); }
+    function esc(s) { try { return CSS.escape(s); } catch (e) { return String(s).replace(/[^\w-]/g, '\\$&'); } }
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+        configurable: true, enumerable: d.enumerable, get: d.get,
+        set: function (html) {
+            var keep = null, a = null;
+            try {
+                a = document.activeElement;
+                if (textBox(a) && a !== this && this.contains(a) && Date.now() > intentUntil && !a.readOnly && !a.disabled && !composing) {
+                    var list = Array.prototype.slice.call(this.querySelectorAll('input, textarea'));
+                    keep = { id: a.id || '', name: a.getAttribute('name') || '', idx: list.indexOf(a), n: list.length, type: a.type, ph: a.placeholder || '', value: a.value, s: null, e: null };
+                    try { keep.s = a.selectionStart; keep.e = a.selectionEnd; } catch (x) { /* number / email boxes have no selection */ }
+                }
+            } catch (x) { keep = null; }
+            d.set.call(this, html);
+            if (!keep) return;
+            try {
+                var t = null;
+                if (keep.id) t = this.querySelector('#' + esc(keep.id));
+                if (!t && keep.name) t = this.querySelector('[name="' + String(keep.name).replace(/"/g, '\\"') + '"]');
+                // a box with no id or name is found by its position, only when the redraw has the same number of boxes (rows added or removed above it would put the text in another row's box)
+                if (!t && keep.idx >= 0) { var all = this.querySelectorAll('input, textarea'), c = all.length === keep.n ? all[keep.idx] : null; if (c && c.type === keep.type && (c.placeholder || '') === keep.ph) t = c; }
+                if (!t || !textBox(t)) return;
+                if (t.value !== keep.value) t.value = keep.value;
+                t.focus({ preventScroll: true });
+                if (keep.s != null) { try { t.setSelectionRange(keep.s, keep.e); } catch (x) { /* ok */ } }
+            } catch (x) { /* the plain redraw stands */ }
+        }
+    });
+})();
+</script>

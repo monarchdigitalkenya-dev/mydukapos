@@ -22,7 +22,7 @@ test('item edits, a cash sale and a bill all survive refreshes (also with the se
   a.w.eval("currentPaymentMethod = 'cash'; addToCart('A1'); addToCart('A1'); document.getElementById('cash-tendered-input').value = '100000'");
   await a.w.eval('checkoutCart()');
   a.w.eval("addToCart('A1'); addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-  const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+  const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; { const p = a.w.document.getElementById('sms-checkout-phone-input'); if (p) p.value = '0712345678'; }
   await a.w.eval('checkoutCart()');
   await settled(a);
   const sold = () => a.w.eval('salesLog.length'), billsN = () => a.w.eval('bills.length');

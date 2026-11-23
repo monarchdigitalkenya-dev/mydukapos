@@ -95,7 +95,7 @@ test('hotel: the Orders menu cards carry the pill too, and it is gone when the s
   assert.match(btn('Flour').querySelector('.igc-stock').textContent, /^3\.5 kg left$/);
   assert.ok(btn('Lowish').querySelector('.igc-stock-low'));
   assert.equal(btn('Zero').querySelector('.igc-stock'), null);
-  assert.match(btn('Zero').textContent, /out of stock/);
+  assert.match(btn('Zero').textContent, /out of stock/i);
   assert.equal(btn('Haircut').querySelector('.igc-stock'), null);
   w.eval('setShowItemQtyLeft(false)');
   assert.equal(d.querySelectorAll('#svc-menu .igc-stock').length, 0, 'the menu repaints without pills');

@@ -1,0 +1,584 @@
+<!-- AQUA MATERIALS (zip 333) ---------------------------------------------------------------------------------------------------------
+     Aqua POS raw materials as VARIETIES, with eligible-material recipes, variety-chosen production and audited restocking.
+       * a raw material record IS one variety: stable id, own stock, own cost. Category (Bottle, Cap, Seal, Label, Packaging, Other ...),
+         SKU, base unit (pieces), packaging units with explicit conversion factors (1 bag = 100), reorder level, active flag.
+       * product.productionRecipe rows are now recipe LINES: { lineId, category, qtyPerUnit, perBottle?, wastePct, optional, variable?, eligible: [material ids], materialId }.
+         "eligible" = which varieties MAY be used (the association); "qtyPerUnit" = how much (the recipe). `materialId` is kept as the default variety so the
+         older sale-time code that reads it keeps working. An association alone never deducts anything.
+       * production (Production tab, custom bale orders, the stage wizard) deducts ONLY the varieties the operator picked (a single valid variety is picked
+         automatically; none = configuration error; short stock = shortage shown, never a silent swap). All checks run first; then the deduction, the
+         finished goods and the log are written in one synchronous step with a rollback if anything throws.
+       * every stock change writes an immutable movement in matMovements (opening, receipt, production, adjustment, reversal) with a transaction id;
+         a transaction id already seen is a no-op (double click / retry / offline replay). Stock itself rides the existing Aqua stock-cell ledger on the
+         server, which applies each change once. Costs are snapshotted on the movement and the production record; a later price change never rewrites them.
+       * restocking and opening stock go through AquaMat.receive(): quantity + unit -> base units, weighted-average cost, supplier, payment (credit is NOT paid).
+     Pure functions are on window.AquaMat so tests can drive them without the screens. -->
+<style>
+#aqm-root .aqm-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0 12px}
+#aqm-root .aqm-bar input,#aqm-root .aqm-bar select{min-height:40px}
+#aqm-root .aqm-card{border:1px solid var(--border-color,#e2ded1);border-left:6px solid var(--c,#0b7a5f);border-radius:12px;padding:10px 12px;margin:0 0 10px;background:var(--bg-surface,#fff)}
+#aqm-root .aqm-card.off{opacity:.62}
+#aqm-root .aqm-card h5{margin:0;font-size:15px}
+#aqm-root .aqm-meta{font-size:12px;color:var(--muted,#6b7a7d);margin:2px 0 6px}
+#aqm-root .aqm-row{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+#aqm-root .aqm-pill{display:inline-block;border-radius:999px;padding:1px 9px;font-size:11.5px;font-weight:700;background:#eef3f2;color:#0b5a47}
+#aqm-root .aqm-pill.low{background:#fdecea;color:#b03a2e}#aqm-root .aqm-pill.rev{background:#fff3cd;color:#7a5c00}
+#aqm-root .aqm-act{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+#aqm-root .aqm-act button,#aqm-ov button.aqm-b{min-height:36px;padding:0 12px;border-radius:9px;border:1px solid var(--border-color,#cfc9b8);background:transparent;color:inherit;font:700 12.5px system-ui,sans-serif;cursor:pointer}
+#aqm-ov button.aqm-go{background:var(--accent,#0b7a5f);color:#fff;border-color:transparent}
+#aqm-ov button.aqm-b[disabled]{opacity:.45;cursor:not-allowed}
+#aqm-ov{position:fixed;inset:0;z-index:100000;display:none;align-items:flex-start;justify-content:center;padding:14px;background:rgba(8,24,26,.62);overflow:auto}
+#aqm-ov.on{display:flex}
+#aqm-ov .aqm-box{width:100%;max-width:640px;background:var(--bg-surface,#fff);color:var(--dark,#15282b);border-radius:16px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.35);margin:auto}
+#aqm-ov h3{margin:0 0 4px}#aqm-ov .aqm-sub{margin:0 0 10px;font-size:13px;color:var(--muted,#6b7a7d)}
+#aqm-ov label{display:block;font-size:12.5px;font-weight:700;margin:10px 0 3px}
+#aqm-ov input,#aqm-ov select,#aqm-ov textarea{width:100%;box-sizing:border-box;min-height:42px;padding:6px 10px;border:1.5px solid var(--border-color,#e2ded1);border-radius:10px;background:var(--bg-surface-alt,#f7f5ef);color:inherit;font:inherit}
+#aqm-ov input[type=checkbox]{width:20px;min-height:20px;height:20px}
+#aqm-ov .aqm-two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#aqm-ov .aqm-line{border:1px solid var(--border-color,#e2ded1);border-radius:12px;padding:10px;margin:8px 0}
+#aqm-ov .aqm-err{color:#b03a2e;font-size:13px;margin:6px 0;min-height:18px}
+#aqm-ov .aqm-warn{background:#fff8e1;border:1px solid #ffe69c;color:#7a5c00;border-radius:8px;padding:6px 9px;font-size:12.5px;margin:6px 0}
+#aqm-ov .aqm-ok{color:#1e7e4a;font-weight:700}
+#aqm-ov .aqm-chk{display:flex;align-items:center;gap:8px;font-weight:600;margin:4px 0}
+#aqm-ov .aqm-chk span{font-size:12px;color:var(--muted,#6b7a7d);font-weight:500}
+#aqm-ov .aqm-act{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+#aqm-ov table{width:100%;border-collapse:collapse;font-size:12.5px}#aqm-ov td,#aqm-ov th{border-bottom:1px solid var(--border-color,#e2ded1);padding:4px 5px;text-align:left}
+@media(max-width:520px){#aqm-ov .aqm-two{grid-template-columns:1fr}}
+</style>
+<div id="aqm-ov" role="dialog" aria-modal="true"><div class="aqm-box" id="aqm-box"></div></div>
+<script>
+(function () {
+    'use strict';
+    var AM = {};
+    var CATS = [['bottle', 'Bottles'], ['cap', 'Caps'], ['seal', 'Seals'], ['label', 'Labels'], ['packaging', 'Packaging'], ['other', 'Other']];
+    var COLORS = { bottle: '#2980b9', cap: '#8e44ad', seal: '#16a085', label: '#e67e22', packaging: '#7f8c8d', other: '#34495e' };
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var q3 = function (v) { return Math.round((Number(v) || 0) * 1000 + (v < 0 ? -1e-6 : 1e-6)) / 1000; };       // stock is kept to 3 decimals, as the rest of Aqua does
+    var q4 = function (v) { return Math.round((Number(v) || 0) * 10000 + 1e-6) / 10000; };
+    var KES = function (v) { return 'KES ' + (Number(v) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var nowIso = function () { return new Date().toISOString(); };
+    var who = function () { try { return typeof activeServerName === 'function' ? activeServerName() : 'Admin'; } catch (e) { return 'Admin'; } };
+    var siteNow = function () { try { return recordSiteId(); } catch (e) { return null; } };
+    var mats = function () { return (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials)) ? rawMaterials : []; };
+    var prods = function () { return (typeof products !== 'undefined' && Array.isArray(products)) ? products : []; };
+    var toast = function (m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } };
+    var save = function () { try { queuePush(); } catch (e) { /* offline queue is the app's */ } };
+    var newId = function (p) { return (p || 'x') + '-' + (typeof genSaleId === 'function' ? genSaleId() : Date.now().toString(36) + Math.random().toString(36).slice(2, 7)); };
+    AM.newTx = function () { return newId('tx'); };
+    AM.cats = CATS;
+
+    /* ---------------- helpers on a material ---------------- */
+    function active(m) { return !!m && !m.removed && !m._deleted && m.active !== false; }
+    function siteOf(m) { try { return matSiteId(m); } catch (e) { return m && m.siteId; } }
+    function catLabel(c) { var f = CATS.filter(function (x) { return x[0] === c; })[0]; return f ? f[1] : (c ? c.charAt(0).toUpperCase() + c.slice(1) : 'Other'); }
+    function slug(s) { return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'other'; }
+    function allCats() { var seen = {}, out = CATS.slice(); out.forEach(function (c) { seen[c[0]] = 1; }); mats().forEach(function (m) { if (m && m.category && !seen[m.category]) { seen[m.category] = 1; out.push([m.category, catLabel(m.category)]); } }); return out; }
+    function unitsOf(m) { return Array.isArray(m && m.units) ? m.units.filter(function (u) { return u && u.name && Number(u.factor) > 0; }) : []; }
+    /* quantity in a named unit -> base units. Throws when the unit has no configured factor: a bag is never assumed to hold a standard count. */
+    function toBase(m, qty, unit) {
+        var base = (m && m.baseUnit) || 'pcs';
+        if (!unit || unit === base) return q3(qty);
+        var u = unitsOf(m).filter(function (x) { return x.name === unit; })[0];
+        if (!u) throw new Error('"' + unit + '" has no conversion set for ' + m.name + '. Add it in Edit > Packaging units.');
+        return q3(Number(qty) * Number(u.factor));
+    }
+    function showQty(m, base) {            // 2,350 pcs = 23 bag + 50 pcs
+        var b = (m && m.baseUnit) || 'pcs', n = q3(base), us = unitsOf(m).slice().sort(function (a, c) { return c.factor - a.factor; });
+        if (us.length && n >= us[0].factor) { var whole = Math.floor(n / us[0].factor + 1e-9), rest = q3(n - whole * us[0].factor); return n + ' ' + b + ' (' + whole + ' ' + us[0].name + (rest ? ' + ' + rest + ' ' + b : '') + ')'; }
+        return n + ' ' + b;
+    }
+    AM.toBase = toBase; AM.showQty = showQty;
+    function stockOf(m) { return q3(m && m.stockQty); }
+    function costOf(m) { try { return typeof matPerPiece === 'function' ? matPerPiece(m) : Number(m.unitCost) || 0; } catch (e) { return Number(m && m.unitCost) || 0; } }
+    function movs() { if (typeof matMovements === 'undefined') return []; return matMovements; }
+    function hasTx(tx) { return !!tx && movs().some(function (x) { return x && x.txId === tx; }); }
+    function move(o) {                                       // immutable audit line
+        var m = { id: newId('mm'), txId: o.txId || newId('tx'), type: o.type, materialId: o.mat.id, materialName: o.mat.name, category: o.mat.category || 'other', qty: q3(o.qty), unit: o.mat.baseUnit || 'pcs',
+            unitCost: q4(o.unitCost != null ? o.unitCost : costOf(o.mat)), siteId: siteOf(o.mat) || siteNow(), at: o.at || nowIso(), by: o.by || who(), ref: o.ref || '', note: o.note || '', updatedAt: Date.now() };
+        m.value = Math.round(m.qty * m.unitCost * 100) / 100;
+        ['supplierId', 'purchaseRef', 'payMethod', 'paidAmount', 'outstanding', 'reversalOf', 'balanceAfter'].forEach(function (k) { if (o[k] !== undefined) m[k] = o[k]; });
+        movs().push(m); return m;
+    }
+    function setStock(mat, delta) { mat.stockQty = Math.max(0, q3(stockOf(mat) + delta)); mat.updatedAt = Date.now(); }
+
+    /* ---------------- migration (safe to run any number of times) ---------------- */
+    var GUESS = [[/preform|bottle|btl/i, 'bottle'], [/\bcap\b|\blid\b|crown/i, 'cap'], [/seal|foil/i, 'seal'], [/label|sticker|shrink/i, 'label'], [/carton|box|wrap|film|packag|bag|sack|pallet/i, 'packaging']];
+    AM.migrate = function () {
+        var changed = 0, review = 0;
+        mats().forEach(function (m) {
+            if (!m || m.removed || m._deleted || m.matModel === 1) return;
+            if (!m.category) { var g = GUESS.filter(function (x) { return x[0].test(m.name || ''); }); if (g.length === 1) m.category = g[0][1]; else { m.category = 'other'; m.needsReview = true; review++; } }
+            m.baseUnit = m.baseUnit || 'pcs'; if (m.active === undefined) m.active = true;
+            if (!m.sku) m.sku = 'MAT-' + String(m.id || '').replace(/^mat-/, '').slice(-6).toUpperCase();
+            if (!Array.isArray(m.units)) m.units = (m.buyUnit === 'bag' && Number(m.perBag) >= 1) ? [{ name: 'bag', factor: Number(m.perBag) }] : [];
+            if (m.reorderLevel == null) m.reorderLevel = 0;
+            m.createdAt = m.createdAt || nowIso(); m.matModel = 1; m.updatedAt = Date.now(); changed++;
+            if (stockOf(m) > 0 && !hasTx('open-' + m.id)) move({ txId: 'open-' + m.id, type: 'opening', mat: m, qty: stockOf(m), unitCost: costOf(m), note: 'Opening balance when the new materials model was switched on (balance carried over)', ref: 'migration' });
+        });
+        prods().forEach(function (p) {
+            if (!p || !Array.isArray(p.productionRecipe)) return;
+            p.productionRecipe.forEach(function (r) {
+                if (!r || r.lineId) return;
+                var m = mats().filter(function (x) { return x.id === r.materialId; })[0];
+                r.lineId = newId('ln'); r.category = (m && m.category) || 'other'; r.eligible = r.materialId ? [r.materialId] : []; r.wastePct = r.wastePct || 0; r.optional = !!r.optional; r.unit = 'pcs';
+                r.legacy = true; changed++;
+            });
+        });
+        if (changed) save();
+        return { changed: changed, needReview: review };
+    };
+
+    /* ---------------- recipes ---------------- */
+    function lines(p, site) {
+        site = site || siteNow();
+        return (p && Array.isArray(p.productionRecipe) ? p.productionRecipe : []).filter(function (r) {
+            if (!r) return false;
+            if (r.lineId) return true;                                       // a line is shown whatever its varieties' site: eligibility is filtered per site below
+            var m = mats().filter(function (x) { return x.id === r.materialId; })[0]; return m && siteOf(m) === site;
+        });
+    }
+    function candidates(line, site) {
+        site = site || siteNow();
+        var ids = Array.isArray(line.eligible) ? line.eligible : (line.materialId ? [line.materialId] : []);
+        return ids.map(function (id) { return mats().filter(function (m) { return m.id === id; })[0]; }).filter(function (m) { return m && active(m) && siteOf(m) === site; });
+    }
+    function bottlesPer(p) { try { return typeof productBottlesPerBale === 'function' ? productBottlesPerBale(p) : (p.bottlesPerBale || 24); } catch (e) { return p.bottlesPerBale || 24; } }
+    function needFor(p, line, qty, override) {
+        if (override != null && line.variable) return q3(override);
+        var per = Number(line.qtyPerUnit) || 0; if (line.perBottle) per *= bottlesPer(p);
+        var n = per * Number(qty) * (1 + (Number(line.wastePct) || 0) / 100);
+        return Math.ceil(n * 1000 - 1e-6) / 1000;                              // never round a requirement down
+    }
+    /* Build the plan for a production run. picks = { lineId: materialId | '' (skip optional) }. Nothing is changed. */
+    AM.plan = function (p, qty, picks, overrides, site) {
+        picks = picks || {}; overrides = overrides || {}; site = site || siteNow();
+        var out = { ok: true, errors: [], lines: [], totalCost: 0 }, ls = lines(p, site), used = {};
+        if (!(qty > 0)) { out.ok = false; out.errors.push('Enter a quantity to produce.'); }
+        ls.forEach(function (ln) {
+            var cands = candidates(ln, site), pick = picks[ln.lineId], row = { lineId: ln.lineId, category: ln.category, optional: !!ln.optional, candidates: cands, auto: false, need: needFor(p, ln, qty, overrides[ln.lineId]), material: null, short: 0, cost: 0, error: '' };
+            if (!(Number(ln.qtyPerUnit) > 0) && !ln.variable) { row.error = catLabel(ln.category) + ': quantity per unit is not set. Open the recipe and set it.'; }
+            else if (!cands.length) { if (ln.optional) { row.skipped = true; } else row.error = 'No active ' + catLabel(ln.category).toLowerCase() + ' variety is eligible for ' + p.name + '. Associate one in Raw Materials > Products.'; }
+            else {
+                if (pick === undefined && cands.length === 1) { pick = cands[0].id; row.auto = true; }                    // a single valid variety is chosen for the operator
+                if (pick === '' && ln.optional) row.skipped = true;
+                else if (!pick) row.error = 'Choose the ' + catLabel(ln.category).toLowerCase() + ' variety used.';
+                else {
+                    var m = cands.filter(function (x) { return x.id === pick; })[0];
+                    if (!m) row.error = 'The selected ' + catLabel(ln.category).toLowerCase() + ' is not eligible, is inactive, or belongs to another site.';
+                    else { row.material = m; row.unitCost = costOf(m); used[m.id] = q3((used[m.id] || 0) + row.need); }
+                }
+            }
+            out.lines.push(row);
+        });
+        out.lines.forEach(function (r) {
+            if (!r.material) return;
+            r.have = stockOf(r.material);
+            if (used[r.material.id] > r.have + 1e-9) { r.short = q3(used[r.material.id] - r.have); r.error = 'Not enough ' + r.material.name + ': need ' + used[r.material.id] + ', have ' + r.have + ' (short by ' + r.short + '). Pick another eligible variety or restock.'; }
+            r.cost = Math.round(r.need * r.unitCost * 100) / 100; out.totalCost += r.cost;
+        });
+        out.lines.forEach(function (r) { if (r.error) { out.ok = false; out.errors.push(r.error); } });
+        out.totalCost = Math.round(out.totalCost * 100) / 100;
+        out.noRecipe = ls.length === 0;
+        return out;
+    };
+
+    /* ---------------- production (the one place materials are consumed) ---------------- */
+    AM.produce = function (o) {
+        // o: { txId, code, qty, picks, overrides, orderRef, orderQty, notes, allowNoRecipe, site, workflow, orderDetails, skipCredit }
+        if (!o || !o.txId) return { ok: false, error: 'Missing transaction id.' };
+        if (typeof productionLog !== 'undefined' && productionLog.some(function (r) { return r && r.txId === o.txId; })) return { ok: true, duplicate: true };
+        var p = prods().filter(function (x) { return x.code === o.code; })[0]; if (!p) return { ok: false, error: 'Product not found.' };
+        var site = o.site || siteNow(), plan = AM.plan(p, o.qty, o.picks, o.overrides, site);
+        if (plan.noRecipe && !o.allowNoRecipe) return { ok: false, error: p.name + ' has no recipe, so I cannot tell what it uses. Set its materials (Inventory > Recipe) or tick "uses no tracked raw materials".', plan: plan };
+        if (!plan.ok) return { ok: false, error: plan.errors[0], plan: plan };
+        var orderCheck = AM.orderStatus(o.orderRef, p.code);
+        if (o.orderRef && o.orderQty > 0 && orderCheck.produced + o.qty > o.orderQty + 1e-9 && !o.confirmOver) return { ok: false, needConfirm: true, error: 'Order ' + o.orderRef + ' is for ' + o.orderQty + ' and ' + orderCheck.produced + ' were already produced. This run would make it ' + (orderCheck.produced + o.qty) + '.', plan: plan };
+        var snapMats = {}, snapProd = JSON.stringify(p), linked = null, snapLinked = null, logLen = (typeof productionLog !== 'undefined' ? productionLog.length : 0), mvLen = movs().length;
+        plan.lines.forEach(function (r) { if (r.material) snapMats[r.material.id] = r.material.stockQty; });
+        if (p.linkedBottleCode) { linked = prods().filter(function (b) { return b.code === p.linkedBottleCode; })[0]; if (linked) snapLinked = JSON.stringify(linked); }
+        try {
+            var prodId = newId('pr'), comps = [], at = nowIso();
+            plan.lines.forEach(function (r) {
+                if (!r.material || r.skipped) return;
+                setStock(r.material, -r.need);
+                move({ txId: o.txId + ':' + r.lineId, type: 'production', mat: r.material, qty: -r.need, unitCost: r.unitCost, ref: prodId, note: 'Production of ' + o.qty + ' x ' + p.name, at: at, balanceAfter: stockOf(r.material) });
+                comps.push({ lineId: r.lineId, materialId: r.material.id, name: r.material.name, category: r.material.category || 'other', qtyUsed: r.need, unit: r.material.baseUnit || 'pcs', unitCost: r.unitCost, cost: r.cost });
+            });
+            if (!o.skipCredit) {
+                if (typeof creditProducedProduct !== 'function') throw new Error('Finished-goods crediting is not available.');
+                creditProducedProduct(p, o.qty);
+            }
+            if (typeof productionLog === 'undefined') throw new Error('Production log is not available.');
+            productionLog.push({ id: prodId, txId: o.txId, timestamp: at, siteId: site, producedBy: who(), targetKind: 'product', targetId: p.code, targetName: p.name, qty: o.qty,
+                sourceMode: comps.length ? 'varieties' : 'no-recipe', componentsUsed: comps, materialCost: plan.totalCost, unitMaterialCost: o.qty > 0 ? Math.round(plan.totalCost / o.qty * 10000) / 10000 : 0,
+                orderRef: o.orderRef || null, orderQty: o.orderQty || null, orderDetails: o.orderDetails || null, workflow: o.workflow || 'standard', bottlesPerBale: null, stages: null, notes: o.notes || '', status: 'completed', updatedAt: Date.now() });
+            save();
+            return { ok: true, productionId: prodId, plan: plan, materialCost: plan.totalCost };
+        } catch (e) {                                                              // roll everything back: no half-applied run
+            plan.lines.forEach(function (r) { if (r.material && snapMats[r.material.id] !== undefined) r.material.stockQty = snapMats[r.material.id]; });
+            var idx = prods().indexOf(p); if (idx >= 0) prods()[idx] = Object.assign(p, JSON.parse(snapProd));
+            if (linked && snapLinked) Object.assign(linked, JSON.parse(snapLinked));
+            if (typeof productionLog !== 'undefined') productionLog.length = logLen;
+            movs().length = mvLen;
+            return { ok: false, error: 'Production was cancelled and nothing was changed: ' + (e && e.message || e) };
+        }
+    };
+    /* what has already been produced against a customer order reference */
+    AM.orderStatus = function (ref, code) {
+        var produced = 0;
+        if (ref && typeof productionLog !== 'undefined') productionLog.forEach(function (r) { if (r && r.orderRef === ref && r.targetId === code && !r.reversedBy && r.status !== 'reversed') produced += Number(r.qty) || 0; });
+        return { produced: produced };
+    };
+    AM.reverseProduction = function (prodId, reason) {
+        if (!reason || !String(reason).trim()) return { ok: false, error: 'A reason is required.' };
+        try { if (typeof isAdminServing === 'function' && !isAdminServing()) return { ok: false, error: 'Only the Admin can reverse a production run.' }; } catch (e) { /* allow */ }
+        var r = (typeof productionLog !== 'undefined' ? productionLog : []).filter(function (x) { return x.id === prodId; })[0];
+        if (!r) return { ok: false, error: 'Production run not found.' };
+        if (r.reversedBy) return { ok: true, duplicate: true };
+        var p = prods().filter(function (x) { return x.code === r.targetId; })[0]; if (!p) return { ok: false, error: 'The product no longer exists.' };
+        var have = (typeof effectiveQtyOf === 'function') ? effectiveQtyOf(p) : (Number(p.qty) || 0);
+        if (have + 1e-9 < r.qty) return { ok: false, error: 'Only ' + have + ' of ' + p.name + ' is left, so ' + r.qty + ' cannot be taken back out. Nothing was changed.' };
+        var tx = 'rev-' + prodId;
+        if (hasTx(tx)) return { ok: true, duplicate: true };
+        creditProducedProduct(p, -r.qty);
+        (r.componentsUsed || []).forEach(function (c) { var m = mats().filter(function (x) { return x.id === c.materialId; })[0]; if (!m) return; setStock(m, c.qtyUsed); move({ txId: tx + ':' + (c.lineId || c.materialId), type: 'reversal', mat: m, qty: c.qtyUsed, unitCost: c.unitCost, reversalOf: r.id, ref: r.id, note: 'Reversal of production: ' + reason }); });
+        r.reversedBy = who(); r.reversedAt = nowIso(); r.reverseReason = String(reason).trim(); r.status = 'reversed'; r.updatedAt = Date.now();
+        save(); return { ok: true };
+    };
+
+    /* ---------------- receiving stock (restock / purchase / opening) ---------------- */
+    AM.receive = function (o) {
+        // o: { txId, materialId, qty, unit, totalCost | unitCost (per the unit given), supplierId, date, payMethod, paid, ref, note, kind: 'restock'|'opening' }
+        var m = mats().filter(function (x) { return x.id === o.materialId; })[0];
+        if (!m) return { ok: false, error: 'Material not found.' };
+        if (!o.txId) return { ok: false, error: 'Missing transaction id.' };
+        if (hasTx(o.txId)) return { ok: true, duplicate: true };
+        var qty = Number(o.qty); if (!(qty > 0) || !isFinite(qty)) return { ok: false, error: 'Enter a quantity greater than zero.' };
+        var base; try { base = toBase(m, qty, o.unit); } catch (e) { return { ok: false, error: e.message }; }
+        var total = o.totalCost !== undefined && o.totalCost !== '' && o.totalCost !== null ? Number(o.totalCost) : (o.unitCost !== undefined && o.unitCost !== '' && o.unitCost !== null ? Number(o.unitCost) * qty : NaN);
+        if (!isFinite(total)) total = base * costOf(m);                                        // no price typed: stock arrives at the current cost
+        if (total < 0) return { ok: false, error: 'Cost cannot be negative.' };
+        var pm = String(o.payMethod || 'cash'), paid = pm === 'credit' ? 0 : (o.paid === undefined || o.paid === '' || o.paid === null ? total : Number(o.paid));
+        if (!isFinite(paid) || paid < 0 || paid > total + 0.005) return { ok: false, error: 'Amount paid must be between 0 and the total cost.' };
+        var oldQty = stockOf(m), oldCost = costOf(m), unitCost = base > 0 ? total / base : 0;
+        var newCost = (oldQty + base) > 0 ? q4((oldQty * oldCost + base * unitCost) / (oldQty + base)) : q4(unitCost);
+        setStock(m, base);
+        if (o.kind === 'opening' && oldQty === 0 && !o.keepCost) { newCost = q4(unitCost); }
+        m.unitCost = newCost; if (m.buyUnit === 'bag' && Number(m.perBag) >= 1) m.bagCost = Math.round(newCost * Number(m.perBag) * 100) / 100;
+        if (o.supplierId) m.supplierId = o.supplierId;
+        var purchaseRef = o.ref || ('RMR-' + String(Date.now()).slice(-8));
+        move({ txId: o.txId, type: o.kind === 'opening' ? 'opening' : 'receipt', mat: m, qty: base, unitCost: unitCost, supplierId: o.supplierId || null, purchaseRef: purchaseRef, payMethod: pm, paidAmount: Math.round(paid * 100) / 100, outstanding: Math.round((total - paid) * 100) / 100,
+            at: o.date ? new Date(o.date + 'T12:00:00').toISOString() : nowIso(), note: (o.note || '') + (qty !== base ? ' [' + qty + ' ' + (o.unit || m.baseUnit || 'pcs') + ' = ' + base + ' ' + (m.baseUnit || 'pcs') + ']' : ''), balanceAfter: stockOf(m) });
+        try {
+            if (typeof restockLog !== 'undefined') restockLog.push({ id: newId('rl'), timestamp: nowIso(), classification: 'material', targetId: m.id, targetName: m.name, qtyAdded: base, createdNew: o.kind === 'opening', notes: o.note || '', supplierId: o.supplierId || null,
+                supplierName: o.supplierId && typeof suppliers !== 'undefined' ? ((suppliers.filter(function (s) { return s.id === o.supplierId; })[0] || {}).name || null) : null, txId: o.txId, purchaseRef: purchaseRef, totalCost: Math.round(total * 100) / 100, paidAmount: Math.round(paid * 100) / 100, payMethod: pm, siteId: siteOf(m), by: who() });
+        } catch (e) { /* the movement is the record of truth */ }
+        save(); return { ok: true, base: base, unitCost: unitCost, newAvgCost: newCost, purchaseRef: purchaseRef };
+    };
+    AM.createMaterial = function (o) {
+        // o: { txId, name, category, sku, baseUnit, units, unitCost, supplierId, reorderLevel, notes, openingQty, openingUnit, openingTotalCost, siteId }
+        var name = String(o.name || '').trim(); if (!name) return { ok: false, error: 'Enter the material name.' };
+        var site = o.siteId || siteNow(); if (!site || site === 'both') return { ok: false, error: 'Pick Shop or Production above first: a material belongs to one site.' };
+        var dup = mats().filter(function (m) { return !m.removed && siteOf(m) === site && String(m.name).trim().toLowerCase() === name.toLowerCase() && (m.category || 'other') === (o.category || 'other'); })[0];
+        if (dup) return { ok: false, error: 'There is already a ' + catLabel(o.category) + ' called "' + name + '" here. Open it to restock, or give this variety a different name.' };
+        var sku = String(o.sku || '').trim();
+        if (sku && mats().some(function (m) { return !m.removed && String(m.sku || '').toLowerCase() === sku.toLowerCase(); })) return { ok: false, error: 'SKU "' + sku + '" is already used by another material.' };
+        var uc = Number(o.unitCost); if (o.unitCost !== undefined && o.unitCost !== '' && (!isFinite(uc) || uc < 0)) return { ok: false, error: 'Cost cannot be negative.' };
+        var id = 'mat-' + (typeof genSaleId === 'function' ? genSaleId() : Date.now()), m = { id: id, siteId: site, name: name, category: o.category || 'other', sku: sku || 'MAT-' + id.slice(-6).toUpperCase(), baseUnit: String(o.baseUnit || 'pcs').trim() || 'pcs', units: Array.isArray(o.units) ? o.units : [],
+            unitCost: isFinite(uc) ? uc : 0, stockQty: 0, supplierId: o.supplierId || null, reorderLevel: Number(o.reorderLevel) || 0, notes: o.notes || '', active: true, matModel: 1, createdAt: nowIso(), updatedAt: Date.now(), isProductionComponent: false, componentRole: '' };
+        mats().push(m);
+        if (Number(o.openingQty) > 0) {
+            var r = AM.receive({ txId: o.txId || newId('tx'), materialId: id, qty: o.openingQty, unit: o.openingUnit, totalCost: o.openingTotalCost, kind: 'opening', supplierId: o.supplierId, payMethod: 'cash', note: 'Opening balance', paid: o.openingTotalCost });
+            if (!r.ok) { mats().splice(mats().indexOf(m), 1); return r; }
+        } else save();
+        return { ok: true, material: m };
+    };
+    AM.adjust = function (o) {
+        // o: { txId, materialId, newQty | delta, reason }
+        var m = mats().filter(function (x) { return x.id === o.materialId; })[0]; if (!m) return { ok: false, error: 'Material not found.' };
+        if (!o.reason || !String(o.reason).trim()) return { ok: false, error: 'A reason is required for a stock adjustment.' };
+        try { if (typeof isAdminServing === 'function' && !isAdminServing()) return { ok: false, error: 'Only the Admin can adjust stock.' }; } catch (e) { /* allow */ }
+        if (o.txId && hasTx(o.txId)) return { ok: true, duplicate: true };
+        var delta = o.delta !== undefined ? Number(o.delta) : q3(Number(o.newQty) - stockOf(m)); if (!isFinite(delta) || delta === 0) return { ok: false, error: 'Nothing to adjust.' };
+        if (stockOf(m) + delta < -1e-9) return { ok: false, error: 'That would take stock below zero.' };
+        setStock(m, delta); move({ txId: o.txId || newId('tx'), type: 'adjustment', mat: m, qty: delta, note: String(o.reason).trim(), balanceAfter: stockOf(m) }); save(); return { ok: true };
+    };
+    AM.setActive = function (id, on) { var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return false; m.active = !!on; m.updatedAt = Date.now(); save(); return true; };
+    AM.history = function (id) { return movs().filter(function (x) { return x && x.materialId === id; }).sort(function (a, b) { return String(a.at).localeCompare(String(b.at)); }); };
+
+    /* ---------------- associations: variety <-> products ---------------- */
+    AM.productsFor = function (matId) { return prods().filter(function (p) { return (p.productionRecipe || []).some(function (r) { return r && Array.isArray(r.eligible) && r.eligible.indexOf(matId) >= 0; }); }); };
+    AM.associate = function (matId, code, on) {
+        var m = mats().filter(function (x) { return x.id === matId; })[0], p = prods().filter(function (x) { return x.code === code; })[0]; if (!m || !p) return { ok: false, error: 'Not found.' };
+        if (!Array.isArray(p.productionRecipe)) p.productionRecipe = [];
+        var ln = p.productionRecipe.filter(function (r) { return r && r.category === (m.category || 'other') && r.lineId; })[0];
+        if (on) {
+            if (!ln) { ln = { lineId: newId('ln'), category: m.category || 'other', qtyPerUnit: 0, wastePct: 0, optional: false, unit: 'pcs', eligible: [], materialId: '' }; p.productionRecipe.push(ln); }
+            if (ln.eligible.indexOf(matId) < 0) ln.eligible.push(matId);
+            if (!ln.materialId) ln.materialId = matId;
+        } else if (ln) {
+            ln.eligible = ln.eligible.filter(function (x) { return x !== matId; });
+            if (ln.materialId === matId) ln.materialId = ln.eligible[0] || '';
+        }
+        p.updatedAt = Date.now(); save(); return { ok: true, needsQty: !!ln && !(Number(ln.qtyPerUnit) > 0) };
+    };
+
+    /* ================= screens ================= */
+    function ov(html) { $('aqm-box').innerHTML = html; $('aqm-ov').classList.add('on'); }
+    function closeOv() { $('aqm-ov').classList.remove('on'); $('aqm-box').innerHTML = ''; }
+    AM.close = closeOv;
+    var F = { q: '', cat: 'all', showOff: false };
+    function supplierSel(id, sel) { try { return '<select id="' + id + '">' + supplierOptionsHtml(sel || '') + '</select>'; } catch (e) { return '<select id="' + id + '"><option value="">-</option></select>'; } }
+    function catSel(id, sel) { return '<select id="' + id + '">' + allCats().map(function (c) { return '<option value="' + esc(c[0]) + '"' + (c[0] === sel ? ' selected' : '') + '>' + esc(c[1]) + '</option>'; }).join('') + '<option value="__new">+ New category…</option></select>'; }
+    AM.render = function () {
+        var root = $('aqm-root'); if (!root) return;
+        var site = (typeof activeSiteId !== 'undefined') ? activeSiteId : null;
+        var list = mats().filter(function (m) { return m && !m.removed && !m._deleted && (typeof matchesActiveSite !== 'function' || matchesActiveSite(m.siteId)); });
+        var review = list.filter(function (m) { return m.needsReview; }).length;
+        var shown = list.filter(function (m) { return (F.showOff || m.active !== false) && (F.cat === 'all' || (m.category || 'other') === F.cat) && (!F.q || (m.name + ' ' + (m.sku || '') + ' ' + (m.category || '')).toLowerCase().indexOf(F.q) >= 0); });
+        var h = '<div class="aqm-bar"><input id="aqm-q" placeholder="🔍 Search name, SKU, category" value="' + esc(F.q) + '" oninput="AquaMat.filter(\'q\',this.value)" style="flex:1;min-width:160px">' +
+            '<select id="aqm-f" onchange="AquaMat.filter(\'cat\',this.value)"><option value="all">All categories</option>' + allCats().map(function (c) { return '<option value="' + esc(c[0]) + '"' + (F.cat === c[0] ? ' selected' : '') + '>' + esc(c[1]) + '</option>'; }).join('') + '</select>' +
+            '<label style="font-size:12.5px;display:flex;gap:6px;align-items:center"><input type="checkbox" ' + (F.showOff ? 'checked' : '') + ' onchange="AquaMat.filter(\'off\',this.checked)" style="width:18px;height:18px"> show inactive</label>' +
+            '<button type="button" class="btn-main" onclick="AquaMat.openEdit()">➕ Add material variety</button></div>';
+        if (review) h += '<div class="settings-hint" style="background:#fff8e1;border:1px solid #ffe69c;border-radius:8px;padding:6px 9px;margin-bottom:8px">⚠️ ' + review + ' older material(s) were put in "Other" because their category could not be told from the name. Open each and choose the right category.</div>';
+        h += shown.length ? shown.map(function (m) {
+            var low = Number(m.reorderLevel) > 0 && stockOf(m) <= Number(m.reorderLevel), c = COLORS[m.category] || '#34495e', id = esc(m.id).replace(/'/g, '');
+            var np = AM.productsFor(m.id).length, out = stockOf(m) <= 0;
+            return '<div class="aqm-card' + (m.active === false ? ' off' : '') + '" style="--c:' + c + '"><h5>' + esc(m.name) + ' <span class="aqm-pill">' + esc(catLabel(m.category)) + '</span>' + (low ? ' <span class="aqm-pill low">' + (out ? 'out of stock' : 'low stock') + '</span>' : '') + (m.active === false ? ' <span class="aqm-pill rev">inactive</span>' : '') + (m.needsReview ? ' <span class="aqm-pill rev">check category</span>' : '') + '</h5>' +
+                '<div class="aqm-meta">' + esc(m.sku || '') + ' · base unit ' + esc(m.baseUnit || 'pcs') + (unitsOf(m).length ? ' · ' + unitsOf(m).map(function (u) { return '1 ' + esc(u.name) + ' = ' + u.factor; }).join(', ') : '') + '</div>' +
+                '<div class="aqm-row"><span>📦 <b>' + esc(showQty(m, stockOf(m))) + '</b></span><span>💰 ' + KES(costOf(m)) + ' / ' + esc(m.baseUnit || 'pcs') + '</span><span>🔔 reorder at ' + (Number(m.reorderLevel) || 0) + '</span><span>🔗 ' + np + ' product' + (np === 1 ? '' : 's') + '</span></div>' +
+                /* zip 364: one Edit button for everything about the material (name, cost, items, count, reorder, supplier, history, active); Restock = a new delivery */
+                '<div class="aqm-act"><button onclick="AquaMat.openEdit(\'' + id + '\')" style="font-weight:800">✏️ Edit</button><button onclick="AquaMat.openRestock(\'' + id + '\')">📦 Restock</button></div></div>';
+        }).join('') : '<p class="empty-state">No materials match' + (site === 'both' ? '. Pick Shop or Production above.' : '. Press "Add material variety".') + '</p>';
+        root.innerHTML = h;
+    };
+    AM.filter = function (k, v) { if (k === 'q') F.q = String(v || '').toLowerCase().trim(); else if (k === 'cat') F.cat = v; else F.showOff = !!v; var s = $('aqm-q'), pos = s ? s.selectionStart : 0; AM.render(); if (k === 'q') { var n = $('aqm-q'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { /* ok */ } } } };
+    AM.toggle = function (id) { var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return; var off = m.active !== false; if (off && !confirm('Deactivate "' + m.name + '"? It will no longer be offered for production. Stock and history stay.')) return; AM.setActive(id, !off); AM.render(); };
+
+    /* ---- add / edit ---- */
+    AM.openEdit = function (id) {
+        var m = id ? mats().filter(function (x) { return x.id === id; })[0] : null, isNew = !m; m = m || { category: 'bottle', baseUnit: 'pcs', units: [], reorderLevel: 0, unitCost: 0 };
+        var us = unitsOf(m);
+        ov('<h3>' + (isNew ? '➕ New material variety' : '✏️ Edit ' + esc(m.name)) + '</h3><p class="aqm-sub">Each variety has its own stock, cost and history. Two varieties in the same category never share a record.</p>' +
+            '<div class="aqm-two"><div><label>Name / variety</label><input id="aqe-name" value="' + esc(m.name || '') + '" placeholder="e.g. Hex Bottle 500ml"></div><div><label>Category</label>' + catSel('aqe-cat', m.category) + '</div></div>' +
+            '<div id="aqe-newcat" style="display:none"><label>New category name</label><input id="aqe-newcatname" placeholder="e.g. Shrink wrap"></div>' +
+            '<div class="aqm-two"><div><label>SKU / material code</label><input id="aqe-sku" value="' + esc(m.sku || '') + '" placeholder="auto if blank"></div><div><label>Base stock unit</label><input id="aqe-base" value="' + esc(m.baseUnit || 'pcs') + '" ' + (isNew ? '' : 'readonly title="Cannot change once there is stock history"') + '></div></div>' +
+            '<label>Packaging units (each with its own conversion)</label><div id="aqe-units">' + us.map(function (u, i) { return unitRow(u.name, u.factor); }).join('') + '</div><button type="button" class="aqm-b" onclick="AquaMat.addUnitRow()">+ Add unit (bag, bale, case…)</button>' +
+            '<div class="aqm-two"><div><label>Cost per base unit (KES)</label><input id="aqe-cost" type="number" min="0" step="any" value="' + (Number(m.unitCost) || '') + '"' + (isNew ? '' : ' title="Changes only future stock; past costs are kept"') + '></div><div><label>Reorder level (base units)</label><input id="aqe-reorder" type="number" min="0" step="any" value="' + (Number(m.reorderLevel) || 0) + '"></div></div>' +
+            '<label>Supplier</label>' + supplierSel('aqe-sup', m.supplierId) + '<label>Notes</label><input id="aqe-notes" value="' + esc(m.notes || '') + '">' +
+            (isNew ? '<div class="aqm-warn" style="margin-top:12px"><b>Opening stock</b> is recorded as an opening receipt in the history.</div><div class="aqm-two"><div><label>Opening quantity</label><input id="aqe-oq" type="number" min="0" step="any" placeholder="0"></div><div><label>Unit</label><select id="aqe-ou"><option value="">base unit</option></select></div></div><label>Total paid for the opening stock (KES, optional)</label><input id="aqe-ot" type="number" min="0" step="any" placeholder="blank = at the cost above">' : '') +
+            '<div class="aqm-err" id="aqe-err"></div><div class="aqm-act"><button class="aqm-b aqm-go" onclick="AquaMat.saveEdit(' + (isNew ? "''" : "'" + esc(m.id) + "'") + ')">💾 Save</button><button class="aqm-b" onclick="AquaMat.close()">Cancel</button></div>');
+        var cs = $('aqe-cat'); if (cs) cs.onchange = function () { $('aqe-newcat').style.display = cs.value === '__new' ? '' : 'none'; };
+    };
+    function unitRow(n, f) { return '<div class="aqm-two aqe-u" style="margin-top:4px"><input class="aqe-un" placeholder="unit name e.g. bag" value="' + esc(n || '') + '"><input class="aqe-uf" type="number" min="1" step="any" placeholder="how many base units in one" value="' + (f || '') + '"></div>'; }
+    AM.addUnitRow = function () { var d = document.createElement('div'); d.innerHTML = unitRow('', ''); $('aqe-units').appendChild(d.firstChild); };
+    AM.saveEdit = function (id) {
+        var err = function (t) { $('aqe-err').textContent = t; }, val = function (i) { return ($(i) || {}).value || ''; };
+        var cat = val('aqe-cat'); if (cat === '__new') { cat = slug(val('aqe-newcatname')); if (!val('aqe-newcatname').trim()) return err('Enter the new category name.'); }
+        var units = [], seen = {}; var bad = '';
+        Array.prototype.forEach.call(document.querySelectorAll('.aqe-u'), function (row) { var n = row.querySelector('.aqe-un').value.trim(), f = Number(row.querySelector('.aqe-uf').value); if (!n && !row.querySelector('.aqe-uf').value) return; if (!n || !(f > 0)) { bad = 'Each packaging unit needs a name and how many base units it holds.'; return; } if (seen[n.toLowerCase()]) { bad = 'Unit "' + n + '" is listed twice.'; return; } seen[n.toLowerCase()] = 1; units.push({ name: n, factor: f }); });
+        if (bad) return err(bad);
+        if (!id) {
+            var r = AM.createMaterial({ txId: newId('tx'), name: val('aqe-name'), category: cat, sku: val('aqe-sku'), baseUnit: val('aqe-base'), units: units, unitCost: val('aqe-cost'), supplierId: val('aqe-sup') || null, reorderLevel: val('aqe-reorder'), notes: val('aqe-notes'), openingQty: val('aqe-oq'), openingUnit: val('aqe-ou'), openingTotalCost: val('aqe-ot') });
+            if (!r.ok) return err(r.error);
+            toast('"' + r.material.name + '" added.');
+        } else {
+            var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return err('Not found.');
+            var name = val('aqe-name').trim(); if (!name) return err('Enter the material name.');
+            var sku = val('aqe-sku').trim(); if (sku && mats().some(function (x) { return x.id !== id && !x.removed && String(x.sku || '').toLowerCase() === sku.toLowerCase(); })) return err('SKU "' + sku + '" is already used by another material.');
+            var dup = mats().filter(function (x) { return x.id !== id && !x.removed && siteOf(x) === siteOf(m) && String(x.name).trim().toLowerCase() === name.toLowerCase() && (x.category || 'other') === cat; })[0]; if (dup) return err('Another ' + catLabel(cat) + ' already has that name.');
+            var oldCat = m.category; m.name = name; m.category = cat; m.sku = sku || m.sku; m.units = units; m.supplierId = val('aqe-sup') || null; m.reorderLevel = Number(val('aqe-reorder')) || 0; m.notes = val('aqe-notes'); m.needsReview = false;
+            var c = val('aqe-cost'); if (c !== '' && Number(c) >= 0) { m.unitCost = Number(c); if (m.buyUnit === 'bag' && Number(m.perBag) >= 1) m.bagCost = Math.round(m.unitCost * m.perBag * 100) / 100; }
+            m.updatedAt = Date.now();
+            if (oldCat !== cat) { prods().forEach(function (p) { (p.productionRecipe || []).forEach(function (r) { if (r && Array.isArray(r.eligible) && r.eligible.indexOf(m.id) >= 0 && r.category !== cat) r.eligible = r.eligible.filter(function (x) { return x !== m.id; }); }); }); }
+            save(); toast('Saved.');
+        }
+        closeOv(); AM.render(); try { renderProductsTable(); } catch (e) { /* not on screen */ }
+    };
+
+    /* ---- restock ---- */
+    AM.openRestock = function (id) {
+        var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return;
+        var opts = '<option value="">' + esc(m.baseUnit || 'pcs') + ' (base unit)</option>' + unitsOf(m).map(function (u) { return '<option value="' + esc(u.name) + '">' + esc(u.name) + ' (= ' + u.factor + ' ' + esc(m.baseUnit || 'pcs') + ')</option>'; }).join('');
+        ov('<h3>📦 Restock ' + esc(m.name) + '</h3><p class="aqm-sub">Now ' + esc(showQty(m, stockOf(m))) + ' at ' + KES(costOf(m)) + ' per ' + esc(m.baseUnit || 'pcs') + '. This adds stock through a receipt; it never overwrites the balance.</p>' +
+            '<div class="aqm-two"><div><label>Quantity received</label><input id="aqr-q" type="number" min="0" step="any" oninput="AquaMat.restockPreview(\'' + esc(m.id) + '\')"></div><div><label>Unit</label><select id="aqr-u" onchange="AquaMat.restockPreview(\'' + esc(m.id) + '\')">' + opts + '</select></div></div>' +
+            '<div class="aqm-two"><div><label>Total cost of this purchase (KES)</label><input id="aqr-t" type="number" min="0" step="any" oninput="AquaMat.restockPreview(\'' + esc(m.id) + '\')" placeholder="blank = at current cost"></div><div><label>Purchase date</label><input id="aqr-d" type="date" value="' + new Date().toISOString().slice(0, 10) + '"></div></div>' +
+            '<div class="aqm-two"><div><label>Payment method</label><select id="aqr-m" onchange="AquaMat.restockPreview(\'' + esc(m.id) + '\')"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="card">Card</option><option value="bank">Bank</option><option value="credit">On credit (not paid yet)</option></select></div><div><label>Amount paid now (KES)</label><input id="aqr-p" type="number" min="0" step="any" placeholder="blank = all"></div></div>' +
+            '<div class="aqm-two"><div><label>Supplier</label>' + supplierSel('aqr-s', m.supplierId) + '</div><div><label>Reference / invoice no.</label><input id="aqr-r" placeholder="optional"></div></div><label>Notes</label><input id="aqr-n">' +
+            '<div class="aqm-warn" id="aqr-prev">Enter the quantity to see the conversion and the new average cost.</div><div class="aqm-err" id="aqr-err"></div>' +
+            '<div class="aqm-act"><button class="aqm-b aqm-go" id="aqr-go" onclick="AquaMat.doRestock(\'' + esc(m.id) + '\')">✅ Receive stock</button><button class="aqm-b" onclick="AquaMat.close()">Cancel</button></div>');
+        AM._rtx = newId('tx');                                                      // one transaction id per opened form: pressing Receive twice cannot add twice
+    };
+    AM.restockPreview = function (id) {
+        var m = mats().filter(function (x) { return x.id === id; })[0], q = Number($('aqr-q').value), p = $('aqr-prev'); if (!m || !p) return;
+        if (!(q > 0)) { p.textContent = 'Enter the quantity to see the conversion and the new average cost.'; return; }
+        var base; try { base = toBase(m, q, $('aqr-u').value); } catch (e) { p.textContent = e.message; return; }
+        var t = $('aqr-t').value === '' ? base * costOf(m) : Number($('aqr-t').value), uc = base > 0 ? t / base : 0, newAvg = (stockOf(m) + base) > 0 ? (stockOf(m) * costOf(m) + base * uc) / (stockOf(m) + base) : uc;
+        p.innerHTML = q + ' ' + esc($('aqr-u').value || m.baseUnit || 'pcs') + ' = <b>' + base + ' ' + esc(m.baseUnit || 'pcs') + '</b> · this purchase ' + KES(uc) + ' per ' + esc(m.baseUnit || 'pcs') + ' · stock becomes <b>' + esc(showQty(m, stockOf(m) + base)) + '</b> · new average cost ' + KES(newAvg) + ($('aqr-m').value === 'credit' ? ' · <b>on credit: ' + KES(t) + ' owed</b>' : '');
+    };
+    AM.doRestock = function (id) {
+        var v = function (i) { return $(i).value; }, go = $('aqr-go'); if (go) go.disabled = true;
+        var r = AM.receive({ txId: AM._rtx, materialId: id, qty: v('aqr-q'), unit: v('aqr-u'), totalCost: v('aqr-t') === '' ? undefined : v('aqr-t'), date: v('aqr-d'), payMethod: v('aqr-m'), paid: v('aqr-p') === '' ? undefined : v('aqr-p'), supplierId: v('aqr-s') || null, ref: v('aqr-r'), note: v('aqr-n') });
+        if (!r.ok) { $('aqr-err').textContent = r.error; if (go) go.disabled = false; return; }
+        toast(r.duplicate ? 'That receipt was already recorded.' : 'Stock received.'); closeOv(); AM.render(); try { renderRestockHistoryTable(); } catch (e) { /* tab not open */ }
+    };
+
+    /* ---- adjust / history / associations ---- */
+    AM.openAdjust = function (id) {
+        var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return;
+        ov('<h3>⚖️ Adjust ' + esc(m.name) + '</h3><p class="aqm-sub">Use only for a count correction, damage or loss. A reason is kept in the history. Counted now: ' + esc(showQty(m, stockOf(m))) + '</p>' +
+            '<label>Counted quantity (' + esc(m.baseUnit || 'pcs') + ')</label><input id="aqa-q" type="number" min="0" step="any"><label>Reason</label><input id="aqa-r" placeholder="e.g. stock count, damaged in store"><div class="aqm-err" id="aqa-err"></div>' +
+            '<div class="aqm-act"><button class="aqm-b aqm-go" onclick="AquaMat.doAdjust(\'' + esc(m.id) + '\')">Save adjustment</button><button class="aqm-b" onclick="AquaMat.close()">Cancel</button></div>');
+        AM._atx = newId('tx');
+    };
+    AM.doAdjust = function (id) { var r = AM.adjust({ txId: AM._atx, materialId: id, newQty: $('aqa-q').value === '' ? NaN : Number($('aqa-q').value), reason: $('aqa-r').value }); if (!r.ok) { $('aqa-err').textContent = r.error; return; } closeOv(); AM.render(); toast('Adjusted.'); };
+    AM.openHistory = function (id) {
+        var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return; var h = AM.history(id), run = 0;
+        var rows = h.map(function (x) { run = q3(run + x.qty); return '<tr><td>' + esc(String(x.at).slice(0, 16).replace('T', ' ')) + '</td><td>' + esc(x.type) + '</td><td style="text-align:right">' + (x.qty > 0 ? '+' : '') + x.qty + '</td><td style="text-align:right">' + KES(x.unitCost) + '</td><td>' + esc(x.by || '') + '</td><td>' + esc((x.note || '') + (x.payMethod === 'credit' ? ' · on credit' : '') + (x.outstanding > 0 ? ' · owed ' + x.outstanding : '')) + '</td></tr>'; }).join('');
+        ov('<h3>📜 ' + esc(m.name) + ' history</h3><p class="aqm-sub">Immutable movements. Balance now: ' + esc(showQty(m, stockOf(m))) + '</p><div style="overflow:auto"><table><thead><tr><th>When</th><th>Type</th><th>Qty</th><th>Cost</th><th>By</th><th>Note</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6">No movements yet.</td></tr>') + '</tbody></table></div><div class="aqm-act"><button class="aqm-b" onclick="AquaMat.close()">Close</button></div>');
+    };
+    AM.openAssoc = function (id, q) {
+        var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return; q = String(q || '').toLowerCase();
+        var ps = prods().filter(function (p) { return p && !p._deleted && p.type !== 'service' && (!q || String(p.name).toLowerCase().indexOf(q) >= 0); });
+        ov('<h3>🔗 Products that can use ' + esc(m.name) + '</h3><p class="aqm-sub">Ticking a product only makes this variety <b>eligible</b> for it. Nothing is deducted until you produce. Set how much each product needs in its recipe.</p>' +
+            '<input id="aqs-q" placeholder="🔍 Search products" value="' + esc(q) + '" oninput="AquaMat.openAssoc(\'' + esc(id) + '\', this.value)">' +
+            ps.map(function (p) { var on = (p.productionRecipe || []).some(function (r) { return r && Array.isArray(r.eligible) && r.eligible.indexOf(id) >= 0; }); return '<label class="aqm-chk"><input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="AquaMat.tickAssoc(\'' + esc(id) + '\',\'' + esc(p.code).replace(/'/g, "\\'") + '\',this.checked)"> ' + esc(p.name) + ' <span>' + esc(p.category || '') + '</span></label>'; }).join('') +
+            '<div class="aqm-act"><button class="aqm-b aqm-go" onclick="AquaMat.close();AquaMat.render()">Done</button></div>');
+        var inp = $('aqs-q'); if (inp && q) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+    };
+    AM.tickAssoc = function (id, code, on) { var r = AM.associate(id, code, on); if (r.ok && on && r.needsQty) toast('Added. Now set how much it needs in the product\'s recipe (Inventory > Recipe).'); };
+
+    /* ---- recipe editor (product -> lines) ---- */
+    var RD = null;
+    AM.openRecipe = function (code) {
+        var p = prods().filter(function (x) { return x.code === code; })[0]; if (!p) return;
+        if (!Array.isArray(p.productionRecipe)) p.productionRecipe = [];
+        AM.migrate();
+        RD = { code: code, lines: JSON.parse(JSON.stringify(p.productionRecipe.filter(function (r) { return r && r.lineId; }))), cost: p.productionCost };
+        recipeDraw();
+    };
+    function recipeDraw() {
+        var p = prods().filter(function (x) { return x.code === RD.code; })[0], site = siteNow(), bale = p.category === 'bale';
+        var h = '<h3>🏭 Recipe: ' + esc(p.name) + '</h3><p class="aqm-sub">For each material the product needs: the category, how much, and which varieties are <b>allowed</b>. At production the operator picks the variety actually used.</p>';
+        h += RD.lines.map(function (l, i) {
+            var pool = mats().filter(function (m) { return active(m) && siteOf(m) === site && (m.category || 'other') === l.category; });
+            return '<div class="aqm-line"><div class="aqm-two"><div><label>Material category</label>' + '<select onchange="AquaMat.rLine(' + i + ',\'category\',this.value)">' + allCats().map(function (c) { return '<option value="' + esc(c[0]) + '"' + (c[0] === l.category ? ' selected' : '') + '>' + esc(c[1]) + '</option>'; }).join('') + '</select></div>' +
+                '<div><label>Quantity per ' + (bale && l.perBottle ? 'bottle' : 'finished unit') + '</label><input type="number" min="0" step="any" value="' + (l.qtyPerUnit || '') + '" onchange="AquaMat.rLine(' + i + ',\'qtyPerUnit\',this.value)"></div></div>' +
+                '<div class="aqm-two"><div><label>Waste / loss %</label><input type="number" min="0" step="any" value="' + (l.wastePct || 0) + '" onchange="AquaMat.rLine(' + i + ',\'wastePct\',this.value)"></div><div style="padding-top:22px">' +
+                (bale ? '<label class="aqm-chk" style="margin:0"><input type="checkbox" ' + (l.perBottle ? 'checked' : '') + ' onchange="AquaMat.rLine(' + i + ',\'perBottle\',this.checked)"> multiply by bottles in a bale (' + bottlesPer(p) + ')</label>' : '') +
+                '<label class="aqm-chk" style="margin:0"><input type="checkbox" ' + (l.optional ? 'checked' : '') + ' onchange="AquaMat.rLine(' + i + ',\'optional\',this.checked)"> optional</label><label class="aqm-chk" style="margin:0"><input type="checkbox" ' + (l.variable ? 'checked' : '') + ' onchange="AquaMat.rLine(' + i + ',\'variable\',this.checked)"> operator may change the quantity</label></div></div>' +
+                '<label>Varieties allowed for this product</label>' + (pool.length ? pool.map(function (m) { return '<label class="aqm-chk"><input type="checkbox" ' + ((l.eligible || []).indexOf(m.id) >= 0 ? 'checked' : '') + ' onchange="AquaMat.rTick(' + i + ',\'' + esc(m.id) + '\',this.checked)"> ' + esc(m.name) + ' <span>' + esc(showQty(m, stockOf(m))) + ' in stock</span></label>'; }).join('') : '<div class="aqm-warn">No active ' + esc(catLabel(l.category).toLowerCase()) + ' variety exists at this site. Add one in Raw Materials.</div>') +
+                '<div class="aqm-act"><button class="aqm-b" onclick="AquaMat.rDel(' + i + ')">🗑 Remove this material</button></div></div>';
+        }).join('') || '<div class="aqm-warn">No materials yet. Without a recipe this product cannot be produced (unless you tick "uses no tracked raw materials" at production).</div>';
+        h += '<div class="aqm-act"><button class="aqm-b" onclick="AquaMat.rAdd()">+ Add a material to the recipe</button></div><label>Other cost per unit (labour, power) KES, optional</label><input type="number" min="0" step="any" value="' + (RD.cost || '') + '" onchange="AquaMat.rCost(this.value)"><div class="aqm-err" id="aqrc-err"></div>' +
+            '<div class="aqm-act"><button class="aqm-b aqm-go" onclick="AquaMat.rSave()">💾 Save recipe</button><button class="aqm-b" onclick="AquaMat.close()">Cancel</button></div>';
+        ov(h);
+    }
+    AM.rLine = function (i, k, v) { var l = RD.lines[i]; if (k === 'category') { l.category = v; l.eligible = []; l.materialId = ''; } else if (k === 'qtyPerUnit' || k === 'wastePct') l[k] = Math.max(0, Number(v) || 0); else l[k] = !!v; recipeDraw(); };
+    AM.rTick = function (i, id, on) { var l = RD.lines[i]; l.eligible = l.eligible || []; var at = l.eligible.indexOf(id); if (on && at < 0) l.eligible.push(id); if (!on && at >= 0) l.eligible.splice(at, 1); l.materialId = l.eligible[0] || ''; };
+    AM.rDel = function (i) { RD.lines.splice(i, 1); recipeDraw(); };
+    AM.rAdd = function () { RD.lines.push({ lineId: newId('ln'), category: 'bottle', qtyPerUnit: 1, wastePct: 0, optional: false, unit: 'pcs', eligible: [], materialId: '' }); recipeDraw(); };
+    AM.rCost = function (v) { RD.cost = Number(v) >= 0 ? Number(v) : null; };
+    AM.rSave = function () {
+        var p = prods().filter(function (x) { return x.code === RD.code; })[0], seen = {};
+        for (var i = 0; i < RD.lines.length; i++) { var l = RD.lines[i]; if (!l.variable && !(Number(l.qtyPerUnit) > 0)) { $('aqrc-err').textContent = catLabel(l.category) + ': enter how much one unit needs (or allow the operator to set it).'; return; } if (!l.optional && !(l.eligible || []).length) { $('aqrc-err').textContent = catLabel(l.category) + ': tick at least one allowed variety (or mark the line optional).'; return; } if (seen[l.category]) { $('aqrc-err').textContent = 'Two lines use ' + catLabel(l.category) + '. Use one line per category.'; return; } seen[l.category] = 1; }
+        var keepLegacy = (p.productionRecipe || []).filter(function (r) { return r && !r.lineId; });
+        p.productionRecipe = keepLegacy.concat(RD.lines.map(function (l) { return Object.assign({}, l, { materialId: (l.eligible || [])[0] || '', unit: 'pcs' }); }));
+        p.productionCost = RD.cost > 0 ? RD.cost : null; p.updatedAt = Date.now(); save(); closeOv();
+        try { renderProductsTable(); } catch (e) { /* ok */ } try { renderProductionForm(); } catch (e) { /* ok */ } toast('Recipe saved.');
+    };
+
+    /* ---- production form ---- */
+    var PD = null;
+    AM.openProduce = function (code, qty, notes, opts) {
+        var p = prods().filter(function (x) { return x.code === code; })[0]; if (!p) return;
+        AM.migrate();
+        PD = { code: code, qty: Number(qty) || 1, notes: notes || '', picks: {}, over: {}, tx: newId('tx'), ref: '', oqty: '', noRecipe: false, confirmOver: false, opts: opts || {} };
+        produceDraw();
+    };
+    function pickerHtml(p, plan, ctx) {
+        return plan.lines.map(function (r) {
+            var ln = lines(p).filter(function (x) { return x.lineId === r.lineId; })[0], sel = '';
+            if (r.candidates.length === 0) sel = '<div class="aqm-warn" style="margin:0">' + esc(r.error || 'No eligible variety.') + '</div>';
+            else if (r.candidates.length === 1 && ctx.picks[r.lineId] === undefined) sel = '<div><b>' + esc(r.candidates[0].name) + '</b> <span class="aqm-pill">chosen automatically (only one eligible)</span></div>';
+            else sel = '<select onchange="AquaMat.' + ctx.fn + '(\'' + r.lineId + '\',this.value)">' + (ctx.picks[r.lineId] === undefined ? '<option value="__none">— choose the ' + esc(catLabel(r.category).toLowerCase()) + ' used —</option>' : '') + (ln && ln.optional ? '<option value=""' + (ctx.picks[r.lineId] === '' ? ' selected' : '') + '>None (skip this optional material)</option>' : '') +
+                r.candidates.map(function (m) { var u = m.id, sh = ''; return '<option value="' + esc(u) + '"' + (ctx.picks[r.lineId] === u ? ' selected' : '') + '>' + esc(m.name) + ' — ' + esc(showQty(m, stockOf(m))) + ' · ' + KES(costOf(m)) + '</option>'; }).join('') + '</select>';
+            var qtyIn = ln && ln.variable ? ' <input type="number" min="0" step="any" style="width:110px" value="' + (ctx.over[r.lineId] != null ? ctx.over[r.lineId] : r.need) + '" onchange="AquaMat.' + ctx.fnq + '(\'' + r.lineId + '\',this.value)">' : '';
+            return '<div class="aqm-line"><b>' + esc(catLabel(r.category)) + (r.optional ? ' (optional)' : '') + '</b> · needs <b>' + r.need + '</b> ' + qtyIn + '<div style="margin-top:6px">' + sel + '</div>' +
+                (r.material ? '<div style="font-size:12px;margin-top:4px" class="' + (r.short ? '' : 'aqm-ok') + '">' + (r.short ? '<span style="color:#b03a2e">⚠ short by ' + r.short + ' (have ' + r.have + ')</span>' : '✔ ' + esc(showQty(r.material, r.have)) + ' available · cost ' + KES(r.cost)) + '</div>' : '') + '</div>';
+        }).join('');
+    }
+    function produceDraw() {
+        var p = prods().filter(function (x) { return x.code === PD.code; })[0], plan = AM.plan(p, PD.qty, cleanPicks(PD.picks), PD.over);
+        var h = '<h3>🏭 Produce ' + esc(p.name) + '</h3><p class="aqm-sub">Choose the actual materials used. Only the varieties you pick are deducted. Site: ' + esc((function () { try { return currentSite().name; } catch (e) { return ''; } })()) + '</p>' +
+            '<div class="aqm-two"><div><label>Quantity to produce</label><input type="number" min="0" step="any" value="' + PD.qty + '" onchange="AquaMat.pQty(this.value)"></div><div><label>Customer order / reference (optional)</label><input value="' + esc(PD.ref) + '" onchange="AquaMat.pRef(this.value)" placeholder="for a make-to-order run"></div></div>' +
+            (PD.ref ? '<div class="aqm-two"><div><label>Quantity ordered (optional)</label><input type="number" min="0" step="any" value="' + esc(PD.oqty) + '" onchange="AquaMat.pOq(this.value)"></div><div style="padding-top:26px;font-size:12.5px">Already produced for it: <b>' + AM.orderStatus(PD.ref, p.code).produced + '</b></div></div>' : '') +
+            pickerHtml(p, plan, { picks: PD.picks, over: PD.over, fn: 'pPick', fnq: 'pOver' });
+        if (plan.noRecipe) h += '<div class="aqm-warn">This product has no recipe, so I cannot tell which materials it uses. Set one in Inventory > Recipe, or tick below if it truly uses no tracked raw materials.</div><label class="aqm-chk"><input type="checkbox" ' + (PD.noRecipe ? 'checked' : '') + ' onchange="AquaMat.pNoRecipe(this.checked)"> This product uses no tracked raw materials</label>';
+        h += '<div class="aqm-warn" style="background:#eef6f2;border-color:#bfe0d2;color:#0b5a47">Material cost for this run: <b>' + KES(plan.totalCost) + '</b>' + (PD.qty > 0 ? ' (' + KES(plan.totalCost / PD.qty) + ' per unit)' : '') + '. Finished goods are added to ' + esc((function () { try { return currentSite().name; } catch (e) { return 'this site'; } })()) + '.</div>';
+        var blocked = !plan.ok || (plan.noRecipe && !PD.noRecipe);
+        h += '<div class="aqm-err" id="aqp-err">' + esc(blocked ? (plan.noRecipe && !PD.noRecipe ? '' : plan.errors[0] || '') : '') + '</div><div class="aqm-act"><button class="aqm-b aqm-go" id="aqp-go" ' + (blocked ? 'disabled' : '') + ' onclick="AquaMat.pGo()">✅ Confirm production</button><button class="aqm-b" onclick="AquaMat.close()">Cancel</button></div>';
+        ov(h);
+    }
+    function cleanPicks(pk) { var o = {}; Object.keys(pk).forEach(function (k) { if (pk[k] !== '__none') o[k] = pk[k]; }); return o; }
+    AM.pQty = function (v) { PD.qty = Math.max(0, Number(v) || 0); produceDraw(); };
+    AM.pRef = function (v) { PD.ref = String(v || '').trim(); produceDraw(); };
+    AM.pOq = function (v) { PD.oqty = v; };
+    AM.pPick = function (lineId, v) { if (v === '__none') delete PD.picks[lineId]; else PD.picks[lineId] = v; produceDraw(); };
+    AM.pOver = function (lineId, v) { PD.over[lineId] = Math.max(0, Number(v) || 0); produceDraw(); };
+    AM.pNoRecipe = function (on) { PD.noRecipe = !!on; produceDraw(); };
+    AM.pGo = function () {
+        var go = $('aqp-go'); if (go) go.disabled = true;
+        var r = AM.produce({ txId: PD.tx, code: PD.code, qty: PD.qty, picks: cleanPicks(PD.picks), overrides: PD.over, orderRef: PD.ref || null, orderQty: Number(PD.oqty) || null, notes: PD.notes, allowNoRecipe: PD.noRecipe, confirmOver: PD.confirmOver });
+        if (!r.ok && r.needConfirm) { if (confirm(r.error + '\n\nProduce anyway?')) { PD.confirmOver = true; return AM.pGo(); } if (go) go.disabled = false; return; }
+        if (!r.ok) { var e = $('aqp-err'); if (e) e.textContent = r.error; if (go) go.disabled = false; return; }
+        closeOv(); toast(r.duplicate ? 'That production run was already recorded.' : 'Produced ' + PD.qty + ' × ' + (prods().filter(function (x) { return x.code === PD.code; })[0] || {}).name + '.');
+        ['qty', 'notes'].forEach(function (k) { var el = $('production-' + k + '-input'); if (el) el.value = ''; });
+        ['renderProductionTargetSelect', 'renderRawMaterialsTable', 'renderProductsTable', 'renderAllItemsGrid', 'renderProductionHistoryTable', 'renderFactoryStockTable'].forEach(function (f) { try { window[f](); } catch (e2) { /* not on screen */ } });
+    };
+
+    /* ---- pickers inside another screen (custom bale order) ---- */
+    var CP = { picks: {}, over: {}, code: null, qty: 1, host: null };
+    AM.renderPickers = function (hostId, code, qty) {
+        var host = $(hostId); if (!host) return; var p = prods().filter(function (x) { return x.code === code; })[0]; if (!p) return;
+        if (CP.code !== code || CP.host !== hostId) { CP.picks = {}; CP.over = {}; }
+        CP.code = code; CP.qty = Number(qty) || 0; CP.host = hostId;
+        var plan = AM.plan(p, CP.qty, cleanPicks(CP.picks), CP.over);
+        host.innerHTML = plan.noRecipe ? '<div class="aqm-warn" style="margin:6px 0">No Production Recipe for this item: the run is recorded and no materials are deducted. Set one in Inventory > Recipe.</div>' :
+            '<div id="aqm-ov-inline"><b>Materials for this custom order</b> (choose the variety actually used)</div>' + '<div style="font-size:13px">' + pickerHtml(p, plan, { picks: CP.picks, over: CP.over, fn: 'cPick', fnq: 'cOver' }) + '<div class="aqm-warn" style="background:#eef6f2;border-color:#bfe0d2;color:#0b5a47">Material cost: <b>' + KES(plan.totalCost) + '</b></div></div>';
+    };
+    AM.cPick = function (lineId, v) { if (v === '__none') delete CP.picks[lineId]; else CP.picks[lineId] = v; AM.renderPickers(CP.host, CP.code, CP.qty); };
+    AM.cOver = function (lineId, v) { CP.over[lineId] = Math.max(0, Number(v) || 0); AM.renderPickers(CP.host, CP.code, CP.qty); };
+    AM.customPicks = function () { return { picks: cleanPicks(CP.picks), overrides: CP.over }; };
+    AM.resetPickers = function () { CP = { picks: {}, over: {}, code: null, qty: 1, host: null }; };
+
+    /* ---- consume a fixed list directly (the stage wizard): same audit, cost snapshot and no-silent-shortage rules ---- */
+    AM.consume = function (needed, o) {
+        // needed: Map/obj materialId -> qty (base units); o: { txId, note }
+        var ids = needed instanceof Map ? Array.from(needed.keys()) : Object.keys(needed), get = function (k) { return needed instanceof Map ? needed.get(k) : needed[k]; };
+        if (o.txId && hasTx(o.txId + ':' + ids[0])) return { ok: true, duplicate: true, used: [] };
+        for (var i = 0; i < ids.length; i++) { var m = mats().filter(function (x) { return x.id === ids[i]; })[0]; if (!m) continue; if (!active(m)) return { ok: false, error: m.name + ' is inactive.' }; if (stockOf(m) + 1e-9 < get(ids[i])) return { ok: false, error: 'Not enough "' + m.name + '" in stock — need ' + get(ids[i]) + ', have ' + stockOf(m) + '.' }; }
+        var used = [];
+        ids.forEach(function (id) { var m = mats().filter(function (x) { return x.id === id; })[0]; if (!m) return; var q = q3(get(id)); setStock(m, -q); move({ txId: (o.txId || newId('tx')) + ':' + id, type: 'production', mat: m, qty: -q, note: o.note || 'Production', ref: o.ref || '', balanceAfter: stockOf(m) }); used.push({ materialId: id, name: m.name, category: m.category || 'other', qtyUsed: q, unitCost: costOf(m), cost: Math.round(q * costOf(m) * 100) / 100 }); });
+        return { ok: true, used: used };
+    };
+
+    window.AquaMat = AM;
+
+    /* ---------------- wiring into the existing screens ---------------- */
+    var wired = false;
+    function wire() {
+        if (wired) return;
+        try {
+            if (typeof rawMaterials === 'undefined' || typeof renderRawMaterialsTable !== 'function') return;
+            window.renderRawMaterialsTable = renderRawMaterialsTable = function () { try { renderRawMaterialsLiveStrip(); } catch (e) { /* strip optional */ } AM.render(); };
+            window.openProductionRecipeModal = openProductionRecipeModal = function (code) { AM.openRecipe(code); };
+            window.updateRawMaterialField = updateRawMaterialField = function (id, field) { if (field === 'stockQty') { toast('Stock changes only through Restock or Adjust, so the history stays complete.', true); } AM.render(); };
+            wired = true; AM.migrate(); AM.render();
+        } catch (e) { /* retried */ }
+    }
+    wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 500); setTimeout(wire, 2000); });
+    document.addEventListener('click', function (e) { if (e.target && e.target.id === 'aqm-ov') closeOv(); });
+})();
+</script>

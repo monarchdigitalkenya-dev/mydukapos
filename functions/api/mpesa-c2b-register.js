@@ -17,6 +17,7 @@ import { loadGatewayConfig, hasDarajaConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { mapShortcodes, saveRegistration } from './_till-diag.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -70,54 +71,60 @@ export async function onRequestPost(context) {
   const origin = callbackOrigin(request, env);
   // zip 143: registered with this shop's secret key, so a forged "payment received" can no longer be posted for the shop
   const cbKey = await ensureCallbackKey(env, clientId, 'c2b');
-  // zip 250: the addresses must NOT contain "mpesa", "m-pesa" or "safaricom": Safaricom's production RegisterURL filters those out (sandbox does not).
-  // pay-cb-till-confirm / pay-cb-till-validate are the same handlers as mpesa-c2b-confirmation / -validation under neutral names.
-  const confirmationUrl = withKey(`${origin}/api/pay-cb-till-confirm?c=${encodeURIComponent(clientId)}`, cbKey);
-  const validationUrl = withKey(`${origin}/api/pay-cb-till-validate?c=${encodeURIComponent(clientId)}`, cbKey);
-  // zip 250: the number that RECEIVES the customers' money. For a Till (Buy Goods) shop that is the Till number (the Store / Head Office number is only
-  // for the STK prompt's BusinessShortCode + password); for a Paybill it is the Paybill. Registering the Store number would listen on the wrong number.
+  // zip 358: the shop and its key travel in the PATH (/api/pcb/<shop>/<key>/c), not a query string - Safaricom documents nothing about query strings in
+  // Register URL addresses and refuses the word "query". Neutral words only (no mpesa / m-pesa / safaricom / exe / cmd / sql). The legacy query-string
+  // form still works for shops that registered it before (pay-cb-till-confirm).
+  const legacyForm = String((env && env.C2B_URL_FORM) || '').toLowerCase() === 'query';
+  const confirmationUrl = legacyForm ? withKey(`${origin}/api/pay-cb-till-confirm?c=${encodeURIComponent(clientId)}`, cbKey) : `${origin}/api/pcb/${encodeURIComponent(clientId)}/${encodeURIComponent(cbKey.k)}/c`;
+  const validationUrl = legacyForm ? withKey(`${origin}/api/pay-cb-till-validate?c=${encodeURIComponent(clientId)}`, cbKey) : `${origin}/api/pcb/${encodeURIComponent(clientId)}/${encodeURIComponent(cbKey.k)}/v`;
+  const shown = (url) => url.replace(/&k=[^&]*/, '&k=•••').replace(/(\/api\/pcb\/[^/]+\/)[^/]+(\/[cv])$/, '$1•••$2');
+  // zip 358: for a Till (Buy Goods) Safaricom's own guides tie the live app to the STORE / Head Office number, while some accounts only accept the Till
+  // number - and nothing official says which one notifications are sent for. So BOTH numbers are registered (each one once; production refuses a
+  // second registration of the same number, reported as "already registered"). A payment arriving on either is captured.
   const isTill = cfg.mpesaTransactionType === 'CustomerBuyGoodsOnline';
-  // zip 263: the Till number and the Shortcode (Store / Head Office / Paybill) can be different numbers, and which one C2B accepts depends on the app's C2B version
-  // and the account. So both are tried, one at a time, preferred one first (Till for a Till shop, Shortcode otherwise), until Safaricom accepts one.
   const till = String(cfg.mpesaPartyB || '').trim(), code = String(cfg.mpesaShortcode || '').trim();
-  const candidates = [...new Set((isTill ? [till, code] : [code, till]).filter(Boolean))];
-  let shortCode = candidates[0] || '';
+  const candidates = [...new Set((isTill ? [code, till] : [code, till]).filter(Boolean))];
+  if (!candidates.length) return jsonResponse({ error: 'Enter the Till number and the Shortcode (Store / Head Office number) in Settings > Payment Gateway first.' }, 400);
 
   try {
     const token = await darajaAccessToken(cfg);
-    // zip 262: "Invalid Access Token [401.003.01]" on RegisterURL while STK Push works means the token is real but this app is not allowed on THAT version of the C2B
-    // API (an app can be subscribed to v1 or v2 only). So when the first version answers 401, the other one is tried once, and the version that worked is reported.
-    const first = String((env && env.DARAJA_C2B_VERSION) || 'v1').toLowerCase() === 'v2' ? 'v2' : 'v1';
+    // zip 358: C2B v2 first (Safaricom's current version; v1 is legacy), v1 when the app answers 401 for v2 (an app is subscribed to one version only).
+    const first = String((env && env.DARAJA_C2B_VERSION) || 'v2').toLowerCase() === 'v1' ? 'v1' : 'v2';
     const post = (ver, sc) => fetch(`${darajaBaseUrl(cfg)}/mpesa/c2b/${ver}/registerurl`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ShortCode: sc, ResponseType: 'Completed', ConfirmationURL: confirmationUrl, ValidationURL: validationUrl }),
     });
-    let usedVersion = first, res, data, why = '';
-    for (const sc of candidates.length ? candidates : ['']) {
-      shortCode = sc;
-      usedVersion = first;
-      res = await post(first, sc);
+    const results = [];
+    for (const sc of candidates) {
+      let usedVersion = first, res = await post(first, sc);
       if (res.status === 401) { const alt = first === 'v1' ? 'v2' : 'v1'; const r2 = await post(alt, sc); if (r2.status !== 401) { res = r2; usedVersion = alt; } }
-      data = {};
-      try { data = await res.json(); } catch (e) { /* not JSON (an HTML error page): handled below */ }
-      if (res.ok && !(data.ResponseCode !== undefined && String(data.ResponseCode) !== '0')) { why = ''; break; }
-      why = data.errorMessage || data.ResponseDescription || `Safaricom declined the URL registration (HTTP ${res.status}).`;
-      // only a "wrong number" answer moves on to the next number; anything else (already registered, no C2B access, bad URL) is the real answer
-      if (!/invalid (short)?code|shortcode|400\.003\.02/i.test(why + (data.errorCode || ''))) break;
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* not JSON (an HTML error page) */ }
+      const ok = res.ok && !(data.ResponseCode !== undefined && String(data.ResponseCode) !== '0');
+      const msg = ok ? (data.ResponseDescription || 'Registered.') : (data.errorMessage || data.ResponseDescription || `Safaricom declined the URL registration (HTTP ${res.status}).`);
+      const already = !ok && /duplicate notification|already registered/i.test(msg);
+      results.push({ shortCode: sc, ok, already, version: usedVersion, status: res.status, message: msg + (data.errorCode ? ` [${data.errorCode}]` : '') });
     }
-    if (why) {
-      let hint = '';
-      // production lets a shortcode's URLs be registered ONCE; changing them means deleting the old ones first
-      if (/duplicate notification/i.test(why)) hint = ' These URLs are already registered for this number. If you changed the address, delete the old URLs in the Daraja portal (My Apps > your app > URL Management / Self Services), then press Register again - or email apisupport@safaricom.co.ke.';
-      else if (/invalid (short)?code|shortcode/i.test(why)) hint = ` Numbers tried: ${candidates.join(', ') || 'none'} (Till number box and Shortcode). Safaricom refused all of them: the number must be the one that receives the money, and the C2B API must be enabled on your live Daraja app for it.`;
-      else if (res.status === 401 || /invalid access token|401\.003\.01/i.test(why + (data.errorCode || ''))) hint = ' Your keys work for the payment prompt but Safaricom has not switched the C2B (customer-to-business) service on for this app, on either v1 or v2. In the Daraja portal open My Apps, edit this app and make sure the C2B API is ticked; for a live Till also ask Safaricom (apis@safaricom.co.ke, or the Go-Live request) to enable C2B URL registration for the Till number ' + shortCode + ' - it is granted per number, not per key. Nothing in MyDukaPOS can bypass that step.';
-      else if (/url/i.test(why)) hint = ' The address must be public https and must not contain the words mpesa / safaricom.';
-      throw new Error(`${why}${data.errorCode ? ` [${data.errorCode}]` : ''}${hint}`);
+    // every number Safaricom accepted (or already had) points at this shop: a callback that arrives without the shop in its address is matched by number
+    await mapShortcodes(env, clientId, results.filter((r) => r.ok || r.already).map((r) => r.shortCode));
+    await saveRegistration(env, clientId, { results, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), form: legacyForm ? 'query' : 'path' });
+
+    const good = results.filter((r) => r.ok);
+    if (good.length) {
+      const extra = results.filter((r) => !r.ok).map((r) => `${r.shortCode}: ${r.already ? 'already registered earlier (see below)' : r.message}`);
+      return jsonResponse({ success: true, shortCode: good.map((r) => r.shortCode).join(' + '), results, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl),
+        message: `Registered with Safaricom for ${good.map((r) => r.shortCode + ' (C2B ' + r.version + ')').join(' and ')}.` + (extra.length ? ' Also: ' + extra.join('; ') + '.' : '') + ' Pay KES 10 to the Till from a phone and watch Settings > Payment Gateway > Till health: it should say "Received" within a minute.',
+        c2bVersion: good[0].version });
     }
-    // The key went to Safaricom server-to-server; the page is shown the URLs without it (zip 143).
-    const shown = (u) => u.replace(/&k=[^&]*/, '&k=•••');
-    return jsonResponse({ success: true, shortCode, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: (data.ResponseDescription || 'Registered.') + (usedVersion !== first ? ' (accepted on C2B ' + usedVersion + ')' : '') + (shortCode !== candidates[0] ? ' (number ' + shortCode + ' accepted after ' + candidates[0] + ' was refused)' : ''), c2bVersion: usedVersion });
+    // nothing accepted: explain the most useful reason
+    const all = results.map((r) => r.message).join(' | ');
+    let hint = '';
+    if (results.some((r) => r.already)) hint = ' Safaricom already has addresses registered for ' + results.filter((r) => r.already).map((r) => r.shortCode).join(' / ') + ' and production accepts them only ONCE. If payments are not showing, those old addresses are the reason: an admin deletes them in the M-PESA / Daraja portal (Self Services > URL Management) or emails apisupport@safaricom.co.ke asking to delete the C2B URLs for that number - then press Register again here.';
+    else if (results.some((r) => r.status === 401 || /invalid access token|401\.003\.01/i.test(r.message))) hint = ' Your keys work for the payment prompt but Safaricom has not switched the C2B (customer-to-business) service on for this app, on either v2 or v1. In the Daraja portal open My Apps and make sure the C2B product is on the live app; at Go Live pick the Store / Head Office number for a Till. Nothing in MyDukaPOS can bypass that step.';
+    else if (results.every((r) => /invalid (short)?code|shortcode|400\.003\.02/i.test(r.message))) hint = ` Numbers tried: ${candidates.join(', ')}. Safaricom refused all of them: the live Daraja app must belong to one of these numbers (for a Till it is usually the Store / Head Office number).`;
+    else if (results.some((r) => /url/i.test(r.message))) hint = ' The address must be public https and must not contain the words mpesa / safaricom / query / exe / cmd / sql.';
+    return jsonResponse({ error: all + hint, results, confirmationUrl: shown(confirmationUrl) }, 500);
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting Safaricom.' }, 500);
   }

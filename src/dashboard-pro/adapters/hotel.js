@@ -129,7 +129,7 @@
                 qty += q; a.costLines++; if (!(uc > 0)) a.missingCost++;
                 var key = String(it.code != null ? it.code : it.name), p = it.code != null ? byCode[String(it.code)] : null;
                 var o = a.item[key] || (a.item[key] = { name: it.name || (p && p.name) || '?', code: it.code, cat: (p && p.category) || it.category || 'Uncategorised', qty: 0, rev: 0, cost: 0, img: (p && p.image) || null, unit: it.unit, dept: sd[1] });
-                o.qty += q; o.rev += line; o.cost += uc * q;
+                o.qty += q; o.rev += line; o.cost += (typeof moneyLineCost === "function" ? moneyLineCost(it, s) : uc * q);   // zip 390: the line's own cost, the same rule as the totals
                 var c = a.cat[o.cat] || (a.cat[o.cat] = { rev: 0, qty: 0 }); c.rev += line; c.qty += q;
             });
             var fee = deliveryOf(s); if (fee > 0.0001) { addDept('delivery', 'Delivery fees', fee, 0); a.delivery += fee; }
@@ -389,8 +389,10 @@
     }
 
     /* ---------- widgets ---------- */
+    // zip 298: on a phone only the first four sections start open; the rest fold (tap the title) - this page was ~5,000-6,000 px of scrolling
+    function foldable(id) { for (var k = 0; k < WIDGETS.length; k++) if (WIDGETS[k][0] === id) return k >= 4 && id !== 'alerts' && id !== 'actions'; return false; }
     function card(id, title, body, extra) {
-        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
+        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + (foldable(id) ? ' dp-fold' : '') + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
     }
     function empty(msg) { return '<p class="dp-empty">' + esc(msg) + '</p>'; }
     function viewBtn(tab, label) { return '<button type="button" class="dp-link" data-goto="' + tab + '">' + esc(label || 'View report') + ' →</button>'; }
@@ -603,7 +605,7 @@
         if (d.noCost.length) a.push({ p: 4, icon: '🏷️', text: d.noCost.length + ' product' + (d.noCost.length === 1 ? ' has' : 's have') + ' stock but no buying price, so profit is incomplete', tab: 'inventory-list-tab' });
         if (d.slow.length && d.A.count >= 5) a.push({ p: 4, icon: '🐢', text: d.slow.length + ' product' + (d.slow.length === 1 ? ' has' : 's have') + ' had no sales in this period', tab: 'inventory-list-tab' });
         try { if (typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) a.push({ p: 2, icon: '🔄', text: 'Some changes on this device have not reached the server yet', tab: null }); } catch (e) { /* none */ }
-        if (d.waitNew > 0) a.push({ p: 2, icon: '🆕', text: d.waitNew + ' order line' + (d.waitNew === 1 ? ' is' : 's are') + ' new and not yet accepted by the kitchen or bar', tab: 'kds-tab' });
+        if (d.waitNew > 0) a.push({ p: 2, icon: '🆕', text: d.waitNew + ' order line' + (d.waitNew === 1 ? ' is' : 's are') + ' new and not yet accepted by the kitchen or bar', tab: 'kds-kitchen-tab' });
         if (d.ready > 0) a.push({ p: 2, icon: '🔔', text: d.ready + ' item' + (d.ready === 1 ? ' is' : 's are') + ' ready and waiting to be served', tab: 'service-tab' });
         if (d.longOpen.length) a.push({ p: 2, icon: '⏱️', text: d.longOpen.length + ' tab' + (d.longOpen.length === 1 ? ' has' : 's have') + ' been open for over 12 hours and still ' + (d.longOpen.length === 1 ? 'owes' : 'owe') + ' money', tab: 'tabs-tab' });
         if (d.tabsValue > 0) a.push({ p: 3, icon: '🍽️', text: 'Open tabs: ' + kes(d.tabsValue) + ' not yet paid on ' + d.owingTabs.length + ' tab' + (d.owingTabs.length === 1 ? '' : 's'), tab: 'tabs-tab' });
@@ -623,7 +625,7 @@
     };
     function ago(t) { var s = Math.max(0, (Date.now() - t) / 1000); if (s < 60) return 'now'; if (s < 3600) return Math.floor(s / 60) + 'm'; if (s < 86400) return Math.floor(s / 3600) + 'h'; if (s < 604800) return Math.floor(s / 86400) + 'd'; return new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); }
     W.actions = function () {
-        var acts = [['🛒', 'New sale', 'sales-tab'], ['🍽️', 'Orders', 'service-tab'], ['🧾', 'Open tabs', 'tabs-tab'], ['📺', 'Kitchen & bar', 'kds-tab'], ['🛏️', 'Tables & rooms', 'tables-rooms-tab'], ['📦', 'Add stock', 'restock-tab'], ['➕', 'Add items', 'add-item-tab'], ['👤', 'Customers', 'customers-tab'], ['💸', 'Add expense', 'profits-tab'], ['👥', 'Staff', 'staff-tab'], ['📈', 'Reports', 'reports-tab'], ['📒', 'Bills', 'bills-tab']];
+        var acts = [['🛒', 'New sale', 'sales-tab'], ['🍽️', 'Orders', 'service-tab'], ['🧾', 'Open tabs', 'tabs-tab'], ['🍳', 'Kitchen', 'kds-kitchen-tab'], ['🍺', 'Bar', 'kds-bar-tab'], ['🛏️', 'Tables & rooms', 'tables-rooms-tab'], ['📦', 'Add stock', 'restock-tab'], ['➕', 'Add items', 'add-item-tab'], ['👤', 'Customers', 'customers-tab'], ['💸', 'Add expense', 'profits-tab'], ['👥', 'Staff', 'staff-tab'], ['📈', 'Reports', 'reports-tab'], ['📒', 'Bills', 'bills-tab']];
         var html = acts.map(function (a) { var b = document.querySelector('.tabs .tab-link[data-tab="' + a[2] + '"]'); if (!b || b.style.display === 'none' || (a[2] === 'staff-tab' && !isAdmin())) return ''; return '<button type="button" class="dp-qa" data-goto="' + a[2] + '"><span>' + a[0] + '</span>' + a[1] + '</button>'; }).join('');
         return card('actions', 'Quick actions', html ? '<div class="dp-qas">' + html + '</div>' : empty('No shortcuts available for this account.'), { span: 12 });
     };
@@ -702,6 +704,8 @@
 
     /* ---------- events (one delegated listener) ---------- */
     function onClick(ev) {
+        var fh = ev.target && ev.target.closest ? ev.target.closest('.dp-fold > .dp-card-h') : null;
+        if (fh && root && root.contains(fh) && !(ev.target.closest('button,a,[data-goto]'))) { fh.parentNode.classList.toggle('dp-open'); return; }
         var t = ev.target && ev.target.closest ? ev.target.closest('[data-preset],[data-metric],[data-topby],[data-topall],[data-staffby],[data-deptby],[data-goto],[data-act],[data-retry],[data-applycustom],[data-wmove]') : null;
         if (!t || !root || !root.contains(t)) return;
         if (t.dataset.preset) { S.preset = t.dataset.preset; persist(); return D.render(); }

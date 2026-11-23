@@ -1,0 +1,194 @@
+<!-- AQUA INVENTORY EXPORT / IMPORT (zip 369) ------------------------------------------------------------------------------------------------
+     The Aqua (water) Inventory list - "Products & Accessories" - had no way to take the list OUT or to bring a list IN (the only import, hidden in
+     Restocking, reads just name / quantity / cost and adds to stock). This puts three buttons on the Inventory tab:
+       ⬇️ Export list      - every product as a spreadsheet (CSV opens in Excel): code, name, type, size, selling price, cost price, stock, VAT, expiry
+       ⬆️ Import list      - read the same columns back (Excel .xlsx/.xls or CSV). A PREVIEW comes first: what will change, what is new, what is skipped.
+       📄 Template         - an empty sheet with the right columns and one example row
+     Nothing is written until you press Apply. Changes go through the SAME code the inventory table uses (updateProductField: stock changes are logged
+     as stock movements, prices keep their bale tiers in step), matching by Code first, then by Name. A new row becomes a new Accessory (or a Sealed Bottle
+     when its size in ml is given). Wholesale bales are linked to a bottle, so they are only created from Add New Items (an existing bale can still have
+     its price / stock updated). Ids: aio-*. -->
+<style id="aio-css">
+#aio-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 12px; }
+#aio-bar button { width: auto; margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 700; border-radius: 9px; border: 1px solid var(--border-color, #cfd8de); background: var(--bg-surface, #fff); color: inherit; cursor: pointer; min-height: 40px; }
+#aio-bar button.aio-go { background: #16a085; border-color: #16a085; color: #fff; }
+#aio-ov { position: fixed; inset: 0; z-index: 100000; background: rgba(15, 23, 42, .55); display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 12px; }
+#aio-ov.on { display: flex; }
+#aio-card { background: var(--card-bg, #fff); color: var(--text, #2c3e50); border-radius: 16px; max-width: 760px; width: 100%; margin: auto; padding: 16px; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); }
+#aio-card h3 { margin: 0 0 6px; }
+#aio-card table { width: 100%; font-size: 13px; border-collapse: collapse; }
+#aio-card th, #aio-card td { padding: 5px 6px; border-bottom: 1px solid #eee; text-align: left; }
+#aio-card .aio-pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 700; margin-right: 6px; }
+#aio-card .aio-up { background: #e8f0fe; color: #1c3a6b; } #aio-card .aio-new { background: #e3f6ea; color: #1e8449; } #aio-card .aio-skip { background: #fdecea; color: #b03a2e; } #aio-card .aio-same { background: #f1f3f4; color: #555; }
+#aio-card .aio-actions { display: flex; gap: 10px; margin-top: 14px; }
+#aio-card .aio-actions button { flex: 1; min-height: 44px; border-radius: 10px; border: 0; font-weight: 800; font-size: 15px; cursor: pointer; }
+</style>
+<script id="aio-js">
+(function () {
+  'use strict';
+  var COLS = ['Code', 'Name', 'Type', 'Size (ml)', 'Selling price', 'Cost price', 'Stock', 'VAT (A/B/Z/E/N)', 'Expiry (YYYY-MM-DD)'];
+  var TYPE_LABEL = { bottled: 'Sealed Bottle', accessory: 'Accessory', bale: 'Wholesale Bale' };
+  var PLAN = null;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+  function cell(v) { var s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s) && isNaN(Number(s))) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+  function norm(h) { return String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+  function save(text, name) {
+    var blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 500);
+  }
+  function stamp() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function list() { try { return products.filter(function (p) { return p && !p._deleted; }); } catch (e) { return []; } }
+
+  function exportList() {
+    var rows = [COLS.join(',')];
+    list().sort(function (a, b) { return String(a.code).localeCompare(String(b.code)); }).forEach(function (p) {
+      rows.push([p.code, p.name, TYPE_LABEL[p.category] || 'Sealed Bottle', p.sizeML || '', (Number(p.price) || 0).toFixed(2), (Number(p.wholesalePrice) || 0).toFixed(2), p.category === 'bale' && p.customQuote ? 0 : (Number(p.qty) || 0), (p.vatCategory === 'C' ? 'Z' : p.vatCategory) || 'A', p.expiryDate || ''].map(cell).join(','));
+    });
+    if (rows.length === 1) { toast('There are no products to export yet.', true); return; }
+    save(rows.join('\r\n'), 'aqua-inventory-' + stamp() + '.csv');
+    toast('Exported ' + (rows.length - 1) + ' products. Open the file in Excel.');
+  }
+  function template() {
+    save(COLS.join(',') + '\r\n' + ['00099', 'Water Dispenser Stand', 'Accessory', '', '4500', '3200', '5', 'A', ''].map(cell).join(',') + '\r\n', 'aqua-inventory-template.csv');
+  }
+
+  /* ---------- reading a file ---------- */
+  function pick() { var f = $('aio-file'); if (f) { f.value = ''; f.click(); } }
+  function readFile(file) {
+    if (!file) return;
+    var ext = String(file.name || '').toLowerCase().split('.').pop();
+    var done = function (rows) { try { build(rows, file.name); } catch (e) { toast('Could not read that file: ' + (e && e.message || e), true); } };
+    if (ext === 'xlsx' || ext === 'xls') {
+      var fr = new FileReader();
+      fr.onload = function (ev) {
+        Promise.resolve(typeof loadSheetJs === 'function' ? loadSheetJs() : null).then(function () {
+          var wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+          done(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' }).map(function (r) { return r.map(function (c) { return c == null ? '' : String(c); }); }));
+        }).catch(function (e) { toast((e && e.message) || 'Could not load the Excel reader - save the sheet as CSV and try again.', true); });
+      };
+      fr.onerror = function () { toast('Could not read that file.', true); }; fr.readAsArrayBuffer(file);
+    } else {
+      var fr2 = new FileReader();
+      fr2.onload = function (ev) { done(parseCsvText(String(ev.target.result).replace(/^﻿/, ''))); };
+      fr2.onerror = function () { toast('Could not read that file.', true); }; fr2.readAsText(file);
+    }
+  }
+  function headerMap(head) {
+    var m = {}, find = function (names) { for (var i = 0; i < head.length; i++) { var h = norm(head[i]); if (names.some(function (n) { return h === n || h.indexOf(n) === 0; })) return i; } return -1; };
+    m.code = find(['code', 'item code', 'sku', 'product code', 'barcode']);
+    m.name = find(['name', 'product name', 'item name', 'product', 'item', 'description']);
+    m.type = find(['type', 'category']);
+    m.size = find(['size', 'ml', 'volume']);
+    m.price = find(['selling price', 'sell price', 'retail price', 'selling', 'retail', 'price']);
+    m.cost = find(['cost price', 'buying price', 'cost', 'buying', 'wholesale price', 'wholesale']);
+    m.qty = find(['stock', 'qty', 'quantity', 'in stock', 'balance']);
+    m.vat = find(['vat']);
+    m.expiry = find(['expiry', 'expiry date', 'expires']);
+    return m;
+  }
+  function num(v) { var s = String(v == null ? '' : v).replace(/[^0-9.\-]/g, ''); if (s === '' || s === '-' || s === '.') return null; var n = parseFloat(s); return isNaN(n) ? null : n; }
+  function typeOf(v) { var s = norm(v); if (!s) return ''; if (/bale|case/.test(s)) return 'bale'; if (/bottle|sealed/.test(s)) return 'bottled'; if (/access|other|filter|dispens|item|material/.test(s)) return 'accessory'; return ''; }
+
+  function build(rows, fileName) {
+    if (typeof activeSiteId !== 'undefined' && activeSiteId === 'both') { toast('Pick one site (Shop or Production) at the top first - a list can only be imported into one site at a time.', true); return; }
+    rows = (rows || []).filter(function (r) { return r && r.some(function (c) { return String(c).trim() !== ''; }); });
+    if (rows.length < 2) { toast('That file has no product rows.', true); return; }
+    var m = headerMap(rows[0]);
+    if (m.name < 0 && m.code < 0) { toast('No "Name" or "Code" column found. Use the template (📄) so the columns match.', true); return; }
+    var plan = { file: fileName, items: [], counts: { up: 0, add: 0, skip: 0, same: 0 } }, usedCodes = {}, byCode = {}, byName = {};
+    list().forEach(function (p) { byCode[String(p.code).toLowerCase()] = p; byName[String(p.name || '').trim().toLowerCase()] = p; });
+    var get = function (r, k) { return m[k] >= 0 ? String(r[m[k]] == null ? '' : r[m[k]]).trim() : ''; };
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i], code = get(r, 'code'), name = get(r, 'name'), line = i + 1;
+      if (!code && !name) continue;
+      var p = (code && byCode[code.toLowerCase()]) || (name && byName[name.toLowerCase()]) || null;
+      var price = num(get(r, 'price')), cost = num(get(r, 'cost')), qty = num(get(r, 'qty')), size = num(get(r, 'size')), vat = get(r, 'vat').toUpperCase().slice(0, 1), exp = get(r, 'expiry'), type = typeOf(get(r, 'type'));
+      if (price !== null && price < 0 || cost !== null && cost < 0 || qty !== null && qty < 0) { plan.items.push({ kind: 'skip', line: line, name: name || code, why: 'a negative number' }); plan.counts.skip++; continue; }
+      if (p) {
+        var ch = [];
+        if (name && name !== p.name) ch.push(['name', name, p.name]);
+        if (price !== null && Math.abs(price - (Number(p.price) || 0)) > 0.004) ch.push(['price', price, (Number(p.price) || 0)]);
+        if (cost !== null && Math.abs(cost - (Number(p.wholesalePrice) || 0)) > 0.004) ch.push(['wholesalePrice', cost, (Number(p.wholesalePrice) || 0)]);
+        var customBale = false; try { customBale = p.category === 'bale' && typeof isCustomBale === 'function' && isCustomBale(p); } catch (e) { customBale = false; }
+        if (qty !== null && !customBale && Math.abs(qty - (Number(p.qty) || 0)) > 0.0001) ch.push(['qty', p.category === 'bale' ? qty : Math.round(qty), Number(p.qty) || 0]);
+        if (vat && 'ABZENC'.indexOf(vat) >= 0 && vat !== ((p.vatCategory === 'C' ? 'Z' : p.vatCategory) || 'A')) ch.push(['vatCategory', vat === 'C' ? 'Z' : vat, p.vatCategory || 'A']);
+        if (exp && /^\d{4}-\d{2}-\d{2}$/.test(exp) && exp !== (p.expiryDate || '')) ch.push(['expiryDate', exp, p.expiryDate || '']);
+        if (ch.length) { plan.items.push({ kind: 'up', line: line, code: p.code, name: p.name, changes: ch }); plan.counts.up++; } else plan.counts.same++;
+        continue;
+      }
+      // a product that is not in the list yet
+      if (!name) { plan.items.push({ kind: 'skip', line: line, name: code, why: 'a new product needs a name' }); plan.counts.skip++; continue; }
+      if (type === 'bale') { plan.items.push({ kind: 'skip', line: line, name: name, why: 'wholesale bales are linked to a bottle - add it from Add New Items' }); plan.counts.skip++; continue; }
+      if (type === 'bottled' && !(size > 0)) { plan.items.push({ kind: 'skip', line: line, name: name, why: 'a sealed bottle needs its size in ml' }); plan.counts.skip++; continue; }
+      if (price === null) { plan.items.push({ kind: 'skip', line: line, name: name, why: 'a new product needs a selling price' }); plan.counts.skip++; continue; }
+      var cat = type === 'bottled' ? 'bottled' : 'accessory';
+      if (code && usedCodes[code.toLowerCase()]) { plan.items.push({ kind: 'skip', line: line, name: name, why: 'the code ' + code + ' appears twice in the file' }); plan.counts.skip++; continue; }
+      if (code) usedCodes[code.toLowerCase()] = true;
+      plan.items.push({ kind: 'add', line: line, code: code, name: name, category: cat, sizeML: cat === 'bottled' ? Math.round(size) : null, price: price, cost: cost === null ? 0 : cost, qty: qty === null ? 0 : Math.max(0, Math.round(qty)), vat: ('ABZEN'.indexOf(vat) >= 0 && vat) ? vat : 'A', expiry: /^\d{4}-\d{2}-\d{2}$/.test(exp) ? exp : null });
+      plan.counts.add++;
+    }
+    if (!plan.items.length && !plan.counts.same) { toast('No usable rows found in that file.', true); return; }
+    PLAN = plan; preview();
+  }
+
+  function preview() {
+    var ov = $('aio-ov'); if (!ov) return;
+    var c = PLAN.counts, names = { name: 'name', price: 'selling price', wholesalePrice: 'cost price', qty: 'stock', vatCategory: 'VAT', expiryDate: 'expiry' };
+    var up = PLAN.items.filter(function (x) { return x.kind === 'up'; }), add = PLAN.items.filter(function (x) { return x.kind === 'add'; }), skip = PLAN.items.filter(function (x) { return x.kind === 'skip'; });
+    var h = '<h3>⬆️ Import preview</h3><p style="margin:0 0 8px; font-size:13px; opacity:.8;">' + esc(PLAN.file) + ' - nothing is saved until you press Apply.</p>' +
+      '<p><span class="aio-pill aio-up">' + c.up + ' to update</span><span class="aio-pill aio-new">' + c.add + ' new</span><span class="aio-pill aio-same">' + c.same + ' unchanged</span><span class="aio-pill aio-skip">' + c.skip + ' skipped</span></p>';
+    if (up.length) h += '<h4 style="margin:10px 0 4px;">Will change</h4><table><thead><tr><th>Product</th><th>What changes</th></tr></thead><tbody>' + up.slice(0, 40).map(function (x) { return '<tr><td>' + esc(x.name) + ' <small>(' + esc(x.code) + ')</small></td><td>' + x.changes.map(function (k) { return esc(names[k[0]] || k[0]) + ': ' + esc(k[2]) + ' → <b>' + esc(k[1]) + '</b>'; }).join('<br>') + '</td></tr>'; }).join('') + '</tbody></table>' + (up.length > 40 ? '<p style="font-size:12px;">…and ' + (up.length - 40) + ' more.</p>' : '');
+    if (add.length) h += '<h4 style="margin:10px 0 4px;">Will be added</h4><table><thead><tr><th>Name</th><th>Type</th><th>Price</th><th>Stock</th></tr></thead><tbody>' + add.slice(0, 40).map(function (x) { return '<tr><td>' + esc(x.name) + '</td><td>' + (TYPE_LABEL[x.category]) + (x.sizeML ? ' ' + x.sizeML + 'ml' : '') + '</td><td>' + esc(x.price) + '</td><td>' + x.qty + '</td></tr>'; }).join('') + '</tbody></table>' + (add.length > 40 ? '<p style="font-size:12px;">…and ' + (add.length - 40) + ' more.</p>' : '');
+    if (skip.length) h += '<h4 style="margin:10px 0 4px; color:#b03a2e;">Skipped</h4>' + skip.slice(0, 30).map(function (x) { return '<div style="font-size:13px;">Row ' + x.line + ' · ' + esc(x.name) + ' - ' + esc(x.why) + '</div>'; }).join('');
+    var any = c.up + c.add > 0;
+    h += '<div class="aio-actions"><button type="button" style="background:#95a5a6;color:#fff;" data-aio="cancel">Cancel</button>' + (any ? '<button type="button" style="background:#16a085;color:#fff;" data-aio="apply">✅ Apply ' + (c.up + c.add) + ' change' + (c.up + c.add === 1 ? '' : 's') + '</button>' : '') + '</div>';
+    $('aio-card').innerHTML = h; ov.classList.add('on');
+  }
+  function apply() {
+    if (!PLAN) return;
+    var made = 0, changed = 0, failed = 0;
+    PLAN.items.forEach(function (x) {
+      try {
+        if (x.kind === 'up') { x.changes.forEach(function (k) { updateProductField(x.code, k[0], String(k[1])); }); changed++; }
+        else if (x.kind === 'add') {
+          var taken = {}; products.forEach(function (p) { taken[String(p.code).toLowerCase()] = true; });
+          var code = x.code && !taken[x.code.toLowerCase()] ? x.code : String((products.reduce(function (mx, p) { return Math.max(mx, parseInt(p.code, 10) || 0); }, 0)) + 1).padStart(5, '0');
+          var st = {}; st[activeSiteId] = x.qty;
+          products.push({ siteId: recordSiteId(), stock: st, code: code, name: x.name, category: x.category, sizeML: x.sizeML, price: x.price, wholesalePrice: x.cost, qty: x.qty, customQuote: false, priceTiers: [], supplierId: null,
+            usableAsMaterial: false, trackBottles: false, bottlesPerBale: null, bottleStock: 0, halfBalePriceMode: 'auto', halfBalePrice: null, allowHalfBale: true, linkedBottleCode: null, baleKind: null, productionRecipe: [],
+            kra: (typeof defaultKraClassification === 'function' ? defaultKraClassification() : undefined), vatCategory: x.vat, expiryDate: x.expiry });
+          made++;
+        }
+      } catch (e) { failed++; }
+    });
+    try { queuePush(); } catch (e) { /* sent with the next change */ }
+    try { renderProductsTable(); renderBottledSizeGrid(); } catch (e) { /* redrawn on the next visit */ }
+    close(); PLAN = null;
+    toast('Import done: ' + changed + ' updated, ' + made + ' added' + (failed ? ', ' + failed + ' could not be applied' : '') + '.', failed > 0);
+  }
+  function close() { var ov = $('aio-ov'); if (ov) ov.classList.remove('on'); }
+
+  function onClick(ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-aio]') : null; if (!t) return;
+    var a = t.getAttribute('data-aio');
+    if (a === 'export') exportList(); else if (a === 'import') pick(); else if (a === 'template') template(); else if (a === 'apply') apply(); else if (a === 'cancel') { close(); PLAN = null; }
+  }
+  function ensure() {
+    var tab = $('inventory-tab'); if (!tab) return false;
+    if (!$('aio-ov')) { var ov = document.createElement('div'); ov.id = 'aio-ov'; ov.innerHTML = '<div id="aio-card" role="dialog" aria-modal="true"></div>'; document.body.appendChild(ov); ov.addEventListener('click', function (e) { if (e.target === ov) { close(); PLAN = null; } else onClick(e); }); }
+    if (!$('aio-bar')) {
+      var panel = tab.querySelector('.panel'), h3 = panel && panel.querySelector('h3'); if (!panel) return false;
+      var bar = document.createElement('div'); bar.id = 'aio-bar';
+      bar.innerHTML = '<button type="button" class="aio-go" data-aio="export">⬇️ Export list</button><button type="button" data-aio="import">⬆️ Import list</button><button type="button" data-aio="template">📄 Template</button><input type="file" id="aio-file" accept=".csv,.xls,.xlsx,text/csv" style="display:none">';
+      if (h3 && h3.nextSibling) h3.parentNode.insertBefore(bar, h3.nextSibling); else panel.insertBefore(bar, panel.firstChild);
+      bar.addEventListener('click', onClick); $('aio-file').addEventListener('change', function () { readFile(this.files && this.files[0]); });
+    }
+    return true;
+  }
+  function boot() { var n = 0; (function tick() { try { ensure(); } catch (e) { /* retried */ } if (++n < 30) setTimeout(tick, n < 10 ? 400 : 2000); })(); }
+  window.AIO = { __v: 369, exportList: exportList, build: build, apply: apply, plan: function () { return PLAN; } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

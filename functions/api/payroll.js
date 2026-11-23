@@ -40,7 +40,7 @@ export async function onRequestPost(context) {
     const ctx = { db, c: clientId, env, who, body };
     if (action === 'doc.file') {
       const f = await docFile(ctx);
-      return new Response(f.bytes, { status: 200, headers: { 'Content-Type': f.type, 'Content-Disposition': `inline; filename="${String(f.name).replace(/[^\w.\- ]+/g, '_')}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...cors } });
+      return new Response(f.bytes, { status: 200, headers: { 'Content-Type': f.type, 'Content-Disposition': `inline; filename="${String(f.name).replace(/[^\w.\- ]+/g, '_')}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", ...cors } });
     }
     const fn = ACTIONS[action];
     if (!fn) return reply({ ok: false, error: 'Unknown action.' }, 400);

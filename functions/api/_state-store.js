@@ -156,12 +156,24 @@ export async function shopMode(env, clientId) {
 export const migratingResponse = (cors = {}) => new Response(JSON.stringify({ error: 'This shop is being upgraded — please try again in a moment.', code: 'migrating' }), { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '5', ...cors } });
 export function shopCall(env, clientId, op, payload) {
   const stub = env.SHOP_STORE.get(env.SHOP_STORE.idFromName(clientId));
-  return stub.fetch('https://shop-store/' + op, { method: 'POST', body: JSON.stringify(payload || {}) });
+  // zip 306: `_shop` tells the database which shop it is (a Durable Object cannot read its own name), so after any change it can tell the shop's
+  // live-sync room "a new version exists" itself - whichever endpoint made the change (see noteRoom in wildcard-router/shop-store.js).
+  return stub.fetch('https://shop-store/' + op, { method: 'POST', body: JSON.stringify({ ...(payload || {}), _shop: String(clientId) }) });
 }
 // Is the per-shop database (the router Worker's ShopStore) running code from before zip 120? It then has no device list, no till
 // numbers and no stock ledger — the Pages project was updated but `npm run deploy:router` was not run. (zip 125)
 export async function shopDbOutdated(env, clientId) {
   try { const res = await shopCall(env, clientId, 'registry', {}); return res.status === 404; } catch (e) { return false; }
+}
+// zip 306: "a new version of this shop exists" -> the shop's live-sync room (SyncRoom), which devices with an open connection ask instead of the
+// server (see webSocketMessage in wildcard-router/worker.js). Called after every single-record write except the sync push itself (its broadcast
+// already counts). Never awaited, never fails a write: if it is lost, each device's backstop pull still finds the change.
+export function noteRoomVersion(env, clientId, ver) {
+  try {
+    if (!env || !env.SYNC_ROOM || !clientId) return;
+    const room = env.SYNC_ROOM.get(env.SYNC_ROOM.idFromName(clientId));
+    Promise.resolve(room.fetch('https://sync-room/ver', { method: 'POST', body: JSON.stringify({ ver: Number(ver) || 0 }) })).catch(() => {});
+  } catch (e) { /* backstop pull */ }
 }
 const idFromStateKey = (key) => (typeof key === 'string' && key.startsWith('pos-data:state:') ? key.slice('pos-data:state:'.length) : null);
 
@@ -206,6 +218,7 @@ export async function writeStateText(env, key, jsonText, opts = {}) {
     meta.writers = opts.prevMeta.writers;
   }
   await env.mydukapos_kv.put(key, value, { metadata: meta });
+  if (!opts.roomNoted) noteRoomVersion(env, idFromStateKey(key), meta.ua || 0);
   return meta;
 }
 

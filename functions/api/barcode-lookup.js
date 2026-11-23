@@ -20,6 +20,7 @@
 // often for local/unbranded stock that isn't in any public database.
 
 import { requireValidLicense } from './_license.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -115,6 +116,8 @@ export async function onRequestGet(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  const rll = await checkRateLimit(env, 'lookup', license.clientId);    // zip 273: each miss calls an outside service
+  if (!rll.ok) return rateLimitResponse('product lookups', rll);
 
   const kv = env.mydukapos_kv;
   try {

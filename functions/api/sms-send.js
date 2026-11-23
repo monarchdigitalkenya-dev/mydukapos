@@ -63,6 +63,7 @@ import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { readSmsConfigFull } from './_sms-store.js';
+import { sendViaOnfon, onfonConfigured, onfonEnabled } from './_onfon.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -331,7 +332,7 @@ async function sendViaTalkSasa(config, recipients, message) {
   };
 }
 
-const VALID_SMS_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
+const VALID_SMS_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa', 'onfon'];
 // Existing shops never saved a `provider` field, so no value here means Africa's Talking — the only provider that ever existed until now.
 export const smsProviderOf = (config) => (VALID_SMS_PROVIDERS.includes(config && config.provider) ? config.provider : 'africastalking');
 const PROVIDER_LABELS = {
@@ -340,6 +341,7 @@ const PROVIDER_LABELS = {
   celcom: 'Celcom Africa',
   advanta: 'Advanta SMS',
   talksasa: 'TalkSasa',
+  onfon: 'Onfon Media',
 };
 
 // zip 247: the provider dispatch, shared with other server code (the "your payment settings changed" alert goes out through the shop's own SMS
@@ -360,6 +362,12 @@ export async function dispatchSms(config, recipients, message, from = '') {
     if (!config.advantaApiKey || !config.advantaPartnerId || !config.advantaShortcode) return missing('Advanta SMS API key, Partner ID, and Shortcode');
     return sendViaCelcomStyle('Advanta SMS', 'https://quicksms.advantasms.com/api/services/sendsms/', config, 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', recipients, message);
   }
+  if (provider === 'onfon') {
+    // zip 327: Onfon Media. Turned off or incomplete = a clear error; the message is NEVER handed to another (paid) provider instead.
+    if (!onfonEnabled(config)) return { status: 400, error: 'Onfon Media is turned off in Settings, so this message was not sent. Turn it on or choose another provider.' };
+    if (!onfonConfigured(config)) return missing('Onfon Access Key, API Key, Client ID and Sender ID');
+    return sendViaOnfon(config, recipients, message);
+  }
   if (provider === 'talksasa') {
     if (!config.talksasaApiKey || !config.talksasaSenderId) return missing('TalkSasa API key and Sender ID');
     return sendViaTalkSasa(config, recipients, message);
@@ -379,6 +387,13 @@ export async function sendShopSms(env, config, phone, message) {
 }
 
 export function normalizePhoneForSms(raw) { return normalizeToE164Kenya(raw); }
+
+async function smsDedupeKey(clientId, recipients, message, requestId) {
+  const src = requestId ? 'id|' + String(requestId).slice(0, 80) : 'm|' + recipients.slice().sort().join(',') + '|' + message;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(src));
+  return 'sms-dedupe:' + clientId + ':' + [...new Uint8Array(buf)].slice(0, 16).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function freeDedupe(env, key) { if (key) { try { await env.mydukapos_kv.delete(key); } catch (e) { /* expires in a minute */ } } }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -433,12 +448,25 @@ export async function onRequestPost(context) {
   const config = full.config;
   const provider = smsProviderOf(config);
 
+  // zip 327: Onfon only - the same message to the same people within a minute (a double tap, a retry after a timeout, a replayed request) is sent ONCE.
+  // `requestId` (when the caller has one) names the message; otherwise it is the recipients + text. A send that was refused for sure frees the key at once;
+  // a timeout (the message may have been accepted) keeps it for the minute.
+  let dedupeKey = null;
+  if (provider === 'onfon') {
+    dedupeKey = await smsDedupeKey(clientId, filteredRecipients, message, body.requestId);
+    try {
+      if (await env.mydukapos_kv.get(dedupeKey)) return jsonResponse({ success: false, duplicate: true, sentCount: 0, failedCount: 0, skippedForOptOut, provider, error: 'This exact message was sent a moment ago, so it was not sent again.' }, 200);
+      await env.mydukapos_kv.put(dedupeKey, String(Date.now()), { expirationTtl: 60 });
+    } catch (e) { dedupeKey = null; }
+  }
+
   try {
     const result = await dispatchSms(config, filteredRecipients, message, typeof body.from === 'string' ? body.from.trim() : '');
-    if (result.status === 400) return jsonResponse({ error: result.error }, 400);
+    if (result.status === 400) { await freeDedupe(env, dedupeKey); return jsonResponse({ error: result.error }, 400); }
 
     if (result.error) {
-      return jsonResponse({ error: result.error, raw: result.raw }, 502);
+      if (!result.uncertain) await freeDedupe(env, dedupeKey);
+      return jsonResponse({ error: result.error, raw: result.raw, ...(result.uncertain ? { uncertain: true } : {}) }, 502);
     }
 
     return jsonResponse({ ...result, skippedForOptOut, provider });

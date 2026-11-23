@@ -164,7 +164,7 @@
                 if (dp === 'pharmacy' && !isPay(it)) {
                     var uc = unitCost(it, ctx.byCode); a.costLines++; if (!(uc > 0)) a.missingCost++;
                     var key = String(it.code != null && it.code !== '' ? it.code : it.name), o = a.drug[key] || (a.drug[key] = { name: String(it.name || '?'), qty: 0, rev: 0, cost: 0 });
-                    o.qty += q; o.rev += line; o.cost += uc * q;
+                    o.qty += q; o.rev += line; o.cost += (typeof moneyLineCost === "function" ? moneyLineCost(it, s) : uc * q);   // zip 390: the line's own cost, the same rule as the totals
                 }
             });
             if (chs) chs.forEach(function (c) { delete c._used; });
@@ -370,8 +370,10 @@
 
     /* ---------- widgets ---------- */
     function orderOf(id) { var i = S.order.indexOf(id); if (i >= 0) return i; for (var k = 0; k < WIDGETS.length; k++) if (WIDGETS[k][0] === id) return 100 + k; return 999; }
+    // zip 298: on a phone the long, number-heavy sections start folded (tap the title to open) - the page was ~6,600 px of scrolling
+    var FOLD = ['clinical', 'stock', 'drugs', 'hours', 'days', 'staff', 'insights', 'activity', 'receivables', 'expenses', 'profit', 'payments'];
     function card(id, title, body, extra) {
-        return '<section class="dh-card dh-w-' + (extra && extra.span || 6) + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dh-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dh-card-b">' + body + '</div></section>';
+        return '<section class="dh-card dh-w-' + (extra && extra.span || 6) + (FOLD.indexOf(id) >= 0 ? ' dh-fold' : '') + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dh-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dh-card-b">' + body + '</div></section>';
     }
     function empty(msg) { return '<p class="dh-empty">' + esc(msg) + '</p>'; }
     function viewBtn(tab, label) { return tabVisible(tab) ? '<button type="button" class="dh-link" data-goto="' + tab + '">' + esc(label || 'View report') + ' →</button>' : ''; }
@@ -656,6 +658,8 @@
 
     /* ---------- events (one delegated listener) ---------- */
     function onClick(ev) {
+        var fh = ev.target && ev.target.closest ? ev.target.closest('.dh-fold > .dh-card-h') : null;
+        if (fh && root && root.contains(fh) && !(ev.target.closest('button,a,[data-goto]'))) { fh.parentNode.classList.toggle('dh-open'); return; }
         var t = ev.target && ev.target.closest ? ev.target.closest('[data-preset],[data-metric],[data-topby],[data-topall],[data-staffby],[data-goto],[data-act],[data-retry],[data-applycustom],[data-wmove]') : null;
         if (!t || !root || !root.contains(t)) return;
         if (t.dataset.preset) { S.preset = t.dataset.preset; persist(); return D.render(); }

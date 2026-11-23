@@ -1,0 +1,712 @@
+<!-- INVOICING ------------------------------------------------------------------------------------------------------------------
+     zip 373: an Invoicing tab in every app.
+       - Invoices in any currency (KES is the default; the default can be changed in Invoicing > Settings), with an "include tax" choice per invoice
+         (no tax / tax added on top / tax already in the prices), discount, notes and terms.
+       - A presentable A4 invoice: print it, save it as a PDF, share it (WhatsApp, e-mail, the phone's share sheet), copy it as text.
+       - Payments on each invoice (cash, M-Pesa, bank ...), part payments, a paid / part paid / overdue status.
+       - Client statements (opening balance, invoices, payments, closing balance, ageing) and a receive-payment screen that settles the oldest invoice first.
+       - Reconciliation: who owes what (ageing) and a bank / M-Pesa statement matcher that ticks the payments the bank really received.
+       - "Also show sales in" (Settings): the Sales Counter shows the payable total in a second currency; the sales themselves stay in KES.
+     The invoices are kept on this device and travel with the shop's settings, so every device sees the same invoices.
+     Also: the payable total on the desktop Sales Counter cart is bigger.
+     Shared by every app via `npm run sync`; never hand-edit it inside an app. -->
+<style>
+/* ---- desktop Sales Counter: the amount to pay is the biggest thing on the cart ---- */
+@media (min-width: 900px) {
+    html body #sales-tab #cart-sticky-bar #cart-grand-total { font-size: 40px !important; font-weight: 800 !important; line-height: 1.1 !important; letter-spacing: -.5px; padding: 8px 16px !important; font-variant-numeric: tabular-nums; }
+    html body #sales-tab #cart-sticky-bar #cart-grand-total .cart-total-savings { font-size: 14px !important; letter-spacing: 0; }
+}
+#vx-also { display: block; font-size: 15px; font-weight: 700; color: #1f6f8b; margin-top: 2px; letter-spacing: 0; }
+
+/* ---- the Invoicing tab ---- */
+#invoicing-tab .vx { max-width: 1180px; margin: 0 auto; }
+#invoicing-tab .vx h3 { margin: 0 0 4px; }
+#invoicing-tab .vx-nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 14px; }
+#invoicing-tab .vx-nav button { width: auto; margin: 0; padding: 9px 15px; border-radius: 999px; border: 1px solid var(--border-color, #ccd1d5); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-weight: 700; font-size: 13px; cursor: pointer; transition: background .15s, transform .15s; }
+#invoicing-tab .vx-nav button:active { transform: scale(.97); }
+#invoicing-tab .vx-nav button.on { background: var(--vx-ac, #0f766e); border-color: var(--vx-ac, #0f766e); color: #fff; }
+#invoicing-tab .vx-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 6px 0 14px; }
+#invoicing-tab .vx-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 12px 14px; border-left: 5px solid var(--vx-ac, #0f766e); }
+#invoicing-tab .vx-card small { display: block; color: #7f8c8d; font-size: 12px; font-weight: 700; }
+#invoicing-tab .vx-card b { display: block; font-size: 22px; margin-top: 3px; color: var(--dark, #2c3e50); font-variant-numeric: tabular-nums; }
+#invoicing-tab .vx-card.bad { border-left-color: #c0392b; } #invoicing-tab .vx-card.good { border-left-color: #1f8a70; }
+#invoicing-tab .vx-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin: 6px 0 12px; }
+#invoicing-tab .vx-bar label, #invoicing-tab .vx-f label { display: block; font-size: 12px; font-weight: 700; color: #7f8c8d; margin-bottom: 3px; }
+#invoicing-tab .vx-bar input, #invoicing-tab .vx-bar select, #invoicing-tab .vx-f input, #invoicing-tab .vx-f select, #invoicing-tab .vx-f textarea { width: 100%; box-sizing: border-box; margin: 0; padding: 9px 10px; border: 1px solid var(--border-color, #ccd1d5); border-radius: 8px; font-size: 14px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); }
+#invoicing-tab .vx-bar input, #invoicing-tab .vx-bar select { width: auto; min-width: 130px; }
+#invoicing-tab .vx-btn { width: auto; margin: 0; padding: 9px 15px; border-radius: 8px; border: 0; background: var(--vx-ac, #0f766e); color: #fff; font-weight: 700; font-size: 13px; cursor: pointer; transition: transform .12s, filter .12s; }
+#invoicing-tab .vx-btn:hover { filter: brightness(1.08); } #invoicing-tab .vx-btn:active { transform: scale(.97); }
+#invoicing-tab .vx-btn.sec { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border: 1px solid var(--border-color, #ccd1d5); }
+#invoicing-tab .vx-btn.dng { background: #c0392b; } #invoicing-tab .vx-btn.sm { padding: 6px 10px; font-size: 12px; }
+#invoicing-tab table.vx-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+#invoicing-tab table.vx-t th { text-align: left; font-size: 12px; color: #7f8c8d; padding: 8px 8px; border-bottom: 2px solid var(--border-color, #e1e5e8); white-space: nowrap; }
+#invoicing-tab table.vx-t td { padding: 9px 8px; border-bottom: 1px solid var(--border-color, #eef0f2); vertical-align: middle; }
+#invoicing-tab table.vx-t .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#invoicing-tab table.vx-t tr.vx-row { cursor: pointer; } #invoicing-tab table.vx-t tr.vx-row:hover td { background: rgba(15, 118, 110, .06); }
+#invoicing-tab .vx-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 800; }
+#invoicing-tab .vx-pill.paid { background: #dcf5e7; color: #15803d; } #invoicing-tab .vx-pill.partial { background: #fff1d6; color: #b45309; }
+#invoicing-tab .vx-pill.unpaid { background: #e4edf7; color: #1d4e89; } #invoicing-tab .vx-pill.overdue { background: #fde2e0; color: #b42318; } #invoicing-tab .vx-pill.void { background: #e9ecef; color: #6b7280; }
+#invoicing-tab .vx-ed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+@media (min-width: 1100px) { #invoicing-tab .vx-ed.wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+#invoicing-tab .vx-box { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+#invoicing-tab .vx-box h4 { margin: 0 0 8px; font-size: 14px; }
+#invoicing-tab .vx-g2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+#invoicing-tab .vx-line { display: grid; grid-template-columns: minmax(0, 3fr) 70px 110px 34px; gap: 6px; align-items: center; margin-bottom: 6px; }
+#invoicing-tab .vx-line.tx { grid-template-columns: minmax(0, 3fr) 70px 110px 56px 34px; }
+#invoicing-tab .vx-line input { padding: 8px; border: 1px solid var(--border-color, #ccd1d5); border-radius: 8px; width: 100%; box-sizing: border-box; margin: 0; font-size: 14px; }
+#invoicing-tab .vx-line .x { background: none; border: 0; color: #c0392b; font-size: 18px; cursor: pointer; width: auto; margin: 0; padding: 0; }
+#invoicing-tab .vx-sum { margin-left: auto; max-width: 340px; font-variant-numeric: tabular-nums; }
+#invoicing-tab .vx-sum div { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+#invoicing-tab .vx-sum .big { font-size: 22px; font-weight: 800; border-top: 2px solid var(--dark, #2c3e50); margin-top: 4px; padding-top: 8px; }
+#invoicing-tab .vx-tip { background: #eaf3f7; border-left: 4px solid #1f6f8b; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin: 8px 0; }
+#invoicing-tab .vx-warn { background: #fff6e5; border-left: 4px solid #e67e22; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin: 8px 0; }
+#invoicing-tab .vx-prev { background: #e7ebef; border-radius: 12px; padding: 12px; overflow: auto; max-height: 80vh; }
+#invoicing-tab .vx-prev-in { width: 794px; transform-origin: top left; }
+#invoicing-tab .vx-empty { text-align: center; padding: 34px 12px; color: #7f8c8d; }
+#invoicing-tab .vx-seg { display: inline-flex; border: 1px solid var(--border-color, #ccd1d5); border-radius: 8px; overflow: hidden; }
+#invoicing-tab .vx-seg button { width: auto; margin: 0; border: 0; border-radius: 0; padding: 8px 12px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-size: 13px; font-weight: 700; cursor: pointer; }
+#invoicing-tab .vx-seg button.on { background: var(--vx-ac, #0f766e); color: #fff; }
+html[data-theme="dark"] #invoicing-tab .vx-pill.paid { background: #16352a; color: #5fd99b; } html[data-theme="dark"] #invoicing-tab .vx-pill.partial { background: #3a300f; color: #ffcf5c; }
+html[data-theme="dark"] #invoicing-tab .vx-pill.unpaid { background: #16293a; color: #8ec5ff; } html[data-theme="dark"] #invoicing-tab .vx-pill.overdue { background: #3d1a17; color: #ff9d94; }
+html[data-theme="dark"] #invoicing-tab .vx-tip { background: #16293a; } html[data-theme="dark"] #invoicing-tab .vx-warn { background: #3a300f; }
+/* pop-up (preview / payment / share) */
+.vx-ov { position: fixed; inset: 0; z-index: 10060; background: rgba(15, 23, 42, .6); display: flex; align-items: center; justify-content: center; padding: 14px; animation: vxfade .18s ease-out; }
+@keyframes vxfade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vxpop { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+.vx-dlg { background: #fff; color: #1f2d3d; border-radius: 14px; width: 100%; max-width: 460px; padding: 18px; box-shadow: 0 18px 50px rgba(0, 0, 0, .3); max-height: 92vh; overflow: auto; animation: vxpop .22s ease-out; }
+.vx-dlg.wide { max-width: 880px; }
+.vx-dlg h3 { margin: 0 0 10px; }
+.vx-dlg label { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
+.vx-dlg input, .vx-dlg select, .vx-dlg textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #ccd1d6; border-radius: 8px; font-size: 14px; }
+.vx-dlg .act { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.vx-dlg .act button { flex: 1 1 auto; min-width: 96px; padding: 10px 12px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; color: #fff; background: #0f766e; }
+.vx-dlg .act button.sec { background: #eef1f4; color: #1f2d3d; } .vx-dlg .act button.wa { background: #25D366; } .vx-dlg .act button.dng { background: #c0392b; }
+.vx-dlg .docwrap { background: #e7ebef; border-radius: 10px; padding: 10px; overflow: auto; max-height: 62vh; }
+@media (prefers-reduced-motion: reduce) { .vx-ov, .vx-dlg { animation: none; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__vxLoaded) return; window.__vxLoaded = true;
+    var KEY = 'pos_invoicing_v1';
+
+    /* ================= small helpers ================= */
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function safe(fn, d) { try { return fn(); } catch (e) { return d; } }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* silent */ } }
+    function uid() { return 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+    function num(x) { var n = parseFloat(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+    function rd(n, d) { var f = Math.pow(10, d == null ? 2 : d); n = Number(n) || 0; return Math.round(n * f + (n >= 0 ? 1e-9 : -1e-9)) / f; }
+    function today() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+    function addDays(iso, n) { var d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+    function dayDiff(a, b) { return Math.round((new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000); }
+    var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function dshow(iso) { if (!iso) return ''; var p = String(iso).slice(0, 10).split('-'); return p.length === 3 ? (+p[2]) + ' ' + MON[(+p[1]) - 1] + ' ' + p[0] : String(iso); }
+    function bizName() { return safe(function () { return typeof businessName !== 'undefined' && businessName ? businessName : (S().bizName || 'My business'); }, 'My business'); }
+    function modKey() { var p = (location.pathname || '').toLowerCase(); var m = /\/(water|hotel|hospital|production|services|pharmacy|carwash)(\/|$)/.exec(p); return m ? m[1] : 'shop'; }
+    var HINT = { shop: 'e.g. Goods supplied — order 123', water: 'e.g. 20 L refills, monthly delivery', hotel: 'e.g. Room 12 — 3 nights, conference hall', hospital: 'e.g. Consultation, lab tests, ward charges', pharmacy: 'e.g. Medicines supplied to the clinic', production: 'e.g. 200 loaves, weekly supply', services: 'e.g. Service call and labour', carwash: 'e.g. Fleet wash — 10 vehicles' };
+
+    /* ================= currencies ================= */
+    var BASE = {
+        KES: { name: 'Kenyan shilling', sym: 'KES', dec: 2, rate: 1, ok: true },
+        USD: { name: 'US dollar', sym: 'USD', dec: 2, rate: 129, ok: false }, EUR: { name: 'Euro', sym: 'EUR', dec: 2, rate: 140, ok: false },
+        GBP: { name: 'British pound', sym: 'GBP', dec: 2, rate: 165, ok: false }, UGX: { name: 'Ugandan shilling', sym: 'UGX', dec: 0, rate: 0.035, ok: false },
+        TZS: { name: 'Tanzanian shilling', sym: 'TZS', dec: 0, rate: 0.05, ok: false }, RWF: { name: 'Rwandan franc', sym: 'RWF', dec: 0, rate: 0.09, ok: false },
+        ZAR: { name: 'South African rand', sym: 'ZAR', dec: 2, rate: 7.2, ok: false }, AED: { name: 'UAE dirham', sym: 'AED', dec: 2, rate: 35, ok: false },
+        INR: { name: 'Indian rupee', sym: 'INR', dec: 2, rate: 1.55, ok: false }, CNY: { name: 'Chinese yuan', sym: 'CNY', dec: 2, rate: 18, ok: false }
+    };
+
+    /* ================= data ================= */
+    function blank() {
+        return {
+            v: 1, updatedAt: 0, invoices: [], credits: [], settings: {
+                defaultCur: 'KES', salesAlso: '', taxDefault: 'none', taxRate: safe(function () { var r = typeof VAT_RATE_A !== 'undefined' ? Number(VAT_RATE_A) : NaN; return r > 0 && r < 100 ? r : 16; }, 16),
+                prefix: 'INV', bizName: '', contact: '', payInfo: '', next: 1, dueDays: 14, accent: '#0f766e', terms: 'Payment is due by the due date shown. Thank you for your business.', notes: '', cur: JSON.parse(JSON.stringify(BASE)), ratesAt: 0
+            }
+        };
+    }
+    var D = null;
+    function load() {
+        if (D) return D;
+        try { var o = JSON.parse(localStorage.getItem(KEY) || 'null'); D = blank(); if (o && typeof o === 'object') { D.invoices = Array.isArray(o.invoices) ? o.invoices : []; D.credits = Array.isArray(o.credits) ? o.credits : []; D.updatedAt = o.updatedAt || 0; D.settings = Object.assign(D.settings, o.settings || {}); D.settings.cur = Object.assign(JSON.parse(JSON.stringify(BASE)), (o.settings && o.settings.cur) || {}); } } catch (e) { D = blank(); }
+        return D;
+    }
+    function save() { D = load(); D.updatedAt = Date.now(); try { localStorage.setItem(KEY, JSON.stringify(D)); } catch (e) { toast('Could not save the invoices on this device (storage is full).', true); } try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* sent with the next change */ } }
+    function S() { return load().settings; }
+    function cur(code) { var c = S().cur[code] || BASE[code]; return c || { name: code, sym: code, dec: 2, rate: 1, ok: false }; }
+    function live() { return load().invoices.filter(function (i) { return i && !i._deleted; }); }
+    function byId(id) { var a = load().invoices; for (var i = 0; i < a.length; i++) if (a[i].id === id && !a[i]._deleted) return a[i]; return null; }
+    function fmt(n, code, plain) {
+        var c = cur(code || 'KES'), d = c.dec == null ? 2 : c.dec, v = rd(n, d), neg = v < 0;
+        var s = Math.abs(v).toLocaleString('en-KE', { minimumFractionDigits: d, maximumFractionDigits: d });
+        return (neg ? '− ' : '') + (plain ? '' : (c.sym || code) + ' ') + s;
+    }
+
+    /* ================= the calculation engine (pure) ================= */
+    function totals(inv, asOf) {
+        var dec = inv.dec == null ? (cur(inv.cur).dec == null ? 2 : cur(inv.cur).dec) : inv.dec;
+        var lines = Array.isArray(inv.lines) ? inv.lines : [];
+        var sub = 0, taxableSub = 0;
+        lines.forEach(function (l) { var a = rd(num(l.qty) * num(l.price), dec); sub += a; if (l.tax !== false) taxableSub += a; });
+        sub = rd(sub, dec);
+        var disc = inv.discType === 'pct' ? rd(sub * Math.min(100, Math.max(0, num(inv.discount))) / 100, dec) : Math.min(sub, Math.max(0, rd(num(inv.discount), dec)));
+        var factor = sub > 0 ? (sub - disc) / sub : 0, base = taxableSub * factor, rate = num(inv.taxRate), tax = 0, total;
+        var mode = inv.taxMode === 'exclusive' || inv.taxMode === 'inclusive' ? inv.taxMode : 'none';
+        if (mode === 'exclusive') { tax = rd(base * rate / 100, dec); total = rd(sub - disc + tax, dec); }
+        else if (mode === 'inclusive') { tax = rd(base * rate / (100 + rate), dec); total = rd(sub - disc, dec); }
+        else { total = rd(sub - disc, dec); }
+        var paid = rd((inv.payments || []).reduce(function (t, p) { return t + (p && !p._deleted ? num(p.amount) : 0); }, 0), dec);
+        var due = Math.max(0, rd(total - paid, dec));
+        var t0 = asOf || today(), status;
+        if (inv.void) status = 'void';
+        else if (total > 0 && due <= Math.pow(10, -dec) / 2) status = 'paid';
+        else if (paid > 0) status = (inv.due && inv.due < t0) ? 'overdue' : 'partial';
+        else status = (inv.due && inv.due < t0) ? 'overdue' : 'unpaid';
+        var rt = num(inv.rate) || 1;
+        return { sub: sub, disc: disc, tax: tax, net: rd(total - tax, dec), total: total, paid: paid, due: due, status: status, taxMode: mode, kes: rd(total * rt, 2), kesDue: rd(due * rt, 2), dec: dec, overpaid: Math.max(0, rd(paid - total, dec)) };
+    }
+    function clientKey(x) {
+        var ph = String(x.phone || '').replace(/\D/g, '');
+        if (ph.length >= 9) return 'p' + ph.slice(-9);
+        return 'n' + String(x.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+    function nextNumber() { var s = S(); var n = Math.max(num(s.next), 1); var used = {}; load().invoices.forEach(function (i) { used[i.no] = 1; }); var no; do { no = (s.prefix || 'INV') + '-' + ('0000' + n).slice(-4); n++; } while (used[no]); return no; }
+    function clients() {
+        var m = {};
+        live().forEach(function (i) { var k = clientKey(i); if (!m[k]) m[k] = { key: k, name: i.client, phone: i.phone, email: i.email, address: i.address, pin: i.pin }; if (i.client) { m[k].name = i.client; if (i.phone) m[k].phone = i.phone; if (i.email) m[k].email = i.email; } });
+        return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+    }
+    /* a client's statement in ONE currency */
+    function statement(key, code, from, to) {
+        var ev = [];
+        live().forEach(function (i) {
+            if (clientKey(i) !== key || i.cur !== code) return;
+            var t = totals(i); if (i.void) return;
+            ev.push({ date: i.date, ord: 0, type: 'Invoice', ref: i.no, desc: i.title || 'Invoice', debit: t.total, credit: 0, inv: i });
+            (i.payments || []).forEach(function (p) { if (p && !p._deleted && num(p.amount) > 0) ev.push({ date: p.date || i.date, ord: 1, type: 'Payment', ref: p.ref || i.no, desc: 'Payment — ' + (p.method || 'received') + ' (on ' + i.no + ')', debit: 0, credit: num(p.amount), inv: i }); });
+        });
+        load().credits.forEach(function (c) { if (c && !c._deleted && c.key === key && c.cur === code) ev.push({ date: c.date, ord: 1, type: 'Payment', ref: c.ref || '', desc: 'Payment on account — ' + (c.method || 'received'), debit: 0, credit: num(c.amount), cr: c }); });
+        ev.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.ord - b.ord; });
+        var opening = 0, rows = [], bal = 0, dec = cur(code).dec;
+        ev.forEach(function (e) { bal = rd(bal + e.debit - e.credit, dec); e.bal = bal; });
+        ev.forEach(function (e) { if (from && e.date < from) opening = e.bal; else if (!to || e.date <= to) rows.push(e); });
+        var inv = rd(rows.reduce(function (t, e) { return t + e.debit; }, 0), dec), pay = rd(rows.reduce(function (t, e) { return t + e.credit; }, 0), dec);
+        return { key: key, cur: code, from: from || '', to: to || '', opening: opening, rows: rows, invoiced: inv, paid: pay, closing: rd(opening + inv - pay, dec) };
+    }
+    function ageing(code, asOf) {
+        var t0 = asOf || today(), res = {}, tot = { cur: 0, d30: 0, d60: 0, d90: 0, d90p: 0, all: 0, credit: 0 }, dec = cur(code).dec;
+        function row(k, name) { return res[k] || (res[k] = { key: k, name: name, cur: 0, d30: 0, d60: 0, d90: 0, d90p: 0, all: 0, invoiced: 0, paid: 0, credit: 0 }); }
+        live().forEach(function (i) {
+            if (i.cur !== code || i.void) return; var t = totals(i, t0), r = row(clientKey(i), i.client);
+            r.invoiced += t.total; r.paid += Math.min(t.paid, t.total); if (t.due <= 0) return;
+            var late = i.due ? dayDiff(t0, i.due) : 0, b = late <= 0 ? 'cur' : late <= 30 ? 'd30' : late <= 60 ? 'd60' : late <= 90 ? 'd90' : 'd90p';
+            r[b] += t.due; r.all += t.due;
+        });
+        load().credits.forEach(function (c) { if (c && !c._deleted && c.cur === code) { var r = row(c.key, c.name); r.credit += num(c.amount); r.paid += num(c.amount); } });
+        var list = Object.keys(res).map(function (k) { var r = res[k]; ['cur', 'd30', 'd60', 'd90', 'd90p', 'all', 'invoiced', 'paid', 'credit'].forEach(function (f) { r[f] = rd(r[f], dec); }); r.net = rd(r.all - r.credit, dec); return r; }).filter(function (r) { return r.invoiced > 0 || r.credit > 0; });
+        list.sort(function (a, b) { return b.all - a.all; });
+        list.forEach(function (r) { ['cur', 'd30', 'd60', 'd90', 'd90p', 'all', 'credit'].forEach(function (f) { tot[f] += r[f]; }); });
+        ['cur', 'd30', 'd60', 'd90', 'd90p', 'all', 'credit'].forEach(function (f) { tot[f] = rd(tot[f], dec); });
+        return { cur: code, asOf: t0, rows: list, total: tot };
+    }
+    /* receive money from a client: settles the oldest unpaid invoices first, the rest is kept as credit on account */
+    function receive(key, name, code, amount, date, method, ref) {
+        var dec = cur(code).dec, left = rd(amount, dec), used = [];
+        var open = live().filter(function (i) { return clientKey(i) === key && i.cur === code && !i.void && totals(i).due > 0; }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+        var batch = uid();
+        open.forEach(function (i) {
+            if (left <= 0) return; var due = totals(i).due, a = Math.min(due, left);
+            i.payments = i.payments || []; i.payments.push({ id: uid(), date: date, amount: a, method: method, ref: ref, batch: batch }); i.updatedAt = Date.now(); left = rd(left - a, dec); used.push({ no: i.no, amount: a });
+        });
+        var credit = 0;
+        if (left > 0) { load().credits.push({ id: uid(), key: key, name: name, cur: code, amount: left, date: date, method: method, ref: ref, batch: batch, updatedAt: Date.now() }); credit = left; }
+        save(); return { used: used, credit: credit };
+    }
+
+    /* ================= bank / M-Pesa statement matching (pure) ================= */
+    function parseStatement(text, which) {
+        var out = [];
+        String(text || '').split(/\r?\n/).forEach(function (raw) {
+            var line = raw.trim(); if (!line) return;
+            var date = '', m;
+            if ((m = /(\d{4})-(\d{2})-(\d{2})/.exec(line))) date = m[0];
+            else if ((m = /(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/.exec(line))) date = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+            else if ((m = /(\d{1,2})[ -]([A-Za-z]{3})[a-z]*[ -,]*(\d{4})/.exec(line))) { var mi = MON.map(function (x) { return x.toLowerCase(); }).indexOf(m[2].toLowerCase()); if (mi >= 0) date = m[3] + '-' + ('0' + (mi + 1)).slice(-2) + '-' + ('0' + m[1]).slice(-2); }
+            var ref = ''; var rm = line.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{8,14}\b/g); if (rm) ref = rm[0];
+            var scrub = line.replace(/(\d{4})-(\d{2})-(\d{2})/g, ' ').replace(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/g, ' ').replace(/\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,14}\b/g, ' ').replace(/\b\d{1,2}:\d{2}(:\d{2})?\b/g, ' ');
+            var nums = (scrub.match(/\d[\d,]*\.?\d*/g) || []).map(function (x) { return num(x); }).filter(function (x) { return x > 0; });
+            if (!nums.length) return;
+            var amt = which === 'last' ? nums[nums.length - 1] : which === 'second' ? (nums[1] != null ? nums[1] : nums[0]) : nums[0];
+            out.push({ id: 's' + out.length, raw: line, date: date, ref: ref, amount: rd(amt, 2) });
+        });
+        return out;
+    }
+    function matchPayments(pays, lines, tolDays) {
+        var used = {}, matched = [], tol = tolDays == null ? 5 : tolDays;
+        function take(p, how, test) { for (var i = 0; i < lines.length; i++) { var l = lines[i]; if (used[l.id]) continue; if (test(l)) { used[l.id] = 1; matched.push({ pay: p, line: l, how: how }); return true; } } return false; }
+        var rest = [];
+        pays.forEach(function (p) { var r = String(p.ref || '').trim().toUpperCase(); if (r.length >= 4 && take(p, 'reference', function (l) { return (l.ref && l.ref.toUpperCase() === r) || l.raw.toUpperCase().indexOf(r) >= 0; })) return; rest.push(p); });
+        var left = [];
+        rest.forEach(function (p) { if (!take(p, 'amount + date', function (l) { return Math.abs(l.amount - num(p.amount)) < 0.01 && (!l.date || !p.date || Math.abs(dayDiff(l.date, p.date)) <= tol); })) left.push(p); });
+        return { matched: matched, missing: left, extra: lines.filter(function (l) { return !used[l.id]; }) };
+    }
+
+    /* ================= tiny PDF writer: one JPEG picture per A4 page ================= */
+    function buildPdf(pages) {
+        var enc = function (s) { var a = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 255; return a; };
+        var parts = [], len = 0, offs = [];
+        function add(x) { if (typeof x === 'string') x = enc(x); parts.push(x); len += x.length; }
+        add('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+        var n = pages.length, objs = 2 + n * 3, kids = [];
+        for (var i = 0; i < n; i++) kids.push((3 + i * 3) + ' 0 R');
+        offs[1] = len; add('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+        offs[2] = len; add('2 0 obj\n<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + n + ' >>\nendobj\n');
+        pages.forEach(function (pg, i) {
+            var po = 3 + i * 3, co = po + 1, io = po + 2, W = 595.28, H = 841.89, h = W * pg.h / pg.w;
+            offs[po] = len; add(po + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W.toFixed(2) + ' ' + H.toFixed(2) + '] /Resources << /XObject << /Im' + i + ' ' + io + ' 0 R >> >> /Contents ' + co + ' 0 R >>\nendobj\n');
+            var cs = 'q ' + W.toFixed(2) + ' 0 0 ' + h.toFixed(2) + ' 0 ' + (H - h).toFixed(2) + ' cm /Im' + i + ' Do Q';
+            offs[co] = len; add(co + ' 0 obj\n<< /Length ' + cs.length + ' >>\nstream\n' + cs + '\nendstream\nendobj\n');
+            offs[io] = len; add(io + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + pg.w + ' /Height ' + pg.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + pg.bytes.length + ' >>\nstream\n'); add(pg.bytes); add('\nendstream\nendobj\n');
+        });
+        var xo = len, x = 'xref\n0 ' + (objs + 1) + '\n0000000000 65535 f \n';
+        for (var k = 1; k <= objs; k++) x += ('0000000000' + offs[k]).slice(-10) + ' 00000 n \n';
+        add(x + 'trailer\n<< /Size ' + (objs + 1) + ' /Root 1 0 R >>\nstartxref\n' + xo + '\n%%EOF\n');
+        var all = new Uint8Array(len), p = 0; parts.forEach(function (a) { all.set(a, p); p += a.length; });
+        return all;
+    }
+    /* draws the document as a picture and cuts it into A4 pages (works where the browser can draw HTML to a canvas; otherwise the caller falls back) */
+    function docToPdf(html) {
+        return new Promise(function (resolve, reject) {
+            try {
+                var W = 794, host = document.createElement('div'); host.style.cssText = 'position:fixed;left:-9999px;top:0;width:' + W + 'px;background:#fff;';
+                host.innerHTML = html; document.body.appendChild(host);
+                var H = Math.max(host.scrollHeight, 400);
+                var xml = new XMLSerializer().serializeToString(host.firstElementChild ? host : host);
+                document.body.removeChild(host);
+                var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="width:' + W + 'px;background:#fff;">' + xml.replace(/^<div[^>]*>/, '').replace(/<\/div>$/, '') + '</div></foreignObject></svg>';
+                var img = new Image();
+                img.onload = function () {
+                    try {
+                        var sc = 2, full = document.createElement('canvas'); full.width = W * sc; full.height = H * sc; var g = full.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, full.width, full.height); g.drawImage(img, 0, 0, full.width, full.height);
+                        var ph = Math.floor(W * sc * 841.89 / 595.28), pages = [];
+                        for (var y = 0; y < full.height; y += ph) {
+                            var c = document.createElement('canvas'); c.width = full.width; c.height = Math.min(ph, full.height - y); var cg = c.getContext('2d'); cg.fillStyle = '#fff'; cg.fillRect(0, 0, c.width, c.height); cg.drawImage(full, 0, y, full.width, c.height, 0, 0, c.width, c.height);
+                            var b64 = c.toDataURL('image/jpeg', 0.92).split(',')[1], bin = atob(b64), bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                            pages.push({ w: c.width, h: c.height, bytes: bytes });
+                        }
+                        resolve(new Blob([buildPdf(pages)], { type: 'application/pdf' }));
+                    } catch (e) { reject(e); }
+                };
+                img.onerror = function () { reject(new Error('draw')); };
+                img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+            } catch (e) { reject(e); }
+        });
+    }
+
+    /* ================= the documents ================= */
+    function shop() {
+        var o = {
+            receiptLogoData: safe(function () { return typeof receiptLogoData !== 'undefined' ? receiptLogoData : ''; }, ''),
+            receiptContact: safe(function () { return typeof receiptContact !== 'undefined' ? receiptContact : ''; }, ''),
+            receiptEmail: safe(function () { return typeof receiptEmail !== 'undefined' ? receiptEmail : ''; }, ''),
+            receiptExtraInfo: safe(function () { return typeof receiptExtraInfo !== 'undefined' ? receiptExtraInfo : ''; }, ''),
+            receiptFooterNotes: safe(function () { return typeof receiptFooterNotes !== 'undefined' ? receiptFooterNotes : ''; }, '')
+        };
+        var logo = /^data:image\//.test(o.receiptLogoData || '') ? o.receiptLogoData : '';
+        var contact = [o.receiptContact, o.receiptEmail, o.receiptExtraInfo].map(function (x) { return String(x || '').trim(); }).filter(Boolean).join('\n').split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+        var pay = safe(function () { return typeof receiptPaymentDetailsList === 'function' ? receiptPaymentDetailsList() : []; }, []);
+        if (!pay.length && S().payInfo) pay = String(S().payInfo).split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+        if (!contact.length && S().contact) contact = String(S().contact).split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+        return { name: bizName(), logo: logo, contact: contact, pay: pay, foot: String(o.receiptFooterNotes || '').trim() };
+    }
+    function docCss(ac) {
+        return '<style>.vx-doc{--ac:' + ac + ';--ink:#111827;--mut:#6b7280;--ln:#e5e7eb;position:relative;box-sizing:border-box;width:794px;max-width:100%;margin:0 auto;background:#fff;color:var(--ink);font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.45;padding:40px 46px 30px;overflow:hidden}'
+            + '.vx-doc *{box-sizing:border-box}.vx-doc .hd{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.vx-doc .brand{display:flex;gap:14px;align-items:center;min-width:0}.vx-doc .brand img{width:58px;height:58px;object-fit:contain;border-radius:10px}'
+            + '.vx-doc .brand h1{margin:0;font-size:20px;font-weight:800;letter-spacing:.2px}.vx-doc .brand .c{font-size:11.5px;color:var(--mut);margin-top:3px;white-space:pre-line}'
+            + '.vx-doc .ttl{text-align:right}.vx-doc .ttl .t{font-size:38px;font-weight:300;letter-spacing:1px;color:var(--ac);line-height:1}.vx-doc .ttl .n{margin-top:8px;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}'
+            + '.vx-doc .band{display:flex;flex-wrap:wrap;gap:0;margin:24px 0 20px;border-left:6px solid var(--ac);background:linear-gradient(90deg,rgba(0,0,0,.035),rgba(0,0,0,0));border-radius:0 10px 10px 0}.vx-doc .band>div{padding:14px 22px}.vx-doc .band small{display:block;font-size:11px;color:var(--mut);font-weight:600;margin-bottom:2px}'
+            + '.vx-doc .band .amt{font-size:32px;font-weight:800;color:var(--ac);line-height:1.1;font-variant-numeric:tabular-nums}.vx-doc .band b{font-size:14px;font-variant-numeric:tabular-nums}.vx-doc .band .sp{flex:1}'
+            + '.vx-doc .two{display:flex;gap:30px;margin-bottom:20px}.vx-doc .two>div{flex:1;min-width:0}.vx-doc h4{margin:0 0 6px;font-size:11.5px;color:var(--mut);font-weight:700;letter-spacing:.3px}.vx-doc .nm{font-size:15px;font-weight:700}.vx-doc .ln{color:#374151;font-size:12.5px}'
+            + '.vx-doc .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12.5px}.vx-doc .kv span{color:var(--mut)}.vx-doc .kv b{text-align:right;font-variant-numeric:tabular-nums}'
+            + '.vx-doc table{width:100%;border-collapse:collapse;margin-top:4px}.vx-doc thead th{text-align:left;font-size:11.5px;color:#fff;background:var(--ac);padding:9px 10px;font-weight:700}.vx-doc th:first-child{border-radius:7px 0 0 7px}.vx-doc th:last-child{border-radius:0 7px 7px 0}'
+            + '.vx-doc td{padding:10px;border-bottom:1px solid var(--ln);vertical-align:top}.vx-doc .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}.vx-doc tr{page-break-inside:avoid}.vx-doc td .s{color:var(--mut);font-size:11px;margin-top:2px}.vx-doc tbody tr:last-child td{border-bottom:2px solid var(--ink)}'
+            + '.vx-doc .sum{display:flex;justify-content:space-between;gap:26px;margin-top:16px;page-break-inside:avoid}.vx-doc .sum .l{flex:1;min-width:0}.vx-doc .tot{width:300px;font-variant-numeric:tabular-nums}.vx-doc .tot .row{display:flex;justify-content:space-between;padding:5px 0;font-size:13px}.vx-doc .tot .row span{color:var(--mut)}'
+            + '.vx-doc .tot .gt{border-top:2px solid var(--ink);margin-top:5px;padding-top:9px;font-size:16px;font-weight:800}.vx-doc .tot .gt span{color:var(--ink)}.vx-doc .tot .due{margin-top:8px;background:var(--ac);color:#fff;border-radius:9px;padding:11px 14px;font-size:17px;font-weight:800}.vx-doc .tot .due span{color:#fff;font-size:12px;font-weight:700}.vx-doc .tot .due.z{background:#15803d}'
+            + '.vx-doc .box{border:1px solid var(--ln);border-radius:10px;padding:11px 13px;margin-bottom:10px;background:#fafafa}.vx-doc .box div{font-size:12.5px}.vx-doc .fx{font-size:11.5px;color:var(--mut);margin-top:8px}'
+            + '.vx-doc .stamp{position:absolute;right:70px;top:210px;transform:rotate(-14deg);border:5px solid #15803d;color:#15803d;font-weight:900;font-size:50px;letter-spacing:6px;padding:0 18px;border-radius:12px;opacity:.16;pointer-events:none}.vx-doc .stamp.v{border-color:#b42318;color:#b42318}'
+            + '.vx-doc .ft{margin-top:26px;padding-top:12px;border-top:1px solid var(--ln);display:flex;justify-content:space-between;gap:12px;color:var(--mut);font-size:11.5px}'
+            + '@media print{.vx-doc{width:100%;padding:0;margin:0}}</style>';
+    }
+    function header(sh, title, no) {
+        return '<div class="hd"><div class="brand">' + (sh.logo ? '<img src="' + esc(sh.logo) + '" alt="">' : '') + '<div><h1>' + esc(sh.name) + '</h1>' + (sh.contact.length ? '<div class="c">' + esc(sh.contact.join('\n')) + '</div>' : '') + '</div></div>'
+            + '<div class="ttl"><div class="t">' + esc(title) + '</div>' + (no ? '<div class="n"># ' + esc(no) + '</div>' : '') + '</div></div>';
+    }
+    function invoiceDoc(inv) {
+        var sh = shop(), t = totals(inv), code = inv.cur, c = cur(code), st = t.status, ac = inv.accent || S().accent || '#0f766e', taxOn = t.taxMode !== 'none';
+        var rows = (inv.lines || []).map(function (l) {
+            var a = rd(num(l.qty) * num(l.price), t.dec), q = num(l.qty);
+            return '<tr><td>' + esc(l.desc || '') + (l.sub ? '<div class="s">' + esc(l.sub) + '</div>' : '') + '</td><td class="r">' + (Math.round(q) === q ? q : q.toFixed(2)) + '</td><td class="r">' + fmt(num(l.price), code, true) + '</td>' + (taxOn ? '<td class="r">' + (l.tax === false ? '—' : num(inv.taxRate) + '%') + '</td>' : '') + '<td class="r">' + fmt(a, code, true) + '</td></tr>';
+        }).join('') || '<tr><td colspan="' + (taxOn ? 5 : 4) + '" style="color:#6b7280">No items yet.</td></tr>';
+        var tots = '<div class="row"><span>Subtotal</span><b>' + fmt(t.sub, code) + '</b></div>'
+            + (t.disc > 0 ? '<div class="row"><span>Discount' + (inv.discType === 'pct' ? ' (' + num(inv.discount) + '%)' : '') + '</span><b>− ' + fmt(t.disc, code) + '</b></div>' : '')
+            + (taxOn ? '<div class="row"><span>' + (t.taxMode === 'inclusive' ? 'VAT ' + num(inv.taxRate) + '% (included)' : 'VAT ' + num(inv.taxRate) + '%') + '</span><b>' + fmt(t.tax, code) + '</b></div>' : '')
+            + '<div class="row gt"><span>Total</span><b>' + fmt(t.total, code) + '</b></div>'
+            + (t.paid > 0 ? '<div class="row"><span>Paid</span><b>− ' + fmt(t.paid, code) + '</b></div>' : '')
+            + '<div class="row due' + (t.due <= 0 && t.total > 0 ? ' z' : '') + '"><span>' + (t.due <= 0 && t.total > 0 ? 'Fully paid' : 'Balance due') + '</span><b>' + fmt(t.due, code) + '</b></div>';
+        var fx = code !== 'KES' ? '<div class="fx">Amounts are in ' + esc(c.name || code) + ' (' + esc(code) + '). Exchange rate used: 1 ' + esc(code) + ' = KES ' + num(inv.rate).toLocaleString('en-KE', { maximumFractionDigits: 4 }) + ' · Total in KES: ' + fmt(t.kes, 'KES') + '</div>' : '';
+        var bill = '<div class="nm">' + esc(inv.client || 'Customer') + '</div>' + [inv.phone, inv.email, inv.address, inv.pin ? 'PIN ' + inv.pin : ''].filter(Boolean).map(function (x) { return '<div class="ln">' + esc(x) + '</div>'; }).join('');
+        var pays = sh.pay.length ? '<div class="box"><h4>How to pay</h4>' + sh.pay.map(function (x) { return '<div>' + esc(x) + '</div>'; }).join('') + '</div>' : '';
+        var notes = inv.notes ? '<div class="box"><h4>Notes</h4><div style="white-space:pre-line">' + esc(inv.notes) + '</div></div>' : '';
+        var terms = inv.terms ? '<div class="box"><h4>Terms</h4><div style="white-space:pre-line;color:#4b5563">' + esc(inv.terms) + '</div></div>' : '';
+        return docCss(ac) + '<div class="vx-doc">' + (st === 'paid' ? '<div class="stamp">PAID</div>' : st === 'void' ? '<div class="stamp v">VOID</div>' : '')
+            + header(sh, 'Invoice', inv.no)
+            + '<div class="band"><div><small>' + (st === 'paid' ? 'Paid in full' : 'Amount due') + '</small><div class="amt">' + fmt(st === 'paid' ? t.total : t.due, code) + '</div></div><div class="sp"></div><div><small>Issued</small><b>' + esc(dshow(inv.date)) + '</b></div><div><small>Due</small><b>' + esc(dshow(inv.due) || 'On receipt') + '</b></div></div>'
+            + '<div class="two"><div><h4>Billed to</h4>' + bill + '</div><div><h4>Details</h4><div class="kv"><span>Invoice no.</span><b>' + esc(inv.no) + '</b><span>Currency</span><b>' + esc(code) + '</b>' + (inv.title ? '<span>Subject</span><b>' + esc(inv.title) + '</b>' : '') + (inv.ref ? '<span>Your ref.</span><b>' + esc(inv.ref) + '</b>' : '') + '<span>Status</span><b>' + esc(st === 'partial' ? 'Part paid' : st.charAt(0).toUpperCase() + st.slice(1)) + '</b></div></div></div>'
+            + '<table><thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit price</th>' + (taxOn ? '<th class="r">VAT</th>' : '') + '<th class="r">Amount</th></tr></thead><tbody>' + rows + '</tbody></table>'
+            + '<div class="sum"><div class="l">' + pays + notes + terms + fx + '</div><div class="tot">' + tots + '</div></div>'
+            + '<div class="ft"><div>' + (sh.foot ? esc(sh.foot) : 'Thank you for your business.') + '</div><div>' + esc(sh.name) + ' · ' + esc(inv.no) + '</div></div></div>';
+    }
+    function statementDoc(st, cl) {
+        var sh = shop(), code = st.cur, ac = S().accent || '#0f766e';
+        var rows = st.rows.map(function (e) { return '<tr><td>' + esc(dshow(e.date)) + '</td><td>' + esc(e.type) + (e.ref ? ' · ' + esc(e.ref) : '') + '<div class="s">' + esc(e.desc) + '</div></td><td class="r">' + (e.debit ? fmt(e.debit, code, true) : '') + '</td><td class="r">' + (e.credit ? fmt(e.credit, code, true) : '') + '</td><td class="r">' + fmt(e.bal, code, true) + '</td></tr>'; }).join('') || '<tr><td colspan="5" style="color:#6b7280">No activity in this period.</td></tr>';
+        var ag = (function () { var a = ageing(code, st.to || today()), r = null; a.rows.forEach(function (x) { if (x.key === st.key) r = x; }); return r; })();
+        var agHtml = ag && ag.all > 0 ? '<div class="box"><h4>Ageing of what is owed</h4><table style="margin:0"><thead><tr><th>Not yet due</th><th class="r">1–30 days</th><th class="r">31–60</th><th class="r">61–90</th><th class="r">90+</th></tr></thead><tbody><tr><td class="r" style="text-align:left">' + fmt(ag.cur, code, true) + '</td><td class="r">' + fmt(ag.d30, code, true) + '</td><td class="r">' + fmt(ag.d60, code, true) + '</td><td class="r">' + fmt(ag.d90, code, true) + '</td><td class="r">' + fmt(ag.d90p, code, true) + '</td></tr></tbody></table></div>' : '';
+        return docCss(ac) + '<div class="vx-doc">' + header(sh, 'Statement', '')
+            + '<div class="band"><div><small>' + (st.closing < 0 ? 'Credit in your favour' : 'Balance due') + '</small><div class="amt">' + fmt(Math.abs(st.closing), code) + '</div></div><div class="sp"></div><div><small>Period</small><b>' + esc(st.from ? dshow(st.from) : 'Start') + ' – ' + esc(dshow(st.to || today())) + '</b></div><div><small>Currency</small><b>' + esc(code) + '</b></div></div>'
+            + '<div class="two"><div><h4>Statement for</h4><div class="nm">' + esc(cl.name || 'Customer') + '</div>' + [cl.phone, cl.email, cl.address].filter(Boolean).map(function (x) { return '<div class="ln">' + esc(x) + '</div>'; }).join('') + '</div><div><h4>Summary</h4><div class="kv"><span>Opening balance</span><b>' + fmt(st.opening, code) + '</b><span>Invoiced</span><b>' + fmt(st.invoiced, code) + '</b><span>Payments received</span><b>− ' + fmt(st.paid, code) + '</b><span>Closing balance</span><b>' + fmt(st.closing, code) + '</b></div></div></div>'
+            + '<table><thead><tr><th>Date</th><th>Details</th><th class="r">Invoiced</th><th class="r">Paid</th><th class="r">Balance</th></tr></thead><tbody><tr><td></td><td style="color:#6b7280">Opening balance</td><td></td><td></td><td class="r">' + fmt(st.opening, code, true) + '</td></tr>' + rows + '</tbody></table>'
+            + '<div class="sum"><div class="l">' + agHtml + (sh.pay.length ? '<div class="box"><h4>How to pay</h4>' + sh.pay.map(function (x) { return '<div>' + esc(x) + '</div>'; }).join('') + '</div>' : '') + '</div></div>'
+            + '<div class="ft"><div>Please tell us if anything on this statement looks wrong.</div><div>' + esc(sh.name) + ' · printed ' + esc(dshow(today())) + '</div></div></div>';
+    }
+    function ageingDoc(a) {
+        var sh = shop(), code = a.cur, ac = S().accent || '#0f766e';
+        var rows = a.rows.map(function (r) { return '<tr><td>' + esc(r.name) + '</td><td class="r">' + fmt(r.cur, code, true) + '</td><td class="r">' + fmt(r.d30, code, true) + '</td><td class="r">' + fmt(r.d60, code, true) + '</td><td class="r">' + fmt(r.d90, code, true) + '</td><td class="r">' + fmt(r.d90p, code, true) + '</td><td class="r"><b>' + fmt(r.all, code, true) + '</b></td></tr>'; }).join('') || '<tr><td colspan="7" style="color:#6b7280">No invoices in ' + esc(code) + '.</td></tr>';
+        var T = a.total;
+        return docCss(ac) + '<div class="vx-doc" style="width:1000px">' + header(sh, 'Receivables', '')
+            + '<div class="band"><div><small>Total owed to us</small><div class="amt">' + fmt(T.all, code) + '</div></div><div class="sp"></div><div><small>As at</small><b>' + esc(dshow(a.asOf)) + '</b></div><div><small>Currency</small><b>' + esc(code) + '</b></div></div>'
+            + '<table><thead><tr><th>Client</th><th class="r">Not yet due</th><th class="r">1–30 days</th><th class="r">31–60</th><th class="r">61–90</th><th class="r">90+</th><th class="r">Total owed</th></tr></thead><tbody>' + rows
+            + '<tr><td><b>Total</b></td><td class="r"><b>' + fmt(T.cur, code, true) + '</b></td><td class="r"><b>' + fmt(T.d30, code, true) + '</b></td><td class="r"><b>' + fmt(T.d60, code, true) + '</b></td><td class="r"><b>' + fmt(T.d90, code, true) + '</b></td><td class="r"><b>' + fmt(T.d90p, code, true) + '</b></td><td class="r"><b>' + fmt(T.all, code, true) + '</b></td></tr></tbody></table>'
+            + (T.credit > 0 ? '<div class="fx">Payments held on account (not deducted above): ' + fmt(T.credit, code) + '</div>' : '')
+            + '<div class="ft"><div>Reconciliation of invoices against payments received.</div><div>' + esc(sh.name) + ' · printed ' + esc(dshow(today())) + '</div></div></div>';
+    }
+    function invText(inv) {
+        var t = totals(inv), code = inv.cur, L = [];
+        L.push(bizName() + ' — INVOICE ' + inv.no); L.push('To: ' + (inv.client || '')); L.push('Date: ' + dshow(inv.date) + (inv.due ? ' · Due: ' + dshow(inv.due) : ''));
+        (inv.lines || []).forEach(function (l) { L.push('• ' + (l.desc || '') + ' — ' + num(l.qty) + ' x ' + fmt(num(l.price), code, true) + ' = ' + fmt(rd(num(l.qty) * num(l.price), t.dec), code, true)); });
+        if (t.disc > 0) L.push('Discount: − ' + fmt(t.disc, code));
+        if (t.taxMode !== 'none') L.push('VAT ' + num(inv.taxRate) + '%' + (t.taxMode === 'inclusive' ? ' (included)' : '') + ': ' + fmt(t.tax, code));
+        L.push('TOTAL: ' + fmt(t.total, code)); if (t.paid > 0) L.push('Paid: ' + fmt(t.paid, code));
+        L.push(t.due > 0 ? 'BALANCE DUE: ' + fmt(t.due, code) : 'PAID IN FULL');
+        if (code !== 'KES') L.push('(1 ' + code + ' = KES ' + num(inv.rate) + ' · KES ' + fmt(t.kes, 'KES', true) + ')');
+        var pay = shop().pay; if (pay.length) { L.push(''); L.push('How to pay:'); pay.forEach(function (x) { L.push(x); }); }
+        L.push(''); L.push('Thank you.'); return L.join('\n');
+    }
+
+    /* ================= the screen ================= */
+    var V = { view: 'list', q: '', f: 'all', ed: null, stClient: '', stCur: 'KES', stFrom: '', stTo: '', agCur: 'KES', agAsOf: '', bank: { text: '', which: 'first', cur: 'KES', res: null } };
+    function body() { return $('vx-body'); }
+    function io(id) { var e = $(id); return e ? e.value : ''; }
+    function curOptions(sel) { return Object.keys(S().cur).map(function (k) { return '<option value="' + esc(k) + '"' + (k === sel ? ' selected' : '') + '>' + esc(k) + ' — ' + esc(S().cur[k].name || k) + '</option>'; }).join(''); }
+    function usedCurs() { var m = { KES: 1 }; m[S().defaultCur] = 1; live().forEach(function (i) { m[i.cur] = 1; }); return Object.keys(m); }
+    function nav() {
+        var items = [['list', '🧾 Invoices'], ['edit', '➕ New invoice'], ['clients', '👥 Clients & statements'], ['recon', '🔍 Reconcile'], ['settings', '⚙️ Settings']];
+        return '<div class="vx-nav">' + items.map(function (x) { return '<button class="' + (V.view === x[0] ? 'on' : '') + '" onclick="Invoicing.go(\'' + x[0] + '\')">' + x[1] + '</button>'; }).join('') + '</div>';
+    }
+    function render() {
+        var host = body(); if (!host) return;
+        var tab = $('invoicing-tab'); if (tab) tab.style.setProperty('--vx-ac', S().accent || '#0f766e');
+        var html = nav();
+        if (V.view === 'edit') html += editorView(); else if (V.view === 'clients') html += clientsView(); else if (V.view === 'recon') html += reconView(); else if (V.view === 'settings') html += settingsView(); else html += listView();
+        host.innerHTML = html;
+        if (V.view === 'edit') { liveUpdate(); }
+    }
+
+    /* ---- invoice list ---- */
+    function listView() {
+        var all = live(), q = V.q.trim().toLowerCase(), f = V.f, t0 = today();
+        var list = all.filter(function (i) { var s = totals(i, t0).status; return (f === 'all' || f === s || (f === 'open' && (s === 'unpaid' || s === 'partial' || s === 'overdue'))) && (!q || (i.no + ' ' + i.client + ' ' + i.title + ' ' + i.phone).toLowerCase().indexOf(q) >= 0); }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (a.no < b.no ? 1 : -1); });
+        var sums = {}; all.forEach(function (i) { if (i.void) return; var t = totals(i, t0), s = sums[i.cur] || (sums[i.cur] = { inv: 0, due: 0, over: 0 }); s.inv += t.total; s.due += t.due; if (t.status === 'overdue') s.over += t.due; });
+        var cards = Object.keys(sums).map(function (c) { var s = sums[c]; return '<div class="vx-card"><small>Invoiced · ' + esc(c) + '</small><b>' + fmt(s.inv, c) + '</b></div><div class="vx-card ' + (s.due > 0 ? 'bad' : 'good') + '"><small>Still owed · ' + esc(c) + '</small><b>' + fmt(s.due, c) + '</b></div>' + (s.over > 0 ? '<div class="vx-card bad"><small>Overdue · ' + esc(c) + '</small><b>' + fmt(s.over, c) + '</b></div>' : ''); }).join('');
+        var dup = {}; all.forEach(function (i) { dup[i.no] = (dup[i.no] || 0) + 1; });
+        var rows = list.map(function (i) { var t = totals(i, t0), s = t.status, lab = s === 'partial' ? 'Part paid' : s.charAt(0).toUpperCase() + s.slice(1);
+            return '<tr class="vx-row" onclick="Invoicing.open(\'' + i.id + '\')"><td><b>' + esc(i.no) + '</b>' + (dup[i.no] > 1 ? ' <span title="Two invoices share this number (made on two devices). Edit one to renumber it." style="color:#c0392b">⚠️</span>' : '') + '</td><td>' + esc(i.client) + (i.title ? '<div style="font-size:12px;color:#7f8c8d">' + esc(i.title) + '</div>' : '') + '</td><td>' + esc(dshow(i.date)) + '</td><td>' + esc(dshow(i.due)) + '</td><td class="r">' + fmt(t.total, i.cur) + '</td><td class="r">' + fmt(t.due, i.cur) + '</td><td><span class="vx-pill ' + s + '">' + lab + '</span></td></tr>'; }).join('');
+        var fb = [['all', 'All'], ['open', 'Open'], ['overdue', 'Overdue'], ['paid', 'Paid'], ['void', 'Void']].map(function (x) { return '<button class="' + (f === x[0] ? 'on' : '') + '" onclick="Invoicing.filter(\'' + x[0] + '\')">' + x[1] + '</button>'; }).join('');
+        return '<div class="vx-cards">' + (cards || '<div class="vx-card"><small>Invoiced</small><b>' + fmt(0, S().defaultCur) + '</b></div>') + '</div>'
+            + '<div class="vx-bar"><div><label>Search</label><input id="vx-q" value="' + esc(V.q) + '" placeholder="Number, client or subject" oninput="Invoicing.search(this.value)"></div><div class="vx-seg">' + fb + '</div><div style="flex:1"></div><button class="vx-btn" onclick="Invoicing.newInv()">➕ New invoice</button></div>'
+            + (rows ? '<div style="overflow:auto"><table class="vx-t"><thead><tr><th>No.</th><th>Client</th><th>Issued</th><th>Due</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th></tr></thead><tbody id="vx-rows">' + rows + '</tbody></table></div>'
+                : '<div class="vx-empty"><div style="font-size:40px">🧾</div><p><b>No invoices ' + (all.length ? 'match' : 'yet') + '.</b></p><p>' + (all.length ? 'Try another search or filter.' : 'Press “New invoice”, pick a client, add what you sold and share it. KES is used unless you pick another currency.') + '</p></div>');
+    }
+
+    /* ---- editor ---- */
+    function newDraft() {
+        var s = S(), c = cur(s.defaultCur);
+        return { id: uid(), no: nextNumber(), client: '', phone: '', email: '', address: '', pin: '', title: '', ref: '', date: today(), due: addDays(today(), num(s.dueDays) || 0), cur: s.defaultCur || 'KES', rate: num(c.rate) || 1, dec: c.dec, taxMode: s.taxDefault || 'none', taxRate: num(s.taxRate) || 16, discType: 'amt', discount: 0, lines: [{ id: uid(), desc: '', qty: 1, price: 0, tax: true }], notes: s.notes || '', terms: s.terms || '', payments: [], createdAt: Date.now(), updatedAt: Date.now(), _new: true };
+    }
+    function editorView() {
+        var inv = V.ed; if (!inv) { inv = V.ed = newDraft(); }
+        var c = cur(inv.cur), taxOn = inv.taxMode !== 'none', lock = inv.payments && inv.payments.length;
+        var custs = safe(function () { return (typeof customers !== 'undefined' && Array.isArray(customers) ? customers : []).filter(function (x) { return x && !x._deleted && x.name; }); }, []);
+        var cl = custs.map(function (x) { return '<option value="' + esc(x.name) + '">' + esc(x.phone || '') + '</option>'; }).join('');
+        var inv2 = safe(function () { return (typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []).filter(function (p) { return p && !p._deleted && p.name; }).slice(0, 800); }, []);
+        var il = inv2.map(function (p) { return '<option value="' + esc(p.name) + '"></option>'; }).join('');
+        var warn = inv.cur !== 'KES' && !c.ok ? '<div class="vx-warn">⚠️ The rate for ' + esc(inv.cur) + ' (KES ' + num(inv.rate) + ') has not been confirmed. Type today’s rate below, or set it once in Settings.</div>' : '';
+        return '<div class="vx-ed wide"><div>'
+            + '<div class="vx-box"><h4>Client</h4><div class="vx-g2 vx-f"><div><label>Name</label><input id="vx-client" list="vx-cl" value="' + esc(inv.client) + '" oninput="Invoicing.pickClient(this.value)" placeholder="Who is this invoice for?"></div><div><label>Phone</label><input id="vx-phone" value="' + esc(inv.phone) + '" oninput="Invoicing.field(\'phone\',this.value)"></div><div><label>Email</label><input id="vx-email" type="email" value="' + esc(inv.email) + '" oninput="Invoicing.field(\'email\',this.value)"></div><div><label>Address / KRA PIN (optional)</label><input id="vx-addr" value="' + esc(inv.address) + '" oninput="Invoicing.field(\'address\',this.value)"></div></div><datalist id="vx-cl">' + cl + '</datalist></div>'
+            + '<div class="vx-box"><h4>Invoice</h4><div class="vx-g2 vx-f"><div><label>Invoice number</label><input id="vx-no" value="' + esc(inv.no) + '" oninput="Invoicing.field(\'no\',this.value)"></div><div><label>Subject (optional)</label><input id="vx-title" value="' + esc(inv.title) + '" oninput="Invoicing.field(\'title\',this.value)" placeholder="' + esc(HINT[modKey()] || '') + '"></div><div><label>Issue date</label><input id="vx-date" type="date" value="' + esc(inv.date) + '" oninput="Invoicing.field(\'date\',this.value)"></div><div><label>Due date</label><input id="vx-due" type="date" value="' + esc(inv.due) + '" oninput="Invoicing.field(\'due\',this.value)"></div>'
+            + '<div><label>Currency' + (lock ? ' (locked — payments exist)' : '') + '</label><select id="vx-cur" onchange="Invoicing.setCur(this.value)"' + (lock ? ' disabled' : '') + '>' + curOptions(inv.cur) + '</select></div>'
+            + '<div id="vx-ratebox" style="' + (inv.cur === 'KES' ? 'display:none' : '') + '"><label>Rate: 1 ' + esc(inv.cur) + ' = KES</label><input id="vx-rate" type="number" step="any" min="0" value="' + esc(inv.rate) + '" oninput="Invoicing.field(\'rate\',this.value)"></div></div>' + warn + '</div>'
+            + '<div class="vx-box"><h4>What you are charging for</h4><div id="vx-lines">' + linesHtml(inv) + '</div><datalist id="vx-il">' + il + '</datalist><button class="vx-btn sec sm" onclick="Invoicing.addLine()">➕ Add a line</button></div>'
+            + '<div class="vx-box"><h4>Tax and discount</h4><div class="vx-g2 vx-f"><div><label>Include tax?</label><div class="vx-seg" id="vx-taxseg">' + [['none', 'No tax'], ['exclusive', 'Add tax on top'], ['inclusive', 'Tax is in the prices']].map(function (x) { return '<button class="' + (inv.taxMode === x[0] ? 'on' : '') + '" onclick="Invoicing.setTax(\'' + x[0] + '\')">' + x[1] + '</button>'; }).join('') + '</div></div><div id="vx-taxrate" style="' + (taxOn ? '' : 'display:none') + '"><label>Tax rate %</label><input type="number" step="any" min="0" value="' + esc(inv.taxRate) + '" oninput="Invoicing.field(\'taxRate\',this.value)"></div>'
+            + '<div><label>Discount</label><div style="display:flex;gap:6px"><input type="number" step="any" min="0" value="' + esc(inv.discount || 0) + '" oninput="Invoicing.field(\'discount\',this.value)"><select style="width:90px" onchange="Invoicing.field(\'discType\',this.value)"><option value="amt"' + (inv.discType !== 'pct' ? ' selected' : '') + '>' + esc(inv.cur) + '</option><option value="pct"' + (inv.discType === 'pct' ? ' selected' : '') + '>%</option></select></div></div></div></div>'
+            + payBox(inv) + '<div class="vx-box vx-f"><h4>Notes and terms</h4><label>Note to the client</label><textarea rows="2" oninput="Invoicing.field(\'notes\',this.value)">' + esc(inv.notes) + '</textarea><label>Terms</label><textarea rows="2" oninput="Invoicing.field(\'terms\',this.value)">' + esc(inv.terms) + '</textarea></div>'
+            + '<div class="vx-box"><div class="vx-sum" id="vx-sum"></div><div class="vx-bar" style="margin-top:12px"><button class="vx-btn" onclick="Invoicing.saveEd()">💾 Save invoice</button><button class="vx-btn sec" onclick="Invoicing.saveEd(true)">👁️ Save &amp; preview / share</button>' + (!inv._new ? '<button class="vx-btn sec" onclick="Invoicing.pay(\'' + inv.id + '\')">💵 Record payment</button>' : '') + '<button class="vx-btn sec" onclick="Invoicing.go(\'list\')">Cancel</button>' + (!inv._new ? (inv.void ? '' : '<button class="vx-btn dng sm" onclick="Invoicing.voidInv(\'' + inv.id + '\')">🚫 Void</button>') + '<button class="vx-btn dng sm" onclick="Invoicing.delInv(\'' + inv.id + '\')">🗑️ Delete</button>' : '') + '</div></div>'
+            + '</div><div><div class="vx-prev"><div class="vx-prev-in" id="vx-prev"></div></div></div></div>';
+    }
+    function payBox(inv) {
+        var ps = (inv.payments || []).filter(function (p) { return p && !p._deleted; });
+        if (inv._new || !ps.length) return '';
+        return '<div class="vx-box"><h4>Payments received</h4>' + ps.map(function (p) { return '<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid #eee;font-size:13px"><span>' + esc(dshow(p.date)) + ' · ' + esc(p.method || '') + (p.ref ? ' · ' + esc(p.ref) : '') + (p.recon ? ' · ✅ reconciled' : '') + '</span><span><b>' + fmt(num(p.amount), inv.cur) + '</b> <button class="vx-btn sec sm" onclick="Invoicing.delPay(\'' + inv.id + '\',\'' + p.id + '\')" aria-label="Remove this payment">✕</button></span></div>'; }).join('') + '</div>';
+    }
+    function linesHtml(inv) {
+        var taxOn = inv.taxMode !== 'none';
+        return (inv.lines || []).map(function (l, i) {
+            return '<div class="vx-line' + (taxOn ? ' tx' : '') + '"><input list="vx-il" value="' + esc(l.desc) + '" placeholder="' + esc(HINT[modKey()] || 'Description') + '" oninput="Invoicing.line(' + i + ',\'desc\',this.value)" onchange="Invoicing.fillFromStock(' + i + ',this.value)"><input type="number" step="any" min="0" value="' + esc(l.qty) + '" oninput="Invoicing.line(' + i + ',\'qty\',this.value)" aria-label="Quantity"><input type="number" step="any" min="0" value="' + esc(l.price) + '" oninput="Invoicing.line(' + i + ',\'price\',this.value)" aria-label="Unit price">' + (taxOn ? '<label style="margin:0;font-size:11px;display:flex;gap:3px;align-items:center"><input type="checkbox" style="width:auto"' + (l.tax !== false ? ' checked' : '') + ' onchange="Invoicing.line(' + i + ',\'tax\',this.checked)">VAT</label>' : '') + '<button class="x" onclick="Invoicing.delLine(' + i + ')" aria-label="Remove line">✕</button></div>';
+        }).join('');
+    }
+    function liveUpdate() {
+        var inv = V.ed; if (!inv) return; var t = totals(inv), c = inv.cur;
+        var s = $('vx-sum'); if (s) s.innerHTML = '<div><span>Subtotal</span><b>' + fmt(t.sub, c) + '</b></div>' + (t.disc > 0 ? '<div><span>Discount</span><b>− ' + fmt(t.disc, c) + '</b></div>' : '') + (t.taxMode !== 'none' ? '<div><span>VAT ' + num(inv.taxRate) + '%' + (t.taxMode === 'inclusive' ? ' (included)' : '') + '</span><b>' + fmt(t.tax, c) + '</b></div>' : '') + '<div class="big"><span>Total</span><b>' + fmt(t.total, c) + '</b></div>' + (c !== 'KES' ? '<div style="color:#7f8c8d;font-size:12px"><span>In KES</span><b>' + fmt(t.kes, 'KES') + '</b></div>' : '');
+        var p = $('vx-prev'); if (p) { p.innerHTML = invoiceDoc(inv); var box = p.parentNode, w = box.clientWidth - 24; if (w > 0 && w < 794) { p.style.transform = 'scale(' + (w / 794) + ')'; box.style.height = (p.scrollHeight * (w / 794) + 24) + 'px'; } else { p.style.transform = ''; box.style.height = ''; } }
+    }
+
+    /* ---- clients and statements ---- */
+    function clientsView() {
+        var cl = clients(), code = V.stCur; if (!V.stClient && cl.length) V.stClient = cl[0].key;
+        var cur0 = cl.filter(function (x) { return x.key === V.stClient; })[0];
+        var picker = '<div class="vx-bar"><div><label>Client</label><select id="vx-stc" onchange="Invoicing.setStClient(this.value)">' + (cl.length ? cl.map(function (x) { return '<option value="' + esc(x.key) + '"' + (x.key === V.stClient ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') : '<option>— no clients yet —</option>') + '</select></div><div><label>Currency</label><select onchange="Invoicing.setStCur(this.value)">' + usedCurs().map(function (x) { return '<option' + (x === code ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div><div><label>From</label><input type="date" id="vx-stf" value="' + esc(V.stFrom) + '" onchange="Invoicing.setStRange()"></div><div><label>To</label><input type="date" id="vx-stt" value="' + esc(V.stTo) + '" onchange="Invoicing.setStRange()"></div></div>';
+        if (!cur0) return picker + '<div class="vx-empty">Make an invoice first — clients appear here automatically.</div>';
+        var st = statement(V.stClient, code, V.stFrom, V.stTo);
+        var rows = st.rows.map(function (e) { return '<tr><td>' + esc(dshow(e.date)) + '</td><td>' + esc(e.type) + ' · ' + esc(e.ref || '') + '<div style="font-size:12px;color:#7f8c8d">' + esc(e.desc) + '</div></td><td class="r">' + (e.debit ? fmt(e.debit, code, true) : '') + '</td><td class="r">' + (e.credit ? fmt(e.credit, code, true) : '') + '</td><td class="r">' + fmt(e.bal, code, true) + '</td></tr>'; }).join('');
+        return picker + '<div class="vx-cards"><div class="vx-card"><small>Opening balance</small><b>' + fmt(st.opening, code) + '</b></div><div class="vx-card"><small>Invoiced</small><b>' + fmt(st.invoiced, code) + '</b></div><div class="vx-card good"><small>Paid</small><b>' + fmt(st.paid, code) + '</b></div><div class="vx-card ' + (st.closing > 0 ? 'bad' : 'good') + '"><small>' + (st.closing < 0 ? 'Credit held' : 'Closing balance') + '</small><b>' + fmt(Math.abs(st.closing), code) + '</b></div></div>'
+            + '<div class="vx-bar"><button class="vx-btn" onclick="Invoicing.stDoc(\'view\')">👁️ Preview / print / share</button><button class="vx-btn sec" onclick="Invoicing.receiveDlg()">💵 Receive payment from this client</button></div>'
+            + '<div style="overflow:auto"><table class="vx-t"><thead><tr><th>Date</th><th>Details</th><th class="r">Invoiced</th><th class="r">Paid</th><th class="r">Balance</th></tr></thead><tbody><tr><td></td><td style="color:#7f8c8d">Opening balance</td><td></td><td></td><td class="r">' + fmt(st.opening, code, true) + '</td></tr>' + (rows || '<tr><td colspan="5" class="vx-empty">No activity in this currency / period.</td></tr>') + '</tbody></table></div>';
+    }
+
+    /* ---- reconcile ---- */
+    function reconView() {
+        var code = V.agCur, a = ageing(code, V.agAsOf || today()), B = V.bank;
+        var rows = a.rows.map(function (r) { return '<tr><td>' + esc(r.name) + '</td><td class="r">' + fmt(r.invoiced, code, true) + '</td><td class="r">' + fmt(r.paid, code, true) + '</td><td class="r">' + fmt(r.cur, code, true) + '</td><td class="r">' + fmt(r.d30, code, true) + '</td><td class="r">' + fmt(r.d60, code, true) + '</td><td class="r">' + fmt(r.d90 + r.d90p, code, true) + '</td><td class="r"><b>' + fmt(r.all, code, true) + '</b></td></tr>'; }).join('');
+        var T = a.total;
+        var sec1 = '<div class="vx-box"><h4>1 · Who owes what (invoices against payments)</h4><div class="vx-bar"><div><label>Currency</label><select onchange="Invoicing.setAg(this.value)">' + usedCurs().map(function (x) { return '<option' + (x === code ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div><div><label>As at</label><input type="date" value="' + esc(V.agAsOf || today()) + '" onchange="Invoicing.setAgDate(this.value)"></div><button class="vx-btn" onclick="Invoicing.agDoc()">🖨️ Print / share</button></div>'
+            + '<div class="vx-cards"><div class="vx-card ' + (T.all > 0 ? 'bad' : 'good') + '"><small>Total owed</small><b>' + fmt(T.all, code) + '</b></div><div class="vx-card"><small>Not yet due</small><b>' + fmt(T.cur, code) + '</b></div><div class="vx-card bad"><small>Overdue</small><b>' + fmt(T.all - T.cur, code) + '</b></div></div>'
+            + '<div style="overflow:auto"><table class="vx-t"><thead><tr><th>Client</th><th class="r">Invoiced</th><th class="r">Paid</th><th class="r">Not due</th><th class="r">1–30</th><th class="r">31–60</th><th class="r">60+</th><th class="r">Owed</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="vx-empty">No invoices in ' + esc(code) + '.</td></tr>') + '</tbody></table></div></div>';
+        var res = B.res, out = '';
+        if (res) {
+            var m = res.matched.map(function (x) { return '<tr><td>✅</td><td>' + esc(x.pay.no) + ' · ' + esc(x.pay.client) + '</td><td class="r">' + fmt(x.pay.amount, B.cur, true) + '</td><td>' + esc(x.line.raw.slice(0, 70)) + '</td><td>' + esc(x.how) + '</td></tr>'; }).join('');
+            var mi = res.missing.map(function (p) { return '<tr><td>⚠️</td><td>' + esc(p.no) + ' · ' + esc(p.client) + '</td><td class="r">' + fmt(p.amount, B.cur, true) + '</td><td colspan="2" style="color:#b45309">Recorded here, not found on the statement (' + esc(dshow(p.date)) + ' · ' + esc(p.method || '') + ' ' + esc(p.ref || '') + ')</td></tr>'; }).join('');
+            var ex = res.extra.map(function (l) { return '<tr><td>❓</td><td colspan="2" class="r">' + fmt(l.amount, B.cur, true) + '</td><td colspan="2">' + esc(l.raw.slice(0, 90)) + ' <span style="color:#b45309">— on the statement, no payment recorded</span></td></tr>'; }).join('');
+            var tm = res.matched.reduce(function (t, x) { return t + x.pay.amount; }, 0), te = res.extra.reduce(function (t, l) { return t + l.amount; }, 0), tmi = res.missing.reduce(function (t, p) { return t + p.amount; }, 0);
+            out = '<div class="vx-cards"><div class="vx-card good"><small>Matched (' + res.matched.length + ')</small><b>' + fmt(tm, B.cur) + '</b></div><div class="vx-card ' + (tmi > 0 ? 'bad' : 'good') + '"><small>Recorded, not on statement (' + res.missing.length + ')</small><b>' + fmt(tmi, B.cur) + '</b></div><div class="vx-card ' + (te > 0 ? 'bad' : 'good') + '"><small>On statement, not recorded (' + res.extra.length + ')</small><b>' + fmt(te, B.cur) + '</b></div></div>'
+                + '<div style="overflow:auto"><table class="vx-t"><tbody>' + m + mi + ex + '</tbody></table></div>' + (res.matched.length ? '<div class="vx-bar" style="margin-top:10px"><button class="vx-btn" onclick="Invoicing.confirmMatches()">✔️ Tick these ' + res.matched.length + ' payments as reconciled</button></div>' : '');
+        }
+        var done = [], todo = []; live().forEach(function (i) { (i.payments || []).forEach(function (p) { if (p && !p._deleted && i.cur === B.cur) (p.recon ? done : todo).push(p); }); });
+        var sec2 = '<div class="vx-box"><h4>2 · Match payments to your bank or M-Pesa statement</h4><div class="vx-tip">Copy the lines from your M-Pesa / bank statement (one transaction per line, with the amount and ideally the date and code) and paste them here. Nothing is changed until you press “Tick”.</div>'
+            + '<div class="vx-bar vx-f"><div><label>Currency of the statement</label><select onchange="Invoicing.setBankCur(this.value)">' + usedCurs().map(function (x) { return '<option' + (x === B.cur ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div><div><label>The amount on each line is the</label><select onchange="Invoicing.setBankWhich(this.value)"><option value="first"' + (B.which === 'first' ? ' selected' : '') + '>first number</option><option value="second"' + (B.which === 'second' ? ' selected' : '') + '>second number</option><option value="last"' + (B.which === 'last' ? ' selected' : '') + '>last number</option></select></div></div>'
+            + '<div class="vx-f"><textarea id="vx-bank" rows="6" placeholder="12/11/2026  QWE1234ABC  Received from JOHN  15,000.00">' + esc(B.text) + '</textarea></div><div class="vx-bar" style="margin-top:8px"><button class="vx-btn" onclick="Invoicing.runMatch()">🔍 Match</button><span style="color:#7f8c8d;font-size:13px">' + done.length + ' payments already ticked · ' + todo.length + ' not yet ticked (' + esc(B.cur) + ')</span></div>' + out + '</div>';
+        return sec1 + sec2;
+    }
+
+    /* ---- settings ---- */
+    function settingsView() {
+        var s = S(), rows = Object.keys(s.cur).map(function (k) { var c = s.cur[k]; return '<tr><td><b>' + esc(k) + '</b></td><td>' + esc(c.name || '') + '</td><td>' + (k === 'KES' ? '1' : '<input type="number" step="any" min="0" style="width:110px" value="' + esc(c.rate) + '" onchange="Invoicing.setRate(\'' + k + '\',this.value)">') + '</td><td>' + (k === 'KES' ? '' : (c.ok ? '✅ set' : '<span style="color:#b45309">check this rate</span>')) + '</td></tr>'; }).join('');
+        var sw = ['#0f766e', '#1d4ed8', '#7c3aed', '#be123c', '#b45309', '#15803d', '#111827'].map(function (c) { return '<button onclick="Invoicing.setAccent(\'' + c + '\')" style="width:34px;height:34px;border-radius:50%;border:' + (s.accent === c ? '3px solid #111' : '1px solid #ccc') + ';background:' + c + ';margin:0 4px 0 0;padding:0;cursor:pointer" aria-label="Colour ' + c + '"></button>'; }).join('');
+        return '<div class="vx-box vx-f"><h4>Default currency</h4><div class="vx-g2"><div><label>New invoices use</label><select onchange="Invoicing.setS(\'defaultCur\',this.value)">' + curOptions(s.defaultCur) + '</select></div><div><label>Also show Sales Counter totals in</label><select onchange="Invoicing.setS(\'salesAlso\',this.value)"><option value="">— just KES —</option>' + Object.keys(s.cur).filter(function (k) { return k !== 'KES'; }).map(function (k) { return '<option value="' + esc(k) + '"' + (s.salesAlso === k ? ' selected' : '') + '>' + esc(k) + '</option>'; }).join('') + '</select></div></div><div class="vx-tip">Sales are always recorded in KES so your books and reports stay correct. The second currency is shown under the payable total as a guide for the customer, using the rate below.</div></div>'
+            + '<div class="vx-box"><h4>Exchange rates (KES for 1 unit)</h4><div style="overflow:auto"><table class="vx-t"><thead><tr><th>Code</th><th>Currency</th><th>1 unit = KES</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div><p style="font-size:12px;color:#7f8c8d">Rates were last confirmed: ' + (s.ratesAt ? esc(dshow(new Date(s.ratesAt).toISOString().slice(0, 10))) : 'never — please set today’s rates') + '. Each invoice keeps the rate it was made with.</p>'
+            + '<div class="vx-bar vx-f"><div><label>Add a currency (code)</label><input id="vx-nc" maxlength="5" placeholder="e.g. ETB" style="text-transform:uppercase"></div><div><label>Name</label><input id="vx-nn" placeholder="Ethiopian birr"></div><div><label>1 unit = KES</label><input id="vx-nr" type="number" step="any" min="0"></div><button class="vx-btn" onclick="Invoicing.addCur()">➕ Add</button></div></div>'
+            + '<div class="vx-box vx-f"><h4>Tax and numbering</h4><div class="vx-g2"><div><label>Tax on new invoices</label><select onchange="Invoicing.setS(\'taxDefault\',this.value)">' + [['none', 'No tax'], ['exclusive', 'Add tax on top'], ['inclusive', 'Tax is in the prices']].map(function (x) { return '<option value="' + x[0] + '"' + (s.taxDefault === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div><div><label>Tax rate %</label><input type="number" step="any" value="' + esc(s.taxRate) + '" onchange="Invoicing.setS(\'taxRate\',this.value)"></div><div><label>Number prefix</label><input value="' + esc(s.prefix) + '" maxlength="8" onchange="Invoicing.setS(\'prefix\',this.value.trim().toUpperCase()||\'INV\')"></div><div><label>Next number</label><input type="number" min="1" value="' + esc(s.next) + '" onchange="Invoicing.setS(\'next\',this.value)"></div><div><label>Payment due after (days)</label><input type="number" min="0" value="' + esc(s.dueDays) + '" onchange="Invoicing.setS(\'dueDays\',this.value)"></div></div>'
+            + '<label>Standard terms</label><textarea rows="2" onchange="Invoicing.setS(\'terms\',this.value)">' + esc(s.terms) + '</textarea><label>Standard note</label><textarea rows="2" onchange="Invoicing.setS(\'notes\',this.value)">' + esc(s.notes) + '</textarea><label>Invoice colour</label><div>' + sw + '</div><p style="font-size:12px;color:#7f8c8d">Your logo, phone and payment details come from Settings → Receipt. If that is empty (or this app has none), fill these in:</p><div class="vx-g2"><div><label>Business name</label><input value="' + esc(s.bizName) + '" onchange="Invoicing.setS(\'bizName\',this.value.trim())"></div><div><label>Phone / e-mail / address (one per line)</label><textarea rows="2" onchange="Invoicing.setS(\'contact\',this.value)">' + esc(s.contact) + '</textarea></div><div><label>How to pay (M-Pesa till, bank …)</label><textarea rows="2" onchange="Invoicing.setS(\'payInfo\',this.value)">' + esc(s.payInfo) + '</textarea></div></div></div>';
+    }
+
+    /* ================= pop-ups ================= */
+    function overlay(inner, wide) {
+        closeOv(); var o = document.createElement('div'); o.className = 'vx-ov'; o.id = 'vx-ov'; o.innerHTML = '<div class="vx-dlg' + (wide ? ' wide' : '') + '">' + inner + '</div>'; o.addEventListener('mousedown', function (e) { if (e.target === o) closeOv(); }); document.body.appendChild(o); return o;
+    }
+    function closeOv() { var o = $('vx-ov'); if (o) o.parentNode.removeChild(o); }
+    var SH = { html: '', text: '', file: '', phone: '', email: '', subject: '' };
+    function shareDlg(title, html, text, file, phone, email, subject) {
+        SH = { html: html, text: text, file: file, phone: phone || '', email: email || '', subject: subject || title };
+        overlay('<h3>' + esc(title) + '</h3><div class="docwrap"><div id="vx-dp" style="width:794px;transform-origin:top left">' + html + '</div></div><div class="act"><button onclick="Invoicing.doPrint()">🖨️ Print</button><button onclick="Invoicing.doPdf()">⬇️ Save PDF</button><button onclick="Invoicing.doShare()">📤 Share</button><button class="wa" onclick="Invoicing.doWa()">WhatsApp</button><button class="sec" onclick="Invoicing.doMail()">✉️ E-mail</button><button class="sec" onclick="Invoicing.doCopy()">📋 Copy text</button><button class="sec" onclick="Invoicing.closeDlg()">Close</button></div>', true);
+        setTimeout(function () { var dp = $('vx-dp'); if (!dp) return; var w = dp.parentNode.clientWidth - 20; if (w > 0 && w < 794) { dp.style.transform = 'scale(' + (w / 794) + ')'; dp.parentNode.style.height = Math.min(dp.scrollHeight * (w / 794) + 20, window.innerHeight * .62) + 'px'; } }, 30);
+    }
+    /* zip 380: print a document exactly as previewed - A4, its own colours, nothing else of the app on the paper */
+    function printDoc(html) {
+        var old = $('vx-print-host'); if (old && old.parentNode) old.parentNode.removeChild(old);
+        var host = document.createElement('div'); host.id = 'vx-print-host';
+        host.innerHTML = '<style>'
+            + '#vx-print-host{display:none}'
+            + '@media print{'
+            + '@page{size:A4 portrait;margin:10mm}'
+            + 'html,body{background:#fff!important;width:auto!important;height:auto!important;margin:0!important;padding:0!important;zoom:1!important}'
+            + 'body.vx-printing>*:not(#vx-print-host){display:none!important}'
+            + 'body.vx-printing #vx-print-host{display:block!important;position:static!important;width:100%!important;margin:0!important;padding:0!important}'
+            + '#vx-print-host,#vx-print-host *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;-webkit-text-stroke:0!important;visibility:visible!important}'
+            + '#vx-print-host .vx-doc{width:100%!important;max-width:none!important;margin:0!important;padding:0!important;transform:none!important;font-size:12.5px}'
+            + '}</style>' + html;
+        document.body.appendChild(host);
+        document.body.classList.add('vx-printing');
+        var done = false, cleanup = function () { if (done) return; done = true; window.removeEventListener('afterprint', cleanup); document.body.classList.remove('vx-printing'); var h = $('vx-print-host'); if (h && h.parentNode) h.parentNode.removeChild(h); };
+        window.addEventListener('afterprint', cleanup);
+        setTimeout(cleanup, 10 * 60000);
+        setTimeout(function () { try { window.print(); } catch (e) { cleanup(); } }, 120);
+    }
+    function pdfOf() {
+        return docToPdf(SH.html).catch(function () { return safe(function () { return typeof textToPdfBlob === 'function' ? textToPdfBlob(SH.text) : null; }, null); });
+    }
+
+    /* ================= actions ================= */
+    var API = window.Invoicing = {
+        __v: 373, totals: totals, statement: statement, ageing: ageing, parseStatement: parseStatement, matchPayments: matchPayments, buildPdf: buildPdf, fmt: fmt, clientKey: clientKey, receive: receive, data: load, nextNumber: nextNumber, invoiceDoc: invoiceDoc, invText: invText, render: render, state: V,
+        go: function (v) { V.view = v; if (v === 'edit' && !V.ed) V.ed = newDraft(); if (v !== 'edit') V.ed = null; render(); },
+        newInv: function () { V.ed = newDraft(); V.view = 'edit'; render(); },
+        search: function (v) { V.q = v; var host = $('vx-rows'); var keep = document.activeElement && document.activeElement.id === 'vx-q'; var pos = keep ? document.activeElement.selectionStart : 0; var tmp = document.createElement('div'); tmp.innerHTML = listView(); var nr = tmp.querySelector('#vx-rows'); if (host && nr) host.innerHTML = nr.innerHTML; else { render(); var q = $('vx-q'); if (q) { q.focus(); q.setSelectionRange(pos, pos); } } },
+        filter: function (f) { V.f = f; render(); },
+        open: function (id) { var i = byId(id); if (!i) return; V.ed = JSON.parse(JSON.stringify(i)); V.view = 'edit'; render(); },
+        field: function (k, v) { if (!V.ed) return; V.ed[k] = (k === 'rate' || k === 'taxRate' || k === 'discount') ? num(v) : v; if (k === 'discType') { render(); return; } liveUpdate(); },
+        pickClient: function (name) {
+            if (!V.ed) return; V.ed.client = name;
+            var c = safe(function () { return (customers || []).filter(function (x) { return x && !x._deleted && String(x.name).toLowerCase() === String(name).trim().toLowerCase(); })[0]; }, null);
+            if (c) { V.ed.phone = c.phone || V.ed.phone; V.ed.email = c.email || V.ed.email; V.ed.address = c.address || c.location || V.ed.address; V.ed.customerId = c.id; var set = function (id, v) { var e = $(id); if (e && v != null && e !== document.activeElement) e.value = v; }; set('vx-phone', V.ed.phone); set('vx-email', V.ed.email); set('vx-addr', V.ed.address); }
+            liveUpdate();
+        },
+        setCur: function (code) { var inv = V.ed; if (!inv) return; var c = cur(code); inv.cur = code; inv.rate = num(c.rate) || 1; inv.dec = c.dec; render(); },
+        setTax: function (m) { if (!V.ed) return; V.ed.taxMode = m; render(); },
+        addLine: function () { if (!V.ed) return; V.ed.lines.push({ id: uid(), desc: '', qty: 1, price: 0, tax: true }); render(); var l = document.querySelectorAll('#vx-lines .vx-line'); if (l.length) { var f = l[l.length - 1].querySelector('input'); if (f) f.focus(); } },
+        delLine: function (i) { if (!V.ed) return; V.ed.lines.splice(i, 1); if (!V.ed.lines.length) V.ed.lines.push({ id: uid(), desc: '', qty: 1, price: 0, tax: true }); render(); },
+        line: function (i, k, v) { var l = V.ed && V.ed.lines[i]; if (!l) return; l[k] = (k === 'qty' || k === 'price') ? num(v) : v; liveUpdate(); },
+        fillFromStock: function (i, name) {
+            var l = V.ed && V.ed.lines[i]; if (!l || !name) return;
+            var p = safe(function () { return (inventory || []).filter(function (x) { return x && !x._deleted && String(x.name).toLowerCase() === String(name).trim().toLowerCase(); })[0]; }, null);
+            if (p && !num(l.price)) { var kes = safe(function () { return typeof getEffectivePrice === 'function' ? getEffectivePrice(p) : num(p.price); }, num(p.price)); var r = V.ed.cur === 'KES' ? 1 : (num(V.ed.rate) || 1); l.price = rd(kes / r, cur(V.ed.cur).dec); render(); }
+        },
+        saveEd: function (preview) {
+            var inv = V.ed; if (!inv) return;
+            if (!String(inv.client || '').trim()) { toast('Type the client’s name first.', true); return; }
+            if (!inv.lines.some(function (l) { return String(l.desc || '').trim() && num(l.qty) > 0; })) { toast('Add at least one line with a description and a quantity.', true); return; }
+            if (inv.cur !== 'KES' && !(num(inv.rate) > 0)) { toast('Type the exchange rate for ' + inv.cur + '.', true); return; }
+            inv.lines = inv.lines.filter(function (l) { return String(l.desc || '').trim() || num(l.price) > 0; });
+            var d = load(), wasNew = !!inv._new; delete inv._new; inv.updatedAt = Date.now(); inv.dec = cur(inv.cur).dec; inv.accent = inv.accent || '';
+            var idx = -1; d.invoices.forEach(function (x, k) { if (x.id === inv.id) idx = k; });
+            if (idx >= 0) d.invoices[idx] = JSON.parse(JSON.stringify(inv)); else d.invoices.push(JSON.parse(JSON.stringify(inv)));
+            if (wasNew) { var m = /(\d+)\s*$/.exec(inv.no || ''); if (m && num(m[1]) >= num(d.settings.next)) d.settings.next = num(m[1]) + 1; }
+            save(); toast('Invoice ' + inv.no + ' saved.'); V.ed = JSON.parse(JSON.stringify(byId(inv.id)));
+            if (preview) { render(); API.share(inv.id); } else { V.view = 'list'; V.ed = null; render(); }
+        },
+        share: function (id) { var i = byId(id) || V.ed; if (!i) return; shareDlg('Invoice ' + i.no, invoiceDoc(i), invText(i), 'invoice-' + String(i.no).replace(/[^a-z0-9]+/gi, '-').toLowerCase(), i.phone, i.email, bizName() + ' — invoice ' + i.no); },
+        pay: function (id) {
+            var i = byId(id); if (!i) return; var t = totals(i);
+            overlay('<h3>Record payment — ' + esc(i.no) + '</h3><div style="color:#6b7280;font-size:13px">Balance: <b>' + fmt(t.due, i.cur) + '</b></div><label>Amount (' + esc(i.cur) + ')</label><input id="vx-pa" type="number" step="any" min="0" value="' + t.due + '"><label>Date</label><input id="vx-pd" type="date" value="' + today() + '"><label>Paid by</label><select id="vx-pm"><option>M-Pesa</option><option>Cash</option><option>Bank transfer</option><option>Cheque</option><option>Card</option><option>Other</option></select><label>Reference (M-Pesa code, cheque no.)</label><input id="vx-pr"><div class="act"><button onclick="Invoicing.savePay(\'' + id + '\')">Save payment</button><button class="sec" onclick="Invoicing.closeDlg()">Cancel</button></div>');
+        },
+        savePay: function (id) {
+            var i = byId(id); if (!i) return; var t = totals(i), a = rd(num(io('vx-pa')), t.dec);
+            if (!(a > 0)) { toast('Type the amount received.', true); return; }
+            if (a > t.due + Math.pow(10, -t.dec)) { toast('That is more than the balance (' + fmt(t.due, i.cur) + '). Use “Receive payment” on the Clients screen to keep the extra as credit.', true); return; }
+            i.payments = i.payments || []; i.payments.push({ id: uid(), date: io('vx-pd') || today(), amount: a, method: io('vx-pm'), ref: io('vx-pr').trim() }); i.updatedAt = Date.now(); save(); closeOv(); toast('Payment saved.');
+            if (V.view === 'edit' && V.ed && V.ed.id === id) V.ed = JSON.parse(JSON.stringify(i)); render();
+        },
+        voidInv: function (id) { var i = byId(id); if (!i) return; if (!confirm('Void invoice ' + i.no + '? It stays on file as void and no longer counts as money owed.')) return; i.void = true; i.updatedAt = Date.now(); save(); V.ed = null; V.view = 'list'; render(); },
+        delInv: function (id) { var i = byId(id); if (!i) return; if (i.payments && i.payments.length) { toast('This invoice has payments. Void it instead.', true); return; } if (!confirm('Delete invoice ' + i.no + '? This cannot be undone.')) return; i._deleted = true; i.updatedAt = Date.now(); save(); V.ed = null; V.view = 'list'; render(); },
+        delPay: function (id, pid) { var i = byId(id); if (!i) return; if (!confirm('Remove this payment? Only do this if it was recorded by mistake.')) return; (i.payments || []).forEach(function (p) { if (p.id === pid) p._deleted = true; }); i.updatedAt = Date.now(); save(); V.ed = JSON.parse(JSON.stringify(i)); render(); },
+        closeDlg: closeOv,
+        // zip 380: the printed invoice is EXACTLY the preview, on A4. It used to be poured into the thermal "report" print (roll width, report fonts,
+        // colours dropped), so paper and preview looked nothing alike. Now the same document + the same styles go to a print-only page of its own.
+        doPrint: function () { var h = SH.html; closeOv(); printDoc(h); },
+        doPdf: function () { toast('Making the PDF…'); pdfOf().then(function (b) { if (!b) { toast('Could not make a PDF on this device. Use Print and choose “Save as PDF”.', true); return; } var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (SH.file || 'invoice') + '.pdf'; document.body.appendChild(a); a.click(); setTimeout(function () { try { document.body.removeChild(a); URL.revokeObjectURL(a.href); } catch (e) { /* done */ } }, 1500); }); },
+        doShare: function () {
+            pdfOf().then(function (b) {
+                var file = b ? new File([b], (SH.file || 'invoice') + '.pdf', { type: 'application/pdf' }) : null;
+                if (file && navigator.canShare && navigator.canShare({ files: [file] })) return navigator.share({ files: [file], title: SH.subject, text: SH.text });
+                if (navigator.share) return navigator.share({ title: SH.subject, text: SH.text });
+                return API.doWa();
+            }).catch(function (e) { if (e && e.name === 'AbortError') return; API.doWa(); });
+        },
+        doWa: function () { var p = safe(function () { return normalizeKenyanPhone(SH.phone); }, ''); window.open('https://wa.me/' + (p || '') + '?text=' + encodeURIComponent(SH.text), '_blank'); },
+        doMail: function () { location.href = 'mailto:' + encodeURIComponent(SH.email || '') + '?subject=' + encodeURIComponent(SH.subject) + '&body=' + encodeURIComponent(SH.text); },
+        doCopy: function () { try { navigator.clipboard.writeText(SH.text).then(function () { toast('Copied.'); }, function () { toast('Could not copy.', true); }); } catch (e) { toast('Could not copy.', true); } },
+        setStClient: function (k) { V.stClient = k; render(); }, setStCur: function (c) { V.stCur = c; render(); },
+        setStRange: function () { V.stFrom = io('vx-stf'); V.stTo = io('vx-stt'); render(); },
+        stDoc: function () {
+            var cl = clients().filter(function (x) { return x.key === V.stClient; })[0]; if (!cl) return; var st = statement(V.stClient, V.stCur, V.stFrom, V.stTo);
+            var L = [bizName() + ' — STATEMENT', 'For: ' + cl.name, 'Period: ' + (V.stFrom ? dshow(V.stFrom) : 'start') + ' – ' + dshow(V.stTo || today()), 'Opening balance: ' + fmt(st.opening, st.cur)];
+            st.rows.forEach(function (e) { L.push(dshow(e.date) + ' · ' + e.type + ' ' + (e.ref || '') + ' · ' + (e.debit ? '+' + fmt(e.debit, st.cur, true) : '−' + fmt(e.credit, st.cur, true)) + ' · bal ' + fmt(e.bal, st.cur, true)); });
+            L.push('CLOSING BALANCE: ' + fmt(st.closing, st.cur)); shareDlg('Statement — ' + cl.name, statementDoc(st, cl), L.join('\n'), 'statement-' + String(cl.name).replace(/[^a-z0-9]+/gi, '-').toLowerCase(), cl.phone, cl.email, bizName() + ' — statement');
+        },
+        receiveDlg: function () {
+            var cl = clients().filter(function (x) { return x.key === V.stClient; })[0]; if (!cl) return; var st = statement(V.stClient, V.stCur);
+            overlay('<h3>Receive payment — ' + esc(cl.name) + '</h3><div style="color:#6b7280;font-size:13px">Owes now: <b>' + fmt(Math.max(0, st.closing), V.stCur) + '</b>. The money settles the oldest unpaid invoices first. Anything extra is kept as credit on the account.</div><label>Amount (' + esc(V.stCur) + ')</label><input id="vx-ra" type="number" step="any" min="0" value="' + Math.max(0, st.closing) + '"><label>Date</label><input id="vx-rd" type="date" value="' + today() + '"><label>Paid by</label><select id="vx-rm"><option>M-Pesa</option><option>Cash</option><option>Bank transfer</option><option>Cheque</option><option>Card</option><option>Other</option></select><label>Reference</label><input id="vx-rr"><div class="act"><button onclick="Invoicing.doReceive()">Save</button><button class="sec" onclick="Invoicing.closeDlg()">Cancel</button></div>');
+        },
+        doReceive: function () {
+            var cl = clients().filter(function (x) { return x.key === V.stClient; })[0]; if (!cl) return; var a = num(io('vx-ra')); if (!(a > 0)) { toast('Type the amount received.', true); return; }
+            var r = receive(V.stClient, cl.name, V.stCur, a, io('vx-rd') || today(), io('vx-rm'), io('vx-rr').trim()); closeOv(); toast('Saved: ' + r.used.length + ' invoice(s) settled' + (r.credit > 0 ? ', ' + fmt(r.credit, V.stCur) + ' kept as credit.' : '.')); render();
+        },
+        setAg: function (c) { V.agCur = c; render(); }, setAgDate: function (d) { V.agAsOf = d; render(); },
+        agDoc: function () { var a = ageing(V.agCur, V.agAsOf || today()); var L = [bizName() + ' — RECEIVABLES as at ' + dshow(a.asOf)]; a.rows.forEach(function (r) { L.push(r.name + ': ' + fmt(r.all, a.cur) + (r.all - r.cur > 0 ? ' (overdue ' + fmt(r.all - r.cur, a.cur) + ')' : '')); }); L.push('TOTAL OWED: ' + fmt(a.total.all, a.cur)); shareDlg('Receivables — ' + a.cur, ageingDoc(a), L.join('\n'), 'receivables-' + a.cur.toLowerCase(), '', '', bizName() + ' — receivables'); },
+        setBankCur: function (c) { V.bank.text = io('vx-bank'); V.bank.cur = c; V.bank.res = null; render(); }, setBankWhich: function (w) { V.bank.text = io('vx-bank'); V.bank.which = w; V.bank.res = null; render(); },
+        runMatch: function () {
+            var B = V.bank; B.text = io('vx-bank'); var lines = parseStatement(B.text, B.which); if (!lines.length) { toast('Paste at least one statement line that has an amount.', true); return; }
+            var pays = []; live().forEach(function (i) { if (i.cur !== B.cur || i.void) return; (i.payments || []).forEach(function (p) { if (p && !p._deleted && !p.recon) pays.push({ id: p.id, inv: i.id, no: i.no, client: i.client, amount: num(p.amount), date: p.date, method: p.method, ref: p.ref }); }); });
+            B.res = matchPayments(pays, lines, 5); render();
+        },
+        confirmMatches: function () {
+            var B = V.bank; if (!B.res) return; var n = 0, now = Date.now();
+            B.res.matched.forEach(function (x) { var i = byId(x.pay.inv); if (!i) return; (i.payments || []).forEach(function (p) { if (p.id === x.pay.id) { p.recon = { at: now, how: x.how, line: x.line.raw.slice(0, 120) }; n++; } }); i.updatedAt = now; });
+            save(); B.res = null; toast(n + ' payments ticked as reconciled.'); render();
+        },
+        setS: function (k, v) { var s = S(); if (k === 'taxRate' || k === 'next' || k === 'dueDays') v = num(v); s[k] = v; save(); if (k === 'salesAlso') alsoRefresh(); if (k === 'defaultCur') toast('New invoices will use ' + v + '.'); render(); },
+        setRate: function (k, v) { var c = S().cur[k]; if (!c) return; c.rate = num(v); c.ok = c.rate > 0; S().ratesAt = Date.now(); save(); alsoRefresh(); render(); },
+        setAccent: function (c) { S().accent = c; save(); render(); },
+        addCur: function () { var code = io('vx-nc').trim().toUpperCase(), nm = io('vx-nn').trim(), r = num(io('vx-nr')); if (!/^[A-Z]{2,5}$/.test(code)) { toast('Type the currency code, for example ETB.', true); return; } if (!(r > 0)) { toast('Type the rate in KES.', true); return; } S().cur[code] = { name: nm || code, sym: code, dec: 2, rate: r, ok: true }; S().ratesAt = Date.now(); save(); render(); }
+    };
+
+    /* ================= the Sales Counter: payable total also in a second currency ================= */
+    function alsoRefresh() {
+        try {
+            var g = $('cart-grand-total'); if (!g) return; var code = S().salesAlso, old = $('vx-also');
+            if (!code || !S().cur[code] || !(num(S().cur[code].rate) > 0)) { if (old && old.parentNode) old.parentNode.removeChild(old); return; }
+            var m = /KES\s*([\d,]+(?:\.\d+)?)/i.exec(g.textContent || ''); if (!m) { if (old && old.parentNode) old.parentNode.removeChild(old); return; } var kes = num(m[1]); if (kes <= 0) { if (old && old.parentNode) old.parentNode.removeChild(old); return; }
+            var sp = document.createElement('span'); sp.id = 'vx-also'; sp.textContent = '≈ ' + fmt(kes / num(S().cur[code].rate), code); if (old && old.textContent === sp.textContent && old.parentNode === g) return; if (old && old.parentNode) old.parentNode.removeChild(old); g.appendChild(sp);
+        } catch (e) { /* cosmetic */ }
+    }
+    function watchTotal() { var g = $('cart-grand-total'); if (!g || g.__vx) return !!g; g.__vx = 1; if (window.MutationObserver) { var busy = false; new MutationObserver(function () { if (busy) return; busy = true; setTimeout(function () { busy = false; alsoRefresh(); }, 60); }).observe(g, { childList: true, characterData: true, subtree: false }); } alsoRefresh(); return true; }
+
+    /* ================= tab, lock lists, sync ================= */
+    function mount() {
+        if ($('invoicing-tab')) return true;
+        var anchor = $('settings-tab-btn') || $('payroll-tab-btn'), host = $('settings-tab'); if (!anchor || !host || !host.parentNode) return false;
+        var btn = document.createElement('button'); btn.id = 'invoicing-tab-btn'; btn.className = 'tab-link'; btn.setAttribute('data-tab', 'invoicing-tab'); btn.setAttribute('onclick', "guardedSwitchTab(event, 'invoicing-tab')"); btn.textContent = '🧾 Invoicing';
+        anchor.parentNode.insertBefore(btn, anchor);
+        var p = document.createElement('div'); p.id = 'invoicing-tab'; p.className = 'tab-content'; p.innerHTML = '<div class="panel vx"><h3>🧾 Invoicing — ' + esc(bizName()) + '</h3><div id="vx-body"></div></div>';
+        host.parentNode.insertBefore(p, host);
+        return true;
+    }
+    function lockLists() { try { [typeof LOCKABLE_TABS !== 'undefined' ? LOCKABLE_TABS : null, typeof ROLE_TABS !== 'undefined' ? ROLE_TABS : null].forEach(function (a) { if (Array.isArray(a) && !a.some(function (t) { return t && t.id === 'invoicing-tab'; })) a.push({ id: 'invoicing-tab', label: '🧾 Invoicing' }); }); } catch (e) { /* the tab stays open to everyone who can see it */ } }
+    function wire() { try { if (typeof performTabSwitch === 'function' && !performTabSwitch.__vx) { var _p = performTabSwitch; var w = function (btn, id) { var r = _p.apply(this, arguments); if (id === 'invoicing-tab') { try { render(); } catch (e) { var b = body(); if (b) b.innerHTML = '<div class="vx-warn">The invoices could not be shown: ' + esc(e && e.message) + '</div>'; } } return r; }; w.__vx = true; performTabSwitch = w; } } catch (e) { /* the button still opens the tab */ } }
+    function hook() { var b = $('invoicing-tab-btn'); if (b && !b.__vx) { b.__vx = 1; b.addEventListener('click', function () { setTimeout(function () { try { if ($('invoicing-tab') && $('invoicing-tab').classList.contains('active')) render(); } catch (e) { /* shown on next click */ } }, 60); }); } }
+    function start() { if (!mount()) { setTimeout(start, 700); return; } hook(); lockLists(); wire(); setTimeout(wire, 800); setTimeout(wire, 2500); watchTotal(); setTimeout(watchTotal, 1500); setInterval(function () { watchTotal(); lockLists(); }, 4000); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    window.addEventListener('load', function () { setTimeout(start, 400); });
+
+    /* every device sees the same invoices: they ride along with the shop's settings and merge invoice by invoice (newest edit wins) */
+    function mergeIn(inc) {
+        if (!inc || typeof inc !== 'object') return false; var d = load(), changed = false;
+        function uni(mine, theirs) { var m = {}; mine.forEach(function (x) { if (x && x.id) m[x.id] = x; }); (theirs || []).forEach(function (x) { if (!x || !x.id) return; var a = m[x.id]; if (!a || (x.updatedAt || 0) > (a.updatedAt || 0)) { m[x.id] = x; changed = true; } }); return Object.keys(m).map(function (k) { return m[k]; }); }
+        d.invoices = uni(d.invoices, inc.invoices); d.credits = uni(d.credits, inc.credits);
+        if ((inc.updatedAt || 0) > (d.updatedAt || 0) && inc.settings) { d.settings = Object.assign(d.settings, inc.settings); d.settings.cur = Object.assign(JSON.parse(JSON.stringify(BASE)), inc.settings.cur || {}); changed = true; }
+        if (changed) { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* kept in memory */ } if (V.view !== 'edit' && $('invoicing-tab') && $('invoicing-tab').classList.contains('active')) render(); alsoRefresh(); }
+        return changed;
+    }
+    API.mergeIn = mergeIn;
+    try { var ec = window.extraSettingsCollect; if (typeof ec === 'function' && !ec.__vx) { var wc = function () { var r = ec.apply(this, arguments) || {}; var d = load(); if (d.invoices.length || d.credits.length || d.updatedAt) r.invoicing = d; return r; }; wc.__vx = true; window.extraSettingsCollect = wc; } } catch (e) { /* local only */ }
+    try { var ea = window.extraSettingsApply; if (typeof ea === 'function' && !ea.__vx) { var wa = function (data) { var r = ea.apply(this, arguments); safe(function () { if (data && data.invoicing) mergeIn(data.invoicing); }); return r; }; wa.__vx = true; window.extraSettingsApply = wa; } } catch (e) { /* local only */ }
+})();
+</script>

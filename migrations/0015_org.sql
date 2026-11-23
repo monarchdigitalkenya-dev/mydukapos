@@ -1,0 +1,15 @@
+-- zip 309: Business HQ (branches, people, branch assignments, HQ administrators, audit). Also created by the server on first use (ensureOrgSchema in functions/api/_org.js).
+CREATE TABLE IF NOT EXISTS org_branch (group_id TEXT NOT NULL, client_id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')), manager_person_id TEXT, phone TEXT, email TEXT, location TEXT, notes TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (group_id, client_id)) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_org_branch_code ON org_branch (group_id, lower(code));
+CREATE TABLE IF NOT EXISTS org_person (group_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, employee_no TEXT, phone TEXT, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','deactivated')), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (group_id, person_id)) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_org_person_empno ON org_person (group_id, lower(employee_no)) WHERE employee_no IS NOT NULL AND employee_no <> '';
+CREATE TABLE IF NOT EXISTS org_assignment (group_id TEXT NOT NULL, assignment_id TEXT NOT NULL, person_id TEXT NOT NULL, client_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('permanent','additional','temporary')), starts_at INTEGER NOT NULL, ends_at INTEGER, ended_at INTEGER, end_reason TEXT, created_by TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (group_id, assignment_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_org_assignment_person ON org_assignment (group_id, person_id);
+CREATE INDEX IF NOT EXISTS ix_org_assignment_open ON org_assignment (group_id, ended_at, ends_at);
+CREATE TABLE IF NOT EXISTS org_admin (group_id TEXT NOT NULL, admin_id TEXT NOT NULL, person_id TEXT NOT NULL, home_client_id TEXT NOT NULL, perms TEXT NOT NULL DEFAULT '[]', branches TEXT NOT NULL DEFAULT '["*"]', status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')), created_by TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (group_id, admin_id)) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_org_admin_person ON org_admin (group_id, person_id);
+CREATE TABLE IF NOT EXISTS org_audit (group_id TEXT NOT NULL, audit_id TEXT NOT NULL, at INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT, before_json TEXT, after_json TEXT, reason TEXT, PRIMARY KEY (group_id, audit_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_org_audit_at ON org_audit (group_id, at);
+CREATE TRIGGER IF NOT EXISTS no_delete_org_audit BEFORE DELETE ON org_audit BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS no_update_org_audit BEFORE UPDATE ON org_audit BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS no_delete_org_assignment BEFORE DELETE ON org_assignment BEGIN SELECT RAISE(ABORT, 'assignment history is never deleted'); END;

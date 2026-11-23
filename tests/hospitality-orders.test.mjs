@@ -76,7 +76,7 @@ test('RESTAURANT end to end: waiter opens Table 05 → kitchen gets food, bar ge
   assert.equal(w.eval(`hospAddProduct('${tab.id}', 'CHP', 1)`), null, 'the waiter cannot add to a printed bill');
   assert.equal(J(w, `salesLog.length`), 0, 'settling for billing is NOT payment');
   w.eval(`document.querySelector('.tab-link[data-tab="bills-tab"]').click()`);
-  assert.match(d.getElementById('bills-awaiting-orders').textContent, /Table 05[\s\S]*2,?827/);
+  assert.match(d.getElementById('bills-awaiting-orders').textContent, /Table 05[\s\S]*2,?827/i);
   // the cashier takes the payment: one receipt, net items + service charge
   as(w, 'm1');
   w.eval(`settleTabDirect('${tab.id}')`);
@@ -136,12 +136,12 @@ test('a waiter sees only their own active orders; a manager (or the setting) see
   as(w, 'w2'); w.eval("hospOpenTabFor('Table 06', { waiter: 'Otieno' })");
   w.eval('renderServiceOrders()');
   let txt = d.getElementById('svc-active-orders').textContent;
-  assert.match(txt, /Table 06/); assert.doesNotMatch(txt, /Table 05/);
+  assert.match(txt, /Table 06/i); assert.doesNotMatch(txt, /Table 05/i);
   as(w, 'm1'); w.eval('renderServiceOrders()');
   txt = d.getElementById('svc-active-orders').textContent;
-  assert.match(txt, /Table 05/); assert.match(txt, /Table 06/);
+  assert.match(txt, /Table 05/i); assert.match(txt, /Table 06/i);
   as(w, 'w2'); w.eval('hospConfig.waiterSeesAll = true; renderServiceOrders()');
-  assert.match(d.getElementById('svc-active-orders').textContent, /Table 05/);
+  assert.match(d.getElementById('svc-active-orders').textContent, /Table 05/i);
   b.close();
 });
 
@@ -189,13 +189,12 @@ test('KDS: the kitchen sees only food, the bar only drinks; items move New → R
   as(w, 'w1');
   await w.eval("routeOrderToTab('Table 05'); currentPaymentMethod = 'tab'; addToCart('BRG'); addToCart('TSK'); checkoutCart()");
   await w.eval("routeOrderToTab('Table 06'); currentPaymentMethod = 'tab'; addToCart('CHP'); checkoutCart()");
-  w.eval(`document.querySelector('.tab-link[data-tab="kds-tab"]').click()`);
-  w.eval("kdsStation = 'kitchen'; renderKds()");
-  let board = d.getElementById('kds-board').textContent;
-  assert.match(board, /Table 05[\s\S]*Beef Burger/); assert.match(board, /Table 06[\s\S]*Chips/);
+  w.eval("kdsTabRender('kitchen')");         // zip 269: Kitchen and Bar are two separate tabs
+  let board = d.getElementById('kds-body-kitchen').textContent;
+  assert.match(board, /Table 05[\s\S]*Beef Burger/i); assert.match(board, /Table 06[\s\S]*Chips/i);
   assert.doesNotMatch(board, /Tusker/, 'no drinks in the kitchen');
-  w.eval("kdsStation = 'bar'; renderKds()");
-  board = d.getElementById('kds-board').textContent;
+  w.eval("kdsTabRender('bar')");
+  board = d.getElementById('kds-body-bar').textContent;
   assert.match(board, /Tusker/); assert.doesNotMatch(board, /Burger|Chips/);
   // statuses
   const t5 = tabOf(w, 'Table 05'); const brg = lineOf(w, 'Table 05', 'BRG');
@@ -207,11 +206,11 @@ test('KDS: the kitchen sees only food, the bar only drinks; items move New → R
   w.eval('renderServiceOrders()');
   assert.match(d.getElementById('svc-active-orders').textContent, /🔔 1 ready/);
   // late: Table 06's chips were ordered 20 minutes ago (kitchen default 15 min)
-  w.eval("tabs.find(t => t.label === 'Table 06' && t.status === 'OPEN').orders[0].timestamp = new Date(Date.now() - 20 * 60000).toISOString(); kdsStation = 'kitchen'; renderKds()");
-  assert.equal(d.querySelectorAll('#kds-board .kds-late').length, 1);
-  // rush first
-  w.eval(`hospSetPriority('${t5.id}', true); renderKds()`);
-  assert.match(d.querySelector('#kds-board .kds-card').textContent, /Table 05[\s\S]*RUSH/);
+  w.eval("tabs.find(t => t.label === 'Table 06' && t.status === 'OPEN').orders[0].timestamp = new Date(Date.now() - 20 * 60000).toISOString(); kdsTabRender('kitchen')");
+  assert.equal(d.querySelectorAll('#kds-body-kitchen .kf-card.late').length, 1);
+  // rush is marked
+  w.eval(`hospSetPriority('${t5.id}', true); kdsTabRender('kitchen')`);
+  assert.ok([...d.querySelectorAll('#kds-body-kitchen .kf-card')].some((c) => /Table 05[\s\S]*RUSH/i.test(c.textContent)));
   b.close();
 });
 
@@ -282,8 +281,8 @@ test('modifiers: an item with extras asks for them, the price follows, the kitch
   assert.equal(line.price, 700); assert.match(line.name, /Beef Burger \(Extra cheese, No onions, Well done\)/);
   w.eval("currentPaymentMethod = 'tab'; checkoutCart()");
   assert.match(lastTicket(w), /Beef Burger[\s\S]*\+ Extra cheese[\s\S]*\+ No onions[\s\S]*\+ Well done/);
-  w.eval("kdsStation = 'kitchen'; document.querySelector('.tab-link[data-tab=\"kds-tab\"]').click(); renderKds()");
-  assert.match(d.getElementById('kds-board').textContent, /\+ Extra cheese/);
+  w.eval("kdsTabRender('kitchen')");
+  assert.match(d.getElementById('kds-body-kitchen').textContent, /\+ Extra cheese/);
   assert.equal(Number(w.eval("hospNetTotal(tabs.find(t => t.label === 'Table 05' && t.status === 'OPEN'))")), 700);
   // drinks without modifier groups go straight in
   w.eval("addToCart('TSK')");

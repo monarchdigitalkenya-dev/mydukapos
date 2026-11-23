@@ -65,6 +65,15 @@ var SVC_GENERIC_TERMS = {
   tabLabel: '🔧 Services Counter', registerLabel: '🗂️ Client Registry', appointmentsLabel: '📅 Bookings', boardLabel: 'Board', listLabel: 'List', reportsLabel: 'Reports', ready: 'Ready', done: 'Completed'
 };
 
+/* zip 345: everything a car wash can clean. 'motor' ones carry a plate / make / model; the rest (carpets, covers, curtains...) only a short description + size. */
+var SVC_WASH_ITEM_TYPES = [
+  { v: 'sedan', l: 'Car - Sedan' }, { v: 'hatchback', l: 'Car - Hatchback' }, { v: 'suv', l: 'Car - SUV' }, { v: 'crossover', l: 'Car - Crossover' }, { v: 'pickup', l: 'Pickup' },
+  { v: 'van', l: 'Van' }, { v: 'minibus', l: 'Minibus / Matatu' }, { v: 'bus', l: 'Bus' }, { v: 'truck', l: 'Truck / Lorry' }, { v: 'motorcycle', l: 'Motorbike' }, { v: 'tuktuk', l: 'Tuk-tuk' },
+  { v: 'bicycle', l: 'Bicycle' }, { v: 'carpet', l: 'Carpet' }, { v: 'rug', l: 'Rug / Mat' }, { v: 'seat_covers', l: 'Seat covers' }, { v: 'sofa', l: 'Sofa / Upholstery' },
+  { v: 'curtains', l: 'Curtains' }, { v: 'mattress', l: 'Mattress' }, { v: 'other', l: 'Other (anything else)' }
+];
+var SVC_WASH_MOTOR = ['sedan', 'hatchback', 'suv', 'crossover', 'pickup', 'van', 'minibus', 'bus', 'truck', 'motorcycle', 'tuktuk'];
+var SVC_WASH_PLATED = ['sedan', 'hatchback', 'suv', 'crossover', 'pickup', 'van', 'minibus', 'bus', 'truck', 'motorcycle'];
 /* ===== the ten templates (built once, lazily resolved by svcGetTemplate) ===== */
 var SVC_TYPES = (function () {
   var R = {};
@@ -115,7 +124,7 @@ var SVC_TYPES = (function () {
   function QG(rows) { return rows.map(function (r) { return { key: r[0], label: r[1], statuses: r[2], color: r[3] || '' }; }); }
   function D(rows) { return rows.map(function (r) { return { id: r[0], label: r[1], metric: r[2], tone: r[3] || 'neutral' }; }); }
   function seedId(type, name) { return 'sc-seed-' + type + '-' + slug(name); }
-  var TIER = { sedan: 1, hatchback: 1, suv: 1.4, crossover: 1.4, pickup: 1.6, van: 1.8, minibus: 2, bus: 3, truck: 3, motorcycle: 0.4, other: 1 };
+  var TIER = { sedan: 1, hatchback: 1, suv: 1.4, crossover: 1.4, pickup: 1.6, van: 1.8, minibus: 2, bus: 3, truck: 3, motorcycle: 0.4, tuktuk: 0.6, bicycle: 0.2, carpet: 1, rug: 0.6, seat_covers: 0.6, sofa: 1.2, curtains: 0.6, mattress: 0.8, other: 1 };
   function tiers(base) { var o = {}, k; for (k in TIER) o[k] = Math.max(50, Math.round(base * TIER[k] / 50) * 50); return o; }
   function C(name, unit, qty) { return { code: '', name: name, unit: unit, qty: qty }; }
   /* seed rows: [name, category, price, durationMin, staffRole, consumption[], {priceMode, byAsset, description}] */
@@ -140,6 +149,18 @@ var SVC_TYPES = (function () {
     return { events: ev };
   }
   var N_VEHICLE = notify({ item: 'your vehicle {plate}', ready: 'Hello {first_name}, your vehicle {plate} is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  var N_WASH = notify({ item: 'your {asset}', ready: 'Hello {first_name}, your {asset} is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  /* [name, category, price, durationMin, staffRole, consumption[], opts] - priced per thing being cleaned (see TIER) */
+  var WASH_EXTRA = [
+    ['Motorbike Wash', 'Wash', 300, 20, 'washer', [C('Shampoo', 'ml', 30)], { byAsset: true, description: 'Full motorbike wash' }],
+    ['Carpet Cleaning', 'Carpets & Fabrics', 1000, 60, 'washer', [C('Carpet shampoo', 'ml', 100)], { byAsset: true, description: 'Price is for a standard carpet; change it on the job for large ones' }],
+    ['Rug / Mat Cleaning', 'Carpets & Fabrics', 500, 30, 'washer', [C('Carpet shampoo', 'ml', 50)], { byAsset: true }],
+    ['Seat Cover Wash', 'Carpets & Fabrics', 600, 40, 'washer', [C('Interior cleaner', 'ml', 50)], { byAsset: true }],
+    ['Sofa / Upholstery Cleaning', 'Carpets & Fabrics', 1500, 90, 'detailer', [C('Carpet shampoo', 'ml', 120)], { byAsset: true }],
+    ['Curtain Cleaning', 'Carpets & Fabrics', 400, 45, 'washer', [C('Detergent', 'ml', 60)], { byAsset: true }],
+    ['Mattress Cleaning', 'Carpets & Fabrics', 1200, 60, 'detailer', [C('Carpet shampoo', 'ml', 100)], { byAsset: true }],
+    ['Tuk-tuk Wash', 'Wash', 300, 20, 'washer', [C('Shampoo', 'ml', 30)], { byAsset: true }]
+  ];
   var N_DEVICE = notify({ item: 'your {device}', ready: 'Hello {first_name}, your {device} is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
   var N_CLIENT = notify({ item: 'your booking', ready: 'Hello {first_name}, we are ready for you at {business}. Please come in.' });
   var N_LAUNDRY = notify({ item: 'your laundry', ready: 'Hello {first_name}, your laundry (ticket {job_no}) is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
@@ -158,6 +179,18 @@ var SVC_TYPES = (function () {
       F('veh_year', 'year', 'Year', { storesIn: 'asset', assetAttr: 'year', validate: 'year', level: 'warn', keyboard: 'numeric', width: 'half' }),
       F('veh_odometer', 'odometer', 'Mileage / odometer (km)', { storesIn: 'asset', assetAttr: 'odometer', validate: 'odometer', level: 'warn', keyboard: 'numeric', width: 'half' }),
       F('veh_notes', 'longtext', 'Vehicle notes', { storesIn: 'asset', assetAttr: 'notes', rows: 2 })
+    ]);
+  }
+  function washItemSec(title) {
+    var motor = { field: 'veh_type', 'in': SVC_WASH_MOTOR }, plated = { field: 'veh_type', 'in': SVC_WASH_PLATED }, other = { field: 'veh_type', nin: SVC_WASH_MOTOR };
+    return sec('vehicle', title || 'What is being cleaned', '🧽', 'intake', [
+      F('veh_type', 'dropdown', 'What is being cleaned', { required: true, storesIn: 'asset', assetAttr: 'type', options: SVC_WASH_ITEM_TYPES.slice(), washItems: true, default: 'sedan' }),
+      F('veh_plate', 'plate', 'Number plate / registration', { required: true, storesIn: 'asset', assetAttr: 'plate', validate: 'plate', level: 'warn', autocomplete: 'asset', placeholder: 'e.g. KDA 123A', width: 'half', visibleWhen: plated }),
+      F('veh_make', 'combo', 'Make', { required: false, storesIn: 'asset', assetAttr: 'make', optionsFrom: 'vehicleMakes', allowOther: true, width: 'half', visibleWhen: motor }),
+      F('veh_model', 'combo', 'Model', { required: false, storesIn: 'asset', assetAttr: 'model', optionsFrom: 'vehicleModels:veh_make', allowOther: true, width: 'half', visibleWhen: motor }),
+      F('veh_color', 'text', 'Colour', { storesIn: 'asset', assetAttr: 'color', width: 'half' }),
+      F('wash_size', 'text', 'Size or number of pieces', { storesIn: 'asset', assetAttr: 'size', width: 'half', placeholder: 'e.g. 3 x 4 m, 2 pieces', visibleWhen: other }),
+      F('veh_notes', 'longtext', 'Description / notes', { storesIn: 'asset', assetAttr: 'notes', rows: 2, placeholder: 'e.g. wool carpet with a juice stain' })
     ]);
   }
   function labourField() { return F('rep_labour', 'money', 'Labour charge', { storesIn: 'job', maps: 'charge:labour', validate: 'money', keyboard: 'decimal', width: 'half' }); }
@@ -246,31 +279,31 @@ var SVC_TYPES = (function () {
 
   /* ============ CAR WASH ============ */
   R.car_wash = {
-    key: 'car_wash', version: 1, label: 'Car Wash', icon: '🚗', description: 'Vehicle wash and detailing with a live queue, condition record, valuables and per-task staff.',
+    key: 'car_wash', version: 1, label: 'Car Wash', icon: '🚗', description: 'Cars, motorbikes, carpets and anything else you clean: live queue, condition record, valuables and tasks assigned to staff.',
     prefix: 'CW', assetKind: 'vehicle',
-    terms: { job: 'Wash Job', jobs: 'Wash Jobs', customer: 'Owner', customers: 'Owners', asset: 'Vehicle', assets: 'Vehicles', staff: 'Assigned Staff', staffs: 'Assigned Staff', service: 'Wash', services: 'Wash Services',
-      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Vehicle Job', walkInButton: '+ New Vehicle Job', bookingButton: '+ Booking', quickButton: 'Quick add', queue: 'Wash Queue',
-      tabLabel: '🚗 Wash Counter', registerLabel: '🗂️ Vehicle Register', appointmentsLabel: '📅 Bookings', boardLabel: 'Wash Queue', listLabel: 'Wash Jobs', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
+    terms: { job: 'Task', jobs: 'Tasks', customer: 'Owner', customers: 'Owners', asset: 'Item', assets: 'Items', staff: 'Assigned Staff', staffs: 'Assigned Staff', service: 'Wash', services: 'Wash Services',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Task', walkInButton: '+ New Task', bookingButton: '+ Booking', quickButton: 'Quick add', queue: 'Task Queue',
+      tabLabel: '🚗 Wash Counter', registerLabel: '🗂️ Item Register', appointmentsLabel: '📅 Bookings', boardLabel: 'Task Queue', listLabel: 'Tasks', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
     sections: [
-      custSec('Owner name', 'Customer / Vehicle Owner', 'quickOff', 'quickOff'),
-      vehicleSec('Vehicle'),
+      custSec('Owner name', 'Customer / Owner', 'quickOff', 'quickOff'),
+      washItemSec('What is being cleaned'),
       servicesSec(true, 'Services'),
-      sec('condition', 'Vehicle condition', '🔎', 'both', [
+      sec('condition', 'Condition (before cleaning)', '🔎', 'both', [
         F('cond_scratches', 'text', 'Existing scratches', { placeholder: 'e.g. Left rear door' }),
         F('cond_dents', 'text', 'Existing dents'),
         F('cond_damage', 'text', 'Existing damage'),
         F('cond_broken', 'text', 'Broken components'),
         F('cond_other', 'longtext', 'Other observations', { rows: 2 }),
         F('cond_photos', 'photo', 'Condition photos', { multiple: true, storesIn: 'job' })
-      ], { collapsed: true }),
+      ], { collapsed: true, when: { field: 'veh_type', 'in': SVC_WASH_MOTOR } }),
       sec('valuables', 'Valuables / Items Left in Vehicle', '💼', 'both', [
         F('valuables', 'widget', 'Valuables / Items Left in Vehicle', { widget: 'valuables', storesIn: 'job' }),
         F('val_ack', 'checkbox', 'Customer acknowledges the valuables disclaimer', { requiredWhen: { field: 'valuables', truthy: true }, visibleWhen: { field: 'valuables', truthy: true }, storesIn: 'data' })
-      ], { collapsed: true }),
-      staffSec('Assigned staff', 'staff'),
+      ], { collapsed: true, when: { field: 'veh_type', 'in': SVC_WASH_MOTOR } }),
+      sec('staff', 'Assign to staff', '👷', 'both', [F('staff', 'widget', 'Assign to staff', { widget: 'staff', storesIn: 'job' })], { collapsed: false }),
       matSec('Products used'), quoteSec(), paySec(), statusSec()
     ],
-    quick: { fields: ['veh_plate', 'services'], required: ['veh_plate'], submitLabel: 'Add to queue' },
+    quick: { fields: ['veh_type', 'veh_plate', 'services'], required: ['veh_type'], submitLabel: 'Add to queue' },
     statuses: ST([
       ['waiting', 'Waiting', '🕒', '#f39c12', 'waiting', 0, ['in_progress', 'ready', 'cancelled']],
       ['in_progress', 'In Progress', '🚿', '#2980b9', 'working', 1, ['ready', 'waiting', 'completed', 'cancelled']],
@@ -281,8 +314,8 @@ var SVC_TYPES = (function () {
     initialStatus: 'waiting', appointmentInitialStatus: 'waiting', createStatuses: ['waiting', 'in_progress'],
     queueGroups: QG([['waiting', 'Waiting', ['waiting'], '#f39c12'], ['working', 'In Progress', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Completed', ['completed'], '#16a085']]),
     staffRoles: [{ key: 'washer', label: 'Washer', bundle: 'worker' }, { key: 'detailer', label: 'Detailer', bundle: 'worker' }, { key: 'supervisor', label: 'Supervisor', bundle: 'supervisor' }, { key: 'cashier', label: 'Cashier', bundle: 'cashier' }],
-    staffAssignment: { mode: 'multi', perTask: true, taskLabels: ['Exterior', 'Interior', 'Engine', 'Finishing'], required: false, filterBySpecialty: true, roleKey: 'washer' },
-    catalog: { categories: ['Wash', 'Interior', 'Exterior', 'Detailing', 'Add-ons'], seeds: seeds('car_wash', [
+    staffAssignment: { mode: 'multi', perTask: true, taskLabels: ['Washing', 'Interior / Vacuum', 'Drying', 'Finishing'], required: false, filterBySpecialty: false, roleKey: 'washer' },
+    catalog: { categories: ['Wash', 'Interior', 'Exterior', 'Detailing', 'Carpets & Fabrics', 'Add-ons'], topUp: { flag: 'items345', seeds: seeds('car_wash', WASH_EXTRA) }, seeds: seeds('car_wash', WASH_EXTRA.concat([
       ['Basic Wash', 'Wash', 500, 30, 'washer', [C('Shampoo', 'ml', 50)], { byAsset: true }],
       ['Premium Wash', 'Wash', 1500, 60, 'washer', [C('Shampoo', 'ml', 80), C('Interior cleaner', 'ml', 50), C('Tyre shine', 'ml', 30), C('Wax', 'ml', 30)], { byAsset: true }],
       ['Exterior Wash', 'Exterior', 400, 20, 'washer', [C('Shampoo', 'ml', 40)], { byAsset: true }],
@@ -293,11 +326,11 @@ var SVC_TYPES = (function () {
       ['Engine Cleaning', 'Add-ons', 800, 30, 'detailer', [C('Degreaser', 'ml', 100)], { byAsset: true }],
       ['Tyre Shine', 'Add-ons', 200, 10, 'washer', [C('Tyre shine', 'ml', 30)], { byAsset: true }],
       ['Other', 'Add-ons', 0, 15, '', [], { priceMode: 'variable' }]
-    ]) },
+    ])) },
     inventory: { mode: 'optional', partsLabel: 'Products used', unitChoices: ['ml', 'l', 'g', 'kg', 'pcs'], deductOn: 'record', chargeableDefault: false },
     quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 500 }, validityDays: 1, statusesAllowingQuote: ['waiting', 'in_progress'] },
     pricing: { labour: false, materials: 'included', discount: true, taxMode: 'cfg' },
-    notify: N_VEHICLE,
+    notify: N_WASH,
     dashboard: D([['remaining', 'Vehicles remaining', 'remaining', 'info'], ['waiting', 'Waiting', 'group:waiting', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready', 'group:ready', 'good'], ['done', 'Completed', 'group:done', 'good'], ['today', "Today's jobs", 'today'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['queue', 'Current queue', 'queue']]),
     reports: ['vehicles_washed', 'revenue_per_vehicle', 'popular_washes', 'repeat_customers', 'avg_turnaround', 'peak_hours', 'jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'staff_activity', 'inventory_consumption'],
     appointments: { mode: 'optional', defaultDurationMin: 45, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: true },

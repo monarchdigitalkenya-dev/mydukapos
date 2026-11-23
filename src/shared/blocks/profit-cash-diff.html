@@ -1,0 +1,98 @@
+<!-- PROFIT CASH DIFFERENCES -------------------------------------------------------------------------------------------------
+     zip 376: a cash drawer that counts MORE than expected (surplus) or LESS (shortage) changes what the business really made. Under the profit
+     figures (Profits tab, the printed Profit Report, and Reports > Expenses & Profit) the surplus is now added, the shortage subtracted, and a
+     FINAL profit is shown. Only counted sessions with a difference are used (a rejected approval is left out). Nothing is changed in the drawer. -->
+<style>
+#profit-cash-adj{margin:14px 0;padding:12px 14px;border:1px solid var(--border,#d9dee5);border-radius:12px;background:var(--card-bg,rgba(127,140,160,.08));max-width:520px}
+#profit-cash-adj .pca-row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:14px}
+#profit-cash-adj .pca-plus b{color:#15803d}#profit-cash-adj .pca-minus b{color:#b91c1c}
+#profit-cash-adj .pca-final{margin-top:6px;padding-top:8px;border-top:2px solid currentColor;font-size:16px;font-weight:700}
+#profit-cash-adj .pca-note{font-size:12px;opacity:.7;margin-top:4px}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.CashDiff) return;
+  function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+  function key(ms) { try { return typeof dateKey === 'function' ? dateKey(new Date(ms)) : new Date(ms).toISOString().slice(0, 10); } catch (e) { return ''; } }
+  function inRange(ms, a, b) {
+    if (typeof a === 'string' || typeof b === 'string') { var k = key(ms); return k >= String(a) && k <= String(b); }
+    return ms >= +a && ms <= +b;
+  }
+  // total surplus and shortage of the counted cash sessions closed in [from, to] (date keys 'YYYY-MM-DD' or Date objects)
+  function between(from, to) {
+    var out = { surplus: 0, shortage: 0, net: 0, count: 0 };
+    try {
+      var list = typeof cashSessions !== 'undefined' && Array.isArray(cashSessions) ? cashSessions : [];
+      list.forEach(function (x) {
+        var c = x && x.closing; if (!c || c.status !== 'counted') return;
+        var v = Number(c.variance); if (!v || !isFinite(v)) return;
+        if (c.approval && c.approval.status === 'rejected') return;
+        var at = Number(c.at) || Number(x.closedAt) || Number(x.openedAt) || 0;
+        if (!inRange(at, from, to)) return;
+        if (v > 0) out.surplus += v; else out.shortage += -v;
+        out.count++;
+      });
+    } catch (e) { /* none */ }
+    out.surplus = r2(out.surplus); out.shortage = r2(out.shortage); out.net = r2(out.surplus - out.shortage);
+    return out;
+  }
+  function money(n) { return 'KES ' + Math.round(Number(n) || 0).toLocaleString('en-US'); }   // zip 394: whole shillings
+  function comm(from, to) { try { return window.StaffCommission ? window.StaffCommission.between(from, to).total : 0; } catch (e) { return 0; } }   // zip 394: staff commission of the period
+  function num(txt) { return parseFloat(String(txt || '').replace(/[^0-9.\-]/g, '')) || 0; }
+
+  function draw() {
+    try {
+      var g = document.getElementById('profit-gross-total'); if (!g) return;
+      var range = typeof profitReportRange === 'function' ? profitReportRange() : null; if (!range) return;
+      var d = between(range.from, range.to), box = document.getElementById('profit-cash-adj'), c = comm(range.from, range.to);
+      if (!d.count && !c) { if (box) box.style.display = 'none'; return; }
+      if (!box) {
+        box = document.createElement('div'); box.id = 'profit-cash-adj';
+        var card = g.closest('.summary-card'), host = card && card.parentNode; if (!host) return;
+        host.insertAdjacentElement('afterend', box);
+      }
+      var net = num(g.textContent);
+      box.style.display = '';
+      box.innerHTML = '<div class="pca-row"><span>Net profit (after expenses)</span><b>' + money(net) + '</b></div>'
+        + (d.count ? '<div class="pca-row pca-plus"><span>+ Cash surplus</span><b>' + money(d.surplus) + '</b></div>'
+        + '<div class="pca-row pca-minus"><span>&minus; Cash shortage</span><b>' + money(d.shortage) + '</b></div>' : '')
+        + (c ? '<div class="pca-row pca-minus"><span>&minus; Staff commission</span><b>' + money(c) + '</b></div>' : '')
+        + '<div class="pca-row pca-final"><span>Final profit</span><span>' + money(net + d.net - c) + '</span></div>'
+        + (d.count ? '<div class="pca-note">From ' + d.count + ' counted cash session' + (d.count === 1 ? '' : 's') + ' in this period.</div>' : '');
+    } catch (e) { /* the normal figures stay */ }
+  }
+  function hook() {
+    var rp = window.renderProfitReport;
+    if (typeof rp === 'function' && !rp.__pca) {
+      var w = function () { var r = rp.apply(this, arguments); draw(); return r; }; w.__pca = true; window.renderProfitReport = w;
+      try { renderProfitReport = w; } catch (e) { /* window property is enough */ }
+    }
+    var pp = window.printProfitsReport;
+    if (typeof pp === 'function' && !pp.__pca) {
+      var p = function () {
+        var t = window.triggerAutoPrintReport, restore = function () { window.triggerAutoPrintReport = t; };
+        if (typeof t === 'function') window.triggerAutoPrintReport = function () {
+          restore();
+          try {                                                   // the report is built; add the cash lines before it goes to the printer
+            var range = profitReportRange(), d = between(range.from, range.to), body = document.getElementById('sales-report-body'), c = comm(range.from, range.to);
+            if ((d.count || c) && body && typeof lastReportText === 'string') {
+              var m = /Net profit \(after expenses\): KES ([0-9.,\-]+)/.exec(body.textContent || ''), net = m ? num(m[1]) : 0;
+              var lines = (d.count ? ['Cash surplus: ' + money(d.surplus), 'Cash shortage: ' + money(d.shortage)] : []).concat(c ? ['Staff commission: ' + money(c)] : []);
+              body.insertAdjacentHTML('beforeend', '<p style="margin-top:10px;font-size:14px;">' + lines.join('<br>') + '<br><strong>Final profit: ' + money(net + d.net - c) + '</strong></p>');
+              lastReportText += '\n' + lines.join('\n') + '\nFinal profit: ' + money(net + d.net - c);
+            }
+          } catch (e) { /* the report prints as before */ }
+          return t.apply(this, arguments);
+        };
+        try { return pp.apply(this, arguments); } finally { setTimeout(restore, 0); }
+      };
+      p.__pca = true; window.printProfitsReport = p;
+      try { printProfitsReport = p; } catch (e) { /* same */ }
+    }
+  }
+  window.CashDiff = { between: between, draw: draw, _hook: hook };
+  hook(); setTimeout(hook, 1500); setTimeout(draw, 2000);
+})();
+</script>
+<!-- /PROFIT CASH DIFFERENCES -->

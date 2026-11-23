@@ -183,16 +183,27 @@ function production(now) {
   return { ...base, productionHistory, rentals: [] };
 }
 
-// ======================= SERVICES (salon / repair / laundry etc.) =======================
-function services(now) {
-  const R = rng(262007);
-  const S = [
-    ['Hair', 'Haircut (Men)', 'scissors', 300, 40], ['Hair', 'Braids (Medium)', 'braid', 2500, 300], ['Hair', 'Hair Treatment', 'treat', 1200, 250], ['Nails', 'Manicure', 'nails', 700, 90], ['Nails', 'Pedicure', 'nails', 900, 110], ['Beauty', 'Facial', 'facial', 1500, 300], ['Beauty', 'Makeup', 'makeup', 2000, 400], ['Massage', 'Full Body Massage (60m)', 'massage', 3000, 500],
-  ].map((a, i) => item(pad(700 + i, 5), a[1], a[0], a[3], a[4], 999, 'pcs', a[2], { isService: true }));
-  const base = shopBase(R, now, 'Salon & Services', S, { perDay: 5, suppliers: ['Beauty Supplies'] });
-  const bookings = [0, 1, 2, 3, 4].map((i) => ({ id: 'BK-d' + (i + 1), customerName: PEOPLE[i], customerPhone: phone(i), serviceCode: S[i].code, staffId: '', date: ymd(now + (i % 3) * DAY), startTime: pad(9 + i, 2) + ':00', endTime: pad(10 + i, 2) + ':00', status: 'confirmed', notes: '', createdAt: now - DAY }));
-  const serviceJobs = [0, 1, 2].map((i) => ({ id: 'JOB-d' + (i + 1), createdAt: iso(now - (i + 1) * DAY), clientName: PEOPLE[i + 5], clientPhone: phone(i + 5), idNumber: '', itemDetails: ['Bridal hair trial', 'Gel manicure set', 'Weekend styling'][i], servicesRequired: S[i].name, serviceNotes: '', quoteAmount: S[i].price, promisedPickup: ymd(now + i * DAY), status: ['in-progress', 'ready', 'received'][i], components: [], laborFee: 0, finalAmount: null, saleId: null }));
-  return { ...base, bookings, serviceJobs };
+// ======================= SERVICES (one demo per business type) =======================
+// Each type has its own business name and price list (the till history and the Sales/Services screens use them). The jobs, customers,
+// vehicles and devices are created in the browser by the svc-demo block, through the app's own job code, so they match each type's forms.
+const SVC_PROFILES = {
+  services: { name: 'Glow Salon & Spa', sup: ['Beauty Supplies'], seed: 262007, base: 700, items: [['Hair', 'Haircut (Men)', 'scissors', 300, 40], ['Hair', 'Braids (Medium)', 'braid', 2500, 300], ['Hair', 'Hair Treatment', 'treat', 1200, 250], ['Nails', 'Manicure', 'nails', 700, 90], ['Nails', 'Pedicure', 'nails', 900, 110], ['Beauty', 'Facial', 'facial', 1500, 300], ['Beauty', 'Makeup', 'makeup', 2000, 400], ['Massage', 'Full Body Massage (60m)', 'massage', 3000, 500]] },
+  carwash: { name: 'Sparkle Car Wash', sup: ['Auto Care Supplies'], seed: 262011, base: 800, items: [['Wash', 'Basic Wash', 'car', 500, 80], ['Wash', 'Premium Wash', 'car', 1500, 250], ['Wash', 'Motorbike Wash', 'car', 300, 50], ['Wash', 'Tuk-tuk Wash', 'car', 300, 50], ['Interior', 'Interior Cleaning', 'car', 800, 150], ['Detailing', 'Wax & Polish', 'car', 2500, 500], ['Exterior', 'Engine Wash', 'car', 1000, 200], ['Carpets & Fabrics', 'Carpet Cleaning', 'car', 1000, 180], ['Carpets & Fabrics', 'Seat Cover Wash', 'car', 600, 100]] },
+  phonerepair: { name: 'FixIt Phone Repair', sup: ['Spares Hub Nairobi'], seed: 262012, base: 900, items: [['Screen', 'Screen Replacement', 'phone', 3500, 2200], ['Battery', 'Battery Replacement', 'phone', 2000, 1100], ['Charging', 'Charging Port Repair', 'phone', 1500, 600], ['Software', 'Software / Flashing', 'phone', 1000, 100], ['Water damage', 'Water Damage Treatment', 'phone', 2500, 400], ['Accessories', 'Screen Protector', 'phone', 300, 60], ['Other', 'Diagnostic Fee', 'phone', 300, 0]] },
+  garage: { name: 'Kamau Auto Garage', sup: ['Autospares Industrial Area'], seed: 262013, base: 1000, items: [['Service', 'Oil & Filter Service', 'tools', 3500, 2400], ['Service', 'Full Service', 'tools', 8000, 5200], ['Brakes', 'Brake Pad Replacement', 'tools', 4500, 2800], ['Tyres', 'Wheel Alignment', 'tools', 2000, 300], ['Diagnostics', 'Diagnostic Scan', 'tools', 1500, 100], ['Electrical', 'Battery Replacement', 'tools', 9000, 7200]] },
+  barber: { name: 'Sharp Cuts Barbershop', sup: ['Barber Supplies Ltd'], seed: 262014, base: 1100, items: [['Cuts', 'Haircut', 'scissors', 300, 20], ['Cuts', 'Kids Cut', 'scissors', 200, 15], ['Beard', 'Beard Trim', 'scissors', 250, 15], ['Beard', 'Shave', 'scissors', 200, 15], ['Colour', 'Hair Dye', 'scissors', 600, 200], ['Wash', 'Hair Wash', 'scissors', 150, 20]] },
+  laundry: { name: 'FreshFold Laundry', sup: ['Detergent Wholesalers'], seed: 262015, base: 1200, items: [['Wash & Fold', 'Wash & Fold (per kg)', 'laundry', 150, 40], ['Ironing', 'Ironing (per item)', 'laundry', 50, 5], ['Dry Cleaning', 'Suit (2 piece)', 'laundry', 800, 250], ['Dry Cleaning', 'Shirt', 'laundry', 250, 60], ['Household', 'Duvet', 'laundry', 600, 150], ['Household', 'Curtains (per panel)', 'laundry', 400, 100], ['Household', 'Bedsheet Set', 'laundry', 200, 50]] },
+  cleaning: { name: 'BrightHome Cleaning', sup: ['Cleaning Chemicals Co.'], seed: 262016, base: 1300, items: [['Home', 'Home Cleaning', 'clean', 3000, 900], ['Commercial', 'Office Cleaning', 'clean', 5000, 1600], ['Upholstery', 'Sofa Cleaning', 'clean', 2000, 500], ['Carpets', 'Carpet Shampoo', 'clean', 1500, 400], ['Deep clean', 'Post-construction Cleaning', 'clean', 8000, 2800], ['Windows', 'Window Cleaning', 'clean', 1200, 300]] },
+  electronics: { name: 'Zuri Electronics Repair', sup: ['Electronics Spares Moi Avenue'], seed: 262017, base: 1400, items: [['TV', 'TV Repair', 'tools', 2500, 900], ['Appliances', 'Fridge Repair', 'tools', 3000, 1200], ['Appliances', 'Microwave Repair', 'tools', 1500, 500], ['Computers', 'Laptop Repair', 'tools', 2500, 900], ['Audio', 'Sound System Repair', 'tools', 2000, 700], ['Other', 'Diagnostic Fee', 'tools', 500, 0]] },
+  tailoring: { name: 'Stitch & Style Tailors', sup: ['Gikomba Fabrics'], seed: 262018, base: 1500, items: [['Alterations', 'Dress Alteration', 'stitch', 800, 100], ['Alterations', 'Trouser Hem', 'stitch', 300, 30], ['Alterations', 'Zip Replacement', 'stitch', 250, 60], ['Made to measure', 'Kitenge Dress', 'stitch', 3500, 1400], ['Made to measure', 'Suit Tailoring', 'stitch', 8000, 4200], ['Uniforms', 'School Uniform', 'stitch', 1500, 700]] }
+};
+function services(now, key) {
+  const P = SVC_PROFILES[key || 'services'];
+  const R = rng(P.seed);
+  const S = P.items.map((a, i) => item(pad(P.base + i, 5), a[1], a[0], a[3], a[4], 999, 'pcs', a[2], { isService: true }));
+  const base = shopBase(R, now, P.name, S, { perDay: 5, suppliers: P.sup });
+  // serviceJobs / bookings stay empty: the old "classic" counter would otherwise take over. The sample jobs are made in the browser (svc-demo block).
+  return { ...base, bookings: [], serviceJobs: [] };
 }
 
 // ======================= WATER (Aqua POS) =======================
@@ -252,7 +263,115 @@ function hospital(now) {
   return { ...base, patients, visits, patientCharges, labResults, admissions, appointments, patientNotes, queue, rooms, bedTypes, roomStates, tables: ['Ward A', 'Private Wing', 'HDU', 'ICU'], institutions: [], hmisConfig: {} };
 }
 
-export const SEED_BUILDERS = { retail, hardware, liquor, hotel, pharmacy, production, services, water, hospital };
+
+// ======================= CAR WASH & CLEANING (zip 361: the standalone app's own records) =======================
+// Customers with vehicles, a month of car jobs and cleaning jobs with payments, the loyalty ledger those payments earned (one customer has a
+// FREE wash waiting, others are close), today's live jobs in every stage, staff with roles and a cleaning team. Ids are fixed: re-seeding
+// produces the same records. Demo staff sign in with PIN 0000.
+// zip 362: the standard (Splash & Dash) price list. Index -> [compact service, large service] (one price whatever the type, picked by vehicle size)
+const CW_SVCS = [
+  [['sd-wash-compact', 'Wash Compact Vehicle', 400, 20], ['sd-wash-large', 'Wash Large Vehicle', 500, 25]],
+  [['sd-wash-compact-vac', 'Wash Compact Vehicle with Vacuum', 700, 35], ['sd-wash-large-vac', 'Wash Large Vehicle with Vacuum', 800, 40]],
+  [['sd-dressing', 'Dressing', 300, 15]],
+  [['sd-engine', 'Engine Wash Normal', 500, 25]],
+  [['sd-polish-wax', 'Body Polish Waxing', 1000, 45]]];
+const CW_CARS = [['Toyota', 'Axio'], ['Toyota', 'Fielder'], ['Mazda', 'Demio'], ['Nissan', 'Note'], ['Subaru', 'Forester'], ['Toyota', 'Prado'], ['Honda', 'Fit'], ['Mercedes', 'C200'], ['Toyota', 'Probox'], ['Nissan', 'X-Trail'], ['VW', 'Golf'], ['Isuzu', 'D-Max']];
+function carwash(now) {
+  const R = rng(262111);
+  const PIN0 = '9af15b336e6a9619928537df30b2e6a2376569fcf9d7e773eccede65606529a0';
+  const staff = [['dst-1', 'Peter Kamau', 'attendant', 'Bay 1 washing'], ['dst-2', 'John Otieno', 'attendant', 'Bay 2, interiors'], ['dst-3', 'Mary Wanjiru', 'cashier', 'Reception & payments'], ['dst-4', 'Grace Akinyi', 'cleaner', 'Carpets & house cleaning'], ['dst-5', 'Tom Mwangi', 'cleaner', 'Carpets & delivery'], ['dst-6', 'Sam Kiprop', 'manager', 'Floor manager']]
+    .map((a, i) => ({ id: a[0], name: a[1], pinHash: PIN0, roles: [], lockedDates: [], isManager: a[2] === 'manager', salesTabMigrated: true, cwRole: a[2], cwPhone: '2547' + pad(11000000 + i * 1234567, 8).slice(0, 8), cwNo: 'ST' + pad(i + 1, 3), cwDuties: a[3], cwActive: true, createdAt: now - 60 * DAY, updatedAt: now - 60 * DAY }));
+  const attendants = ['dst-1', 'dst-2'];
+  const plates = ['KDA 123X', 'KCB 456Y', 'KDG 789Z', 'KBZ 321A', 'KDC 654B', 'KCX 987C', 'KDD 147D', 'KCA 258E', 'KDE 369F', 'KBT 741G', 'KDF 852H', 'KCS 963J', 'KDH 159K', 'KCR 357L', 'KDJ 486M', 'KCQ 624N', 'KDK 735P', 'KCP 846Q'];
+  const customers = [], vehicles = [];
+  for (let i = 0; i < 18; i++) {
+    const ph = '254' + ['7', '7', '1', '7'][i % 4] + pad(10000000 + (12345678 + i * 45678913) % 89999999, 8);
+    customers.push({ id: 'dcwc-' + (i + 1), name: PEOPLE[i], phone: ph, altPhone: '', email: i % 3 === 0 ? PEOPLE[i].split(' ')[0].toLowerCase() + '@example.com' : '', contactPref: ['sms', 'whatsapp', 'call'][i % 3], type: i % 6 === 5 ? 'office' : i % 4 === 3 ? 'home' : 'car_owner', location: ['Westlands', 'Kilimani', 'Lavington', 'South B', 'Kileleshwa', 'Parklands'][i % 6], estate: ['Olive Court', 'Riverside', 'Green Park', 'Sunrise', 'Palm Grove'][i % 5], town: 'Nairobi', building: i % 3 === 0 ? 'Block ' + String.fromCharCode(65 + i % 4) : '', house: String(10 + i) + (i % 2 ? 'B' : 'A'), floor: String(i % 5), notes: '', createdAt: now - (75 - i * 3) * DAY, createdBy: 'Mary Wanjiru', updatedAt: now - (75 - i * 3) * DAY });
+    const m = CW_CARS[i % CW_CARS.length];
+    const cat = /Prado|Forester|X-Trail/.test(m[1]) ? 'suv' : /D-Max/.test(m[1]) ? 'truck' : /Probox/.test(m[1]) ? 'large' : i % 7 === 3 ? 'cab' : 'compact';
+    vehicles.push({ id: 'dcwv-' + (i + 1), plate: plates[i].replace(/\s/g, ''), make: m[0], model: m[1], year: String(2008 + (i * 3) % 14), colour: ['White', 'Silver', 'Black', 'Blue', 'Grey', 'Red'][i % 6], category: cat, customerId: 'dcwc-' + (i + 1), notes: '', createdAt: now - (75 - i * 3) * DAY, updatedAt: now - (75 - i * 3) * DAY });
+  }
+  vehicles.push({ id: 'dcwv-19', plate: 'KDL951R', make: 'Toyota', model: 'Harrier', colour: 'Black', category: 'suv', customerId: 'dcwc-1', notes: 'Second car', createdAt: now - 40 * DAY, updatedAt: now - 40 * DAY });
+  const big = (v) => ['large', 'suv', 'truck'].includes(v.category);
+  const svcFor = (k, v) => { const o = CW_SVCS[k]; return o.length > 1 && big(v) ? o[1] : o[0]; };
+  const jobs = [], payments = [], loyalty = [], sms = [];
+  let seq = 0;
+  const hist = (id, list) => list.map((x, k) => ({ id: 'dsh-' + id + '-' + k, s: x[0], at: x[1], by: x[2] || 'Mary Wanjiru', byId: x[3] || 'dst-3', note: '' }));
+  const lkey = (c, v) => 'car|' + c.phone + '|' + v.plate;
+  const day = (ms) => { const d = new Date(ms + 3 * 3600000); return String(d.getUTCFullYear()).slice(2) + pad(d.getUTCMonth() + 1, 2) + pad(d.getUTCDate(), 2); };
+  const mk = (t, c, v, svcIdx, staffId, stage, payMethod, opts = {}) => {
+    seq++;
+    const id = 'dcwj-' + pad(seq, 4), no = 'CW-' + day(t) + '-' + pad(seq % 1000, 3);
+    const items = svcIdx.map((k, n) => { const x = svcFor(k, v); return { id: 'dli-' + seq + '-' + n, serviceId: x[0], name: x[1], price: x[2], qty: 1 }; });
+    const mins = svcIdx.reduce((s, k) => s + svcFor(k, v)[3], 0), sname = staff.find((x) => x.id === staffId).name;
+    const h = [['received', t], ['assigned', t + 60000]];
+    if (stage >= 1) h.push(['washing', t + 5 * 60000, sname, staffId]);
+    if (stage >= 2) { h.push(['completed', t + (mins + 10) * 60000, sname, staffId]); h.push(['ready', t + (mins + 10) * 60000 + 1, sname, staffId]); }
+    if (stage >= 3) h.push(['collected', t + (mins + 30) * 60000]);
+    const status = h[h.length - 1][0];
+    const total = opts.free ? 0 : items.reduce((s, x) => s + x.price, 0);
+    const job = { id, no, kind: 'car', customerId: c.id, vehicleId: v.id, items, discount: opts.free ? items.reduce((s, x) => s + x.price, 0) : 0, instructions: '', condition: '', estMinutes: mins, receivedAt: t, createdAt: t, createdBy: 'Mary Wanjiru', createdById: 'dst-3', device: 'demo', dueAt: t + mins * 60000,
+      cleaning: null, assignments: [{ id: 'das-' + seq, staffId, name: sname, teamId: '', at: t + 60000, by: 'Mary Wanjiru', removedAt: null, rev: 0 }], statusHistory: hist(id, h), photos: [], teamId: '', free: !!opts.free, loyaltyKey: lkey(c, v), collection: stage >= 3 ? { at: t + (mins + 30) * 60000, releasedBy: sname, releasedById: staffId, confirmed: true, note: '', payStatus: payMethod || opts.free ? (opts.free ? 'free' : 'paid') : 'unpaid', balance: payMethod ? 0 : total } : null,
+      invoiceNo: 'INV-' + no.slice(3), status, statusAt: h[h.length - 1][1], phase: { collected: 3, ready: 2, washing: 1, assigned: 0 }[status], closedAt: stage >= 3 ? t + (mins + 30) * 60000 : null, completedAt: stage >= 2 ? t + (mins + 10) * 60000 : null, updatedAt: t + (mins + 30) * 60000 };
+    jobs.push(job);
+    if (payMethod && total > 0) {
+      const at = t + (mins + 25) * 60000;
+      payments.push({ id: 'dcwp-' + seq, jobId: id, jobNo: no, customerId: c.id, amount: total, method: payMethod, ref: payMethod === 'mpesa' ? 'S' + 'GHJKLMNPQRSTUVW'.charAt(seq % 15) + pad(seq * 7919 % 99999999, 8) : '', type: 'payment', at, by: 'Mary Wanjiru', byId: 'dst-3', byName: 'Mary Wanjiru', note: '', device: 'demo', updatedAt: at });
+      loyalty.push({ id: 'cwl-earn-' + id + '-0', key: job.loyaltyKey, type: 'earn', jobId: id, jobNo: no, at, by: 'Mary Wanjiru', updatedAt: at });
+    }
+    if (opts.free && stage >= 2) loyalty.push({ id: 'cwl-redeem-' + id + '-0', key: job.loyaltyKey, type: 'redeem', jobId: id, jobNo: no, at: t + (mins + 10) * 60000, by: sname, updatedAt: t + (mins + 10) * 60000 });
+    sms.push({ id: 'cws-checkin-' + id, event: 'checkin', jobId: id, jobNo: no, customerId: c.id, to: c.phone, message: 'Hello ' + c.name.split(' ')[0] + ', your car ' + plates[Number(v.id.split('-')[1]) - 1 || 0] + ' has been received for ' + items.map((x) => x.name).join(' + ') + ' (KES ' + total + '). It will be handled by ' + sname + '. Thank you for choosing Sparkle Car Wash.', status: 'sent', tries: 1, at: t, sentAt: t + 3000, by: 'Mary Wanjiru', dev: 'demo', error: '', updatedAt: t + 3000 });
+    return job;
+  };
+  // 30 days of history: customer 1 (KDA 123X) has 9 paid washes -> a FREE wash waiting; customer 2 has 8 (one to go)
+  for (let d = 30; d >= 1; d--) {
+    const n = 3 + Math.floor(R() * 3);      // zip 381: 3-5 jobs a day (was 4-7): the demo stayed over its 400 KB size budget (478 KB), so it loaded slowly
+    for (let k = 0; k < n; k++) {
+      let ci = 2 + Math.floor(R() * 16);
+      if (d % 3 === 0 && k === 0) ci = 0;
+      if (d % 3 === 1 && k === 0 && d > 4) ci = 1;
+      const c = customers[ci], v = vehicles[ci];
+      const t = now - d * DAY - (8 + k * 1.3 + R()) * 3600000;
+      const svc = R() < 0.5 ? [1] : R() < 0.5 ? [0, 3] : [1, 2, 3];
+      mk(t, c, v, svc, attendants[(d + k) % 2], 3, R() < 0.55 ? 'mpesa' : 'cash');
+    }
+  }
+  // today: live jobs in every stage (customer 1's free wash among them)
+  const tday = now - 3 * 3600000;
+  mk(tday, customers[0], vehicles[18], [1, 2], 'dst-1', 1, null);
+  mk(tday + 20 * 60000, customers[3], vehicles[3], [0, 3], 'dst-2', 2, null);
+  mk(tday + 40 * 60000, customers[5], vehicles[5], [1], 'dst-1', 3, 'mpesa');
+  mk(tday + 70 * 60000, customers[7], vehicles[7], [1, 4], 'dst-2', 1, null);
+  mk(now - 25 * 60000, customers[9], vehicles[9], [0], 'dst-1', 0, null);
+  // cleaning jobs (carpet pickups, a sofa, a house cleaning)
+  const cleans = [['carpet', '6x9', 1, 2000, 200, 'Carpet/Rug Large', 'sd-rug-large', 6, 'delivered'], ['carpet', '5x8', 2, 1500, 200, 'Carpet/Rug Medium', 'sd-rug-medium', 4, 'ready_delivery'], ['carpet', '4x6', 3, 1000, 0, 'Carpet/Rug Small', 'sd-rug-small', 2, 'in_cleaning'], ['sofa', '', 5, 500, 0, 'Sofa cleaning (per seat)', '', 1, 'received'], ['carpet', '7x10', 1, 2000, 150, 'Carpet/Rug Large', 'sd-rug-large', 9, 'delivered']];
+  cleans.forEach((x, i) => {
+    seq++;
+    const c = customers[10 + i], t = now - x[7] * DAY + 9 * 3600000, id = 'dcwj-' + pad(seq, 4), no = 'CL-' + day(t) + '-' + pad(i + 1, 3);
+    const flow = x[0] === 'house' ? ['received'] : ['received', 'picked_up', 'in_cleaning', 'quality_check', 'ready_delivery', 'out_delivery', 'delivered'];
+    const upto = flow.indexOf(x[8]);
+    const h = flow.slice(0, upto + 1).map((s, k) => [s, t + k * 5 * 3600000, k ? 'Grace Akinyi' : 'Mary Wanjiru', k ? 'dst-4' : 'dst-3']);
+    const total = x[3] * x[2] + x[4];
+    jobs.push({ id, no, kind: 'clean', customerId: c.id, vehicleId: '', items: [{ id: 'dli-c' + i, serviceId: x[6], name: x[5] + (x[1] ? ' (' + x[1] + ')' : ''), price: x[3], qty: x[2] }], discount: 0, instructions: i === 1 ? 'Call before delivery' : '', condition: i === 0 ? 'Wine stain in one corner' : '', estMinutes: 1440, receivedAt: t, createdAt: t, createdBy: 'Mary Wanjiru', createdById: 'dst-3', device: 'demo', dueAt: t + DAY,
+      cleaning: { type: x[0], dims: x[1], qty: x[2], delivery: x[4], pickup: { location: c.location, estate: c.estate, building: c.building, house: c.house, floor: c.floor, landmark: 'Next to the gate' }, scheduledAt: t, expectedAt: t + DAY, deliveredAt: x[8] === 'delivered' ? t + 30 * 3600000 : null, deliveryConfirmedBy: x[8] === 'delivered' ? c.name.split(' ')[0] : '' },
+      assignments: [{ id: 'das-c' + i, staffId: 'dst-4', name: 'Grace Akinyi', teamId: 'dtm-a', at: t, by: 'Mary Wanjiru', removedAt: null, rev: 0 }, { id: 'das-c2' + i, staffId: 'dst-5', name: 'Tom Mwangi', teamId: 'dtm-a', at: t, by: 'Mary Wanjiru', removedAt: null, rev: 0 }],
+      statusHistory: hist(id, h), photos: [], teamId: 'dtm-a', free: false, loyaltyKey: 'clean|' + c.phone, collection: x[8] === 'delivered' ? { at: t + 30 * 3600000, releasedBy: 'Tom Mwangi', releasedById: 'dst-5', confirmed: true, note: '', payStatus: 'paid', balance: 0 } : null,
+      invoiceNo: 'INV-' + no.slice(3), status: x[8], statusAt: h[h.length - 1][1], phase: { delivered: 3, ready_delivery: 2, in_cleaning: 1, received: 0 }[x[8]], closedAt: x[8] === 'delivered' ? t + 30 * 3600000 : null, completedAt: upto >= 4 ? t + 20 * 3600000 : null, updatedAt: t + 30 * 3600000 });
+    if (x[8] === 'delivered' || x[8] === 'ready_delivery') {
+      const amt = x[8] === 'delivered' ? total : 500, at = t + 2 * 3600000;
+      payments.push({ id: 'dcwp-c' + i, jobId: id, jobNo: no, customerId: c.id, amount: amt, method: 'mpesa', ref: 'SKC' + pad(1000000 + i * 7919, 7), type: x[8] === 'delivered' ? 'payment' : 'deposit', at, by: 'Mary Wanjiru', byId: 'dst-3', byName: 'Mary Wanjiru', note: '', device: 'demo', updatedAt: at });
+      if (x[8] === 'delivered') loyalty.push({ id: 'cwl-earn-' + id + '-0', key: 'clean|' + c.phone, type: 'earn', jobId: id, jobNo: no, at, by: 'Mary Wanjiru', updatedAt: at });
+    }
+  });
+  const cwConfig = [{ id: 'cfg', v: 1, catalog: 'sd1', business: { name: 'Sparkle Car Wash', logo: '', address: 'Ngong Road, opposite the Mall', phone: '0712 345 678', email: 'hello@sparklecarwash.co.ke', location: 'Nairobi' },
+    payments: { methods: ['cash', 'mpesa', 'card'], custom: [], till: '5123456', paybill: '', account: '', invoiceNotes: 'Thank you for choosing Sparkle Car Wash.' },
+    teams: [{ id: 'dtm-a', name: 'Team A', memberIds: ['dst-4', 'dst-5'], active: true }], updatedAt: now - 60 * DAY }];
+  const cwAudit = jobs.slice(-12).map((j, i) => ({ id: 'dcwa-' + i, at: j.receivedAt, by: 'Mary Wanjiru', byId: 'dst-3', role: 'cashier', act: 'job.create', ref: j.no, jobId: j.id, detail: j.items.map((x) => x.name).join(' + '), updatedAt: j.receivedAt }));
+  return { businessName: 'Sparkle Car Wash', ownerName: 'Owner', staff, cwCustomers: customers, cwVehicles: vehicles, cwJobs: jobs, cwPayments: payments, cwLoyalty: loyalty, cwSms: sms, cwAudit, cwComplaints: [{ id: 'dcwk-1', jobId: jobs[jobs.length - 9].id, jobNo: jobs[jobs.length - 9].no, customerId: jobs[jobs.length - 9].customerId, kind: 'complaint', text: 'Water spots left on the bonnet.', involved: ['dst-1', 'dst-2'], attributedTo: [], at: now - 2 * DAY, by: 'Sam Kiprop', resolved: false, updatedAt: now - 2 * DAY }], cwConfig, inventory: [], salesLog: [], customers: [], expenses: [], stockMovementLog: [], returns: [], suppliers: [], bills: [], debts: [] };
+}
+
+const svcBuilder = (k) => (now) => services(now, k);
+export const SEED_BUILDERS = { retail, hardware, liquor, hotel, pharmacy, production, services: svcBuilder('services'), carwash, phonerepair: svcBuilder('phonerepair'), garage: svcBuilder('garage'), barber: svcBuilder('barber'), laundry: svcBuilder('laundry'), cleaning: svcBuilder('cleaning'), electronics: svcBuilder('electronics'), tailoring: svcBuilder('tailoring'), water, hospital };
 export function buildDemoSeed(kind, now) {
   const b = SEED_BUILDERS[kind];
   if (!b) throw new Error('No demo data for ' + kind);

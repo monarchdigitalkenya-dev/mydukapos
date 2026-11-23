@@ -1,0 +1,912 @@
+<!-- PRICE LIST (zip 381) ------------------------------------------------------------------------------------------------------------------
+     Shop: one screen for every product and service with its selling price, buying price, quantity left and a monthly sales target - all
+     editable in place - and how much of the target was achieved (from the sales of the month). Two parts: Items and Services.
+     A service has no stock of its own: it is tracked by the material it uses. A service can use
+       * ALL of a list of materials every time (the usual recipe), or
+       * ONE of several materials (e.g. Printing on Matt OR Glossy paper): the cashier picks the material at the Sales Counter, that material's
+         stock goes down, the sale line says which it was, and each material can carry its own price.
+     Data: product.monthlyTargetAmount (KSh a month), product.moq (the least a customer can buy in one sale), product.priceAtCounter (no fixed
+     price: the cashier types it), product.materialChoices [{ code, qtyPerUnit, price }], product.recipe (the "all of" list).
+     Reports > Targets vs Achieved: the monthly targets spread over the report period against what was sold, by category (printable on A4).
+     Reports > Sales by Category, and a Category picker beside the period that narrows both reports.
+     Item form: Category, MOQ, sold as (whole packs / any number), monthly target. Variants share the item's MOQ and target.
+     Import price list: an Excel / CSV price list (category, name, price, MOQ, target) - services added straight in, a preview first.
+     Quantity changes are written as stock movements ("Price List count"), like a stock take. Only the admin edits; staff with the tab see it. -->
+<style>
+.plw .pl { max-width: 1240px; margin: 0 auto; }
+.plw .pl-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.plw .pl-head h3 { margin: 0; font-size: 21px; }
+.plw .pl-head p { margin: 2px 0 0; color: var(--muted, #6b7c8a); font-size: 13px; max-width: 70ch; }
+.plw .pl-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.plw .pl-tools input, .plw .pl-tools select { width: auto; min-width: 150px; margin: 0; padding: 8px 10px; border-radius: 10px; }
+.plw .pl-seg { display: inline-flex; border: 1px solid var(--border-color, #d6dde3); border-radius: 12px; overflow: hidden; background: var(--bg-surface, #fff); }
+.plw .pl-seg button { width: auto; margin: 0; border: 0; border-radius: 0; padding: 9px 16px; background: transparent; color: var(--dark, #1f2d3a); font-weight: 700; font-size: 13.5px; cursor: pointer; }
+.plw .pl-seg button.on { background: #14532d; color: #fff; }
+.plw .pl-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.plw .pl-card { border-radius: 14px; padding: 12px 14px; color: #fff; background-color: #14532d;
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px); box-shadow: 0 1px 0 rgba(0,0,0,.06); }
+.plw .pl-card.b { background-color: #1e3a8a; } .plw .pl-card.c { background-color: #7c2d12; } .plw .pl-card.d { background-color: #3f3f46; }
+.plw .pl-card span { display: block; font-size: 12px; opacity: .9; } .plw .pl-card b { display: block; font-size: 22px; line-height: 1.2; margin-top: 2px; }
+.plw .pl-box { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e6ea); border-radius: 14px; overflow: hidden; }
+.plw .pl-scroll { overflow-x: auto; }
+#price-list-tab table.pl-t { width: 100%; border-collapse: collapse; min-width: 900px; }
+.plw .pl-t th { position: sticky; top: 0; background: var(--bg-surface-alt, #f3f6f4); text-align: left; font-size: 12px; color: var(--muted, #5f6f7c); font-weight: 800; padding: 10px; border-bottom: 1px solid var(--border-color, #e1e6ea); white-space: nowrap; }
+.plw .pl-t td { padding: 8px 10px; border-bottom: 1px solid var(--border-color, #eef1f3); vertical-align: middle; font-size: 13.5px; }
+.plw .pl-t tr.sub td { background: var(--bg-surface-alt, #fafbfa); }
+.plw .pl-t tr.sub td:first-child { padding-left: 26px; }
+.plw .pl-t .r { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.plw .pl-t input.pl-in { width: 92px; margin: 0; padding: 7px 8px; border-radius: 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.plw .pl-t input.pl-in.narrow { width: 70px; }
+.plw .pl-t input.pl-in:disabled { background: transparent; border-color: transparent; color: inherit; }
+.plw .pl-name b { display: block; } .plw .pl-name small { color: var(--muted, #6b7c8a); }
+.plw .pl-bar { height: 8px; background: #e5e7eb; border-radius: 99px; overflow: hidden; min-width: 90px; }
+.plw .pl-bar i { display: block; height: 100%; background: #16a34a; }
+.plw .pl-bar.mid i { background: #d97706; } .plw .pl-bar.low i { background: #dc2626; }
+.plw .pl-pc { font-weight: 800; font-size: 12px; margin-top: 3px; white-space: nowrap; }
+.plw .pl-low { color: #b91c1c; font-weight: 800; }
+.plw .pl-mat { font-size: 12.5px; line-height: 1.5; }
+.plw .pl-mat span { display: inline-block; background: #ecfdf5; color: #065f46; border-radius: 8px; padding: 1px 8px; margin: 2px 4px 2px 0; }
+.plw .pl-mat span.out { background: #fef2f2; color: #991b1b; }
+.plw .pl-btn { width: auto; margin: 0; padding: 7px 12px; border-radius: 9px; font-size: 12.5px; font-weight: 700; background: #14532d; color: #fff; border: 0; cursor: pointer; }
+.plw .pl-btn.sec { background: var(--bg-surface, #fff); color: var(--dark, #1f2d3a); border: 1px solid var(--border-color, #cfd8de); }
+.plw .pl-empty { padding: 26px; text-align: center; color: var(--muted, #6b7c8a); }
+.plw .pl-note { font-size: 12.5px; color: var(--muted, #6b7c8a); margin: 10px 2px 0; }
+.plw .pl-saved { color: #15803d; font-weight: 700; font-size: 12.5px; min-height: 18px; }
+#pl-ov { position: fixed; inset: 0; z-index: 9800; background: rgba(15, 23, 42, .55); display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 16px 10px; }
+#pl-ov.on { display: flex; }
+#pl-ov .pl-dlg { background: var(--bg-surface, #fff); color: var(--dark, #1f2d3a); width: 100%; max-width: 640px; border-radius: 16px; padding: 18px; box-sizing: border-box; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+#pl-ov h3 { margin: 0 0 4px; } #pl-ov p.sub { margin: 0 0 12px; color: #64748b; font-size: 13px; }
+#pl-ov .pl-mode { display: grid; gap: 8px; margin: 8px 0 12px; }
+#pl-ov .pl-mode label { display: flex; gap: 10px; align-items: flex-start; border: 2px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; cursor: pointer; font-size: 13.5px; }
+#pl-ov .pl-mode label.on { border-color: #15803d; background: #f0fdf4; }
+#pl-ov .pl-mode input { width: auto; margin: 3px 0 0; }
+#pl-ov .pl-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, .8fr) minmax(0, .9fr) auto; gap: 8px; align-items: end; margin: 6px 0; }
+#pl-ov .pl-row label { display: block; font-size: 11.5px; color: #64748b; font-weight: 700; margin-bottom: 2px; }
+#pl-ov .pl-row select, #pl-ov .pl-row input { width: 100%; margin: 0; box-sizing: border-box; }
+#pl-ov .pl-row button { width: auto; margin: 0; padding: 9px 11px; }
+#pl-ov .pl-act { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-top: 14px; }
+#pl-ov .pl-act button { width: auto; margin: 0; padding: 10px 16px; border-radius: 10px; font-weight: 700; }
+#pl-ov .pl-pick { display: grid; gap: 8px; margin-top: 10px; }
+#pl-ov .pl-pick button { width: 100%; margin: 0; text-align: left; display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 12px;
+  border: 2px solid #e2e8f0; background: var(--bg-surface, #fff); color: inherit; font: inherit; cursor: pointer; }
+#pl-ov .pl-pick button b { font-size: 15px; } #pl-ov .pl-pick button small { color: #64748b; display: block; } #pl-ov .pl-pick button:disabled { opacity: .45; cursor: not-allowed; }
+#pl-ov .pl-err { color: #b91c1c; font-size: 13px; min-height: 18px; margin-top: 6px; }
+@media (max-width: 640px) { #pl-ov .pl-row { grid-template-columns: 1fr 1fr; } .plw .pl-tools input, .plw .pl-tools select { min-width: 0; flex: 1 1 140px; } }
+#pl-ov .pl-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+#pl-ov .pl-t td { font-size: 12.5px; padding: 6px 8px; }
+</style>
+<div id="pl-ov" role="dialog" aria-modal="true"><div class="pl-dlg plw" id="pl-dlg"></div></div>
+<script>
+(function () {
+    'use strict';
+    if (window.PriceList) return;
+    var V = { view: 'items', q: '', cat: '', month: '' };
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var num = function (v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; };
+    var r2 = function (n) { return Math.round(Number(n) || 0); };   // money is whole shillings (no cents in Kenya)
+    // the item list: `inventory` in every app; the Water app keeps its products in `products` (aqua_products)
+    var waterApp = function () { try { return typeof inventory === 'undefined' && typeof products !== 'undefined' && Array.isArray(products); } catch (e) { return false; } };
+    var inv = function () { try { if (typeof inventory !== 'undefined' && Array.isArray(inventory)) return inventory; } catch (e) { /* none */ } try { if (waterApp()) return products; } catch (e) { /* none */ } return []; };
+    var sales = function () { try { return Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } };
+    var admin = function () { try { return typeof isAdminServing === 'function' ? isAdminServing() : true; } catch (e) { return true; } };
+    var money = function (n) { return 'KES ' + Math.round(Number(n) || 0).toLocaleString('en-KE'); };
+    var qtyTxt = function (n) { var x = Math.round((Number(n) || 0) * 1000) / 1000; return String(x); };
+    var unitOf = function (p) { try { return typeof unitLabel === 'function' ? unitLabel(p.unit || 'pcs') : (p.unit || 'pcs'); } catch (e) { return p.unit || 'pcs'; } };
+    var toast = function (m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } };
+    // the month in Nairobi time (the tills run on Kenya time)
+    var monthOf = function (ts) { var t = typeof ts === 'number' ? ts : Date.parse(ts); if (!isFinite(t)) return ''; var d = new Date(t + 3 * 3600000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); };
+    var thisMonth = function () { return monthOf(Date.now()); };
+    var monthName = function (m) { var p = String(m).split('-'); var d = new Date(Date.UTC(+p[0], +p[1] - 1, 15)); return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }); };
+    // what this app's till can do: sell by minimum order (the Shop), ask which material a service used (the Shop)
+    var canMoq = function () { return typeof cartMoqOf === 'function'; };
+    var canOneOf = function () { try { return typeof addToCart === 'function' && addToCart.length >= 5; } catch (e) { return false; } };
+    var isLive = function (p) { return p && !p._deleted && !p.archived && p.code; };
+    var isService = function (p) { return p.type === 'service'; };
+    var isItem = function (p) { return !isService(p) && p.type !== 'set-placeholder'; };
+
+    /* ---------------- the item lines of a sale, bill payments included ----------------
+       zip 388: a payment on a bill (the part paid when the bill is opened, or a later instalment) is a sale whose line is just "Bill payment"
+       (no item code): the goods are on the bill. Leaving those out made the Price List and Sales by Category add up to less than the Sales
+       report. Each payment is now shared across the bill's own items in proportion to their value - whole shillings, the last item taking
+       the remainder, so the parts add up to the payment exactly - and so are the pieces (a bill of 2 Beta paid half = 1 Beta sold).
+       A payment whose bill cannot be found stays one line with no item ("Bill payments" in Sales by Category) so no shilling is dropped. */
+    function billById(id) {
+        try { return (typeof bills !== 'undefined' && Array.isArray(bills) ? bills : []).find(function (b) { return b && String(b.id) === String(id); }) || null; } catch (e) { return null; }
+    }
+    function saleLines(s) {
+        var out = [];
+        (s.items || []).forEach(function (l) {
+            if (!l) return;
+            var isPay = l.unit === 'payment' || l.isPayment;
+            if (!isPay) { if (l.code) out.push({ code: l.code, qty: Number(l.qty) || 0, value: Math.round((Number(l.price) || 0) * (Number(l.qty) || 0)), variantId: l.variantId, unitPieces: l.unitPieces, material: l.material, materialName: l.materialName, saleMode: l.saleMode }); return; }
+            var amount = Math.round((Number(l.price) || 0) * (Number(l.qty) || 1));
+            var bill = s.billId != null ? billById(s.billId) : null;
+            var goods = bill ? (bill.items || []).filter(function (x) { return x && x.code && x.unit !== 'payment' && !x.isPayment; }) : [];
+            var tot = goods.reduce(function (t, x) { return t + (Number(x.price) || 0) * (Number(x.qty) || 0); }, 0);
+            if (!(tot > 0)) { out.push({ code: null, qty: 0, value: amount, billPayment: true }); return; }
+            var left = amount;
+            goods.forEach(function (x, i) {
+                var share = (Number(x.price) || 0) * (Number(x.qty) || 0) / tot;
+                var v = i === goods.length - 1 ? left : Math.round(amount * share); left -= v;
+                out.push({ code: x.code, qty: (Number(x.qty) || 0) * amount / tot, value: v, variantId: x.variantId, unitPieces: x.unitPieces, saleMode: x.saleMode, fromBill: true });
+            });
+        });
+        return out;
+    }
+
+    /* ---------------- what sold in a month: units and money per product (and per variant, per material) ---------------- */
+    function soldIn(month) {
+        var out = {};
+        sales().forEach(function (s) {
+            if (!s || s.voided || s._deleted || s.isReturn || monthOf(s.timestamp) !== month) return;
+            saleLines(s).forEach(function (l) {
+                if (!l.code) return;
+                var p = inv().find(function (x) { return x.code === l.code; });
+                var q = (Number(l.qty) || 0) * (Number(l.unitPieces) > 1 ? Number(l.unitPieces) : 1);   // an MOQ pack / order line = its pieces
+                if (p && p.dualUnit && l.saleMode === 'piece') q = q / (Number(p.unitsPerBox) || 1);   // pieces counted as part of a box
+                var o = out[l.code] = out[l.code] || { qty: 0, value: 0, v: {}, m: {} };
+                o.qty += q; o.value += l.value;
+                if (l.variantId) { var vv = o.v[l.variantId] = o.v[l.variantId] || { qty: 0, value: 0 }; vv.qty += q; vv.value += l.value; }
+                if (l.material) { var mm = o.m[l.material] = o.m[l.material] || { qty: 0, name: l.materialName || '' }; mm.qty += q; }
+            });
+        });
+        // returned goods come off what was sold
+        try {
+            (typeof returns !== 'undefined' && Array.isArray(returns) ? returns : []).forEach(function (r) {
+                if (!r || r._deleted || monthOf(r.timestamp || r.date) !== month) return;
+                (r.items || [r]).forEach(function (l) { if (!l || !l.code || !out[l.code]) return; var q = Number(l.qty) || 0; out[l.code].qty -= q; out[l.code].value -= (Number(l.price) || 0) * q; });
+            });
+        } catch (e) { /* no returns list */ }
+        return out;
+    }
+    // the monthly target is money (KSh a month); achieved = what was sold that month against it
+    var tgtOf = function (p) { return Number(p && p.monthlyTargetAmount) > 0 ? Number(p.monthlyTargetAmount) : 0; };
+    function progress(value, target) {
+        if (!(target > 0)) return '<span style="color:#94a3b8;font-size:12.5px">No target</span>';
+        var pc = Math.max(0, Math.round(value / target * 100));
+        var cls = pc >= 100 ? '' : pc >= 50 ? 'mid' : 'low';
+        return '<div class="pl-bar ' + cls + '"><i style="width:' + Math.min(100, pc) + '%"></i></div><div class="pl-pc">' + pc + '% · ' + money(Math.max(0, target - value)) + ' to go</div>';
+    }
+
+    /* ---------------- screen ---------------- */
+    function cats(list) { var c = {}; list.forEach(function (p) { if (p.category) c[p.category] = 1; }); return Object.keys(c).sort(); }
+    function matches(p) {
+        var q = V.q.trim().toLowerCase();
+        if (V.cat && String(p.category || '') !== V.cat) return false;
+        if (!q) return true;
+        return [p.name, p.code, p.category, p.barcode].some(function (x) { return String(x || '').toLowerCase().indexOf(q) >= 0; });
+    }
+    function inp(kind, code, vid, val, cls, extra) {
+        var whole = kind !== 'qty';   // money and MOQ are whole numbers; only a stock quantity may be a fraction (kg, litres)
+        return '<input class="pl-in' + (cls ? ' ' + cls : '') + '" type="number" min="0" step="' + (whole ? '1' : 'any') + '" inputmode="' + (whole ? 'numeric' : 'decimal') + '" value="' + esc(val) + '"' + (admin() ? '' : ' disabled') +
+            ' data-pl="' + kind + '" data-code="' + esc(code) + '"' + (vid ? ' data-vid="' + esc(vid) + '"' : '') + (extra || '') + ' aria-label="' + esc(kind) + '">';
+    }
+    function itemsHtml(month, sold) {
+        var all = inv().filter(isLive).filter(isItem);
+        var list = all.filter(matches).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        var tot = { value: 0, stock: 0, target: 0, sold: 0, low: 0 };
+        all.forEach(function (p) {
+            var s = sold[p.code] || { qty: 0, value: 0 };
+            tot.value += s.value; tot.stock += (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0);
+            if (tgtOf(p) > 0) { tot.target += tgtOf(p); tot.sold += Math.max(0, Math.min(s.value, tgtOf(p))); }
+            var lowAt = Number(p.minStock) > 0 ? Number(p.minStock) : 5; if ((Number(p.qty) || 0) <= lowAt) tot.low++;
+        });
+        var cards = '<div class="pl-cards"><div class="pl-card"><span>Items</span><b>' + all.length + '</b></div>' +
+            '<div class="pl-card b"><span>Sales in ' + esc(monthName(month)) + '</span><b>' + money(tot.value) + '</b></div>' +
+            '<div class="pl-card c"><span>Stock value (at buying price)</span><b>' + money(tot.stock) + '</b></div>' +
+            '<div class="pl-card d"><span>Target achieved' + (tot.target > 0 ? ' of ' + money(tot.target) : '') + '</span><b>' + (tot.target > 0 ? Math.round(tot.sold / tot.target * 100) + '%' : '—') + '</b></div></div>';
+        if (!list.length) return cards + '<div class="pl-box"><div class="pl-empty">' + (all.length ? 'No item matches the search.' : 'No items yet. Add them under Stock, Inventory.') + '</div></div>';
+        var rows = list.map(function (p) {
+            var s = sold[p.code] || { qty: 0, value: 0, v: {} };
+            var lowAt = Number(p.minStock) > 0 ? Number(p.minStock) : 5, low = (Number(p.qty) || 0) <= lowAt;
+            var h = '<tr><td class="pl-name"><b>' + esc(p.name) + '</b><small>' + esc(p.code) + (p.category ? ' · ' + esc(p.category) : '') + '</small></td>' +
+                '<td class="r">' + inp('price', p.code, '', r2(p.price)) + atCounter(p) + '</td>' +
+                '<td class="r">' + inp('cost', p.code, '', r2(p.wholesalePrice)) + '</td>' +
+                (canMoq() ? '<td class="r">' + inp('moq', p.code, '', Number(p.moq) > 1 ? qtyTxt(p.moq) : '', 'narrow', ' placeholder="1"') + moqNote(Number(p.price) || 0, Number(p.moq) || 0) + moqMode(p) + '</td>' : '') +
+                '<td class="r">' + (p.hasVariants && (p.variants || []).length ? '<span class="pl-note" style="margin:0">by size below</span>' : inp('qty', p.code, '', qtyTxt(p.qty), 'narrow') + ' <span' + (low ? ' class="pl-low"' : '') + '>' + esc(unitOf(p)) + '</span>') + '</td>' +
+                '<td class="r">' + inp('target', p.code, '', tgtOf(p) ? r2(tgtOf(p)) : '', '', ' placeholder="0"') + '</td>' +
+                '<td class="r"><b>' + qtyTxt(s.qty) + '</b></td><td>' + progress(s.value, tgtOf(p)) + '</td>' +
+                '<td class="r">' + money(s.value) + '</td></tr>';
+            if (p.hasVariants) (p.variants || []).forEach(function (v) {
+                if (!v || v._deleted) return; var sv = (s.v || {})[v.id] || { qty: 0, value: 0 };
+                h += '<tr class="sub"><td class="pl-name"><b>' + esc(v.name) + '</b><small>size of ' + esc(p.name) + '</small></td>' +
+                    '<td class="r">' + inp('price', p.code, v.id, r2(v.price)) + '</td><td class="r">' + inp('cost', p.code, v.id, r2(v.wholesalePrice)) + '</td>' +
+                    (canMoq() ? '<td class="r" style="font-size:11.5px;color:#64748b">' + (Number(p.moq) > 1 ? 'shared' : '') + '</td>' : '') + '<td class="r">' + inp('qty', p.code, v.id, qtyTxt(v.qty), 'narrow') + '</td><td class="r" style="font-size:11.5px;color:#64748b">' + (tgtOf(p) ? 'shared' : '') + '</td><td class="r">' + qtyTxt(sv.qty) + '</td><td style="font-size:11.5px;color:#64748b">' + (tgtOf(p) && tgtOf(p) > 0 ? Math.round(sv.value / tgtOf(p) * 100) + '% of the item target' : '') + '</td><td class="r">' + money(sv.value) + '</td></tr>';
+            });
+            return h;
+        }).join('');
+        return cards + '<div class="pl-box"><div class="pl-scroll"><table class="pl-t"><thead><tr><th>Item</th><th class="r">Selling price</th><th class="r">Buying price</th>' + (canMoq() ? '<th class="r">MOQ</th>' : '') + '<th class="r">Quantity left</th>' +
+            '<th class="r">Target / month (KSh)</th><th class="r">Sold</th><th>Achieved</th><th class="r">Sales value</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    }
+    function atCounter(p) { return p.priceAtCounter ? '<div style="font-size:11px;color:#b45309;font-weight:700;margin-top:2px">' + (p.priceNote ? esc(p.priceNote) : 'Price typed at the counter') + '</div>' : ''; }
+    function materialsCell(p) {
+        var mode = (Array.isArray(p.materialChoices) && p.materialChoices.length && !(p.recipe || []).length) ? 'one' : ((p.recipe || []).length ? 'all' : '');
+        var list = mode === 'one' ? p.materialChoices.map(function (c) { return { code: c.code, per: c.qtyPerUnit, price: c.price }; }) : (p.recipe || []).map(function (r) { return { code: r.code, per: r.qtyPerUnit }; });
+        if (!mode) return '<div class="pl-mat"><span style="background:#f1f5f9;color:#475569">No material linked</span></div>';
+        return '<div class="pl-mat"><div style="font-size:11.5px;color:#64748b;font-weight:700">' + (mode === 'one' ? 'Uses ONE of (cashier picks):' : 'Uses every time:') + '</div>' + list.map(function (c) {
+            var m = inv().find(function (x) { return x.code === c.code; });
+            var left = m ? Number(m.qty) || 0 : 0, can = (Number(c.per) || 1) > 0 ? Math.floor(left / (Number(c.per) || 1) + 1e-9) : 0;
+            return '<span class="' + (can > 0 ? '' : 'out') + '">' + esc(m ? m.name : c.code + ' (removed)') + ' · ' + qtyTxt(c.per) + ' each · ' + qtyTxt(left) + ' left' + (mode === 'one' && Number(c.price) > 0 ? ' · ' + money(c.price) : '') + '</span>';
+        }).join('') + '</div>';
+    }
+    function servicesHtml(month, sold) {
+        var all = inv().filter(isLive).filter(isService);
+        var list = all.filter(matches).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        var tot = { value: 0, target: 0, sold: 0, linked: 0 };
+        all.forEach(function (p) { var s = sold[p.code] || { qty: 0, value: 0 }; tot.value += s.value; if (tgtOf(p) > 0) { tot.target += tgtOf(p); tot.sold += Math.max(0, Math.min(s.value, tgtOf(p))); } if ((p.recipe || []).length || (p.materialChoices || []).length) tot.linked++; });
+        var cards = '<div class="pl-cards"><div class="pl-card"><span>Services</span><b>' + all.length + '</b></div>' +
+            '<div class="pl-card b"><span>Sales in ' + esc(monthName(month)) + '</span><b>' + money(tot.value) + '</b></div>' +
+            '<div class="pl-card c"><span>Tracked by a material</span><b>' + tot.linked + ' of ' + all.length + '</b></div>' +
+            '<div class="pl-card d"><span>Target achieved' + (tot.target > 0 ? ' of ' + money(tot.target) : '') + '</span><b>' + (tot.target > 0 ? Math.round(tot.sold / tot.target * 100) + '%' : '—') + '</b></div></div>';
+        if (!list.length) return cards + '<div class="pl-box"><div class="pl-empty">' + (all.length ? 'No service matches the search.' : 'No services yet. Add one under Stock, Add Item, and choose Service.') + '</div></div>';
+        var rows = list.map(function (p) {
+            var s = sold[p.code] || { qty: 0, value: 0, m: {} };
+            var byMat = Object.keys(s.m || {}).map(function (k) { var m = inv().find(function (x) { return x.code === k; }); return esc((m && m.name) || s.m[k].name || k) + ': ' + qtyTxt(s.m[k].qty); }).join(' · ');
+            return '<tr><td class="pl-name"><b>' + esc(p.name) + '</b><small>' + esc(p.code) + (p.category ? ' · ' + esc(p.category) : '') + '</small></td>' +
+                '<td class="r">' + inp('price', p.code, '', r2(p.price)) + atCounter(p) + '</td>' +
+                (canMoq() ? '<td class="r">' + inp('moq', p.code, '', Number(p.moq) > 1 ? qtyTxt(p.moq) : '', 'narrow', ' placeholder="1"') + moqNote(Number(p.price) || 0, Number(p.moq) || 0) + moqMode(p) + '</td>' : '') +
+                '<td style="min-width:260px">' + materialsCell(p) + (admin() ? '<div style="margin-top:6px"><button type="button" class="pl-btn sec" onclick="PriceList.editMaterials(\'' + esc(p.code).replace(/'/g, '&#39;') + '\')">Set materials</button></div>' : '') + '</td>' +
+                '<td class="r">' + inp('target', p.code, '', tgtOf(p) ? r2(tgtOf(p)) : '', '', ' placeholder="0"') + '</td>' +
+                '<td class="r"><b>' + qtyTxt(s.qty) + '</b>' + (byMat ? '<div style="font-size:11.5px;color:#64748b;white-space:normal">' + byMat + '</div>' : '') + '</td><td>' + progress(s.value, tgtOf(p)) + '</td>' +
+                '<td class="r">' + money(s.value) + '</td></tr>';
+        }).join('');
+        return cards + '<div class="pl-box"><div class="pl-scroll"><table class="pl-t"><thead><tr><th>Service</th><th class="r">Price</th>' + (canMoq() ? '<th class="r">MOQ</th>' : '') + '<th>Material used (stock left)</th><th class="r">Target / month (KSh)</th><th class="r">Done</th><th>Achieved</th><th class="r">Sales value</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    }
+    function render() {
+        var host = $('pl-body'); if (!host) return;
+        var month = V.month || thisMonth(), sold = soldIn(month);
+        var list = inv().filter(isLive).filter(V.view === 'items' ? isItem : isService);
+        var nItems = inv().filter(isLive).filter(isItem).length, nSvc = inv().filter(isLive).filter(isService).length;
+        var catOpts = '<option value="">All categories</option>' + cats(list).map(function (c) { return '<option' + (c === V.cat ? ' selected' : '') + ' value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('');
+        host.innerHTML = '<div class="pl-head"><div><h3>Price List</h3><p>Every ' + (V.view === 'items' ? 'item' : 'service') + ' with its price, ' + (V.view === 'items' ? 'quantity left, ' : 'the material it uses, ') + 'monthly target and how much of the target was achieved. Type into a box to change it' + (admin() ? '' : ' (only the admin can change figures)') + '.</p></div>' +
+            '<div class="pl-tools"><div class="pl-seg" role="tablist"><button type="button" class="' + (V.view === 'items' ? 'on' : '') + '" onclick="PriceList.view(\'items\')">Items (' + nItems + ')</button><button type="button" class="' + (V.view === 'services' ? 'on' : '') + '" onclick="PriceList.view(\'services\')">Services (' + nSvc + ')</button></div>' +
+            '<input id="pl-q" type="search" placeholder="Search name, code or category" value="' + esc(V.q) + '" aria-label="Search">' +
+            '<select id="pl-cat" aria-label="Category">' + catOpts + '</select>' +
+            '<input id="pl-month" type="month" value="' + esc(month) + '" max="' + esc(thisMonth()) + '" aria-label="Month">' +
+            '<button type="button" class="pl-btn sec" onclick="PriceList.printTargets()">Print targets report</button>' +
+            (admin() ? '<button type="button" class="pl-btn" onclick="PriceList.importOpen()">Import price list</button>' : '') + '</div></div>' +
+            '<div class="pl-saved" id="pl-saved"></div>' +
+            (V.view === 'items' ? itemsHtml(month, sold) : servicesHtml(month, sold)) +
+            '<p class="pl-note">Sold and Achieved count the sales of ' + esc(monthName(month)) + ' (voided sales and returns are not counted).' + (canMoq() ? ' With an MOQ the price is for the whole minimum order (MOQ 150 at KES 73 = 150 pieces for KES 73). Whole packs only: 150, 300, 450 pieces (KES 73, 146, 219). Any number: 200 pieces = KES 97, always rounded to the shilling.' : '') + ' A change of quantity is recorded in the stock history as "Price List count".</p>';
+    }
+    function saved(msg) { var e = $('pl-saved'); if (e) { e.textContent = msg; clearTimeout(saved.t); saved.t = setTimeout(function () { var x = $('pl-saved'); if (x) x.textContent = ''; }, 3500); } }
+    function persist() {
+        try { if (waterApp()) safeSetItem('aqua_products', JSON.stringify(products)); else safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* none */ }
+        try { if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* none */ }
+        try { queuePush(); } catch (e) { /* sent with the next change */ }
+        try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); else if (typeof renderProductsTable === 'function') renderProductsTable(); } catch (e) { /* cosmetic */ }
+    }
+
+    /* ---------------- edits ---------------- */
+    function change(el) {
+        if (!admin()) { toast('Only the admin can change prices, quantities and targets.', true); render(); return; }
+        var kind = el.getAttribute('data-pl'), code = el.getAttribute('data-code'), vid = el.getAttribute('data-vid');
+        var p = inv().find(function (x) { return x.code === code; }); if (!p) return;
+        var raw = String(el.value).trim(), v = num(raw);
+        if (raw !== '' && (!isFinite(v) || v < 0)) { toast('Type a number, 0 or more.', true); render(); return; }
+        var tgt = vid ? (p.variants || []).find(function (x) { return x.id === vid; }) : p; if (!tgt) return;
+        var label = p.name + (vid ? ' (' + tgt.name + ')' : '');
+        if (kind === 'price') { if (r2(tgt.price) === r2(v)) return; tgt.price = r2(v); if (!vid && v > 0 && p.priceAtCounter) { delete p.priceAtCounter; delete p.priceNote; } saved('Price of ' + label + ' saved: ' + money(v)); }
+        else if (kind === 'cost') { if (r2(tgt.wholesalePrice) === r2(v)) return; tgt.wholesalePrice = r2(v); saved('Buying price of ' + label + ' saved: ' + money(v)); }
+        else if (kind === 'target') { var t = raw === '' ? 0 : r2(v); if (tgtOf(p) === t) return; if (t > 0) p.monthlyTargetAmount = t; else delete p.monthlyTargetAmount; saved(t > 0 ? 'Target for ' + p.name + ': ' + money(t) + ' a month.' : 'Target for ' + p.name + ' removed.'); }
+        else if (kind === 'moq') { var mq = raw === '' ? 0 : Math.round(v); if ((Number(p.moq) || 0) === (mq > 1 ? mq : 0)) return; if (mq > 1) p.moq = mq; else delete p.moq; saved(mq > 1 ? 'Minimum order for ' + p.name + ': ' + qtyTxt(mq) + '.' : 'Minimum order for ' + p.name + ' removed.'); }
+        else if (kind === 'qty') {
+            if (raw === '') { render(); return; }
+            var before = Number(tgt.qty) || 0, after = Math.round(v * 1000) / 1000, d = Math.round((after - before) * 1e6) / 1e6;
+            if (!d) return;
+            if (Math.abs(d) >= Math.max(50, before) && !confirm('Change the quantity of ' + label + ' from ' + qtyTxt(before) + ' to ' + qtyTxt(after) + '?')) { render(); return; }
+            tgt.qty = after;
+            try { if (typeof logStockMovement === 'function') logStockMovement(p.code, label, d, 'Price List count', 'qty'); } catch (e) { /* the quantity is still saved */ }
+            if (vid) { try { p.qty = Math.round((p.variants || []).reduce(function (a, x) { return a + (Number(x && x.qty) || 0); }, 0) * 1000) / 1000; } catch (e) { /* none */ } }   // the item's total = its sizes, as everywhere else
+            saved('Quantity of ' + label + ': ' + qtyTxt(before) + ' to ' + qtyTxt(after) + '.');
+        }
+        p.updatedAt = Date.now();
+        persist(); render();
+    }
+
+    /* ---------------- materials of a service ---------------- */
+    var M = null;
+    function ov(html) { $('pl-dlg').innerHTML = html; $('pl-ov').classList.add('on'); }
+    function close() { $('pl-ov').classList.remove('on'); $('pl-dlg').innerHTML = ''; $('pl-dlg').style.maxWidth = ''; M = null; IMP = null; }
+    function itemOptions(sel) {
+        return '<option value="">Choose an item</option>' + inv().filter(isLive).filter(isItem).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); })
+            .map(function (p) { return '<option value="' + esc(p.code) + '"' + (p.code === sel ? ' selected' : '') + '>' + esc(p.name) + ' (' + qtyTxt(p.qty) + ' ' + esc(unitOf(p)) + ' left)</option>'; }).join('');
+    }
+    function matDlg() {
+        var p = inv().find(function (x) { return x.code === M.code; }); if (!p) return close();
+        var rows = M.rows.map(function (r, i) {
+            return '<div class="pl-row"><div><label>Item used</label><select data-mi="' + i + '" data-mf="code">' + itemOptions(r.code) + '</select></div>' +
+                '<div><label>Used per service</label><input data-mi="' + i + '" data-mf="per" type="number" min="0" step="any" value="' + esc(r.per) + '"></div>' +
+                '<div><label>' + (M.mode === 'one' ? 'Price with it (optional)' : '&nbsp;') + '</label><input data-mi="' + i + '" data-mf="price" type="number" min="0" step="any" value="' + esc(r.price || '') + '" placeholder="' + esc(r2(p.price)) + '"' + (M.mode === 'one' ? '' : ' disabled style="visibility:hidden"') + '></div>' +
+                '<button type="button" class="pl-btn sec" onclick="PriceList.matRow(' + i + ')" aria-label="Remove">Remove</button></div>';
+        }).join('');
+        ov('<h3>Materials for ' + esc(p.name) + '</h3><p class="sub">A service has no stock of its own. Link the item it uses, and every one sold takes that item off the shelf, so the stock tells you how much work was done.</p>' +
+            '<div class="pl-mode">' + (canOneOf() ? '<label class="' + (M.mode === 'one' ? 'on' : '') + '"><input type="radio" name="pl-mode" ' + (M.mode === 'one' ? 'checked' : '') + ' onchange="PriceList.matMode(\'one\')"><span><b>Uses ONE of these</b><br>The cashier picks which one at the Sales Counter, e.g. Printing on Matt paper or on Glossy paper. Each can have its own price.</span></label>' : '') +
+            '<label class="' + (M.mode === 'all' ? 'on' : '') + '"><input type="radio" name="pl-mode" ' + (M.mode === 'all' ? 'checked' : '') + ' onchange="PriceList.matMode(\'all\')"><span><b>Uses ALL of these every time</b><br>e.g. a lamination uses one pouch and one sheet each time.</span></label></div>' +
+            (rows || '<p class="sub">No item linked yet.</p>') +
+            '<button type="button" class="pl-btn sec" onclick="PriceList.matAdd()">Add an item</button>' +
+            '<div class="pl-err" id="pl-err"></div>' +
+            '<div class="pl-act"><button type="button" class="pl-btn sec" onclick="PriceList.close()">Cancel</button>' + ((p.recipe || []).length || (p.materialChoices || []).length ? '<button type="button" class="pl-btn sec" onclick="PriceList.matClear()">Unlink all</button>' : '') + '<button type="button" class="pl-btn" onclick="PriceList.matSave()">Save materials</button></div>');
+    }
+    function readRows() {
+        Array.prototype.forEach.call(document.querySelectorAll('#pl-dlg [data-mi]'), function (e) { var i = +e.getAttribute('data-mi'), f = e.getAttribute('data-mf'); if (M.rows[i]) M.rows[i][f] = e.value; });
+    }
+
+    /* ---------------- the cashier picks the material ---------------- */
+    function pickMaterial(code) {
+        var p = inv().find(function (x) { return x.code === code; }); if (!p) return;
+        var list = (p.materialChoices || []).map(function (c) {
+            var m = inv().find(function (x) { return x.code === c.code; }); if (!m) return '';
+            var per = Number(c.qtyPerUnit) || 1, left = Number(m.qty) || 0, can = Math.floor(left / per + 1e-9);
+            var price = Number(c.price) > 0 ? Number(c.price) : (Number(p.price) || 0);
+            return '<button type="button" ' + (can > 0 ? '' : 'disabled ') + 'onclick="PriceList.pick(\'' + esc(code).replace(/'/g, '&#39;') + '\', \'' + esc(m.code).replace(/'/g, '&#39;') + '\')"><span><b>' + esc(m.name) + '</b><small>' + qtyTxt(left) + ' ' + esc(unitOf(m)) + ' left · ' + qtyTxt(per) + ' used each' + (can > 0 ? '' : ' · out of stock') + '</small></span><b>' + money(price) + '</b></button>';
+        }).join('');
+        ov('<h3>' + esc(p.name) + '</h3><p class="sub">Which one is the customer getting?</p><div class="pl-pick">' + (list || '<p class="sub">No material is linked any more. Set it in Price List, Services.</p>') + '</div><div class="pl-act"><button type="button" class="pl-btn sec" onclick="PriceList.close()">Cancel</button></div>');
+    }
+
+    /* ---------------- import a price list (Excel / CSV) ----------------
+       Reads any sheet laid out as rows: category, name, price, MOQ / quantities, target. The header row is found by its titles (it need not
+       be the first row), a title row above it is skipped, a blank category carries the one above, a "total" row with no name is skipped.
+       Price "KSh 1,200" / "1,200" / "20/="; a range "(30-45)" sets the lowest price and the cashier types the real one; "KSh 50" sitting in
+       the quantities column with no price is taken as the price. "150 pcs" = the minimum order (MOQ); a plain number there = stock left.
+       Target = KSh a month; a "target" smaller than three sales is left empty and shown (it looks like a unit price). Nothing is saved
+       until the preview is confirmed; a name already in the shop is updated, never duplicated. */
+    var normH = function (h) { return String(h == null ? '' : h).toLowerCase().replace(/\(.*?\)/g, ' ').replace(/\b(ksh|kshs|kes)\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim(); };
+    var HDR = {
+        name: ['service product', 'product service', 'service', 'services', 'service name', 'product', 'products', 'product name', 'item', 'items', 'item name', 'name', 'description', 'particulars', 'details'],
+        code: ['code', 'sku', 'item code', 'product code', 'service code'],
+        type: ['type', 'kind', 'item or service', 'product or service'],
+        category: ['service category', 'category', 'categories', 'group', 'department', 'section', 'product category'],
+        price: ['price list', 'price', 'prices', 'selling price', 'unit price', 'rate', 'rates', 'retail price', 'charge', 'charges', 'amount', 'sp'],
+        cost: ['cost', 'cost price', 'buying price', 'purchase price', 'bp'],
+        qty: ['quantities', 'quantity', 'qty', 'stock', 'quantity left', 'qty left', 'in stock', 'balance', 'opening stock', 'on hand'],
+        moq: ['moq', 'min order', 'minimum order', 'min qty', 'minimum qty', 'min order qty', 'minimum order quantity', 'minimum quantity'],
+        target: ['target amount', 'target', 'targets', 'monthly target', 'target per month', 'target month', 'sales target', 'target amount month'],
+        unit: ['unit', 'units', 'uom']
+    };
+    function headerMap(row) {
+        var map = {}, cells = (row || []).map(normH);
+        Object.keys(HDR).forEach(function (f) {
+            cells.forEach(function (c, i) { if (map[f] === undefined && c && HDR[f].indexOf(c) >= 0 && !Object.keys(map).some(function (k) { return map[k] === i; })) map[f] = i; });
+        });
+        Object.keys(HDR).forEach(function (f) {   // looser second pass: "Target Amount (KSh) per month", "Selling price each"
+            if (map[f] !== undefined) return;
+            cells.forEach(function (c, i) { if (map[f] === undefined && c && !Object.keys(map).some(function (k) { return map[k] === i; }) && HDR[f].some(function (s) { return s.length > 3 && (' ' + c + ' ').indexOf(' ' + s + ' ') >= 0; })) map[f] = i; });
+        });
+        return map;
+    }
+    var firstNum = function (s) { var m = String(s == null ? '' : s).replace(/,/g, '').match(/-?\d+(\.\d+)?/); return m ? parseFloat(m[0]) : null; };
+    var isRange = function (s) { return /^\(?\s*(ksh|kes)?\s*\d[\d,]*(\.\d+)?\s*(-|–|to)\s*(ksh|kes)?\s*\d[\d,]*(\.\d+)?\s*\)?$/i.test(String(s).trim()); };
+    var rangeOf = function (s) { var n = String(s).replace(/,/g, '').match(/\d+(\.\d+)?/g) || []; return [parseFloat(n[0]), parseFloat(n[1])]; };
+    var isMoney = function (s) { return /\b(ksh|kshs|kes)\b|\/=|^\s*sh\.?\s*\d/i.test(String(s)); };
+    var titleKey = function (s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); };
+    var catKey = function (s) { return titleKey(s).replace(/&/g, ' and ').split(/[^a-z0-9]+/).filter(Boolean).sort().join(' '); };   // "Printing & branding" = "Branding & Printing"
+    var moqNote = function (price, moq) { return moq > 1 ? '<div style="font-size:11px;color:#64748b;white-space:nowrap">' + money(price) + ' per ' + qtyTxt(moq) + ' pcs</div>' : ''; };
+    // how an MOQ item is sold: whole packs only, or any number of pieces from the MOQ up (rounded to whole shillings)
+    function moqMode(p) {
+        if (!(Number(p.moq) > 1)) return '';
+        var m = p.moqMode === 'from' ? 'from' : 'pack';
+        return '<select data-plmode="' + esc(p.code) + '" style="width:auto;margin:4px 0 0;padding:4px 6px;font-size:11.5px;border-radius:8px"' + (admin() ? '' : ' disabled') + ' aria-label="How it is sold">' +
+            '<option value="pack"' + (m === 'pack' ? ' selected' : '') + '>Whole packs only</option><option value="from"' + (m === 'from' ? ' selected' : '') + '>Any number from ' + qtyTxt(p.moq) + '</option></select>';
+    }
+
+    // sheets = [{ name, rows: [[cell,...], ...] }]  ->  { rows: [...], categories: [...], skipped: [...] }
+    function planImport(sheets, invList) {
+        invList = invList || inv();
+        var out = [], skipped = [], seen = {}, catName = {};
+        (sheets || []).forEach(function (sh) {
+            var rows = sh.rows || [], h = -1, map = null;
+            for (var i = 0; i < Math.min(rows.length, 25); i++) { var m = headerMap(rows[i]); if (m.name !== undefined && (m.price !== undefined || m.target !== undefined || m.moq !== undefined || m.qty !== undefined)) { h = i; map = m; break; } }
+            if (h < 0) { if (rows.some(function (r) { return (r || []).some(function (c) { return String(c || '').trim(); }); })) skipped.push({ sheet: sh.name, n: 0, why: 'No price-list header found (needs a name column and a price, quantity or target column).' }); return; }
+            var sheetSvc = /servic/i.test(sh.name || ''), section = null, lastCat = '';
+            var cell = function (r, f) { return map[f] === undefined ? '' : String(r[map[f]] == null ? '' : r[map[f]]).trim(); };
+            for (var j = h + 1; j < rows.length; j++) {
+                var r = rows[j] || [], n = j + 1, filled = r.filter(function (c) { return String(c == null ? '' : c).trim(); });
+                if (!filled.length) continue;
+                var name = cell(r, 'name').replace(/\s+/g, ' ');
+                if (!name) {
+                    if (filled.length === 1 && firstNum(filled[0]) === null) { var t = String(filled[0]).trim(); if (/servic/i.test(t)) section = 'service'; else if (/\b(product|item|goods|stock)s?\b/i.test(t)) section = 'item'; else lastCat = t; continue; }
+                    skipped.push({ sheet: sh.name, n: n, why: 'No name (a total or note row): ' + filled.join(' · ') }); continue;
+                }
+                var row = { n: n, sheet: sh.name, name: name, warns: [], include: true, code: cell(r, 'code') };
+                var c = cell(r, 'category'); if (c) lastCat = c;
+                var ck = catKey(lastCat); if (ck && !catName[ck]) catName[ck] = lastCat.trim(); row.category = ck ? catName[ck] : '';
+                // price
+                var pr = cell(r, 'price'), qx = cell(r, 'qty'), mq = cell(r, 'moq');
+                row.price = null;
+                if (pr && isRange(pr)) { var rg = rangeOf(pr); row.price = rg[0]; row.priceAtCounter = true; row.priceNote = 'Price ' + rg[0] + '–' + rg[1] + ', typed at the counter'; }
+                else if (pr) { row.price = firstNum(pr); if (row.price === null) row.warns.push('Price "' + pr + '" is not a number.'); }
+                // quantities column: MOQ ("150 pcs"), a price range, a price in the wrong column, or stock left
+                row.moq = mq ? firstNum(mq) : null; row.qty = null;
+                if (qx) {
+                    if (isRange(qx)) { var rq = rangeOf(qx); if (row.price === null) { row.price = rq[0]; row.priceAtCounter = true; row.priceNote = 'Price ' + rq[0] + '–' + rq[1] + ', typed at the counter'; row.warns.push('"' + qx + '" read as a price range.'); } }
+                    else if (isMoney(qx)) { if (row.price === null) { row.price = firstNum(qx); row.warns.push('Price taken from the quantities column (' + qx + ').'); } else row.warns.push('"' + qx + '" in the quantities column was ignored.'); }
+                    else if (/[a-z]/i.test(qx) && firstNum(qx) !== null) { if (row.moq === null) row.moq = firstNum(qx); }
+                    else if (firstNum(qx) !== null) row.qty = firstNum(qx);
+                }
+                if (row.moq !== null && !(row.moq > 1)) row.moq = null;
+                if (row.moq !== null && !canMoq()) { row.warns.push('MOQ ' + row.moq + ' not used: this app sells every item by the piece, so check the price is for ONE piece.'); row.moq = null; }
+                if (row.price === null || !(row.price > 0)) { row.price = 0; row.priceAtCounter = true; if (!row.priceNote) row.priceNote = 'No price in the list, typed at the counter'; }
+                // target (KSh a month)
+                var tg = cell(r, 'target'); row.target = tg ? firstNum(tg) : null;
+                row.price = Math.round(row.price);
+                var oneSale = row.price;   // the smallest possible sale: one minimum order (the price is for the MOQ)
+                if (row.target !== null && row.price > 0 && !row.priceAtCounter && row.target < oneSale) { row.warns.push('Target ' + tg + ' is less than one ' + (row.moq > 1 ? 'minimum order (' + money(oneSale) + ')' : 'sale') + ' - looks like a price or cost, so no target was set.'); row.target = null; }
+                if (row.target !== null && !(row.target > 0)) row.target = null;
+                row.cost = map.cost !== undefined ? firstNum(cell(r, 'cost')) : null;
+                row.unit = cell(r, 'unit');
+                // item or service: a type column, else a section heading, else the sheet name, else a stock quantity makes it an item
+                var ty = cell(r, 'type').toLowerCase();
+                row.type = /servic/.test(ty) ? 'service' : /item|product|good|stock/.test(ty) ? 'item' : section ? section : sheetSvc ? 'service' : (row.qty !== null ? 'item' : 'service');
+                // the same name twice in the file
+                var key = titleKey(name);
+                if (seen[key]) { row.warns.push('Same name as row ' + seen[key] + ' - added as "' + name + ' (2)". Rename it if it is a different size.'); row.name = name + ' (2)'; key = titleKey(row.name); }
+                seen[key] = n;
+                var ex = (row.code && invList.find(function (p) { return isLive(p) && String(p.code).toLowerCase() === row.code.toLowerCase(); })) || invList.find(function (p) { return isLive(p) && titleKey(p.name) === key; });
+                row.existing = ex ? ex.code : null;
+                if (ex && (isService(ex) ? 'service' : 'item') !== row.type) { row.type = isService(ex) ? 'service' : 'item'; row.warns.push('Already in the shop as ' + (isService(ex) ? 'a service' : 'an item') + ' - kept that way.'); }
+                out.push(row);
+            }
+        });
+        var cats = {}; out.forEach(function (x) { if (x.category) cats[x.category] = 1; });
+        return { rows: out, skipped: skipped, categories: Object.keys(cats) };
+    }
+
+    function newCode(taken) { var c; try { c = typeof generateItemCode === 'function' ? generateItemCode() : ''; } catch (e) { c = ''; } var k = 1; while (!c || taken[c.toLowerCase()]) { c = 'PL' + String(Date.now()).slice(-6) + (k++); } taken[c.toLowerCase()] = 1; return c; }
+    // applies the included rows; returns { created, updated, services, items }
+    function applyImport(plan, opts) {
+        opts = opts || {}; var res = { created: 0, updated: 0, services: 0, items: 0 }, now = Date.now(), list = inv(), taken = {};
+        list.forEach(function (p) { if (p && p.code) taken[String(p.code).toLowerCase()] = 1; });
+        (plan.rows || []).forEach(function (x) {
+            if (!x.include) return;
+            var p = x.existing ? list.find(function (q) { return q.code === x.existing; }) : null;
+            if (p) {
+                if (opts.updatePrices !== false && (x.price > 0 || !(Number(p.price) > 0))) { p.price = r2(x.price); if (x.priceAtCounter) { p.priceAtCounter = true; p.priceNote = x.priceNote; } else { delete p.priceAtCounter; delete p.priceNote; } }
+                if (x.cost != null && x.cost >= 0) p.wholesalePrice = r2(x.cost);
+                if (x.moq > 1) { p.moq = Math.round(x.moq); if (!p.moqMode) p.moqMode = 'pack'; }
+                if (x.target > 0) p.monthlyTargetAmount = r2(x.target);
+                if (x.category && !p.category) p.category = x.category;
+                if (x.qty != null && !isService(p) && !p.hasVariants) { var d = Math.round((x.qty - (Number(p.qty) || 0)) * 1e6) / 1e6; if (d) { p.qty = x.qty; try { logStockMovement(p.code, p.name, d, 'Price list import (count)', 'qty'); } catch (e) { /* none */ } } }
+                p.updatedAt = now; res.updated++; return;
+            }
+            var code = x.code && !taken[x.code.toLowerCase()] ? x.code : newCode(taken); taken[code.toLowerCase()] = 1;
+            if (x.type === 'service') {
+                p = { type: 'service', code: code, name: x.name, price: r2(x.price), wholesalePrice: x.cost > 0 ? r2(x.cost) : 0, minimumPrice: 0, unit: x.unit || 'pcs', qty: null, location: '', image: null, vatCategory: 'A', recipe: [], comboItems: [] };
+                res.services++;
+            } else {
+                p = { type: 'item', code: code, name: x.name, qty: x.qty > 0 ? x.qty : 0, price: r2(x.price), wholesalePrice: x.cost > 0 ? r2(x.cost) : 0, wholesaleSellingPrice: 0, unit: x.unit || 'pcs', vatCategory: 'A', image: null };
+                res.items++;
+            }
+            if (x.category) p.category = x.category;
+            if (x.moq > 1) { p.moq = Math.round(x.moq); p.moqMode = 'pack'; }
+            if (x.target > 0) p.monthlyTargetAmount = r2(x.target);
+            if (x.priceAtCounter) { p.priceAtCounter = true; p.priceNote = x.priceNote; }
+            p.createdAt = now; p.updatedAt = now;
+            list.push(p); res.created++;
+            if (p.type === 'item' && p.qty > 0) { try { logStockMovement(p.code, p.name, p.qty, 'Price list import (opening stock)', 'qty'); } catch (e) { /* none */ } }
+        });
+        return res;
+    }
+
+    var IMP = null;
+    function readFile(file) {
+        return new Promise(function (resolve, reject) {
+            var rd = new FileReader(), isCsv = /\.(csv|txt)$/i.test(file.name);
+            rd.onerror = function () { reject(new Error('The file could not be read.')); };
+            rd.onload = async function (e) {
+                try {
+                    if (isCsv) { var t = String(e.target.result); resolve([{ name: file.name.replace(/\.[^.]+$/, ''), rows: (typeof parseCsvText === 'function' ? parseCsvText(t) : t.split(/\r?\n/).map(function (l) { return l.split(','); })) }]); return; }
+                    if (typeof loadSheetJs === 'function') await loadSheetJs();
+                    if (!window.XLSX) throw new Error('The Excel reader could not load. Check the internet, or save the sheet as CSV and import that.');
+                    var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                    resolve(wb.SheetNames.map(function (nm) { return { name: nm, rows: XLSX.utils.sheet_to_json(wb.Sheets[nm], { header: 1, raw: false, defval: '' }) }; }));
+                } catch (err) { reject(err); }
+            };
+            if (isCsv) rd.readAsText(file); else rd.readAsArrayBuffer(file);
+        });
+    }
+    function impDlg() {
+        var P = IMP.plan, inc = P.rows.filter(function (x) { return x.include; });
+        var nNew = inc.filter(function (x) { return !x.existing; }).length, nUpd = inc.length - nNew, nSvc = inc.filter(function (x) { return !x.existing && x.type === 'service'; }).length;
+        var catSel = '<select id="pl-imp-cat" style="width:auto;margin:0"><option value="">All rows</option>' + P.categories.map(function (c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('') + '</select>';
+        var rows = P.rows.map(function (x, i) {
+            return '<tr' + (x.include ? '' : ' style="opacity:.45"') + '><td><input type="checkbox" ' + (x.include ? 'checked' : '') + ' onchange="PriceList.impSet(' + i + ',\'include\',this.checked)" style="width:auto;margin:0" aria-label="Include"></td>' +
+                '<td style="color:#64748b">' + x.n + '</td><td>' + esc(x.category) + '</td><td><b>' + esc(x.name) + '</b>' + (x.warns.length ? '<div style="color:#b45309;font-size:11.5px">' + x.warns.map(esc).join('<br>') + '</div>' : '') + '</td>' +
+                '<td><select onchange="PriceList.impSet(' + i + ',\'type\',this.value)" style="width:auto;margin:0;padding:5px 6px"' + (x.existing ? ' disabled' : '') + '><option value="service"' + (x.type === 'service' ? ' selected' : '') + '>Service</option><option value="item"' + (x.type === 'item' ? ' selected' : '') + '>Item</option></select></td>' +
+                '<td class="r">' + (x.priceAtCounter ? '<span style="color:#b45309">' + (x.price > 0 ? money(x.price) + ' +' : 'At counter') + '</span>' : money(x.price)) + '</td>' +
+                '<td class="r">' + (x.moq > 1 ? qtyTxt(x.moq) + moqNote(x.price, x.moq) : '') + '</td><td class="r">' + (x.qty != null ? qtyTxt(x.qty) : '') + '</td><td class="r">' + (x.target > 0 ? money(x.target) : '') + '</td>' +
+                '<td>' + (x.existing ? '<span style="color:#1d4ed8;font-weight:700">Update</span>' : '<span style="color:#15803d;font-weight:700">New</span>') + '</td></tr>';
+        }).join('');
+        var sk = P.skipped.length ? '<details style="margin-top:8px;font-size:12.5px"><summary>' + P.skipped.length + ' row(s) not imported</summary>' + P.skipped.map(function (s) { return '<div>' + esc(s.sheet) + (s.n ? ' row ' + s.n : '') + ': ' + esc(s.why) + '</div>'; }).join('') + '</details>' : '';
+        $('pl-dlg').style.maxWidth = '1120px';
+        ov('<h3>Import price list: ' + esc(IMP.file) + '</h3><p class="sub">' + P.rows.length + ' rows read. Check them, then press Import. Nothing is saved before that.</p>' +
+            '<div class="pl-cards" style="margin-bottom:10px"><div class="pl-card"><span>New</span><b>' + nNew + '</b></div><div class="pl-card b"><span>New services</span><b>' + nSvc + '</b></div><div class="pl-card c"><span>New items</span><b>' + (nNew - nSvc) + '</b></div><div class="pl-card d"><span>Already in the shop (updated)</span><b>' + nUpd + '</b></div></div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;font-size:13px">Make ' + catSel + ' <button type="button" class="pl-btn sec" onclick="PriceList.impBulk(\'service\')">Services</button><button type="button" class="pl-btn sec" onclick="PriceList.impBulk(\'item\')">Items (keep stock)</button>' +
+            '<label style="display:flex;gap:6px;align-items:center;margin-left:auto"><input type="checkbox" id="pl-imp-upd" ' + (IMP.updatePrices ? 'checked' : '') + ' onchange="PriceList.impUpd(this.checked)" style="width:auto;margin:0"> Update the prices of things already in the shop</label></div>' +
+            '<div class="pl-box"><div class="pl-scroll" style="max-height:52vh"><table class="pl-t" style="min-width:900px"><thead><tr><th></th><th>Row</th><th>Category</th><th>Name</th><th>Type</th><th class="r">Price</th><th class="r">MOQ</th><th class="r">Stock</th><th class="r">Target / month</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + sk +
+            '<p class="pl-note">A service has no stock; link the paper or material it uses afterwards with Set materials. "At counter": the list has no fixed price, so the cashier types it on the sale.</p>' +
+            '<div class="pl-err" id="pl-err"></div><div class="pl-act"><button type="button" class="pl-btn sec" onclick="PriceList.close()">Cancel</button><button type="button" class="pl-btn" onclick="PriceList.impGo()">Import ' + inc.length + ' row(s)</button></div>');
+    }
+
+    /* ---------------- Reports: Targets vs Achieved ----------------
+       The monthly target (KSh) of every item and service, spread over the report period by days (a month counts in full, 7 days of a
+       30-day month = 7/30 of it), against what was sold in that period (sales value, voids out, returns off). Status uses the pace up to
+       today: Reached (whole period target met), On track (at or above where it should be by today), Behind. Grouped by category. */
+    function soldInRange(from, to) {
+        var out = {};
+        sales().forEach(function (s) {
+            if (!s || s.voided || s._deleted || s.isReturn) return; var t = new Date(s.timestamp).getTime(); if (!(t >= from && t <= to)) return;
+            saleLines(s).forEach(function (l) {
+                if (!l.code) return;
+                var o = out[l.code] = out[l.code] || { qty: 0, value: 0, v: {} };
+                var pcs = (Number(l.qty) || 0) * (Number(l.unitPieces) > 1 ? Number(l.unitPieces) : 1), val = l.value;
+                o.qty += pcs; o.value += val;
+                if (l.variantId) { var ov = o.v[l.variantId] = o.v[l.variantId] || { qty: 0, value: 0 }; ov.qty += pcs; ov.value += val; }
+            });
+        });
+        try {
+            (typeof returns !== 'undefined' && Array.isArray(returns) ? returns : []).forEach(function (r) {
+                if (!r || r._deleted) return; var t = new Date(r.timestamp || r.date).getTime(); if (!(t >= from && t <= to)) return;
+                (r.items || [r]).forEach(function (l) { var c = l && (l.code || l.itemCode); if (!c || !out[c]) return; var q = Number(l.qty) || 0; out[c].qty -= q; out[c].value -= Math.round((Number(l.price) || 0) * q); });
+            });
+        } catch (e) { /* no returns list */ }
+        return out;
+    }
+    // share of a monthly target that falls in [from, to] (Nairobi calendar days)
+    function monthShare(from, to) {
+        var day = 86400000, k = function (t) { var d = new Date(t + 3 * 3600000); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+        var a = k(from), b = k(to), share = 0;
+        for (var t = a; t <= b; t += day) { var d = new Date(t); share += 1 / new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); }
+        return share;
+    }
+    function targetsReport(range) {
+        var from = range.from.getTime(), to = range.to.getTime(), now = Date.now();
+        // a period that starts on the 1st and runs to today ("This month", "This year") is measured against the WHOLE months it is in;
+        // the pace up to today decides On track / Behind
+        var nb = function (t) { return new Date(t + 3 * 3600000); }, f = nb(from), tEnd = to;
+        if (f.getUTCDate() === 1 && to >= now - 60000) { var e = nb(to); tEnd = Date.UTC(e.getUTCFullYear(), e.getUTCMonth() + 1, 0, 12) - 3 * 3600000; }
+        var share = monthShare(from, tEnd), shareNow = now < from ? 0 : monthShare(from, Math.min(to, now));
+        var sold = soldInRange(from, to), list = inv().filter(isLive).filter(function (p) { return isItem(p) || isService(p); });
+        var only = repCat ? repCat() : ''; if (only) list = list.filter(function (p) { return (p.category || 'No category') === only; });
+        var withT = list.filter(function (p) { return tgtOf(p) > 0; });
+        var groups = {}, tot = { target: 0, got: 0, due: 0, n: 0, reached: 0, behind: 0 }, untargeted = 0;
+        list.forEach(function (p) { if (!(tgtOf(p) > 0)) untargeted += Math.max(0, (sold[p.code] || {}).value || 0); });
+        withT.forEach(function (p) {
+            var s = sold[p.code] || { qty: 0, value: 0 }, tg = Math.round(tgtOf(p) * share), due = Math.round(tgtOf(p) * shareNow), got = Math.max(0, Math.round(s.value));
+            var st = got >= tg ? 'Reached' : got >= due ? 'On track' : 'Behind';
+            var c = p.category || 'No category', g = groups[c] = groups[c] || { rows: [], target: 0, got: 0 };
+            g.rows.push({ p: p, tg: tg, got: got, qty: s.qty, pc: tg > 0 ? Math.round(got / tg * 100) : 0, st: st, v: s.v || {} });
+            g.target += tg; g.got += got; tot.target += tg; tot.got += got; tot.due += due; tot.n++; if (st === 'Reached') tot.reached++; if (st === 'Behind') tot.behind++;
+        });
+        var pcAll = tot.target > 0 ? Math.round(tot.got / tot.target * 100) : 0;
+        var bar = function (pc, st) { var col = st === 'Reached' ? '#16a34a' : st === 'On track' ? '#d97706' : '#dc2626'; return '<div style="height:7px;background:#e5e7eb;border-radius:9px;overflow:hidden;min-width:70px"><div style="height:100%;width:' + Math.min(100, pc) + '%;background:' + col + '"></div></div>'; };
+        var stc = function (st) { return '<span style="font-weight:800;color:' + (st === 'Reached' ? '#15803d' : st === 'On track' ? '#b45309' : '#b91c1c') + '">' + st + '</span>'; };
+        var csv = [['Category', 'Name', 'Type', 'Target for period (KES)', 'Achieved (KES)', 'Achieved %', 'Short by (KES)', 'Pieces / times sold', 'Status']];
+        var cats = Object.keys(groups).sort();
+        var body = cats.map(function (c) {
+            var g = groups[c]; g.rows.sort(function (a, b) { return b.pc - a.pc; });
+            var gpc = g.target > 0 ? Math.round(g.got / g.target * 100) : 0;
+            var rows = g.rows.map(function (r) {
+                csv.push([c, r.p.name, isService(r.p) ? 'Service' : 'Product', r.tg, r.got, r.pc, Math.max(0, r.tg - r.got), Math.round(r.qty * 1000) / 1000, r.st]);
+                return '<tr><td style="padding:6px 8px;border-bottom:1px solid #eef1f3">' + esc(r.p.name) + '<div style="font-size:11px;color:#64748b">' + (isService(r.p) ? 'Service' : 'Product') + '</div></td>' +
+                    '<td style="padding:6px 8px;border-bottom:1px solid #eef1f3;text-align:right;white-space:nowrap">' + money(r.tg) + '</td><td style="padding:6px 8px;border-bottom:1px solid #eef1f3;text-align:right;white-space:nowrap">' + money(r.got) + '</td>' +
+                    '<td style="padding:6px 8px;border-bottom:1px solid #eef1f3;min-width:110px">' + bar(r.pc, r.st) + '<div style="font-size:12px;font-weight:800;margin-top:2px">' + r.pc + '%</div></td>' +
+                    '<td style="padding:6px 8px;border-bottom:1px solid #eef1f3;text-align:right;white-space:nowrap">' + (r.tg > r.got ? money(r.tg - r.got) : '-') + '</td><td style="padding:6px 8px;border-bottom:1px solid #eef1f3;text-align:right">' + qtyTxt(r.qty) + '</td><td style="padding:6px 8px;border-bottom:1px solid #eef1f3">' + stc(r.st) + '</td></tr>' +
+                    // the sizes / colours of the item: they share its target - what each one sold
+                    (r.p.hasVariants ? (r.p.variants || []).filter(function (v) { return v && !v._deleted; }).map(function (v) {
+                        var sv = r.v[v.id] || { qty: 0, value: 0 }, share = r.tg > 0 ? Math.round(sv.value / r.tg * 100) : 0;
+                        csv.push([c, r.p.name + ' - ' + v.name, 'Variant (shares the target)', '', sv.value, share, '', Math.round(sv.qty * 1000) / 1000, '']);
+                        return '<tr><td style="padding:4px 8px 4px 22px;border-bottom:1px solid #f3f5f6;font-size:12px;color:#334155">' + esc(v.name) + '</td><td style="padding:4px 8px;border-bottom:1px solid #f3f5f6;text-align:right;font-size:11.5px;color:#64748b">shared</td>' +
+                            '<td style="padding:4px 8px;border-bottom:1px solid #f3f5f6;text-align:right;font-size:12px">' + money(sv.value) + '</td><td style="padding:4px 8px;border-bottom:1px solid #f3f5f6;font-size:11.5px;color:#64748b">' + share + '% of the target</td>' +
+                            '<td style="border-bottom:1px solid #f3f5f6"></td><td style="padding:4px 8px;border-bottom:1px solid #f3f5f6;text-align:right;font-size:12px">' + qtyTxt(sv.qty) + '</td><td style="border-bottom:1px solid #f3f5f6"></td></tr>';
+                    }).join('') : '');
+            }).join('');
+            csv.push([c, 'CATEGORY TOTAL', '', g.target, g.got, gpc, Math.max(0, g.target - g.got), '', '']);
+            return '<tr><td colspan="7" style="padding:10px 8px 6px;background:#f3f6f4;font-weight:800;border-bottom:2px solid #14532d">' + esc(c) +
+                '<span style="float:right;font-weight:700">' + money(g.got) + ' of ' + money(g.target) + ' · ' + gpc + '%</span></td></tr>' + rows;
+        }).join('');
+        csv.push(['ALL', 'TOTAL', '', tot.target, tot.got, pcAll, Math.max(0, tot.target - tot.got), '', '']);
+        if (untargeted > 0) csv.push(['', 'Sales of things with no target', '', '', untargeted, '', '', '', '']);
+        var card = function (lbl, val, col) { return '<div style="border-radius:12px;padding:12px 14px;color:#fff;background-color:' + col + ';background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 2px,transparent 2px 9px)"><div style="font-size:12px;opacity:.9">' + lbl + '</div><div style="font-size:21px;font-weight:800">' + val + '</div></div>'; };
+        var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:10px 0 14px">' +
+            card('Target for the period', money(tot.target), '#3f3f46') + card('Achieved', money(tot.got), '#14532d') + card('Achieved %', pcAll + '%', '#1e3a8a') +
+            card(tot.target > tot.got ? 'Still to reach' : 'Above target', money(Math.abs(tot.target - tot.got)), tot.target > tot.got ? '#7c2d12' : '#14532d') +
+            card('Reached / behind', tot.reached + ' / ' + tot.behind + ' of ' + tot.n, '#3f3f46') + '</div>' +
+            (tot.n ? '<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' +
+                ['Name', 'Target', 'Achieved', 'Achieved %', 'Short by', 'Sold', 'Status'].map(function (h, i) { return '<th style="text-align:' + ([1, 2, 4, 5].indexOf(i) >= 0 ? 'right' : 'left') + ';padding:6px 8px;border-bottom:2px solid #2c3e50;font-size:12px">' + h + '</th>'; }).join('') +
+                '</tr></thead><tbody>' + body + '</tbody></table></div>'
+                : '<p style="color:#64748b">No item or service has a monthly target yet. Set targets in Stock, Price List (or import a price list with a target column).</p>') +
+            (untargeted > 0 ? '<p style="font-size:12.5px;color:#64748b;margin-top:10px">Sales of things with no target in this period: ' + money(untargeted) + '.</p>' : '') +
+            '<p style="font-size:12.5px;color:#64748b">The monthly target is spread over the period by days (a whole month counts in full). On track = at or above where it should be by today. Achieved = sales value; voided sales and returns are not counted.</p>';
+        return { title: 'Targets vs Achieved' + (only ? ' - ' + only : ''), html: (only ? '<p style="margin:6px 0;font-weight:700">Category: ' + esc(only) + '</p>' : '') + html, csv: csv };
+    }
+    // print the report on A4 exactly as shown (colours kept), like the invoices: the app's print system prints #vx-print-host alone
+    function printA4(title, sub, html) {
+        var biz = ''; try { biz = typeof businessName !== 'undefined' && businessName ? String(businessName) : ''; } catch (e) { biz = ''; }
+        var doc = '<div class="vx-doc" style="font-family:Arial,sans-serif;color:#0f172a">' +
+            '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #14532d;padding-bottom:6px;margin-bottom:6px"><div><div style="font-size:20px;font-weight:800">' + esc(title) + '</div>' +
+            '<div style="font-size:12px;color:#475569">' + esc(sub) + '</div></div><div style="text-align:right;font-size:12px;color:#475569"><b style="font-size:14px;color:#0f172a">' + esc(biz) + '</b><br>Printed ' + esc(new Date().toLocaleString('en-GB')) + '</div></div>' + html + '</div>';
+        var old = $('vx-print-host'); if (old && old.parentNode) old.parentNode.removeChild(old);
+        var host = document.createElement('div'); host.id = 'vx-print-host';
+        host.innerHTML = '<style>#vx-print-host{display:none}@media print{@page{size:A4 portrait;margin:10mm}html,body{background:#fff!important;width:auto!important;height:auto!important;margin:0!important;padding:0!important;zoom:1!important}' +
+            'body.vx-printing>*:not(#vx-print-host){display:none!important}body.vx-printing #vx-print-host{display:block!important;position:static!important;width:100%!important;margin:0!important;padding:0!important}' +
+            '#vx-print-host,#vx-print-host *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;-webkit-text-stroke:0!important;visibility:visible!important}' +
+            '#vx-print-host table{width:100%!important;border-collapse:collapse}#vx-print-host tr{page-break-inside:avoid}#vx-print-host .table-scroll{overflow:visible!important}#vx-print-host .vx-doc{font-size:11.5px}}</style>' + doc;
+        document.body.appendChild(host); document.body.classList.add('vx-printing');
+        var done = false, cleanup = function () { if (done) return; done = true; window.removeEventListener('afterprint', cleanup); document.body.classList.remove('vx-printing'); var h = $('vx-print-host'); if (h && h.parentNode) h.parentNode.removeChild(h); };
+        window.addEventListener('afterprint', cleanup); setTimeout(cleanup, 10 * 60000);
+        setTimeout(function () { try { window.print(); } catch (e) { cleanup(); } }, 120);
+        return true;
+    }
+    // the report for one calendar month (the Price List month picker)
+    function monthRange(m) {
+        var pr = String(m || thisMonth()).split('-'), y = +pr[0], mo = +pr[1];
+        var from = new Date(Date.UTC(y, mo - 1, 1) - 3 * 3600000), end = new Date(Date.UTC(y, mo, 1) - 3 * 3600000 - 1);
+        return { from: from, to: end.getTime() > Date.now() ? new Date() : end, label: monthName(m || thisMonth()), text: monthName(m || thisMonth()) };
+    }
+    function printTargets(range) {
+        var rg = range || monthRange(V.month || thisMonth()), rep = targetsReport(rg);
+        return printA4(rep.title, (rg.text || rg.label || '') + ' - target spread over the period by days; On track = at or above the pace up to today', rep.html);
+    }
+    function wrapReportsPrint() {
+        if (typeof window.reportsPrint !== 'function' || window.reportsPrint.__pl) return;
+        var orig = window.reportsPrint;
+        var w = function () {
+            var k = window.__reportKind;
+            if (k === 'targets') { try { return printTargets(reportsRange()); } catch (e) { /* the normal print */ } }
+            if (k === 'category') { try { var rg = reportsRange(), rep = categoryReport(rg); return printA4(rep.title, rg.text || rg.label || '', rep.html); } catch (e) { /* the normal print */ } }
+            return orig.apply(this, arguments);
+        };
+        w.__pl = true; window.reportsPrint = w;
+    }
+    function addReportButton() {
+        wrapReportsPrint();
+        var first = document.querySelector('#reports-tab .report-kind-btn'), host = first && first.parentNode;
+        if (!host || host.querySelector('[data-kind="targets"]')) return;
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'report-kind-btn'; b.setAttribute('data-kind', 'targets'); b.textContent = 'Targets vs Achieved';
+        b.addEventListener('click', function () { reportsGenerate('targets'); });
+        var after = host.querySelector('[data-kind="stock"]'); if (after && after.nextSibling) host.insertBefore(b, after.nextSibling); else host.appendChild(b);
+    }
+    window.reportExtraBuilders = window.reportExtraBuilders || {};
+    window.reportExtraBuilders.targets = targetsReport;
+
+    /* ---------------- Add / edit item form: Category, MOQ, how MOQ items are sold, monthly target ----------------
+       Added under the prices of the Inventory form (items and services). Saved with the item by wrapping saveInventoryItem. The form
+       rebuilds the whole record on save, so what it does not show (materials, "price at counter", MOQ ...) is carried back from before. */
+    var KEEP = ['category', 'subCat', 'materialChoices', 'priceAtCounter', 'priceNote', 'moq', 'moqMode', 'monthlyTargetAmount', 'createdAt'];
+    function formMount() {
+        if ($('pl-f-wrap')) return true;
+        var anchorEl = $('inv-min-price'), grp = anchorEl && anchorEl.closest ? anchorEl.closest('.form-group') : null;
+        if (!grp || !grp.parentNode) return false;
+        var box = document.createElement('div'); box.id = 'pl-f-wrap'; box.className = 'form-group';
+        box.innerHTML = '<div style="border:1px solid var(--border-color,#d6dde3);border-radius:12px;padding:12px;background:var(--bg-surface-alt,#f6f8f7)">' +
+            '<div style="font-weight:800;margin-bottom:8px">Price List details <span style="font-weight:normal;color:#7f8c8d;font-size:13px">category' + (canMoq() ? ', minimum order' : '') + ' and monthly target</span></div>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">' +
+            '<div' + (ownCat() ? ' style="display:none"' : '') + '><label>Category</label><input type="text" id="pl-f-cat" list="pl-f-cats" placeholder="e.g. Branding & Printing" autocomplete="off"><datalist id="pl-f-cats"></datalist></div>' +
+            '<div' + (canMoq() ? '' : ' style="display:none"') + '><label>MOQ (pieces) <span style="font-weight:normal;color:#7f8c8d">optional</span></label><input type="number" id="pl-f-moq" min="0" step="1" inputmode="numeric" placeholder="none"></div>' +
+            '<div' + (canMoq() ? '' : ' style="display:none"') + '><label>Sold as</label><select id="pl-f-mode"><option value="pack">Whole packs only</option><option value="from">Any number from the MOQ</option></select></div>' +
+            '<div><label>Target per month (KES)</label><input type="number" id="pl-f-target" min="0" step="1" inputmode="numeric" placeholder="0"></div></div>' +
+            '<div id="pl-f-hint" style="font-size:12px;color:#64748b;margin-top:6px' + (canMoq() ? '' : ';display:none') + '">With an MOQ the price above is for the whole minimum order (e.g. 150 pcs for KES 73). Variants share the item\'s MOQ and target.</div></div>';
+        grp.parentNode.insertBefore(box, grp.nextSibling);
+        var upd = function () { var m = Math.round(num(($('pl-f-moq') || {}).value)); var sel = $('pl-f-mode'); if (sel) sel.disabled = !(m > 1); var pr = Math.round(num(($('inv-price') || {}).value)); var h = $('pl-f-hint'); if (h) h.textContent = m > 1 ? 'The price above is for ' + m + ' pieces' + (pr > 0 ? ' (KES ' + pr.toLocaleString('en-KE') + ' per ' + m + ' pcs)' : '') + '. Variants share the MOQ and the target.' : 'With an MOQ the price above is for the whole minimum order (e.g. 150 pcs for KES 73). Variants share the item\'s MOQ and target.'; };
+        ['pl-f-moq'].forEach(function (id) { $(id).addEventListener('input', upd); });
+        var ip = $('inv-price'); if (ip) ip.addEventListener('input', upd);
+        ['inv-code', 'inv-name'].forEach(function (id) { var e = $(id); if (e) e.addEventListener('change', function () { formFillFromMatch(); }); });
+        var cat = $('pl-f-cat'); if (cat) cat.addEventListener('focus', fillCats);
+        upd(); return true;
+    }
+    function ownCat() { return !!document.getElementById('inv-add-cat'); }   // the Hotel form has its own Category box
+    function fillCats() { var dl = $('pl-f-cats'); if (!dl) return; var c = {}; inv().forEach(function (p) { if (p && p.category && !p._deleted) c[p.category] = 1; }); dl.innerHTML = Object.keys(c).sort().map(function (x) { return '<option value="' + esc(x) + '">'; }).join(''); }
+    function formMatch() {
+        var code = String(($('inv-code') || {}).value || '').trim().toLowerCase(), name = String(($('inv-name') || {}).value || '').trim().toLowerCase();
+        return (code && inv().find(function (p) { return isLive(p) && String(p.code).toLowerCase() === code; })) || (name && inv().find(function (p) { return isLive(p) && String(p.name || '').trim().toLowerCase() === name; })) || null;
+    }
+    function formSet(p) {
+        if (!$('pl-f-wrap')) return;
+        $('pl-f-cat').value = p && p.category ? p.category : ''; $('pl-f-cat').setAttribute('data-was', p && p.category ? p.category : '');
+        $('pl-f-moq').value = p && Number(p.moq) > 1 ? Math.round(p.moq) : '';
+        $('pl-f-mode').value = p && p.moqMode === 'from' ? 'from' : 'pack';
+        $('pl-f-target').value = p && tgtOf(p) ? Math.round(tgtOf(p)) : '';
+        try { $('pl-f-moq').dispatchEvent(new Event('input')); } catch (e) { /* cosmetic */ }
+    }
+    function formFillFromMatch() { var p = formMatch(); if (p) formSet(p); }
+    function wrapSave() {
+        if (typeof window.saveInventoryItem !== 'function' || window.saveInventoryItem.__pl) return;
+        var orig = window.saveInventoryItem;
+        var w = function () {
+            formMount();
+            var f = $('pl-f-wrap') ? { was: $('pl-f-cat').getAttribute('data-was') || '', cat: String($('pl-f-cat').value || '').trim(), moq: Math.round(num($('pl-f-moq').value)), mode: $('pl-f-mode').value === 'from' ? 'from' : 'pack', target: Math.round(num($('pl-f-target').value)) } : null;
+            var before = formMatch(), snap = before ? JSON.parse(JSON.stringify(before)) : null, n0 = inv().length;
+            var codeVal = String(($('inv-code') || {}).value || '').trim(), nameVal = String(($('inv-name') || {}).value || '').trim();
+            var r = orig.apply(this, arguments);
+            try {
+                var p = (snap && inv().find(function (x) { return x && x.code === snap.code; })) || (codeVal && inv().find(function (x) { return x && String(x.code).toLowerCase() === codeVal.toLowerCase(); })) ||
+                    (inv().length > n0 ? inv()[inv().length - 1] : null) || (nameVal && inv().find(function (x) { return x && String(x.name || '').trim().toLowerCase() === nameVal.toLowerCase(); }));
+                if (!p) return r;
+                if (snap && snap.code === p.code) KEEP.forEach(function (k) { if (snap[k] != null && p[k] == null) p[k] = snap[k]; });   // the editor rebuilt the record
+                if (f) {
+                    // set when typed; removed only when the box showed this item's category and was cleared - never just because it was empty
+                    if (!ownCat()) { if (f.cat) p.category = f.cat; else if (snap && snap.category && f.was && f.was === snap.category) delete p.category; }
+                    if (canMoq()) { if (f.moq > 1) { p.moq = f.moq; p.moqMode = f.mode; } else { delete p.moq; delete p.moqMode; } }
+                    if (f.target > 0) p.monthlyTargetAmount = f.target; else delete p.monthlyTargetAmount;
+                }
+                if (Number(p.price) > 0 && p.priceAtCounter) { delete p.priceAtCounter; delete p.priceNote; }
+                p.updatedAt = Date.now(); persist();
+                if (!String(($('inv-name') || {}).value || '').trim()) formSet(null);   // the form was cleared after saving
+            } catch (e) { /* the save itself already succeeded */ }
+            return r;
+        };
+        Object.keys(orig).forEach(function (k) { try { w[k] = orig[k]; } catch (e) { /* none */ } });
+        w.__pl = true; window.saveInventoryItem = w;
+    }
+    function wrapEditService() {
+        if (typeof window.editService !== 'function' || window.editService.__pl) return;
+        var orig = window.editService;
+        var w = function (code) { var r = orig.apply(this, arguments); try { formMount(); formSet(inv().find(function (x) { return x && x.code === code; }) || null); } catch (e) { /* cosmetic */ } return r; };
+        w.__pl = true; window.editService = w;
+    }
+    function formStart() { formMount(); wrapSave(); wrapEditService(); }
+
+    /* ---------------- Reports by category ----------------
+       A Category picker next to the Reports period: Targets vs Achieved and Sales by Category show only that category.
+       Sales by Category: every category's sales in the period (value, share, pieces / times sold, sales count), the items inside each. */
+    function repCat() { var e = $('pl-rep-cat'); return e ? e.value : ''; }
+    function catOf(code) { var p = inv().find(function (x) { return x && x.code === code; }); return p ? (p.category || 'No category') : 'Removed items'; }
+    function categoryReport(range) {
+        var from = range.from.getTime(), to = range.to.getTime(), only = repCat(), groups = {}, total = 0, salesN = {};
+        sales().forEach(function (s) {
+            if (!s || s.voided || s._deleted || s.isReturn) return; var t = new Date(s.timestamp).getTime(); if (!(t >= from && t <= to)) return;
+            saleLines(s).forEach(function (l) {
+                var c = l.code ? catOf(l.code) : 'Bill payments'; if (only && c !== only) return;
+                var p = l.code ? inv().find(function (x) { return x && x.code === l.code; }) : null;
+                var g = groups[c] = groups[c] || { value: 0, qty: 0, items: {}, sales: {} };
+                var val = l.value, pcs = (Number(l.qty) || 0) * (Number(l.unitPieces) > 1 ? Number(l.unitPieces) : 1);
+                g.value += val; g.qty += pcs; g.sales[s.id || s.refNumber || t] = 1; total += val;
+                var ik = l.code || '__billpay', nm = p ? p.name : (l.code || 'Payments on bills'), it = g.items[ik] = g.items[ik] || { name: nm, type: p ? (isService(p) ? 'Service' : 'Product') : 'Payment', value: 0, qty: 0 };
+                it.value += val; it.qty += pcs;
+            });
+        });
+        var cats = Object.keys(groups).sort(function (a, b) { return groups[b].value - groups[a].value; });
+        var csv = [['Category', 'Item', 'Type', 'Sales value (KES)', 'Share %', 'Pieces / times sold']];
+        var th = function (h, r) { return '<th style="text-align:' + (r ? 'right' : 'left') + ';padding:6px 8px;border-bottom:2px solid #2c3e50;font-size:12px">' + h + '</th>'; };
+        var td = function (v, r, st) { return '<td style="padding:5px 8px;border-bottom:1px solid #eef1f3;' + (r ? 'text-align:right;white-space:nowrap;' : '') + (st || '') + '">' + v + '</td>'; };
+        var summary = cats.map(function (c) { var g = groups[c], sh = total > 0 ? Math.round(g.value / total * 100) : 0; csv.push([c, 'CATEGORY TOTAL', '', g.value, sh, Math.round(g.qty * 1000) / 1000]);
+            return '<tr>' + td('<b>' + esc(c) + '</b>') + td(money(g.value), 1) + td('<div style="height:7px;background:#e5e7eb;border-radius:9px;overflow:hidden;min-width:80px"><div style="height:100%;width:' + sh + '%;background:#14532d"></div></div><div style="font-size:11.5px;font-weight:800">' + sh + '%</div>') + td(qtyTxt(g.qty), 1) + td(Object.keys(g.sales).length, 1) + '</tr>'; }).join('');
+        var detail = cats.map(function (c) {
+            var g = groups[c], its = Object.keys(g.items).map(function (k) { return g.items[k]; }).sort(function (a, b) { return b.value - a.value; });
+            return '<tr><td colspan="4" style="padding:10px 8px 6px;background:#f3f6f4;font-weight:800;border-bottom:2px solid #14532d">' + esc(c) + '<span style="float:right">' + money(g.value) + '</span></td></tr>' +
+                its.map(function (it) { csv.push([c, it.name, it.type, it.value, g.value > 0 ? Math.round(it.value / g.value * 100) : 0, Math.round(it.qty * 1000) / 1000]);
+                    return '<tr>' + td(esc(it.name) + '<div style="font-size:11px;color:#64748b">' + it.type + '</div>') + td(money(it.value), 1) + td((g.value > 0 ? Math.round(it.value / g.value * 100) : 0) + '% of the category', 0, 'font-size:12px;color:#475569') + td(qtyTxt(it.qty), 1) + '</tr>'; }).join('');
+        }).join('');
+        csv.push(['ALL', 'TOTAL', '', total, 100, '']);
+        var html = (only ? '<p style="margin:6px 0;font-weight:700">Category: ' + esc(only) + '</p>' : '') +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:10px 0 14px">' +
+            '<div style="border-radius:12px;padding:12px 14px;color:#fff;background-color:#14532d;background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 2px,transparent 2px 9px)"><div style="font-size:12px">Sales in the period</div><div style="font-size:21px;font-weight:800">' + money(total) + '</div></div>' +
+            '<div style="border-radius:12px;padding:12px 14px;color:#fff;background-color:#1e3a8a;background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 2px,transparent 2px 9px)"><div style="font-size:12px">Categories with sales</div><div style="font-size:21px;font-weight:800">' + cats.length + '</div></div>' +
+            (cats.length ? '<div style="border-radius:12px;padding:12px 14px;color:#fff;background-color:#3f3f46;background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 2px,transparent 2px 9px)"><div style="font-size:12px">Best category</div><div style="font-size:16px;font-weight:800">' + esc(cats[0]) + '</div></div>' : '') + '</div>' +
+            (cats.length ? '<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' + th('Category') + th('Sales value', 1) + th('Share') + th('Pieces / times sold', 1) + th('Sales', 1) + '</tr></thead><tbody>' + summary + '</tbody></table></div>' +
+                '<h4 style="margin:16px 0 6px">Inside each category</h4><div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' + th('Item / service') + th('Sales value', 1) + th('Share') + th('Pieces / times sold', 1) + '</tr></thead><tbody>' + detail + '</tbody></table></div>'
+                : '<p style="color:#64748b">No sales' + (only ? ' in this category' : '') + ' in this period.</p>') +
+            '<p style="font-size:12.5px;color:#64748b">Voided sales are not counted. A payment on a bill counts for the bill\'s items, shared by their value. A category is the one set on the item now (Stock, Price List or the item form).</p>';
+        return { title: 'Sales by Category' + (only ? ' - ' + only : ''), html: html, csv: csv };
+    }
+    function addCategoryPicker() {
+        var per = $('reports-range-select'); if (!per || $('pl-rep-cat')) return;
+        var wrap = document.createElement('span'); wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-left:10px';
+        wrap.innerHTML = '<label for="pl-rep-cat" style="font-weight:700;margin:0">Category:</label><select id="pl-rep-cat" style="width:auto;margin:0"></select>';
+        per.parentNode.insertBefore(wrap, per.nextSibling);
+        var sel = $('pl-rep-cat');
+        var fill = function () { var c = {}, cur = sel.value; inv().forEach(function (p) { if (isLive(p) && p.category) c[p.category] = 1; }); sel.innerHTML = '<option value="">All categories</option>' + Object.keys(c).sort().map(function (x) { return '<option value="' + esc(x) + '"' + (x === cur ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join(''); };
+        fill(); sel.addEventListener('focus', fill); sel.addEventListener('mousedown', fill);
+        sel.addEventListener('change', function () { var k = window.__reportKind; if (k === 'targets' || k === 'category') reportsGenerate(k); });
+        var first = document.querySelector('#reports-tab .report-kind-btn'), host = first && first.parentNode;
+        if (host && !host.querySelector('[data-kind="category"]')) {
+            var b = document.createElement('button'); b.type = 'button'; b.className = 'report-kind-btn'; b.setAttribute('data-kind', 'category'); b.textContent = 'Sales by Category';
+            b.addEventListener('click', function () { reportsGenerate('category'); });
+            var t = host.querySelector('[data-kind="targets"]'); if (t && t.nextSibling) host.insertBefore(b, t.nextSibling); else host.appendChild(b);
+        }
+    }
+    window.reportExtraBuilders = window.reportExtraBuilders || {};
+    window.reportExtraBuilders.category = categoryReport;
+
+    /* ---------------- tab ---------------- */
+    function mount() {
+        if ($('price-list-tab')) return true;
+        var anchor = document.querySelector('.tab-link[data-tab="inventory-list-tab"]') || document.querySelector('.tab-link[data-tab="inventory-tab"]'), host = $('inventory-list-tab') || $('inventory-tab');
+        if (!anchor || !host || !host.parentNode) return false;
+        var btn = document.createElement('button'); btn.id = 'price-list-tab-btn'; btn.className = 'tab-link'; btn.setAttribute('data-tab', 'price-list-tab'); btn.setAttribute('onclick', "guardedSwitchTab(event, 'price-list-tab')"); btn.textContent = 'Price List';
+        anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+        var pane = document.createElement('div'); pane.id = 'price-list-tab'; pane.className = 'tab-content plw'; pane.innerHTML = '<div class="panel pl" id="pl-body"></div>';
+        host.parentNode.insertBefore(pane, host.nextSibling);
+        pane.addEventListener('change', function (e) {
+            var t = e.target; if (!t) return;
+            if (t.matches && t.matches('input.pl-in')) change(t);
+            else if (t.getAttribute && t.getAttribute('data-plmode')) {
+                if (!admin()) { render(); return; }
+                var pm = inv().find(function (x) { return x.code === t.getAttribute('data-plmode'); }); if (!pm) return;
+                pm.moqMode = t.value === 'from' ? 'from' : 'pack'; pm.updatedAt = Date.now(); persist(); render();
+                saved(pm.name + ': ' + (pm.moqMode === 'from' ? 'any number from ' + qtyTxt(pm.moq) + ' pcs (' + money(pm.price) + ' per ' + qtyTxt(pm.moq) + ', rounded to the shilling).' : 'sold in whole packs of ' + qtyTxt(pm.moq) + ' pcs at ' + money(pm.price) + ' a pack.'));
+            }
+            else if (t.id === 'pl-cat') { V.cat = t.value; render(); }
+            else if (t.id === 'pl-month') { V.month = /^\d{4}-\d{2}$/.test(t.value) ? t.value : ''; render(); }
+        });
+        pane.addEventListener('input', function (e) { var t = e.target; if (t && t.id === 'pl-q') { V.q = t.value; clearTimeout(mount.t); mount.t = setTimeout(function () { render(); var q = $('pl-q'); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }, 250); } });
+        pane.addEventListener('keydown', function (e) { var t = e.target; if (e.key === 'Enter' && t && t.matches && t.matches('input.pl-in')) { e.preventDefault(); t.blur(); } });
+        return true;
+    }
+    function lockLists() { try { [typeof LOCKABLE_TABS !== 'undefined' ? LOCKABLE_TABS : null, typeof ROLE_TABS !== 'undefined' ? ROLE_TABS : null].forEach(function (a) { if (Array.isArray(a) && !a.some(function (t) { return t && t.id === 'price-list-tab'; })) a.push({ id: 'price-list-tab', label: 'Price List' }); }); } catch (e) { /* open to everyone who can see the tab */ } }
+    function wire() { try { if (typeof performTabSwitch === 'function' && !performTabSwitch.__pl) { var _p = performTabSwitch; var w = function (btn, id) { var r = _p.apply(this, arguments); if (id === 'price-list-tab') { try { render(); } catch (e) { var b = $('pl-body'); if (b) b.innerHTML = '<p class="pl-empty">The price list could not be shown: ' + esc(e && e.message) + '</p>'; } } return r; }; Object.keys(_p).forEach(function (k) { try { w[k] = _p[k]; } catch (e) { /* none */ } }); w.__pl = true; performTabSwitch = w; } } catch (e) { /* the button still opens the tab */ } }
+    function hook() { var b = $('price-list-tab-btn'); if (b && !b.__pl) { b.__pl = 1; b.addEventListener('click', function () { setTimeout(function () { var t = $('price-list-tab'); if (t && t.classList.contains('active')) render(); }, 60); }); } }
+    function start() { addReportButton(); setTimeout(addReportButton, 1500); addCategoryPicker(); setTimeout(addCategoryPicker, 1600); formStart(); setTimeout(formStart, 1500); setTimeout(formStart, 4000); if (!mount()) { setTimeout(start, 700); return; } hook(); lockLists(); wire(); setTimeout(wire, 800); setTimeout(wire, 2500); }
+    $('pl-ov').addEventListener('mousedown', function (e) { if (e.target === $('pl-ov')) close(); });
+
+    window.PriceList = {
+        __v: 381, soldIn: soldIn, monthOf: monthOf, render: render, close: close, pickMaterial: pickMaterial,
+        planImport: planImport, applyImport: applyImport, targetsReport: targetsReport, monthShare: monthShare, printTargets: function (rg) { return printTargets(rg); }, monthRange: monthRange, categoryReport: categoryReport,
+        importOpen: function () {
+            if (!admin()) { toast('Only the admin can import a price list.', true); return; }
+            var f = document.createElement('input'); f.type = 'file'; f.accept = '.xlsx,.xls,.csv,.ods'; f.style.display = 'none';
+            f.onchange = function () { var file = f.files && f.files[0]; f.remove(); if (file) PriceList.importFile(file); };
+            document.body.appendChild(f); f.click();
+        },
+        importFile: function (file) {
+            return readFile(file).then(function (sheets) { PriceList.importSheets(sheets, file.name); }).catch(function (e) { toast((e && e.message) || 'The file could not be read.', true); });
+        },
+        importSheets: function (sheets, fileName) {
+            var plan = planImport(sheets);
+            if (!plan.rows.length) { toast('No price-list rows found in "' + fileName + '". It needs a name column and a price, quantity or target column.', true); return false; }
+            IMP = { file: fileName, plan: plan, updatePrices: true }; impDlg(); return true;
+        },
+        impSet: function (i, f, v) { if (!IMP || !IMP.plan.rows[i]) return; IMP.plan.rows[i][f] = v; impDlg(); },
+        impUpd: function (v) { if (IMP) IMP.updatePrices = !!v; },
+        impBulk: function (t) { if (!IMP) return; var c = ($('pl-imp-cat') || {}).value || ''; IMP.plan.rows.forEach(function (x) { if (!x.existing && (!c || x.category === c)) x.type = t; }); impDlg(); var s = $('pl-imp-cat'); if (s) s.value = c; },
+        impGo: function () {
+            if (!IMP) return; var n = IMP.plan.rows.filter(function (x) { return x.include; }).length;
+            if (!n) { $('pl-err').textContent = 'Tick at least one row.'; return; }
+            var r = applyImport(IMP.plan, { updatePrices: IMP.updatePrices });
+            persist(); close();
+            V.view = r.services >= r.items ? 'services' : 'items'; render();
+            saved('Imported: ' + r.created + ' new (' + r.services + ' services, ' + r.items + ' items), ' + r.updated + ' updated.');
+            toast('Price list imported: ' + r.created + ' new, ' + r.updated + ' updated.');
+        },
+        view: function (v) { V.view = v === 'services' ? 'services' : 'items'; V.cat = ''; render(); },
+        pick: function (code, mat) { close(); try { addToCart(code, undefined, undefined, undefined, mat); } catch (e) { toast('Could not add it: ' + (e && e.message), true); } },
+        editMaterials: function (code) {
+            if (!admin()) { toast('Only the admin can change the materials.', true); return; }
+            var p = inv().find(function (x) { return x.code === code; }); if (!p) return;
+            var one = (p.materialChoices || []).length && !(p.recipe || []).length;
+            M = { code: code, mode: !canOneOf() ? 'all' : (one ? 'one' : ((p.recipe || []).length ? 'all' : 'one')),
+                rows: one ? p.materialChoices.map(function (c) { return { code: c.code, per: c.qtyPerUnit, price: c.price || '' }; }) : (p.recipe || []).map(function (r) { return { code: r.code, per: r.qtyPerUnit, price: '' }; }) };
+            if (!M.rows.length) M.rows.push({ code: '', per: 1, price: '' });
+            matDlg();
+        },
+        matMode: function (m) { if (!M) return; readRows(); M.mode = m === 'all' ? 'all' : 'one'; matDlg(); },
+        matAdd: function () { if (!M) return; readRows(); M.rows.push({ code: '', per: 1, price: '' }); matDlg(); },
+        matRow: function (i) { if (!M) return; readRows(); M.rows.splice(i, 1); matDlg(); },
+        matClear: function () {
+            if (!M) return; var p = inv().find(function (x) { return x.code === M.code; }); if (!p) return close();
+            if (!confirm('Unlink every material from ' + p.name + '? Its sales will no longer take anything off the shelf.')) return;
+            p.recipe = []; delete p.materialChoices; p.updatedAt = Date.now(); persist(); close(); render(); saved('Materials of ' + p.name + ' unlinked.');
+        },
+        matSave: function () {
+            if (!M) return; readRows();
+            var p = inv().find(function (x) { return x.code === M.code; }); if (!p) return close();
+            var err = $('pl-err'), seen = {}, rows = [];
+            for (var i = 0; i < M.rows.length; i++) {
+                var r = M.rows[i]; if (!r.code && !String(r.per).trim()) continue;
+                if (!r.code) { err.textContent = 'Choose the item on every line, or remove the line.'; return; }
+                if (seen[r.code]) { err.textContent = 'The same item is listed twice.'; return; }
+                var per = num(r.per); if (!(per > 0)) { err.textContent = 'Type how much of each item one service uses (more than 0).'; return; }
+                seen[r.code] = 1; rows.push({ code: r.code, qtyPerUnit: Math.round(per * 1e6) / 1e6, price: num(r.price) > 0 ? r2(num(r.price)) : 0 });
+            }
+            if (!rows.length) { err.textContent = 'Add at least one item, or press Unlink all.'; return; }
+            if (M.mode === 'one') { p.materialChoices = rows.map(function (r) { return r.price > 0 ? r : { code: r.code, qtyPerUnit: r.qtyPerUnit }; }); p.recipe = []; }
+            else { p.recipe = rows.map(function (r) { return { code: r.code, qtyPerUnit: r.qtyPerUnit }; }); delete p.materialChoices; }
+            p.updatedAt = Date.now(); persist(); var nm = p.name; close(); render(); saved('Materials of ' + nm + ' saved.');
+        }
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    window.addEventListener('load', function () { setTimeout(start, 400); });
+})();
+</script>

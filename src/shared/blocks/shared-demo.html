@@ -17,10 +17,21 @@
 #sd-bar button.sd-x{border-color:transparent;font-size:18px;padding:0 8px}
 :is(#sd-bar,#sd-buy) :is(button,input,a):focus-visible{outline:3px solid var(--focus,#0b7a5f);outline-offset:2px}
 body.sd-on{padding-bottom:60px}
+/* zip 332: on a PHONE the banner is one slim row and sits UNDER the cart bar, the round cart button and the other floating buttons (they are lifted by its height) - it used to
+   cover them, so in the demos nobody could open the cart or check out. While the full-screen cart / payment sheet is open the banner steps aside. */
+@media (max-width:900px){
+#sd-bar{flex-wrap:nowrap;gap:6px;padding:4px 8px calc(4px + env(safe-area-inset-bottom,0px));justify-content:flex-start;overflow-x:auto;white-space:nowrap}
+#sd-bar button{min-height:32px;padding:0 9px;flex:0 0 auto}
+#sd-bar>span,#sd-bar>b{flex:0 0 auto}
+html.sd-bar-on .ptl-bar{bottom:var(--sd-h,0px)!important}
+html.sd-bar-on body #mobile-cart-fab,html.sd-bar-on body #floating-kb-toggle,html.sd-bar-on body #scroll-to-top-btn{margin-bottom:var(--sd-h,0px)}
+html.sd-bar-on #cart-sticky-bar{bottom:var(--sd-h,0px)}
+html.ptl-sheet-open #sd-bar,html.pps-s2 #sd-bar,html.pps-s3 #sd-bar{display:none!important}
+}
 @media (max-width:600px){#sd-bar .sd-t{display:none}body.sd-on{padding-bottom:56px}}
 #sd-buy{position:fixed;inset:0;z-index:2147483100;display:none;align-items:center;justify-content:center;padding:14px;background:rgba(8,24,26,.68);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 #sd-buy.on{display:flex}
-#sd-buy .sd-box{position:relative;width:100%;max-width:440px;max-height:92vh;overflow:auto;overscroll-behavior:contain;background:var(--bg-surface,#fff);color:var(--dark,#15282b);border-radius:20px;padding:26px 24px;box-shadow:0 18px 50px rgba(8,24,26,.4)}
+#sd-buy .sd-box{position:relative;width:100%;max-width:440px;max-height:calc(92vh / var(--pos-z,1));overflow:auto;overscroll-behavior:contain;background:var(--bg-surface,#fff);color:var(--dark,#15282b);border-radius:20px;padding:26px 24px;box-shadow:0 18px 50px rgba(8,24,26,.4)}
 #sd-buy h2{margin:0 28px 6px 0;font-size:21px;letter-spacing:-.01em}
 #sd-buy p{margin:0 0 12px;color:var(--muted,#5b6d70)}
 #sd-buy label{display:block;margin:12px 0 4px;font-size:13px;font-weight:700}
@@ -58,7 +69,7 @@ body.sd-on{padding-bottom:60px}
     // zip 263: three photos per row on a phone unless the visitor picked otherwise (the shop's own setting is Settings > Phone till)
     try { if (localStorage.getItem('pos_ptl_cols') === null) localStorage.setItem('pos_ptl_cols', '3'); } catch (e) { /* two per row */ }
     // zip 263: light AND dark. A visitor who never chose a theme gets the one their device uses; the Light / Dark switch (header and banner) still decides after that.
-    try { if (localStorage.getItem('mdp-theme') === null && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) { /* light */ }
+    try { if ((window.__mdpThemeSaved ? window.__mdpThemeSaved() === null : localStorage.getItem('mdp-theme') === null) && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) { /* light */ }
 
     function wrap(name, fn) { try { if (typeof window[name] === 'function') { var orig = window[name]; window[name] = function () { return DEMO.on && DEMO.pulled ? fn.apply(this, arguments) : orig.apply(this, arguments); }; } } catch (e) { /* not in this app */ } }
     function noop() { return Promise.resolve(true); }
@@ -74,7 +85,12 @@ body.sd-on{padding-bottom:60px}
         wrap('hasUnsyncedWork', function () { return false; });
         var t0 = Date.now();
         (function watch() {
-            if (window.__pullOkOnce || window.__pulledOnce || (localStorage.getItem('pos_last_synced_at') || '') !== '' || Date.now() - t0 > 60000) { DEMO.pulled = true; return; }
+            if (window.__pullOkOnce || window.__pulledOnce || (localStorage.getItem('pos_last_synced_at') || '') !== '' || Date.now() - t0 > 60000) {
+                DEMO.pulled = true;
+                // zip 320: the sample as it arrived is this device's baseline for the hourly reset (kept once; the hour starts now)
+                try { if (window.DemoReset) setTimeout(function () { window.DemoReset.capture(); }, 1500); } catch (e) { /* no reset on this page */ }
+                return;
+            }
             setTimeout(watch, 400);
         })();
         bar();
@@ -82,6 +98,10 @@ body.sd-on{padding-bottom:60px}
 
     function resetDemo() {
         if (!confirm('Reset the sample shop? Everything you changed on THIS device is cleared and the original sample data comes back.')) return;
+        if (window.DemoReset && window.DemoReset.eligible() && window.DemoReset.restoreNow()) return;   // zip 320: same restore as the hourly one
+        // zip 320: clearing ALL of this browser address's storage is only safe on the demo's own address (demo-<name>.<domain>); on a shared address
+        // (a ?c=demo_ link) the same storage can hold a real shop, so nothing is cleared there
+        if (host.split('.')[0].indexOf('demo-') !== 0) { alert('Open the sample shop from its own address (demo-...) to reset it.'); return; }
         var theme = null, ref = null; try { theme = localStorage.getItem('mdp-theme'); ref = localStorage.getItem('sd_buy_ref'); } catch (e) { /* none */ }
         try { localStorage.clear(); } catch (e) { /* ignore */ }
         try { if (theme) localStorage.setItem('mdp-theme', theme); if (ref) localStorage.setItem('sd_buy_ref', ref); } catch (e) { /* the choice is simply asked again */ }
@@ -104,10 +124,12 @@ body.sd-on{padding-bottom:60px}
             '<button type="button" id="sd-reset" title="Reset sample data">Reset</button><button type="button" class="sd-x" id="sd-hide" aria-label="Hide banner">&times;</button>';
         (document.body || document.documentElement).appendChild(el);
         document.body && document.body.classList.add('sd-on');
+        var setH = function () { try { document.documentElement.style.setProperty('--sd-h', (el.style.display === 'none' ? 0 : el.offsetHeight) + 'px'); } catch (e) { /* cosmetic */ } };
+        document.documentElement.classList.add('sd-bar-on'); setH(); window.addEventListener('resize', setH); setTimeout(setH, 600); setTimeout(setH, 2500);
         document.getElementById('sd-reset').onclick = resetDemo;
         document.getElementById('sd-theme').onclick = function () { if (typeof toggleAppTheme === 'function') toggleAppTheme(); };
         document.getElementById('sd-buy-open').onclick = openBuy;
-        document.getElementById('sd-hide').onclick = function () { el.style.display = 'none'; if (document.body) document.body.classList.remove('sd-on'); };
+        document.getElementById('sd-hide').onclick = function () { el.style.display = 'none'; document.documentElement.classList.remove('sd-bar-on'); if (document.body) document.body.classList.remove('sd-on'); };
     }
 
     /* ---------- Get my own link ---------- */
@@ -122,11 +144,12 @@ body.sd-on{padding-bottom:60px}
         d.innerHTML = '<div class="sd-box"><button type="button" class="sd-close" aria-label="Close">&times;</button><div id="sd-buy-body"></div></div>';
         document.body.appendChild(d); B.box = d;
         d.querySelector('.sd-close').onclick = close;
-        d.addEventListener('mousedown', function (e) { if (e.target === d) close(); });
-        d.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+        // zip 285: on the "Your link is ready" screen ONLY the X button closes the popup (a stray tap outside or Escape must never lose the link / licence)
+        d.addEventListener('mousedown', function (e) { if (e.target === d && !B.locked) close(); });
+        d.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !B.locked) close(); });
         return d;
     }
-    function body(html) { var b = document.getElementById('sd-buy-body'); b.innerHTML = html; return b; }
+    function body(html) { B.locked = false; var b = document.getElementById('sd-buy-body'); b.innerHTML = html; return b; }
     function money(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
     // zip 267: a referral code arrives as ?ref=CODE (the public site adds it to the demo link); kept for this visit and sent with the request, where the SERVER checks it
     function myRef() {
@@ -143,7 +166,15 @@ body.sd-on{padding-bottom:60px}
         shell().classList.add('on');
         B.ref = refGet();
         if (B.ref && B.ref.paid && B.ref.link) { ready(B.ref); return; }
-        if (B.ref && B.ref.id) { waiting(B.ref.method === 'claim' && !B.ref.claimed ? 'pay' : 'wait'); return; }
+        if (B.ref && B.ref.id) {
+            if (B.ref.method === 'claim' && !B.ref.claimed) {
+                // zip 300: a saved "send the money yourself" request is checked against the gateway NOW - if the payment prompt works today, start fresh and use it
+                body('<p><span class="sd-spin"></span>One moment&hellip;</p>');
+                post({ action: 'options', ref: myRef() }).then(function (t) { if (t.__ok) B.terms = t; if (t.__ok && t.stk) { refSet(null); B.ref = null; form(); } else waiting('pay'); }).catch(function () { waiting('pay'); });
+                return;
+            }
+            waiting(B.ref.method === 'claim' && !B.ref.claimed ? 'pay' : 'wait'); return;
+        }
         body('<p><span class="sd-spin"></span>One moment&hellip;</p>');
         post({ action: 'options', ref: myRef() }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
             .catch(function (e) { body('<h2 id="sd-buy-h">Get my own link</h2><p class="sd-err" role="alert">' + esc(e.message || 'Could not load. Please try again.') + '</p>'); });
@@ -197,7 +228,7 @@ body.sd-on{padding-bottom:60px}
             if (r.needChoice) { return choose(r); }
             if (!r.__ok && r.code === 'branch_proof') { choose({ amount: (B.terms && B.terms.amount) || 0, branchAmount: (B.terms && B.terms.amount) || 0 }); var e4 = document.getElementById('sd-err'); if (e4) e4.textContent = r.error; return; }
             if (!r.__ok) { form(); var e2 = document.getElementById('sd-err'); if (e2) e2.textContent = r.error || 'Something went wrong. Please try again.'; return; }
-            B.ref = { id: r.id, token: r.token, method: r.method, amount: r.amount, kind: r.kind, paymentUrl: r.paymentUrl || '', claimed: false }; refSet(B.ref);
+            B.ref = { id: r.id, token: r.token, method: r.method, amount: r.amount, kind: r.kind, paymentUrl: r.paymentUrl || '', claimed: false, stkError: r.stkError || '' }; refSet(B.ref);
             waiting(r.method === 'claim' ? 'pay' : 'wait');
         }).catch(function () { form(); var e3 = document.getElementById('sd-err'); if (e3) e3.textContent = 'No connection. Please check your internet and try again.'; });
     }
@@ -223,7 +254,14 @@ body.sd-on{padding-bottom:60px}
         var r = B.ref, phone = (B.terms && B.terms.paymentPhone) || '';
         if (mode === 'pay') {
             body('<h2 id="sd-buy-h">Pay ' + money(r.amount) + '</h2><p>Send <b>' + money(r.amount) + '</b> by M-Pesa' + (phone ? ' to <b>' + esc(phone) + '</b>' : '') + ', then tap the button below. We confirm the payment and your link appears here.</p>' +
-                '<p class="sd-err" id="sd-err" role="alert"></p><div class="sd-row"><button type="button" class="sd-go" id="sd-claim">I’ve made this payment</button></div>');
+                '<p class="sd-err" id="sd-err" role="alert">' + (r.stkError ? esc('The M-Pesa prompt could not be sent: ' + r.stkError) : '') + '</p><div class="sd-row" style="flex-direction:column"><button type="button" class="sd-go" id="sd-retry">Send the M-Pesa prompt to my phone</button><button type="button" id="sd-claim">I’ve made this payment</button></div>');
+            document.getElementById('sd-retry').onclick = function () {
+                var b = this, er = document.getElementById('sd-err'); b.disabled = true; b.textContent = 'Sending\u2026'; er.textContent = '';
+                post({ action: 'retry', id: r.id, token: r.token }).then(function (j) {
+                    if (!j.__ok) { er.textContent = j.error || 'The prompt could not be sent.'; b.disabled = false; b.textContent = 'Send the M-Pesa prompt to my phone'; return; }
+                    r.method = 'stk'; r.stkError = ''; refSet(r); waiting('wait');
+                }).catch(function () { er.textContent = 'No connection. Please try again.'; b.disabled = false; b.textContent = 'Send the M-Pesa prompt to my phone'; });
+            };
             document.getElementById('sd-claim').onclick = function () {
                 var b = this; b.disabled = true;
                 post({ action: 'claim', id: r.id, token: r.token }).then(function (j) { if (!j.__ok) { document.getElementById('sd-err').textContent = j.error || 'Please try again.'; b.disabled = false; return; } r.claimed = true; refSet(r); waiting('wait'); });
@@ -244,6 +282,7 @@ body.sd-on{padding-bottom:60px}
             '<div class="sd-row"><button type="button" id="sd-lic">Download your licence (PDF)</button></div><p class="sd-err" id="sd-err" role="alert"></p>' +
             '<div class="sd-row" style="margin-top:0"><button type="button" id="sd-copy">Copy</button><a class="sd-go" href="' + esc(ref.link) + '" style="flex:1;display:flex;align-items:center;justify-content:center;border-radius:12px;min-height:48px;color:#fff;background:var(--accent,#0b7a5f);text-decoration:none;font-weight:700">Open my shop</a></div>' +
             '<div class="sd-row"><button type="button" id="sd-more" style="font-weight:600">Get another link</button></div>');
+        B.locked = true; // zip 285: only the X button closes this screen
         document.getElementById('sd-lic').onclick = function () { licence(ref); };
         document.getElementById('sd-copy').onclick = function () { var i = document.getElementById('sd-link'); i.select(); try { navigator.clipboard.writeText(ref.link); } catch (e) { try { document.execCommand('copy'); } catch (x) { /* selected for a manual copy */ } } this.textContent = 'Copied'; };
         document.getElementById('sd-more').onclick = function () { refSet(null); B.ref = null; B.form = null; openBuy(); };
@@ -273,7 +312,11 @@ body.sd-on{padding-bottom:60px}
 
     var url = (typeof apiUrl === 'function' ? apiUrl('/api/license-status') : '/api/license-status' + (cid ? '?c=' + encodeURIComponent(cid) : ''));
     function ask() {
-        fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { if (d && d.sharedDemo) engage(); }).catch(function () { /* offline: behave as a normal app */ });
+        fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+            // zip 320: the hourly reset (demo-reset block) only ever runs where the server has said "this address is a shared demo"
+            if (d && typeof d.clientId === 'string' && d.clientId && window.DemoReset) window.DemoReset.confirm(d.clientId, !!d.sharedDemo);
+            if (d && d.sharedDemo) engage();
+        }).catch(function () { /* offline: behave as a normal app */ });
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ask); else ask();
 })();

@@ -1,0 +1,468 @@
+<!-- PUBLIC ORDER (zip 368) ------------------------------------------------------------------------------------------------------------
+     ONE public "order from home" barcode for every app (the hotel already had it; now the Shop, Water, Hospital, Production, Services, Pharmacy and
+     Car Wash have it too) and a tab - "🛵 Online Orders" - to handle what customers order through it.
+
+     HOW IT WORKS (nothing new on the server): it uses the same secure /api/qr-order service the hotel uses, with its ONE public code (kind "online").
+       - The code holds only a random token. Customers scan it, see the items, pick, type name + phone + delivery address (or choose pickup) and send.
+       - EVERYTHING you sell is published to that code by default (the menu is rebuilt from your items every minute: price and in-stock changes follow).
+         Not published: items with no price, hidden / archived items, ingredients, and (pharmacy / hospital) items that need a prescription.
+       - The order waits on the server until staff press Accept (one person owns it - two tills can never both take it). "Add to sale" puts it in
+         the Sales Counter cart, the cashier checks out as usual (so stock, receipts, reports and the cash drawer are all the normal ones) and the
+         order is then marked paid. Nothing here bypasses the till.
+     Self-contained on purpose (own styles, own tab + button, colour fallbacks) so the identical block works in every app. Ids and classes: pubo-*.
+     Needs the transaction database (D1) like every QR order; without it the tab says so in plain words. -->
+<style id="pubo-css">
+#online-orders-tab { --pubo-ink: var(--dark, #1f2d3a); --pubo-mute: #6b7c8a; --pubo-line: var(--border-color, #e3e8ec); --pubo-card: var(--bg-surface, #fff); --pubo-bg: var(--bg-surface-alt, #f4f6f7); --pubo-go: #0e9f6e; --pubo-go-d: #0b7f58; --pubo-warm: #f08a24; --pubo-bad: #d64545; }
+#online-orders-tab * { box-sizing: border-box; }
+#online-orders-tab .pubo-hero { display: grid; grid-template-columns: 188px 1fr; gap: 18px; align-items: center; padding: 16px; border-radius: 18px; background: var(--pubo-card); border: 1px solid var(--pubo-line); box-shadow: 0 6px 22px rgba(15, 80, 60, .08); position: relative; overflow: hidden; }
+#online-orders-tab .pubo-hero::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 6px; background: linear-gradient(180deg, var(--pubo-go), #19c18a); }
+#online-orders-tab .pubo-sign { background: #fff; border-radius: 14px; padding: 10px; border: 2px dashed #0e9f6e; text-align: center; position: relative; }
+#online-orders-tab .pubo-sign .pubo-qr { width: 100%; aspect-ratio: 1; display: block; }
+#online-orders-tab .pubo-sign .pubo-qr svg { width: 100%; height: 100%; display: block; }
+#online-orders-tab .pubo-sign .pubo-scan { font-size: 12px; font-weight: 800; color: #0b7f58; margin-top: 4px; letter-spacing: .01em; }
+#online-orders-tab .pubo-noqr { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--pubo-mute); font-size: 12px; text-align: center; padding: 8px; }
+#online-orders-tab .pubo-title { margin: 0 0 2px; font-size: 20px; line-height: 1.2; color: var(--pubo-ink); }
+#online-orders-tab .pubo-sub { margin: 0 0 10px; font-size: 13px; color: var(--pubo-mute); max-width: 56ch; }
+#online-orders-tab .pubo-state { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #e7f8f1; color: #0b7f58; margin-bottom: 8px; }
+#online-orders-tab .pubo-state i { width: 8px; height: 8px; border-radius: 50%; background: var(--pubo-go); display: inline-block; animation: pubo-live 2s ease-in-out infinite; }
+#online-orders-tab .pubo-state.off { background: #fdecec; color: #b03030; }
+#online-orders-tab .pubo-state.off i { background: var(--pubo-bad); animation: none; }
+#online-orders-tab .pubo-state.wait { background: #fff4e2; color: #9a5b00; }
+#online-orders-tab .pubo-state.wait i { background: var(--pubo-warm); animation: none; }
+@keyframes pubo-live { 0%, 100% { box-shadow: 0 0 0 0 rgba(14, 159, 110, .5); } 50% { box-shadow: 0 0 0 6px rgba(14, 159, 110, 0); } }
+#online-orders-tab .pubo-link { display: flex; gap: 6px; margin-bottom: 10px; }
+#online-orders-tab .pubo-link input { flex: 1; min-width: 0; font-size: 12px; padding: 8px 10px; border: 1px solid var(--pubo-line); border-radius: 10px; background: var(--pubo-bg); color: var(--pubo-ink); }
+#online-orders-tab .pubo-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+#online-orders-tab .pubo-btn { appearance: none; border: 0; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; padding: 9px 13px; border-radius: 11px; background: var(--pubo-bg); color: var(--pubo-ink); border: 1px solid var(--pubo-line); width: auto; margin: 0; min-height: 38px; transition: transform .12s ease, box-shadow .12s ease; }
+#online-orders-tab .pubo-btn:hover { box-shadow: 0 3px 10px rgba(0, 0, 0, .1); }
+#online-orders-tab .pubo-btn:active { transform: scale(.97); }
+#online-orders-tab .pubo-btn:focus-visible, #online-orders-tab .pubo-chip:focus-visible, #online-orders-tab summary:focus-visible { outline: 3px solid #19c18a; outline-offset: 2px; }
+#online-orders-tab .pubo-btn.go { background: var(--pubo-go); border-color: var(--pubo-go); color: #fff; }
+#online-orders-tab .pubo-btn.go:hover { background: var(--pubo-go-d); }
+#online-orders-tab .pubo-btn.warm { background: #fff4e2; border-color: #f2c987; color: #8a5200; }
+#online-orders-tab .pubo-btn.bad { background: #fff; border-color: #efb5b5; color: #b03030; }
+#online-orders-tab .pubo-btn[disabled] { opacity: .55; cursor: default; }
+#online-orders-tab details.pubo-set { margin-top: 12px; border-top: 1px dashed var(--pubo-line); padding-top: 10px; }
+#online-orders-tab details.pubo-set summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--pubo-ink); }
+#online-orders-tab .pubo-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
+#online-orders-tab .pubo-form label { font-size: 12px; color: var(--pubo-mute); display: block; }
+#online-orders-tab .pubo-form input[type="text"], #online-orders-tab .pubo-form textarea { width: 100%; font-size: 15px; padding: 9px 10px; border: 1px solid var(--pubo-line); border-radius: 10px; background: var(--pubo-card); color: var(--pubo-ink); }
+#online-orders-tab .pubo-form .wide { grid-column: 1 / -1; }
+#online-orders-tab .pubo-switch { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--pubo-ink); }
+#online-orders-tab .pubo-switch input { width: 20px; height: 20px; margin: 0; }
+#online-orders-tab .pubo-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 12px; }
+#online-orders-tab .pubo-chip { appearance: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--pubo-line); background: var(--pubo-card); color: var(--pubo-ink); width: auto; margin: 0; }
+#online-orders-tab .pubo-chip b { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 6px; border-radius: 999px; background: var(--pubo-bg); font-size: 12px; text-align: center; }
+#online-orders-tab .pubo-chip.on { background: var(--pubo-ink); border-color: var(--pubo-ink); color: #fff; }
+#online-orders-tab .pubo-chip.on b { background: rgba(255, 255, 255, .22); }
+#online-orders-tab .pubo-chip.hot b { background: var(--pubo-warm); color: #fff; }
+#online-orders-tab .pubo-list { display: grid; gap: 10px; }
+#online-orders-tab .pubo-card { background: var(--pubo-card); border: 1px solid var(--pubo-line); border-left: 6px solid #b9c4cc; border-radius: 14px; padding: 12px 14px; }
+#online-orders-tab .pubo-card.new { border-left-color: var(--pubo-warm); }
+#online-orders-tab .pubo-card.work { border-left-color: #2f80ed; }
+#online-orders-tab .pubo-card.ready { border-left-color: var(--pubo-go); }
+#online-orders-tab .pubo-card.fresh { animation: pubo-in .5s cubic-bezier(.2, .8, .2, 1); }
+@keyframes pubo-in { from { transform: translateY(-8px); opacity: 0; box-shadow: 0 0 0 0 rgba(240, 138, 36, .55); } to { transform: none; opacity: 1; box-shadow: 0 0 0 0 rgba(240, 138, 36, 0); } }
+#online-orders-tab .pubo-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#online-orders-tab .pubo-who { font-size: 16px; font-weight: 800; color: var(--pubo-ink); }
+#online-orders-tab .pubo-tot { font-size: 16px; font-weight: 800; color: var(--pubo-ink); white-space: nowrap; }
+#online-orders-tab .pubo-meta { font-size: 12px; color: var(--pubo-mute); margin-top: 2px; }
+#online-orders-tab .pubo-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 800; background: var(--pubo-bg); color: var(--pubo-ink); margin-left: 6px; }
+#online-orders-tab .pubo-pill.how { background: #e8f1fe; color: #1f5fbf; }
+#online-orders-tab .pubo-lines { margin: 8px 0; padding: 8px 10px; border-radius: 10px; background: var(--pubo-bg); font-size: 14px; color: var(--pubo-ink); }
+#online-orders-tab .pubo-lines div { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; }
+#online-orders-tab .pubo-lines em { color: var(--pubo-mute); font-size: 12px; }
+#online-orders-tab .pubo-where { font-size: 13px; margin: 6px 0; color: var(--pubo-ink); }
+#online-orders-tab .pubo-alert { margin: 8px 0; padding: 8px 10px; border-radius: 10px; font-size: 13px; background: #fff4e2; color: #8a5200; }
+#online-orders-tab .pubo-alert.pay { background: #e8f1fe; color: #1f4f9f; }
+#online-orders-tab .pubo-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+#online-orders-tab .pubo-empty { text-align: center; padding: 34px 16px; color: var(--pubo-mute); background: var(--pubo-card); border: 1px dashed var(--pubo-line); border-radius: 16px; }
+#online-orders-tab .pubo-empty b { display: block; font-size: 16px; color: var(--pubo-ink); margin-bottom: 4px; }
+#online-orders-tab .pubo-note { margin: 10px 0 0; font-size: 12px; color: var(--pubo-mute); }
+#online-orders-tab .pubo-problem { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: #fdecec; color: #8f2626; font-size: 13px; }
+.pubo-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px; background: #f08a24; color: #fff; font-size: 11px; font-weight: 800; text-align: center; line-height: 18px; }
+#pubo-cart-banner { margin: 0 0 10px; padding: 10px 12px; border-radius: 12px; background: #e7f8f1; border: 1px solid #9fe0c6; color: #0b5c40; font-size: 13px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+#pubo-cart-banner button { border: 0; background: #fff; border: 1px solid #9fe0c6; color: #0b5c40; border-radius: 9px; padding: 6px 10px; font-weight: 700; cursor: pointer; width: auto; margin: 0; }
+@media (max-width: 640px) {
+  #online-orders-tab .pubo-hero { grid-template-columns: 1fr; padding-left: 20px; }
+  #online-orders-tab .pubo-sign { max-width: 220px; margin: 0 auto; }
+  #online-orders-tab .pubo-btn { flex: 1 1 auto; }
+}
+@media (prefers-reduced-motion: reduce) { #online-orders-tab .pubo-state i, #online-orders-tab .pubo-card.fresh { animation: none; } #online-orders-tab .pubo-btn { transition: none; } }
+</style>
+<script id="pubo-js">
+(function () {
+  'use strict';
+  var ID = 'online-orders-tab', BTN = 'online-orders-tab-btn', CODE_LABEL = 'Order from home';
+  var S = { codes: [], orders: [], reqs: [], pays: [], code: null, filter: '', seen: null, busy: false, polling: false, setupBusy: false, problem: '', noD1: false, lastOk: 0, lastFail: 0, lastSetupTry: 0, qrSvg: '', qrFor: '' };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { s = String(s == null ? '' : s); return (typeof escapeHtml === 'function') ? escapeHtml(s) : s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { if (typeof showToast === 'function') { showToast(m, !!bad); return; } } catch (e) { /* fall through */ } try { alert(m); } catch (e) { /* nothing */ } }
+  function fmt(n) { n = Number(n) || 0; try { return typeof money === 'function' ? money(n) : 'KES ' + n.toFixed(2); } catch (e) { return 'KES ' + n.toFixed(2); } }
+  function isHospital() { return /\/hospital(\/|$)/.test(location.pathname) || !!$('maternity-tab-btn'); }      // the HMIS has the maternity tab on every address it is served from
+  function isWater() { return typeof refillSizes !== 'undefined' && typeof addRefillToCart === 'function' && typeof addBottledToCart === 'function'; }
+  function isAdmin() { try { return typeof isAdminServing !== 'function' || !!isAdminServing(); } catch (e) { return true; } }
+  function me() { try { return typeof activeServerName === 'function' ? activeServerName() : ''; } catch (e) { return ''; } }
+  function offline() { try { return typeof window.posNetOffline === 'function' && !!window.posNetOffline(); } catch (e) { return false; } }
+
+  /* ---------- this shop's online-ordering settings (kept on the device; the published copy on the server is the shared one) ---------- */
+  function cfgKey() { try { return typeof appStoreKey === 'function' ? appStoreKey('pos_pubo_cfg') : 'pos_pubo_cfg'; } catch (e) { return 'pos_pubo_cfg'; } }
+  function loadCfg() { try { var c = JSON.parse(localStorage.getItem(cfgKey()) || '{}'); return (c && typeof c === 'object') ? c : {}; } catch (e) { return {}; } }
+  function saveCfg(c) { try { if (typeof safeSetItem === 'function') safeSetItem(cfgKey(), JSON.stringify(c)); else localStorage.setItem(cfgKey(), JSON.stringify(c)); } catch (e) { /* the next publish still works */ } }
+  var cfg = loadCfg();
+
+  /* ---------- talking to the server (same service as the hotel's QR ordering) ---------- */
+  function call(body) {
+    return fetch(apiUrl('/api/qr-order'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ by: me() }, body)) }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (d) {
+        if (!res.ok) { var err = new Error(d.error || d.message || ('HTTP ' + res.status)); err.data = d; err.status = res.status; throw err; }
+        return d;
+      });
+    });
+  }
+  function urlFor(token) { var c = (typeof clientToken !== 'undefined' && clientToken) ? '&c=' + encodeURIComponent(clientToken) : ''; return location.origin + '/order/?t=' + encodeURIComponent(token) + c; }
+  function qrLib() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    return new Promise(function (ok, no) { var s = document.createElement('script'); s.src = '/order/qrcode.js'; s.onload = function () { ok(window.qrcode); }; s.onerror = function () { no(new Error('The QR picture needs the internet the first time.')); }; document.head.appendChild(s); });
+  }
+  function svgFor(token) { return qrLib().then(function (q) { var qr = q(0, 'M'); qr.addData(urlFor(token)); qr.make(); return qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); }); }
+  function onlineCode() { return (S.codes || []).filter(function (c) { return c.active && c.kind === 'online'; })[0] || null; }
+
+  /* ---------- what customers can order: everything you sell, unless you hid it ---------- */
+  function list() { try { if (isWater()) return (typeof products !== 'undefined' && Array.isArray(products)) ? products : []; return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : []; } catch (e) { return []; } }
+  function imageOf(p) { var m = /(\/api\/media\?k=p&id=[A-Za-z0-9_-]{6,80})/.exec(String((p && p.image) || '')); return m ? m[1] : ''; }
+  function stockOf(p, mode) { try { if (isWater()) { var q = Number(p.qty) || 0; try { if (p.category === 'bale' && typeof effectiveBaleQty === 'function') q = Number(effectiveBaleQty(p)) || 0; } catch (e) { /* the shelf quantity */ } return q; } return Number(typeof getAvailableStock === 'function' ? getAvailableStock(p, mode) : (mode === 'piece' ? p.pieceQty : p.qty)) || 0; } catch (e) { return 1; } }
+  function priceOf(p, mode) { try { if (!isWater() && typeof getEffectivePrice === 'function') { var v = Number(getEffectivePrice(p, mode)); if (v > 0) return v; } } catch (e) { /* the plain price */ } return Number(mode === 'piece' ? p.piecePrice : p.price) || 0; }
+  function sellable(p) {
+    if (!p || p.removed || p.archived || p.inactive || p.menuHidden || p.onlineHidden || p.deleted) return false;
+    var t = (typeof productType === 'function') ? productType(p) : (p.type || 'item');
+    if (t === 'ingredient' || t === 'material' || t === 'combo') return false;
+    if (t === 'service' && (isHospital())) return false;           // a hospital does not take bookings for care by QR: medicines and shop items only
+    if (p.requiresPrescription) return false;   // never sold without a prescription check at the counter
+    if (isWater() && (p.customQuote || (typeof isCustomBale === 'function' && isCustomBale(p)))) return false;   // made to order, quoted by a person
+    return true;
+  }
+  function buildMenu() {
+    var items = [];
+    list().filter(sellable).forEach(function (p) {
+      var code = String(p.code || ''); if (!code) return;
+      var isService = ((typeof productType === 'function') ? productType(p) : p.type) === 'service';
+      var main = priceOf(p, 'box');
+      if (main > 0) items.push({ code: code, name: String(p.name || code), price: main, category: String(p.category || ''), description: String(p.description || ''), image: imageOf(p), available: isService ? true : stockOf(p, 'box') > 0, modifierGroupIds: [] });
+      if (p.dualUnit && Number(p.piecePrice) > 0) items.push({ code: code + '::piece', name: String(p.name || code) + ' (single)', price: Number(p.piecePrice), category: String(p.category || ''), description: '', image: imageOf(p), available: stockOf(p, 'piece') > 0, modifierGroupIds: [] });
+    });
+    if (isWater()) {
+      try { (refillSizes || []).forEach(function (s) { if (s && s.id && Number(s.price) > 0) items.push({ code: 'refill:' + s.id, name: String(s.label || 'Refill') + ' refill', price: Number(s.price), category: 'Water refills', description: '', image: '', available: (typeof totalTankVolume !== 'function') || totalTankVolume() >= (Number(s.sizeML) || 0) / 1000, modifierGroupIds: [] }); }); } catch (e) { /* products only */ }
+    }
+    var instr = ''; try { instr = (typeof receiptPaymentDetailsList === 'function') ? receiptPaymentDetailsList().join(' · ') : ''; } catch (e) { /* none */ }
+    var payment = { mpesa: !!(cfg.till || cfg.paybill || instr), cash: true, tillNumber: cfg.till || '', paybill: cfg.paybill || '', accountNumber: cfg.acc || '', accountName: cfg.accName || '', instructions: cfg.instr || instr };
+    return { business: localStorage.getItem('pos_biz_name') || '', style: 'shop', open: cfg.open !== false, note: cfg.note || '', payment: payment, items: items, modifierGroups: [] };
+  }
+  function sigOf(m) { try { return JSON.stringify(m); } catch (e) { return String(Math.random()); } }
+
+  /* ---------- set up by default: the code, the published items, the saved settings ---------- */
+  function refreshCodes() { return call({ action: 'list' }).then(function (d) { S.codes = d.codes || []; S.code = onlineCode(); S.noD1 = false; return S.codes; }); }
+  function publish(silent) {
+    var m = buildMenu();
+    return call({ action: 'publishMenu', menu: m }).then(function (d) { cfg.sig = sigOf(m); cfg.publishedAt = Date.now(); cfg.count = d.items; saveCfg(cfg); S.problem = ''; if (!silent) toast('Published — customers can order ' + d.items + ' item(s).'); render(); return d.items; })
+      .catch(function (e) { S.problem = 'Could not publish: ' + e.message; if (e.data && e.data.code === 'no_d1') S.noD1 = true; if (!silent) toast(S.problem, true); render(); return null; });
+  }
+  function hydrate(token) {   // a second phone for the same shop: take the shop's saved message and payment details instead of starting blank
+    if (cfg.touchedAt) return Promise.resolve();
+    return fetch(apiUrl('/api/qr-order') + (/\?/.test(apiUrl('/api/qr-order')) ? '&' : '?') + 't=' + encodeURIComponent(token) + ((typeof clientToken !== 'undefined' && clientToken) ? '&c=' + encodeURIComponent(clientToken) : '')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d) return; var p = d.payment || {};
+      cfg.till = cfg.till || p.tillNumber || ''; cfg.paybill = cfg.paybill || p.paybill || ''; cfg.acc = cfg.acc || p.accountNumber || ''; cfg.accName = cfg.accName || p.accountName || ''; cfg.instr = cfg.instr || p.instructions || '';
+      if (d.menu && d.menu.note && !cfg.note) cfg.note = d.menu.note; if (d.paused) cfg.open = false;
+      cfg.touchedAt = Date.now(); saveCfg(cfg);
+    }).catch(function () { /* the defaults are fine */ });
+  }
+  function setup(force) {
+    if (S.setupBusy || offline()) return Promise.resolve();
+    if (!force && Date.now() - S.lastSetupTry < (S.noD1 ? 600000 : 45000)) return Promise.resolve();
+    S.lastSetupTry = Date.now(); S.setupBusy = true;
+    return refreshCodes().then(function () {
+      if (S.code || !isAdmin()) return;
+      return call({ action: 'ensure', kind: 'online', labels: [CODE_LABEL] }).then(refreshCodes);
+    }).then(function () {
+      if (!S.code) return;
+      return hydrate(S.code.token).then(function () { if (!isAdmin()) return; var m = buildMenu(); if (!cfg.sig || cfg.sig !== sigOf(m)) return publish(true); });
+    }).catch(function (e) { S.lastFail = Date.now(); if (e.data && e.data.code === 'no_d1') { S.noD1 = true; S.problem = ''; } else if (e.status !== 404) S.problem = 'Online ordering is not reachable right now (' + e.message + '). It will retry by itself.'; })
+      .then(function () { S.setupBusy = false; render(); });
+  }
+
+  /* ---------- incoming orders ---------- */
+  function actionable() { return S.orders.filter(function (o) { return o.status === 'SUBMITTED'; }).length + S.reqs.length + S.pays.length; }
+  function beep() { try { var A = window.AudioContext || window.webkitAudioContext; if (!A) return; var a = new A(), o = a.createOscillator(), g = a.createGain(); o.connect(g); g.connect(a.destination); o.frequency.value = 880; g.gain.value = 0.08; o.start(); setTimeout(function () { try { o.stop(); a.close(); } catch (e) { /* done */ } }, 220); } catch (e) { /* silent */ } }
+  function poll() {
+    if (S.polling || !S.code || offline()) return Promise.resolve();
+    S.polling = true; flush();
+    var before = S.seen || { o: {}, r: {}, p: {} };
+    return call({ action: 'pending' }).then(function (d) {
+      S.lastOk = Date.now();
+      var orders = (d.orders || []).filter(function (o) { return o.kind === 'online'; }), keep = {}; orders.forEach(function (o) { keep[o.id] = 1; });
+      var reqs = (d.requests || []).filter(function (r) { return keep[r.orderId]; }), pays = (d.payments || []).filter(function (p) { return keep[p.orderId]; });
+      var first = !S.seen, fresh = orders.filter(function (o) { return o.status === 'SUBMITTED' && !before.o[o.id]; }), fReq = reqs.filter(function (r) { return !before.r[r.id]; }), fPay = pays.filter(function (p) { return !before.p[p.id]; });
+      S.orders = orders; S.reqs = reqs; S.pays = pays; S.fresh = {}; fresh.forEach(function (o) { S.fresh[o.id] = 1; });
+      S.seen = { o: {}, r: {}, p: {} }; orders.forEach(function (o) { if (o.status === 'SUBMITTED') S.seen.o[o.id] = 1; }); reqs.forEach(function (r) { S.seen.r[r.id] = 1; }); pays.forEach(function (p) { S.seen.p[p.id] = 1; });
+      if (!first) {
+        if (fresh.length) toast('🛵 ' + fresh.length + ' new online order' + (fresh.length > 1 ? 's' : '') + ' — ' + fresh.map(function (o) { return o.name || 'customer'; }).join(', ') + ' (Online Orders tab)');
+        else if (fReq.length) toast('🛵 A customer asked to change an online order (Online Orders tab)');
+        else if (fPay.length) toast('💳 A customer says they paid an online order — check it (Online Orders tab)');
+        if (fresh.length || fReq.length || fPay.length) beep();
+      }
+    }).catch(function () { S.lastFail = Date.now(); }).then(function () { S.polling = false; render(); });
+  }
+
+  /* work that must reach the server even if the connection drops: kept in order, retried, never lost (same idea as the hotel's outbox) */
+  function obKey() { return 'pos_pubo_outbox'; }
+  function outbox() { try { return JSON.parse(localStorage.getItem(obKey()) || '[]'); } catch (e) { return []; } }
+  function obSave(q) { try { localStorage.setItem(obKey(), JSON.stringify(q.slice(-100))); } catch (e) { /* full storage: the next change retries */ } }
+  function enqueue(body) { var q = outbox(); q.push({ id: 'pb' + Date.now() + Math.random().toString(36).slice(2, 7), body: body, at: Date.now() }); obSave(q); setTimeout(flush, 1200); }
+  var flushing = false;
+  function flush() {
+    if (flushing || offline()) return; flushing = true;
+    (function next() {
+      var q = outbox(); if (!q.length) { flushing = false; return; }
+      var job = q[0];
+      fetch(apiUrl('/api/qr-order'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ by: me() }, job.body)) }).then(function (r) {
+        if (r.status === 202 || r.status >= 500) { flushing = false; return; }        // the sale has not reached the database yet / server busy: keep the order of work and try again
+        obSave(outbox().filter(function (x) { return x.id !== job.id; })); next();
+      }).catch(function () { flushing = false; });
+    })();
+  }
+
+  /* ---------- the order cards ---------- */
+  function parseNote(note) {
+    note = String(note || ''); var how = 'delivery', where = '', extra = '';
+    var m = /^DELIVERY to: ([\s\S]*?)(?: \| ([\s\S]*))?$/.exec(note);
+    if (m) { where = m[1]; extra = m[2] || ''; } else if (/^PICKUP/.test(note)) { how = 'pickup'; var m2 = /^PICKUP \(customer collects\)(?: \| ([\s\S]*))?$/.exec(note); extra = (m2 && m2[1]) || ''; } else extra = note;
+    return { how: how, where: where, extra: extra };
+  }
+  function group(o) { return o.status === 'SUBMITTED' ? 'new' : (o.status === 'READY' ? 'ready' : (o.status === 'SERVED' || o.status === 'BILLED') ? 'done' : 'work'); }
+  function ago(ts) { var m = Math.max(0, Math.round((Date.now() - Number(ts || 0)) / 60000)); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : new Date(ts).toLocaleDateString('en-GB'); }
+  function phoneDigits(p) { var d = String(p || '').replace(/[^0-9]/g, ''); if (/^0\d{9}$/.test(d)) d = '254' + d.slice(1); return d; }
+  function card(o) {
+    var g = group(o), n = parseNote(o.note), live = (o.items || []).filter(function (i) { return !i.removed; });
+    var lines = live.map(function (i) { return '<div><span>' + esc(i.qty) + ' × ' + esc(i.name) + (i.note ? ' <em>(' + esc(i.note) + ')</em>' : '') + '</span><span>' + fmt((Number(i.price) || 0) * (Number(i.qty) || 0)) + '</span></div>'; }).join('');
+    var rq = S.reqs.filter(function (r) { return r.orderId === o.id; }).map(function (r) { var p = r.payload || {}; return '<div class="pubo-alert">🔁 Customer wants to ' + (r.type === 'CANCEL' ? (Number.isInteger(p.line) ? 'cancel ' + esc(p.name || 'an item') : 'cancel the whole order') : 'swap ' + esc(p.fromName || p.name || 'an item') + ' for ' + esc(p.toName || 'another item')) + (p.reason ? ' — “' + esc(p.reason) + '”' : '') + '<div class="pubo-row"><button class="pubo-btn go" data-pubo="req-yes" data-id="' + esc(r.id) + '">Approve</button><button class="pubo-btn" data-pubo="req-no" data-id="' + esc(r.id) + '">Decline</button></div></div>'; }).join('');
+    var py = S.pays.filter(function (p) { return p.orderId === o.id; }).map(function (p) { return '<div class="pubo-alert pay">💳 Customer says they paid ' + fmt(p.amount) + ' by ' + (p.method === 'mpesa' ? 'M-Pesa' : 'cash') + (p.mpesaCode ? ' (code <b>' + esc(p.mpesaCode) + '</b>)' : '') + '. Their note is not proof — check your M-Pesa messages or take the cash, then ring the sale. <div class="pubo-row"><button class="pubo-btn bad" data-pubo="pay-no" data-id="' + esc(p.id) + '">Not received</button></div></div>'; }).join('');
+    var loaded = cfg.loaded && cfg.loaded.id === o.id;
+    var b = '';
+    if (o.status === 'SUBMITTED') b = '<button class="pubo-btn go" data-pubo="accept" data-id="' + esc(o.id) + '">✔ Accept</button><button class="pubo-btn bad" data-pubo="reject" data-id="' + esc(o.id) + '">Decline</button>';
+    else {
+      b = '<button class="pubo-btn go" data-pubo="sale" data-id="' + esc(o.id) + '">' + (loaded ? '🛒 Open the sale' : '🛒 Add to sale') + '</button>';
+      if (o.status === 'CLAIMED') b += '<button class="pubo-btn warm" data-pubo="st-PREPARING" data-id="' + esc(o.id) + '">Getting it ready</button>';
+      if (o.status === 'CLAIMED' || o.status === 'PREPARING') b += '<button class="pubo-btn" data-pubo="st-READY" data-id="' + esc(o.id) + '">Ready</button>';
+      if (o.status === 'READY' || o.status === 'PREPARING' || o.status === 'CLAIMED') b += '<button class="pubo-btn" data-pubo="st-SERVED" data-id="' + esc(o.id) + '">' + (n.how === 'pickup' ? 'Collected' : 'Delivered') + '</button>';
+      if (['CLAIMED', 'PREPARING', 'READY'].indexOf(o.status) >= 0) b += '<button class="pubo-btn bad" data-pubo="st-CANCELLED" data-id="' + esc(o.id) + '">Cancel</button>';
+    }
+    var d = phoneDigits(o.phone), contact = o.phone ? '<a class="pubo-btn" href="tel:' + esc(o.phone) + '" style="text-decoration:none;">📞 Call</a><a class="pubo-btn" target="_blank" rel="noopener" href="https://wa.me/' + esc(d) + '" style="text-decoration:none;">💬 WhatsApp</a>' : '';
+    var st = { SUBMITTED: 'Waiting for you', CLAIMED: 'Accepted', PREPARING: 'Getting it ready', READY: 'Ready', SERVED: n.how === 'pickup' ? 'Collected' : 'Delivered', BILLED: 'Billed' }[o.status] || o.status;
+    return '<div class="pubo-card ' + g + (S.fresh && S.fresh[o.id] ? ' fresh' : '') + '"><div class="pubo-top"><div><span class="pubo-who">' + esc(o.name || 'Customer') + '</span><span class="pubo-pill how">' + (n.how === 'pickup' ? 'Pickup' : 'Delivery') + '</span><span class="pubo-pill">' + esc(st) + '</span></div><div class="pubo-tot">' + fmt(o.total) + '</div></div>'
+      + '<div class="pubo-meta">' + ago(o.createdAt) + (o.owner ? ' · looked after by ' + esc(o.owner) : '') + '</div>'
+      + (n.where ? '<div class="pubo-where">📍 ' + esc(n.where) + '</div>' : '') + (n.extra ? '<div class="pubo-where">📝 ' + esc(n.extra) + '</div>' : '')
+      + '<div class="pubo-lines">' + lines + '</div>' + rq + py + '<div class="pubo-row">' + b + contact + '</div></div>';
+  }
+  function counts() { var c = { new: 0, work: 0, ready: 0, done: 0 }; S.orders.forEach(function (o) { c[group(o)]++; }); return c; }
+  function render() {
+    badge();
+    var root = $(ID); if (!root || !root.classList.contains('active')) return;
+    var c = counts(), code = S.code, cur = S.filter;
+    if (!cur) cur = c.new ? 'new' : c.work ? 'work' : c.ready ? 'ready' : c.done ? 'done' : 'new';
+    var shown = S.orders.filter(function (o) { return group(o) === cur; }).sort(function (a, b) { return a.createdAt - b.createdAt; });
+    var paused = cfg.open === false, state = S.noD1 ? ['off', 'Not switched on yet'] : !code ? ['wait', 'Setting up…'] : paused ? ['off', 'Paused — customers are told to ask you'] : ['', 'Live — customers can order now'];
+    var hero = '<div class="pubo-hero"><div class="pubo-sign">' + (code && S.qrSvg && S.qrFor === code.token ? '<div class="pubo-qr">' + S.qrSvg.replace('<svg', '<svg role="img" aria-label="QR code to order from us"') + '</div><div class="pubo-scan">Scan to order</div>' : '<div class="pubo-noqr">' + (S.noD1 ? 'Needs the transaction database' : 'The code appears here') + '</div>') + '</div>'
+      + '<div><h3 class="pubo-title">Order from home</h3><span class="pubo-state ' + state[0] + '"><i></i>' + esc(state[1]) + '</span>'
+      + '<p class="pubo-sub">One public code for your whole shop. Customers scan it, pick from everything you sell, and send you their name, phone and where to bring it. You accept the order here.</p>'
+      + (code ? '<div class="pubo-link"><input type="text" readonly value="' + esc(urlFor(code.token)) + '" onclick="this.select()" aria-label="Order link"><button class="pubo-btn" data-pubo="copy">Copy</button></div>'
+        + '<div class="pubo-acts"><button class="pubo-btn go" data-pubo="print">🖨️ Print the sign</button><button class="pubo-btn" data-pubo="png">⬇ Picture</button><button class="pubo-btn" data-pubo="wa">💬 Share on WhatsApp</button><button class="pubo-btn" data-pubo="receipt">🧾 Put on receipts</button></div>' : (S.noD1 ? '' : isAdmin() ? '<div class="pubo-acts"><button class="pubo-btn go" data-pubo="setup">Make the code now</button></div>' : '<p class="pubo-sub">Ask the owner or admin to open this tab once — the code is made automatically.</p>'))
+      + '</div></div>';
+    var set = '<details class="pubo-set"' + (S.openSet ? ' open' : '') + '><summary>Settings: pause, message, how customers pay</summary><div class="pubo-form">'
+      + '<label class="pubo-switch wide"><input type="checkbox" id="pubo-open" ' + (paused ? '' : 'checked') + '> Taking online orders</label>'
+      + '<label class="wide">Message customers see (optional)<input type="text" id="pubo-note" value="' + esc(cfg.note || '') + '" placeholder="e.g. We deliver within 5 km. Orders after 6pm go out tomorrow."></label>'
+      + '<label>M-Pesa Till<input type="text" id="pubo-till" value="' + esc(cfg.till || '') + '" placeholder="e.g. 123456"></label><label>Paybill<input type="text" id="pubo-paybill" value="' + esc(cfg.paybill || '') + '" placeholder="optional"></label>'
+      + '<label>Account no.<input type="text" id="pubo-acc" value="' + esc(cfg.acc || '') + '" placeholder="optional"></label><label>Business name for M-Pesa<input type="text" id="pubo-accname" value="' + esc(cfg.accName || '') + '"></label>'
+      + '<label class="wide">Extra payment note<input type="text" id="pubo-instr" value="' + esc(cfg.instr || '') + '" placeholder="e.g. Cash is also welcome on delivery"></label>'
+      + '<div class="wide pubo-acts"><button class="pubo-btn go" data-pubo="save">💾 Save &amp; publish</button><button class="pubo-btn" data-pubo="publish">🔄 Publish items now</button></div></div>'
+      + '<p class="pubo-note">' + (cfg.publishedAt ? 'Items last published ' + new Date(cfg.publishedAt).toLocaleString('en-GB') + (cfg.count != null ? ' — ' + cfg.count + ' item(s)' : '') + '. ' : '') + 'Everything you sell is published automatically and kept up to date every minute (prices and what is in stock). Items with no price, archived items and items that need a prescription are never shown.</p></details>';
+    var chips = [['new', 'New'], ['work', 'Being handled'], ['ready', 'Ready'], ['done', 'Handed over']].map(function (k) { return '<button class="pubo-chip' + (cur === k[0] ? ' on' : '') + (k[0] === 'new' && c.new ? ' hot' : '') + '" data-pubo="filter" data-id="' + k[0] + '">' + k[1] + '<b>' + c[k[0]] + '</b></button>'; }).join('');
+    var body = shown.length ? shown.map(card).join('') : '<div class="pubo-empty"><b>' + (cur === 'new' ? 'No new orders right now' : 'Nothing here') + '</b>' + (code ? 'When a customer orders, it appears here with a sound. Print the sign and put it on your counter, door or receipts.' : 'Once the code is made, orders appear here.') + '</div>';
+    root.innerHTML = '<div class="panel">' + hero + (S.problem ? '<div class="pubo-problem">' + esc(S.problem) + '</div>' : '') + (S.noD1 ? '<div class="pubo-problem">Online ordering needs the transaction database (D1) to be connected for this shop. Ask the owner to finish that setup, then open this tab again.</div>' : '') + set
+      + (S.noD1 ? '' : '<div class="pubo-chips">' + chips + '</div><div class="pubo-list">' + body + '</div>') + '</div>';
+    if (code && (!S.qrSvg || S.qrFor !== code.token)) svgFor(code.token).then(function (svg) { S.qrSvg = svg; S.qrFor = code.token; render(); }).catch(function (e) { S.problem = e.message; });
+  }
+  function badge() {
+    var b = $(BTN); if (!b) return; var n = actionable(), el = $('pubo-badge');
+    if (!el) { el = document.createElement('span'); el.id = 'pubo-badge'; el.className = 'pubo-badge'; b.appendChild(el); }
+    el.textContent = String(n); el.style.display = n ? '' : 'none';
+  }
+
+  /* ---------- actions ---------- */
+  function findOrder(id) { return S.orders.filter(function (o) { return o.id === id; })[0]; }
+  function haveItems(o) {
+    var miss = [];
+    (o.items || []).filter(function (i) { return !i.removed; }).forEach(function (i) { var code = String(i.code); if (code.indexOf('refill:') === 0) { if (!isWater() || !(refillSizes || []).some(function (s) { return 'refill:' + s.id === code; })) miss.push(i.name); return; } var base = code.replace(/::piece$/, ''); if (!list().some(function (p) { return p && p.code === base; })) miss.push(i.name); });
+    return miss;
+  }
+  function accept(id) {
+    var o = findOrder(id); if (!o) return;
+    var miss = haveItems(o); if (miss.length) { toast('Not on this device\'s item list: ' + miss.join(', ') + ' — decline it, or sync this device first.', true); return; }
+    call({ action: 'claim', orderId: id }).then(function () { toast('Accepted — it is yours. Press "Add to sale" when you are ready to ring it.'); S.filter = 'work'; return poll(); })
+      .catch(function (e) { toast(e.data && e.data.already ? ((e.data.message || 'Someone else already took this order.')) : 'Could not accept: ' + e.message, true); poll(); });
+  }
+  function reject(id) {
+    var why = prompt('Why can\'t you take it? (the customer sees this)', 'Sorry, we cannot deliver this order'); if (why === null) return;
+    call({ action: 'reject', orderId: id, reason: why }).then(poll).catch(function (e) { toast(e.data && e.data.message ? e.data.message : e.message, true); poll(); });
+  }
+  function setStatus(id, to) {
+    if (to === 'CANCELLED' && !confirm('Cancel this order? The customer is told it was cancelled.')) return;
+    call({ action: 'status', orderId: id, status: to, reason: to === 'CANCELLED' ? 'Cancelled by the shop' : '' }).then(poll).catch(function (e) { toast(e.message, true); poll(); });
+  }
+  function cartCount() { try { return Object.keys(currentCart || {}).length; } catch (e) { return 0; } }
+  function toSale(id) {
+    var o = findOrder(id); if (!o) return;
+    if (cfg.loaded && cfg.loaded.id === id && cartCount()) { openSales(); return; }
+    var miss = haveItems(o); if (miss.length) { toast('Not on this device\'s item list: ' + miss.join(', ') + ' — sync this device first.', true); return; }
+    if (cartCount() && !confirm('The Sales Counter already has items in the cart. Replace them with this online order?')) return;
+    var problems = [];
+    try { Object.keys(currentCart).forEach(function (k) { delete currentCart[k]; }); } catch (e) { toast('Could not open the cart on this screen.', true); return; }
+    (o.items || []).filter(function (i) { return !i.removed; }).forEach(function (i) {
+      var code = String(i.code), qty = Number(i.qty) || 1, before = Object.keys(currentCart).length;
+      try {
+        if (code.indexOf('refill:') === 0) { var sid = code.slice(7); for (var k = 0; k < Math.ceil(qty); k++) addRefillToCart(sid); }
+        else if (isWater()) addBottledToCart(code, undefined, qty);
+        else { var piece = /::piece$/.test(code), base = code.replace(/::piece$/, ''); for (var j = 0; j < Math.ceil(qty); j++) addToCart(base, piece ? 'piece' : undefined); if (qty % 1) { var key = Object.keys(currentCart).filter(function (x) { return currentCart[x] && currentCart[x].code === base; })[0]; if (key) currentCart[key].qty = qty; } }
+      } catch (e) { problems.push(i.name); }
+      var key2 = Object.keys(currentCart).filter(function (x) { return currentCart[x] && (x === code || x === 'product:' + code || currentCart[x].code === code.replace(/::piece$/, '')); })[0];
+      var line = key2 && currentCart[key2]; if (!line && Object.keys(currentCart).length === before) problems.push(i.name);
+      else if (line && Math.abs((Number(line.price) || 0) - (Number(i.price) || 0)) > 0.009) problems.push(i.name + ' (price now ' + fmt(line.price) + ', customer ordered at ' + fmt(i.price) + ')');
+    });
+    try { if (typeof renderCart === 'function') renderCart(); } catch (e) { /* cosmetic */ }
+    cfg.loaded = { id: id, name: o.name || 'Customer', phone: o.phone || '', note: o.note || '', total: o.total, at: Date.now() }; saveCfg(cfg);
+    openSales(); banner();
+    if (problems.length) toast('Check these lines before you finish the sale: ' + problems.join('; '), true); else toast('Order added to the cart — take payment as usual.');
+  }
+  function openSales() { var b = $('sales-tab-btn') || document.querySelector('.tab-link[data-tab="sales-tab"]'); if (b) b.click(); }
+  function banner() {
+    var host = $('sales-tab'), el = $('pubo-cart-banner');
+    if (!host || !cfg.loaded || !cartCount()) { if (el) el.remove(); return; }
+    var n = parseNote(cfg.loaded.note), html = '🛵 <b>Online order — ' + esc(cfg.loaded.name) + '</b> · ' + (n.how === 'pickup' ? 'pickup' : 'deliver to ' + esc(n.where)) + (cfg.loaded.phone ? ' · ' + esc(cfg.loaded.phone) : '') + ' <button type="button" data-pubo="unload">Not this one</button>';
+    if (!el) { el = document.createElement('div'); el.id = 'pubo-cart-banner'; el.addEventListener('click', onClick); host.insertBefore(el, host.firstChild); }
+    if (el.innerHTML !== html) el.innerHTML = html;
+  }
+  function unload() { cfg.loaded = null; saveCfg(cfg); var el = $('pubo-cart-banner'); if (el) el.remove(); render(); }
+  /* the cashier finishes the sale in the normal checkout; when the cart empties, the order is marked paid (once the sale reaches the database) */
+  function wrapCheckout() {
+    if (window.__puboWrapped || typeof window.checkoutCart !== 'function') return; window.__puboWrapped = true;
+    var base = window.checkoutCart;
+    window.checkoutCart = function () {
+      var loaded = cfg.loaded, before = cartCount(), logLen = (typeof salesLog !== 'undefined' && Array.isArray(salesLog)) ? salesLog.length : -1, r;
+      try { r = base.apply(this, arguments); } catch (e) { throw e; }
+      Promise.resolve(r).then(function () {
+        try {
+          if (!loaded || !before || cartCount()) return;
+          var sale = (logLen >= 0 && typeof salesLog !== 'undefined') ? salesLog.slice(logLen).filter(function (s) { return s && s.id; }).pop() : null;
+          if (sale) enqueue({ action: 'settle', orderIds: [loaded.id], saleId: String(sale.id) }); else enqueue({ action: 'status', orderId: loaded.id, status: 'SERVED' });
+          cfg.loaded = null; saveCfg(cfg); banner(); toast('Online order for ' + loaded.name + ' is done.'); setTimeout(poll, 3000);
+        } catch (e) { /* the order stays open: nothing is lost */ }
+      }, function () { /* the sale did not finish: the order stays loaded */ });
+      return r;
+    };
+  }
+  /* QR picture / sign / receipt */
+  function save(blob, name) { var u = URL.createObjectURL(blob), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { a.remove(); URL.revokeObjectURL(u); }, 500); }
+  function drawPng(svg, px) {
+    svg = svg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg" width="' + px + '" height="' + px + '"');
+    var url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })), img = new Image();
+    return new Promise(function (ok, no) { img.onload = ok; img.onerror = function () { no(new Error('Could not draw the picture.')); }; img.src = url; }).then(function () { var cv = document.createElement('canvas'); cv.width = cv.height = px; var g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, px, px); g.imageSmoothingEnabled = false; g.drawImage(img, 0, 0, px, px); URL.revokeObjectURL(url); return cv; });
+  }
+  function printSign() {
+    var c = S.code; if (!c) return;
+    svgFor(c.token).then(function (svg) {
+      var w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print the sign.', true); return; }
+      var biz = esc(localStorage.getItem('pos_biz_name') || '');
+      w.document.write('<!doctype html><meta charset="utf-8"><title>Order from home</title><style>body{font-family:system-ui,sans-serif;margin:0;display:flex;justify-content:center}.s{width:420px;margin:24px;border:3px dashed #0e9f6e;border-radius:22px;padding:26px 22px;text-align:center}.s h1{margin:0 0 4px;font-size:30px}.s h2{margin:0 0 14px;font-size:18px;color:#0b7f58}.s svg{width:300px;height:300px}.s p{margin:12px 0 0;font-size:15px}.s small{display:block;margin-top:10px;color:#667;word-break:break-all;font-size:11px}</style><div class="s">' + (biz ? '<h1>' + biz + '</h1>' : '') + '<h2>Scan to order from home</h2>' + svg + '<p>Pick what you want, send your name, phone and where to bring it. We confirm, then you pay on delivery or pickup.</p><small>' + esc(urlFor(c.token)) + '</small></div><script>setTimeout(function(){print()},400)<\/script>');
+      w.document.close();
+    }).catch(function (e) { toast(e.message, true); });
+  }
+  function onReceipt() {
+    var c = S.code; if (!c) return;
+    if (typeof receiptQrData !== 'undefined' && receiptQrData && typeof receiptQrCaption !== 'undefined' && receiptQrCaption !== 'Scan to order from home' && !confirm('Your receipts already print a QR picture. Replace it with the order-from-home QR?')) return;
+    svgFor(c.token).then(function (svg) { return drawPng(svg, 300); }).then(function (cv) {
+      receiptQrData = cv.toDataURL('image/png'); safeSetItem('pos_receipt_qr', receiptQrData);
+      receiptQrCaption = 'Scan to order from home'; safeSetItem('pos_receipt_qr_caption', receiptQrCaption);
+      receiptShowQr = true; safeSetItem('pos_receipt_show_qr', 'true');
+      try { syncReceiptBrandingUI(); } catch (e) { /* cosmetic */ } try { queuePush(); } catch (e) { /* next change sends it */ } try { pushSharedReceiptSettingsIfNeeded(); } catch (e) { /* ok */ }
+      toast('Done — every receipt now prints the order-from-home QR. Print a test receipt to see it.');
+    }).catch(function (e) { toast(e.message || 'Could not set the receipt QR.', true); });
+  }
+  function saveSettings() {
+    function v(id) { var e = $(id); return e ? String(e.value || '').trim() : ''; }
+    cfg.open = !!($('pubo-open') && $('pubo-open').checked); cfg.note = v('pubo-note'); cfg.till = v('pubo-till'); cfg.paybill = v('pubo-paybill'); cfg.acc = v('pubo-acc'); cfg.accName = v('pubo-accname'); cfg.instr = v('pubo-instr'); cfg.touchedAt = Date.now(); saveCfg(cfg);
+    S.openSet = true; publish(false);
+  }
+  function onClick(ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-pubo]') : null; if (!t) return;
+    var a = t.getAttribute('data-pubo'), id = t.getAttribute('data-id');
+    if (a === 'filter') { S.filter = id; render(); }
+    else if (a === 'accept') accept(id); else if (a === 'reject') reject(id); else if (a === 'sale') toSale(id);
+    else if (a.indexOf('st-') === 0) setStatus(id, a.slice(3));
+    else if (a === 'req-yes' || a === 'req-no') call({ action: 'decideRequest', reqId: id, approve: a === 'req-yes' }).then(function () { toast(a === 'req-yes' ? 'Approved. If the order is already in the cart, change it there too.' : 'Declined.'); poll(); }).catch(function (e) { toast((e.data && e.data.message) || e.message, true); poll(); });
+    else if (a === 'pay-no') { if (confirm('Mark this payment as NOT received? The customer is told to pay again.')) call({ action: 'rejectPayment', payId: id }).then(poll).catch(function (e) { toast(e.message, true); }); }
+    else if (a === 'copy') { var u = S.code && urlFor(S.code.token); try { navigator.clipboard.writeText(u).then(function () { toast('Link copied.'); }, function () { toast(u); }); } catch (e) { toast(u); } }
+    else if (a === 'wa') { if (S.code) window.open('https://wa.me/?text=' + encodeURIComponent('Order from ' + (localStorage.getItem('pos_biz_name') || 'us') + ' here: ' + urlFor(S.code.token)), '_blank'); }
+    else if (a === 'png') { if (S.code) svgFor(S.code.token).then(function (s) { return drawPng(s, 1024); }).then(function (cv) { cv.toBlob(function (b) { b ? save(b, 'order-from-home-QR.png') : toast('Could not make the picture.', true); }, 'image/png'); }).catch(function (e) { toast(e.message, true); }); }
+    else if (a === 'print') printSign(); else if (a === 'receipt') onReceipt(); else if (a === 'save') saveSettings();
+    else if (a === 'publish') publish(false); else if (a === 'setup') setup(true); else if (a === 'unload') unload();
+  }
+
+  /* ---------- the tab + button (built here, registered for staff roles like every other tab) ---------- */
+  function ensure() {
+    var sales = $('sales-tab'), sb = $('sales-tab-btn') || document.querySelector('.tab-link[data-tab="sales-tab"]');
+    if (!sales || !sb) return false;
+    if (!$(ID)) { var d = document.createElement('div'); d.id = ID; d.className = 'tab-content'; sales.parentNode.insertBefore(d, sales.nextSibling); d.addEventListener('click', onClick); }
+    if (!$(BTN)) {
+      var nb = document.createElement('button'); nb.id = BTN; nb.className = 'tab-link'; nb.setAttribute('data-tab', ID); nb.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')");
+      nb.textContent = '🛵 Online Orders'; sb.parentNode.insertBefore(nb, sb.nextSibling);
+      nb.addEventListener('click', function () { setTimeout(function () { S.fresh = {}; render(); poll(); setup(false); }, 0); });
+    }
+    return !!$(BTN);
+  }
+  function register() {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === ID; })) {
+        var item = { id: ID, label: '🛵 Online Orders' }, i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'deliveries-tab'; });
+        LOCKABLE_TABS.splice(i >= 0 ? i + 1 : LOCKABLE_TABS.length, 0, item);
+        if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === ID; })) ROLE_TABS.push(item);
+      }
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  // staff who work the Sales Counter get this tab once in their roles (the admin can untick it later)
+  function migrate() {
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return; var changed = false;
+      staff.forEach(function (m) { if (!m || m.puboMigrated) return; m.puboMigrated = true; changed = true; if (Array.isArray(m.roles) && m.roles.indexOf('sales-tab') >= 0 && m.roles.indexOf(ID) < 0) { m.roles.push(ID); m.updatedAt = Date.now(); } });
+      if (changed) { safeSetItem('pos_staff', JSON.stringify(staff)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  function boot() {
+    var n = 0;
+    (function tick() { try { if (ensure()) { register(); wrapCheckout(); banner(); if (n === 3) migrate(); } } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 300 : 1500); })();
+    setTimeout(function () { try { setup(true); } catch (e) { /* the interval retries */ } }, 7000);
+    setInterval(function () { try { ensure(); badge(); banner(); } catch (e) { /* cosmetic */ } }, 3000);
+    setInterval(function () { try { if (S.code || S.lastSetupTry) setup(false); } catch (e) { /* next time */ } }, 60000);
+    setInterval(function () {      // live connection healthy: a new order already pokes this device, so this is only a backstop
+      try {
+        var sock = (typeof syncSocket !== 'undefined') ? syncSocket : null, now = Date.now(), live = !!(sock && sock.readyState === 1 && window.__wsPongSeen && now - (window.__wsLastRxAt || 0) < 45000);
+        if (document.hidden && now - Math.max(S.lastOk, S.lastFail) < 60000) return;
+        if (live && now - Math.max(S.lastOk, S.lastFail) < 30000) return;
+      } catch (e) { /* any doubt: check */ }
+      poll();
+    }, 8000);
+    // a poke from the server (something changed) also checks for online orders at once
+    var tries = 0; (function hook() { if (typeof window.pullFreshAfterPoke === 'function' && !window.__puboPoke) { window.__puboPoke = true; var base = window.pullFreshAfterPoke; window.pullFreshAfterPoke = function () { try { poll(); } catch (e) { /* the timer still polls */ } return base.apply(this, arguments); }; } else if (!window.__puboPoke && ++tries < 20) setTimeout(hook, 1000); })();
+  }
+  window.PUBO = { __v: 368, flush: flush, outbox: outbox, buildMenu: buildMenu, publish: publish, poll: poll, setup: setup, state: S, cfg: function () { return cfg; }, parseNote: parseNote };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

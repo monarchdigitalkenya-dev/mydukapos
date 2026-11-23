@@ -1,0 +1,145 @@
+<!-- DELIVERY GUARD ------------------------------------------------------------------------------------------------------------
+     zip 374: orders and bills must never silently stop arriving on the kitchen / cashier devices.
+     Why they stopped: a phone or tablet that is idle for a while freezes the page's timers, or keeps a WebSocket that LOOKS open but is dead,
+     and the app believed it was "live", so it only checked the server every 30-45 s - or never. This guard does not trust the connection:
+       1. every 10 s (screen on) it checks WHEN this device last really heard from the server; older than 30 s -> it asks the server again;
+       2. older than 45 s -> it throws the connection away and opens a new one;
+       3. older than 90 s -> it also clears every pause / back-off and re-sends anything stuck;
+       4. anything this device made that the server has not confirmed for 40 s is pushed again the same way;
+       5. when it comes back from sleep / another app / no network it catches up at once;
+       6. it asks the phone to keep the screen on;
+       7. zip 378: nothing is shown on screen (no bar, no beep, no pill) - it only recovers, silently.
+     What no web page can do: run while the phone is switched off, the app is force-closed, or the system has killed it. Keep the app open on the
+     kitchen / cashier device and plugged in. Nothing is sent to anyone: all of this runs on the device. -->
+<style>
+/* zip 378: the delivery guard shows nothing on screen */
+#dg-bar,#dg-pill{display:none!important}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.DeliveryGuard) return;
+  var KEEP_KEY = 'pos_keepawake_v1';
+  var S = { lastOk: Date.now(), unsyncedSince: 0, lastKick: 0, lastReset: 0, lastRetry: 0, lastBeep: 0, lastReconnect: 0, wake: null, timer: null, bar: null, pill: null, state: 'ok' };
+
+  // ---- the decision, pure (tested): what is the state and what must be done now? ----
+  // in: now, lastOk (last real answer from the server), unsyncedSince (0 = nothing waiting), hidden, online, lastKick/lastReconnect/lastReset/lastRetry
+  function decide(i) {
+    var age = i.now - i.lastOk, out = { state: 'ok', pull: false, reconnect: false, reset: false, push: false, age: age };
+    if (i.hidden) return out;                                         // timers are frozen anyway; the visible/focus hook catches up
+    var waiting = i.unsyncedSince ? i.now - i.unsyncedSince : 0;
+    if (age > 30000 && i.now - i.lastKick >= 10000) out.pull = true;
+    if (age > 45000 && i.now - i.lastReconnect >= 30000) out.reconnect = true;
+    if ((age > 90000 || waiting > 90000) && i.now - i.lastReset >= 120000) out.reset = true;
+    if (waiting > 40000 && i.now - i.lastKick >= 10000) out.push = true;
+    out.state = (age > 60000 || waiting > 60000) ? (i.online === false ? 'offline' : 'stale') : (age > 30000 || waiting > 30000 ? 'warn' : 'ok');
+    return out;
+  }
+
+  function fn(name) { try { return typeof window[name] === 'function' ? window[name] : null; } catch (e) { return null; } }
+  function now() { return Date.now(); }
+
+  // ---- note every real answer from the server ----
+  // "Heard from the server" = a GET of the sync endpoint (what a pull is) that was answered, or any message that came over the live socket.
+  // A push proves nothing about RECEIVING, so it does not count. (A pull skipped because this device's own push is stuck is not counted either:
+  // that is exactly the situation the red bar is for.)
+  function syncPath() { try { return typeof SYNC_URL === 'string' && SYNC_URL ? SYNC_URL : '/api/sync'; } catch (e) { return '/api/sync'; } }
+  function noteFetch(url, method, status) {
+    try {
+      if (String(method || 'GET').toUpperCase() !== 'GET') return;
+      var u = String(url || ''), q = u.indexOf('?'); u = q >= 0 ? u.slice(0, q) : u;
+      var sp = syncPath(); if (u.slice(-sp.length) !== sp) return;
+      if (status >= 200 && status < 400) S.lastOk = now();
+    } catch (e) { /* diagnostics */ }
+  }
+  function wrap() {
+    if (window.fetch && !window.fetch.__dg) {
+      var of = window.fetch;
+      var wf = function (input, init) {
+        var p = of.apply(this, arguments);
+        try {
+          var url = typeof input === 'string' ? input : (input && input.url) || '', method = (init && init.method) || (input && input.method) || 'GET';
+          Promise.resolve(p).then(function (res) { if (res) noteFetch(url, method, res.status); }, function () { /* no answer: nothing to note */ });
+        } catch (e) { /* the request itself is untouched */ }
+        return p;
+      };
+      wf.__dg = true; window.fetch = wf;
+    }
+  }
+  function wsHeard() { var t = Number(window.__wsLastRxAt) || 0; if (t > S.lastOk && t <= now()) S.lastOk = t; }   // a real message / pong on the live socket
+
+  function hasWaiting() { try { var h = fn('hasUnsyncedWork'); return !!(h && h()); } catch (e) { return false; } }
+
+  function kick(reason) {
+    S.lastKick = now();
+    try { var f = fn('flushThenPull'); if (f) { f(); return; } var p = fn('pullState'); if (p) p(); } catch (e) { /* next tick */ }
+  }
+  function reconnect() {
+    S.lastReconnect = now();
+    try { if (typeof syncSocket !== 'undefined' && syncSocket) { try { syncSocket.close(); } catch (e) { /* already dead */ } } } catch (e) { /* none */ }
+    try { window.__wsOpenedAt = 0; var c = fn('connectSyncSocket'); if (c) setTimeout(c, 400); } catch (e) { /* the poll covers it */ }
+  }
+  function reset(manual) {                                           // automatic: leaves permanently refused records alone; a tap on Retry revives those too
+    S.lastReset = now();
+    try { var r = fn('syncRetryAttention'); if (r) r(!manual); } catch (e) { /* none */ }
+  }
+
+  // ---- screen ----
+  // zip 378: NOTHING is shown on screen any more - no red bar, no beep, no vibration, no status pill. A message that "orders are not arriving"
+  // caused panic at the counter while the watchdog was already fixing it. The watchdog below still does all the work silently
+  // (catch-up, reconnect, re-send). The screen is still kept on (pos_keepawake_v1 = '0' in localStorage turns that off).
+  function ensureUi() { /* zip 378: no on-screen bar or pill */ }
+  function render(d) { /* zip 378: silent */ }
+
+  // ---- keep the screen on ----
+  function keepWanted() { try { return localStorage.getItem(KEEP_KEY) !== '0'; } catch (e) { return true; } }
+  function setKeep(on) {
+    try { localStorage.setItem(KEEP_KEY, on ? '1' : '0'); } catch (e) { /* memory only */ }
+    if (on) acquire(); else release();
+  }
+  function acquire() {
+    try {
+      if (!keepWanted() || S.wake || !navigator.wakeLock || document.visibilityState !== 'visible') return;
+      navigator.wakeLock.request('screen').then(function (l) {
+        S.wake = l; l.addEventListener('release', function () { S.wake = null; });
+      }).catch(function () { /* low battery / not allowed: the guard still works while the screen is on */ });
+    } catch (e) { /* unsupported */ }
+  }
+  function release() { try { if (S.wake) S.wake.release(); } catch (e) { /* none */ } S.wake = null; }
+
+  // ---- the watchdog ----
+  function active() {                                                // only once this app has started syncing (after login); never on the login screen or in a copy that does not sync
+    try { return typeof pollTimer !== 'undefined' ? !!pollTimer : !!fn('pullState'); } catch (e) { return false; }
+  }
+  function tick() {
+    try {
+      if (!active()) { S.lastOk = now(); S.unsyncedSince = 0; S.state = 'ok'; return; }
+      wsHeard();
+      var waiting = hasWaiting();
+      if (waiting && !S.unsyncedSince) S.unsyncedSince = now();
+      if (!waiting) S.unsyncedSince = 0;
+      var d = decide({ now: now(), lastOk: S.lastOk, unsyncedSince: S.unsyncedSince, hidden: document.visibilityState === 'hidden', online: navigator.onLine, lastKick: S.lastKick, lastReconnect: S.lastReconnect, lastReset: S.lastReset });
+      S.state = d.state;
+      if (d.reconnect) reconnect();
+      if (d.reset) reset();
+      if (d.pull || d.push) kick('watchdog');
+      render(d);
+    } catch (e) { /* the next tick */ }
+  }
+  function wake() {                                                  // back from sleep / another app / offline: do not wait for the next tick
+    try { if (document.visibilityState === 'hidden') return; acquire(); if (now() - S.lastOk > 8000) { kick('resume'); if (now() - S.lastOk > 30000) reconnect(); } setTimeout(tick, 1500); } catch (e) { /* the tick follows */ }
+  }
+  function start() {
+    wrap();
+    if (S.timer) return;
+    S.timer = setInterval(tick, 10000);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') release(); wake(); });
+    window.addEventListener('focus', wake); window.addEventListener('online', wake); window.addEventListener('pageshow', wake);
+    document.addEventListener('resume', wake);
+    acquire(); setTimeout(wrap, 3000); setTimeout(tick, 4000);
+  }
+  window.DeliveryGuard = { decide: decide, noteFetch: noteFetch, state: function () { return { state: S.state, lastOk: S.lastOk, unsyncedSince: S.unsyncedSince }; }, tick: tick, setKeepAwake: setKeep, _S: S };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+</script>
+<!-- /DELIVERY GUARD -->

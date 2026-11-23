@@ -1,0 +1,393 @@
+<!-- COUNTER PRO (zip 298) --------------------------------------------------------------------------------------------------------
+     Sales Counter, desktop / laptop / tablet (wider than 700 px - the phone till has its own layout and is left alone):
+       - a compact, dense product grid: 5-7 columns, a small picture strip (a small 📦 placeholder when there is none), two-line names, the full name on hover
+       - ONE search field: icon inside, clear (x) inside, placeholder "Search products, barcode or SKU...", the camera button as a small icon button; the
+         "Product Search" heading and the loose hint line are gone (the Sales / Bills buttons moved up beside the search box)
+       - a compact one-row category bar (scrolls sideways, counts on every chip) - only where the app has no category bar of its own (the Hotel keeps its own
+         chips, compacted) and only while the picture-tile mode (category-tiles) is off
+       - [ Hold Sale ] [ Open Drawer ] [ COMPLETE SALE ] on ONE row at the bottom of the cart: the very same buttons (same ids, same handlers, same permissions),
+         only moved. "Open Drawer" is the existing cash-drawer chip (the cash float panel); it is not a new button and nothing is simulated.
+       - a tighter cart (less padding, shorter rows) and a tighter page, so the totals and the sale buttons stay in view
+       - scanner readiness: a small "Scan ready" light, and window.__ccScanSkip() which tells the app's keyboard-wedge listener when a burst of keys belongs to a
+         text box someone is deliberately typing in (a payment reference, a customer / delivery form, anything inside a dialog or the cart sheet) so it is NOT
+         taken for a barcode. A scan with nothing focused, or with the cursor in the search box / a quantity / price / cash box, behaves exactly as before.
+     Nothing here sells, stocks, prices or saves anything. It only moves existing buttons and styles existing elements. Keyboard: F2 = search, Esc in the search = clear,
+     Enter / Space on a product card = add it. Classes / ids: ccp-*, cc-*. -->
+<style id="ccp-css">
+#sales-tab.ccp-on.tab-content { padding: 10px 14px 12px; }
+#sales-tab.ccp-on .pos-grid { gap: 12px; }
+@media (min-width: 901px) { #sales-tab.ccp-on .pos-grid { grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr); } }
+#sales-tab.ccp-on .pos-grid > .panel, #sales-tab.ccp-on #sales-cart-slot > .panel { padding: 10px 12px; border-radius: 12px; }
+#sales-tab.ccp-on .pos-grid > .panel > h3 { margin-bottom: 8px; padding-bottom: 6px; font-size: 15px; }
+#sales-tab.ccp-on .pos-grid > .panel > h3::before { height: 16px; }
+/* ---- the search row ---- */
+#sales-tab.ccp-on .pos-products > h3.ccp-empty { display: none; }
+#sales-tab.ccp-on .search-container { margin: 0 0 4px; position: relative; }
+#sales-tab.ccp-on .search-container > div:first-child { display: flex; align-items: center; gap: 6px; }
+html body #sales-tab.ccp-on #sales-search { min-width: 0; height: 38px !important; min-height: 0 !important; padding: 0 12px 0 34px !important; font-size: 14px !important; border-radius: 10px !important; background-repeat: no-repeat !important; background-position: 11px 50% !important; background-size: 15px 15px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a97a0' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") !important; }
+html body #sales-tab.ccp-on .cc-has #sales-search { padding-right: 36px !important; }
+#sales-tab.ccp-on .search-container button[onclick*="openBarcodeScanModal"] { flex: 0 0 auto; width: 38px; min-width: 38px; height: 38px; min-height: 0; padding: 0; font-size: 16px; border-radius: 10px; }
+#sales-tab.ccp-on .search-container .pos-head-actions { margin: 0 !important; flex: 0 0 auto; white-space: nowrap; }
+#sales-tab.ccp-on .search-container .pos-head-actions button { min-height: 0 !important; height: 38px; padding: 0 12px !important; border-radius: 10px !important; font-size: 13px !important; }
+.cc-clear { display: none; flex: 0 0 auto; width: 26px; height: 26px; margin: 0 0 0 -36px; padding: 0; border: 0; border-radius: 50%; background: rgba(120, 132, 140, .18); color: #5d6a72; font-size: 15px; line-height: 1; cursor: pointer; align-items: center; justify-content: center; position: relative; z-index: 2; }
+.cc-clear:hover { background: rgba(120, 132, 140, .32); }
+.cc-clear:focus-visible, .cc-chip:focus-visible, #sales-tab .item-grid-cell:focus-visible { outline: 2px solid var(--accent, #2980b9); outline-offset: 1px; }
+#sales-tab.ccp-on .cc-has .cc-clear { display: inline-flex; }
+.cc-scan { flex: 0 0 auto; display: none; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; background: rgba(39, 174, 96, .14); color: #1e8449; border: 1px solid rgba(39, 174, 96, .35); }
+.cc-scan::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.cc-scan.pause { background: rgba(243, 156, 18, .15); color: #9a6200; border-color: rgba(243, 156, 18, .45); }
+.cc-scan.pause::before { background: transparent; border: 1.5px solid currentColor; }
+#sales-tab.ccp-on.cc-sales-on .cc-scan { display: inline-flex; }
+/* zip 300: no "Scan ready" wording - only the small light stays (green = a scanner works now, hollow amber = paused) */
+.cc-scan, #sales-tab.ccp-on.cc-sales-on .cc-scan { font-size: 0 !important; gap: 0 !important; width: 14px; min-width: 14px; height: 14px !important; padding: 0 !important; justify-content: center; background: transparent !important; border: 0 !important; }
+.cc-scan::before { width: 9px; height: 9px; }
+#sales-tab.ccp-on #search-results .search-item { padding: 7px 10px; font-size: 13px; }
+#sales-tab.ccp-on .pos-products > p, #sales-tab.ccp-on .pos-products > .search-container + p { display: none; }
+/* ---- categories ---- */
+#cc-cat-bar, #sales-tab.ccp-on #sc-cat-bar, #sales-tab.ccp-on #sc-cat-bar-sub { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 4px; padding: 2px 1px 3px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; background: transparent; }
+#cc-cat-bar[hidden], #sales-tab.ccp-on #sc-cat-bar[style*="display: none"], #sales-tab.ccp-on #sc-cat-bar[style*="display:none"] { display: none; }
+body.ctl-on #cc-cat-bar { display: none; }
+#cc-cat-bar::-webkit-scrollbar, #sales-tab.ccp-on #sc-cat-bar::-webkit-scrollbar { height: 5px; }
+#cc-cat-bar::-webkit-scrollbar-thumb, #sales-tab.ccp-on #sc-cat-bar::-webkit-scrollbar-thumb { background: rgba(120, 132, 140, .35); border-radius: 3px; }
+#sales-tab.ccp-on .hcat-bar .hcat-chip, #cc-cat-bar .cc-chip { flex: 0 0 auto; min-height: 0; height: 28px; padding: 0 10px; border-radius: 14px; font-size: 12px; font-weight: 700; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  border: 1px solid var(--border-color, #ccd1d6); background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); }
+#cc-cat-bar .cc-chip.on { background: var(--accent, #0e7c6b); border-color: var(--accent, #0e7c6b); color: #fff; }
+#cc-cat-bar .cc-chip .cc-n { min-width: 16px; padding: 0 5px; border-radius: 8px; background: rgba(0, 0, 0, .1); font-size: 10.5px; line-height: 16px; text-align: center; }
+#cc-cat-bar .cc-chip.on .cc-n { background: rgba(255, 255, 255, .28); }
+/* ---- the product grid ---- */
+#sales-tab.ccp-on #item-image-grid { grid-template-columns: repeat(var(--cc-cols, 6), minmax(0, 1fr)); gap: 6px; margin-top: 2px; padding: 3px 4px 4px 1px; border-top: 0; }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell { border-radius: 8px; box-shadow: none; transition: border-color .1s, background .1s; }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell:hover { transform: none; box-shadow: none; border-color: var(--accent, #2980b9); background: var(--bg-surface-alt, #f4f8fb); }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell:active { transform: scale(.985); }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell img, #sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-noimg { aspect-ratio: 1 / 1; width: 100%; height: auto; }   /* zip 299: a full square picture, not a strip */
+#sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-noimg { font-size: 30px; }
+/* ---- zip 299: product pictures are square (1:1) and the WHOLE picture shows, in every module ---- */
+.item-grid-cell img, .svc-menu-btn .svc-thumb, .size-card .size-photo, .hcat-thumb, .inv-thumb, .dp-thumb img, .ctl-img img, .ctl-thumb img, #img-menu img { object-fit: contain !important; object-position: center; background: var(--bg-surface-alt, #f4f6f7); }
+.item-grid-cell img, .svc-menu-btn .svc-thumb { aspect-ratio: 1 / 1 !important; width: 100%; height: auto; }
+.inv-thumb { width: 52px !important; height: 52px !important; }
+.hcat-thumb { width: 40px; height: 40px; }
+#img-menu img { width: 160px; height: 160px; }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-name { font-size: 11.5px; line-height: 1.22; padding: 4px 6px 0; min-height: 2.44em; }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-price { font-size: 12px; padding: 1px 6px 5px; }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-stock { top: 2px; left: 2px; padding: 0 5px; font-size: 9px; line-height: 14px; max-width: calc(100% - 24px); }
+#sales-tab.ccp-on #item-image-grid .item-grid-cell .igc-price-badge { top: 2px; right: 2px; width: 18px; height: 18px; font-size: 10px; }
+/* ---- zip 300: a narrow cart stacks each line as a small card ---- */
+#sales-tab.ccp-on.cc-narrow #cart-table thead { display: none; }
+#sales-tab.ccp-on.cc-narrow #cart-table, #sales-tab.ccp-on.cc-narrow #cart-table tbody { display: block; width: 100%; min-width: 0 !important; max-width: 100%; }   /* .table-scroll table has min-width: 480px */
+#sales-tab.ccp-on.cc-narrow #cart-table tr:has(> td:nth-child(5)) { box-sizing: border-box; width: 100%; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr:has(> td:nth-child(5)) { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "n n t" "q p x"; gap: 6px 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border-color, #e5e9ec); }
+#sales-tab.ccp-on.cc-narrow #cart-table tr:has(> td:nth-child(5)) > td { display: block; min-width: 0 !important; width: auto; padding: 0; border: 0; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr > td:nth-child(1) { grid-area: n; font-size: 13px; line-height: 1.25; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr > td:nth-child(2) { grid-area: q; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr > td:nth-child(3) { grid-area: p; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr > td:nth-child(4) { grid-area: t; text-align: right; font-weight: 800; white-space: nowrap; }
+#sales-tab.ccp-on.cc-narrow #cart-table tr > td:nth-child(5) { grid-area: x; }
+#sales-tab.ccp-on.cc-narrow #cart-table .qty-controls { display: flex; align-items: center; gap: 4px; }
+#sales-tab.ccp-on.cc-narrow #cart-table .qty-controls > span { display: none; }
+#sales-tab.ccp-on.cc-narrow #cart-table .qty-controls > button { flex: 0 0 26px; min-width: 26px; }
+#sales-tab.ccp-on.cc-narrow #cart-table td:nth-child(2) input[type=number] { width: 42px !important; }
+#sales-tab.ccp-on.cc-narrow #cart-table .cart-price-chip { min-width: 0; padding: 2px 6px; }
+#sales-tab.ccp-on.cc-narrow #cart-table .cart-price-chip .cpc-amt { font-size: 12.5px; white-space: nowrap; }
+#sales-tab.ccp-on.cc-narrow #cart-table td:nth-child(5) button.remove-btn { width: 30px; height: 30px; padding: 0 !important; font-size: 0 !important; line-height: 1; border-radius: 8px; }
+#sales-tab.ccp-on.cc-narrow #cart-table td:nth-child(5) button.remove-btn::before { content: "\2715"; font-size: 13px; }
+/* ---- the cart ---- */
+#sales-tab.ccp-on .pos-checkout .order-type-toggle button, #sales-tab.ccp-on #order-type-toggle button { min-height: 0; height: 32px; padding: 0 10px; font-size: 13px; }
+#sales-tab.ccp-on .pos-checkout .pos-cart-scroll thead th { padding: 5px 8px; font-size: 11px; }
+#sales-tab.ccp-on .pos-checkout .pos-cart-scroll table td { padding: 4px 8px; font-size: 13px; }
+#sales-tab.ccp-on #cart-table td:first-child { min-width: 120px; line-height: 1.25; }
+#sales-tab.ccp-on #cart-table td:nth-child(4) { white-space: nowrap; }
+#sales-tab.ccp-on #cart-table .price-input, #sales-tab.ccp-on #cart-table button.price-input { width: 96px !important; }
+#sales-tab.ccp-on #cart-table input[type=number] { height: 30px; min-height: 0; font-size: 14px; }
+#sales-tab.ccp-on #cart-table td:nth-child(2) input[type=number] { width: 54px !important; padding: 0 4px; text-align: center; -moz-appearance: textfield; appearance: textfield; }
+#sales-tab.ccp-on #cart-table td:nth-child(2) input[type=number]::-webkit-inner-spin-button, #sales-tab.ccp-on #cart-table td:nth-child(2) input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }   /* the - / + buttons step it; a click in the middle of a narrow box must never land on a hidden spinner */
+#sales-tab.ccp-on #cart-table td:nth-child(2) button { width: 26px; height: 26px; padding: 0; }
+#sales-tab.ccp-on #cart-table td button { min-height: 0; }
+#sales-tab.ccp-on #cart-table td button[onclick*="emove"] { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+#sales-tab.ccp-on #cart-sticky-bar .grand-total { padding: 6px 12px; font-size: 22px; }
+#sales-tab.ccp-on #cart-sticky-bar .payment-toggle button { padding: 7px 4px; }
+/* ---- [ Hold Sale ] [ Open Drawer ] [ COMPLETE SALE ] ---- */
+#cc-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; margin: 6px 0 0; }
+#cc-actions > button { box-sizing: border-box; flex: 0 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 44px; min-height: 0; margin: 0 !important; padding: 0 12px !important; border-radius: 10px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+#cc-actions > #hold-sale-btn, #cc-actions > #cash-chip, #cc-actions > #resume-held-btn { background: var(--bg-surface-alt, #f1f3f5) !important; color: var(--dark, #2c3e50) !important; border: 1.5px solid var(--border-color, #cfd6dc); box-shadow: none; }
+#cc-actions > #resume-held-btn { border-color: #8e44ad; color: #6c3483 !important; }
+#cc-actions > #cash-chip { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+#cc-actions > #hold-sale-btn:not(:disabled):hover, #cc-actions > #cash-chip:hover, #cc-actions > #resume-held-btn:hover { border-color: var(--accent, #2980b9); }
+#cc-actions > #hold-sale-btn:disabled { cursor: not-allowed; }
+#cart-sticky-bar #cc-actions > #main-checkout-btn { flex: 1 1 150px; width: auto !important; min-width: 130px; height: 46px; min-height: 0; font-size: 15px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+#sales-tab.ccp-on #held-sale-bar.cc-empty { display: none; }
+html[data-theme="dark"] .cc-scan { color: #58d68d; }
+html[data-theme="dark"] .cc-scan.pause { color: #f5b041; }
+</style>
+<script id="ccp-js">
+(function () {
+  'use strict';
+  if (window.__ccp) return;
+  window.__ccp = {};
+  var MQ = '(min-width: 701px)';
+  var ph = 'Search products, barcode or SKU...';
+  var S = { cat: null };                       // the chosen category (lower-case key, '' = Uncategorised) or null = all
+  var $ = function (id) { return document.getElementById(id); };
+  function desk() { try { return window.matchMedia ? window.matchMedia(MQ).matches : true; } catch (e) { return true; } }
+  function tab() { return $('sales-tab'); }
+  function safe(f) { try { return f(); } catch (e) { return undefined; } }
+
+  /* ---------------- scanner: is the person deliberately typing in a box? ---------------- */
+  var CODEISH = /code|barcode|scan|search|ref|sku/i;
+  var PAYISH = /mpesa|m-pesa|payment|pay-|split|bank|card|customer|phone|delivery|address|\bpin\b|password|bill-|reference|payer|note|reason|name/i;
+  function inFixed(el) {
+    for (var n = el; n && n !== document.body && n.nodeType === 1; n = n.parentNode) {
+      var cs = null; try { cs = window.getComputedStyle(n); } catch (e) { cs = null; }
+      if (cs && cs.position === 'fixed') return true;
+    }
+    return false;
+  }
+  function intentional(el) {
+    if (!el || el === document.body || el === document.documentElement || el.nodeType !== 1) return false;
+    if (el.isContentEditable) return true;
+    var tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+    var ty = tag === 'TEXTAREA' ? 'textarea' : String(el.type || 'text').toLowerCase();
+    if (/^(checkbox|radio|button|submit|range|file|color|image|reset)$/.test(ty)) return false;
+    if (el.id === 'sales-search' || el.id === 'scanner-test-input') return false;
+    if (inFixed(el)) return !CODEISH.test(el.id + ' ' + (el.name || '') + ' ' + (el.placeholder || '')) || PAYISH.test(el.id + ' ' + (el.name || ''));
+    if (ty === 'number') return false;                                   // quantity / price / cash boxes: a scan wins (the app takes the digits back out)
+    var key = el.id + ' ' + (el.name || '') + ' ' + (el.placeholder || '');
+    if (PAYISH.test(el.id + ' ' + (el.name || ''))) return true;         // a payment reference, a customer or delivery box: typing, never a scan
+    return !CODEISH.test(key);
+  }
+  window.__ccScanSkip = function () { return !!safe(function () { return intentional(document.activeElement); }); };
+  window.__ccScanIntentional = intentional;
+
+  /* ---------------- the search box ---------------- */
+  function searchSetup() {
+    var inp = $('sales-search'); if (!inp) return;
+    inp.placeholder = ph;
+    inp.setAttribute('aria-label', 'Search products, barcode or SKU');
+    var row = inp.parentNode; if (!row) return;
+    var clr = $('cc-clear');
+    if (!clr) {
+      clr = document.createElement('button'); clr.type = 'button'; clr.id = 'cc-clear'; clr.className = 'cc-clear'; clr.setAttribute('aria-label', 'Clear search'); clr.title = 'Clear (Esc)'; clr.textContent = '×';
+      clr.addEventListener('click', function () { clearSearch(true); });
+      row.insertBefore(clr, inp.nextSibling);
+      inp.addEventListener('input', syncClear);
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Escape' && inp.value) { e.preventDefault(); clearSearch(false); } });
+    }
+    var sc = $('cc-scan');
+    if (!sc) {
+      sc = document.createElement('span'); sc.id = 'cc-scan'; sc.className = 'cc-scan'; sc.setAttribute('role', 'status');
+      sc.textContent = 'Scan ready'; sc.title = 'A barcode scanner works right now: just scan, no need to click the search box.';
+      row.appendChild(sc);
+    }
+    var cam = row.querySelector('button[onclick*="openBarcodeScanModal"]'); if (cam && !cam.getAttribute('aria-label')) cam.setAttribute('aria-label', 'Scan barcode with the camera');
+    syncClear();
+  }
+  function syncClear() { var inp = $('sales-search'); if (inp && inp.parentNode) inp.parentNode.classList.toggle('cc-has', !!inp.value); }
+  function clearSearch(focus) {
+    var inp = $('sales-search'); if (!inp) return;
+    inp.value = '';
+    try { if (typeof liveSearch === 'function') liveSearch(''); } catch (e) { /* the grid redraws on the next render */ }
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    syncClear();
+    if (focus) { try { inp.focus(); } catch (e) { /* cosmetic */ } }
+  }
+  function headerPlace() {
+    var t = tab(), inp = $('sales-search'); if (!t || !inp) return;
+    var h3 = t.querySelector('.pos-products > h3') || t.querySelector('.pos-grid > .panel > h3');
+    var row = inp.parentNode, bar = (h3 && h3.querySelector('.pos-head-actions')) || (row && row.querySelector('.pos-head-actions'));
+    if (!row) return;
+    if (desk()) {
+      if (bar && bar.parentNode !== row) row.appendChild(bar);
+      var sc = $('cc-scan'); if (sc && sc.parentNode === row && row.lastElementChild !== sc) row.appendChild(sc);
+      if (h3) h3.classList.toggle('ccp-empty', !Array.prototype.some.call(h3.querySelectorAll('button'), function (b) { return !b.classList.contains('ptl-search-btn'); }));
+    } else {
+      if (bar && h3 && bar.parentNode === row) h3.appendChild(bar);
+      if (h3) h3.classList.remove('ccp-empty');
+    }
+  }
+
+  /* ---------------- categories ---------------- */
+  function normCat(c) { c = String(c == null ? '' : c).trim().toLowerCase(); return c === 'uncategorised' ? '' : c; }
+  function catList() {
+    var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { inv = []; }
+    var map = {}, order = [], total = 0;
+    inv.forEach(function (p) {
+      if (!p) return;
+      try { if (typeof isSellableProduct === 'function' && !isSellableProduct(p)) return; } catch (e) { return; }
+      if ((p.dualUnit && typeof window.igcDualCellHtml !== 'function') || p.type === 'service') return;   // zip 327: box-and-piece items are in the grid now
+      var n = 1;
+      if (p.hasVariants) { if (Array.isArray(p.variants) && p.variants.length) n = p.variants.length; else return; }
+      var label = String(p.category == null ? '' : p.category).trim() || 'Uncategorised', k = normCat(label);
+      if (!map[k]) { map[k] = { k: k, label: label, n: 0 }; order.push(k); }
+      map[k].n += n; total += n;
+    });
+    order.sort(function (a, b) { if (a === '') return 1; if (b === '') return -1; return map[a].label.localeCompare(map[b].label, undefined, { sensitivity: 'base' }); });
+    return { list: order.map(function (k) { return map[k]; }), total: total };
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  var lastBar = '';
+  function drawBar() {
+    var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return;
+    if ($('sc-cat-bar')) return;                                          // the Hotel has its own category chips
+    var host = $('cc-cat-bar');
+    if (!desk()) { if (host) host.hidden = true; return; }
+    var c = catList();
+    if (S.cat !== null && !c.list.some(function (x) { return x.k === S.cat; })) S.cat = null;
+    if (c.list.length < 2) { if (host) host.hidden = true; if (S.cat !== null) S.cat = null; return; }
+    if (!host) {
+      host = document.createElement('div'); host.id = 'cc-cat-bar'; host.setAttribute('role', 'group'); host.setAttribute('aria-label', 'Categories');
+      var sc = grid.parentNode.querySelector('.search-container');
+      grid.parentNode.insertBefore(host, sc && sc.nextSibling ? sc.nextSibling : grid);
+      host.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('button[data-k]') : null; if (!b) return;
+        var k = b.getAttribute('data-k'); S.cat = k === '__all' ? null : k;
+        lastBar = ''; drawBar();
+        try { renderItemImageGrid(($('sales-search') || {}).value || ''); } catch (er) { /* the next render draws it */ }
+      });
+      host.addEventListener('wheel', function (e) { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && host.scrollWidth > host.clientWidth) { host.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+    }
+    var html = '<button type="button" class="cc-chip' + (S.cat === null ? ' on' : '') + '" data-k="__all" aria-pressed="' + (S.cat === null) + '">All <span class="cc-n">' + c.total + '</span></button>'
+      + c.list.map(function (x) { var on = S.cat === x.k; return '<button type="button" class="cc-chip' + (on ? ' on' : '') + '" data-k="' + esc(x.k) + '" aria-pressed="' + on + '" title="' + esc(x.label) + '">' + esc(x.label) + ' <span class="cc-n">' + x.n + '</span></button>'; }).join('');
+    host.hidden = false;
+    if (html !== lastBar) { lastBar = html; host.innerHTML = html; var on = host.querySelector('.cc-chip.on'); if (on && on.scrollIntoView && S.cat !== null) { try { on.scrollIntoView({ inline: 'nearest', block: 'nearest' }); } catch (e) { /* cosmetic */ } } }
+  }
+  // limit the app's own grid render to the chosen category (the first inventory.filter / forEach of that render, then removed again - the same way the category tiles do it)
+  function limit(catKey) {
+    var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : null; } catch (e) { inv = null; }
+    if (!inv) return null;
+    var pf = Array.prototype.filter, pe = Array.prototype.forEach;
+    var inCat = function (p) { return normCat(p && p.category) === catKey; };
+    var def = function (name, impl) { try { Object.defineProperty(inv, name, { configurable: true, writable: true, enumerable: false, value: impl }); } catch (e) { /* frozen: the full grid shows */ } };
+    def('filter', function (fn, t) { try { delete inv.filter; } catch (e) { /* none */ } return pf.call(inv, function (p, i, a) { return inCat(p) && fn.call(t, p, i, a); }); });
+    def('forEach', function (fn, t) { try { delete inv.forEach; } catch (e) { /* none */ } return pe.call(inv, function (p, i, a) { if (inCat(p)) fn.call(t, p, i, a); }); });
+    return function () { try { delete inv.filter; } catch (e) { /* none */ } try { delete inv.forEach; } catch (e) { /* none */ } };
+  }
+  function installGrid() {
+    var orig = window.renderItemImageGrid;
+    if (typeof orig !== 'function' || orig.__ccp) return typeof orig === 'function';
+    var w = function () {
+      var restore = null;
+      try { if (S.cat !== null && desk() && !document.body.classList.contains('ctl-on') && !$('sc-cat-bar')) restore = limit(S.cat); } catch (e) { restore = null; }
+      try { return orig.apply(this, arguments); } finally { if (restore) restore(); safe(drawBar); safe(decorate); safe(cols); }
+    };
+    w.__ccp = true; window.renderItemImageGrid = w;
+    return true;
+  }
+
+  /* ---------------- the grid: columns, hover names, keyboard ---------------- */
+  var ro = null;
+  /* zip 300: when the cart panel is narrow (a tablet, a small window) each cart line stacks as a small card (name + total on top; quantity, price and remove
+     underneath) instead of running 600 px of columns off the edge of a 300 px panel. The class is set from the REAL width, so it follows the window. */
+  function cartFit() {
+    var t = tab(); if (!t) return;
+    var cs = t.querySelector('.pos-cart-scroll');
+    if (!t.classList.contains('ccp-on') || !cs) { t.classList.remove('cc-narrow'); return; }
+    var w = cs.clientWidth; if (!w) return;
+    t.classList.toggle('cc-narrow', t.classList.contains('cc-narrow') ? w < 540 : w < 500);
+  }
+  function cols() {
+    safe(cartFit);
+    var g = $('item-image-grid'); if (!g) return;
+    var w = g.clientWidth || 0; if (!w) return;
+    var n = Math.max(3, Math.min(7, Math.floor(w / 124)));
+    if (String(n) !== g.style.getPropertyValue('--cc-cols')) g.style.setProperty('--cc-cols', String(n));
+  }
+  function decorate() {
+    var g = $('item-image-grid'); if (!g) return;
+    Array.prototype.forEach.call(g.querySelectorAll('.item-grid-cell:not([data-cc])'), function (c) {
+      c.setAttribute('data-cc', '1');
+      var nm = c.querySelector('.igc-name'), pr = c.querySelector('.igc-price');
+      c.title = (nm ? nm.textContent.trim() : '') + (pr ? ' - ' + pr.textContent.trim() : '');
+      if (!c.classList.contains('out-of-stock')) { c.tabIndex = 0; c.setAttribute('role', 'button'); }
+    });
+  }
+  function gridSetup() {
+    var g = $('item-image-grid'); if (!g || g.__ccp) return;
+    g.__ccp = true;
+    g.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+      var c = e.target && e.target.closest ? e.target.closest('.item-grid-cell') : null;
+      if (c && e.target === c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); c.click(); }
+    });
+    if (window.MutationObserver) new MutationObserver(function () { safe(decorate); }).observe(g, { childList: true });
+    if (window.ResizeObserver) { ro = new ResizeObserver(function () { safe(cols); }); ro.observe(g); }
+    safe(decorate); safe(cols);
+  }
+
+  /* ---------------- Hold Sale | Open Drawer | COMPLETE SALE ---------------- */
+  var LAB_DONE = '✅ Complete Sale', LAB_OLD = '✅ Confirm', LAB_HOLD = '⏸️ Hold Sale', LAB_HOLD_OLD = '⏸️ Hold sale';
+  function drawerLabel() {
+    var chip = $('cash-chip'); if (!chip) return;
+    var t = chip.textContent;
+    if (t === '💵 Open cash drawer') { chip.textContent = '💵 Open Drawer'; chip.title = 'Open the cash drawer panel (cash float)'; }
+    else if (t.indexOf('💵') === 0 && chip.title !== t) chip.title = t;
+  }
+  function dock() {
+    var bar = $('cart-sticky-bar'), btn = $('main-checkout-btn'); if (!bar || !btn) return;
+    var row = $('cc-actions');
+    if (!row) { row = document.createElement('div'); row.id = 'cc-actions'; row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Sale actions'); }
+    if (row.parentNode !== bar) { if (btn.parentNode === bar) bar.insertBefore(row, btn); else bar.appendChild(row); }
+    var want = [$('hold-sale-btn'), $('resume-held-btn'), $('cash-chip'), btn].filter(Boolean);
+    var cur = Array.prototype.slice.call(row.children);
+    if (want.length !== cur.length || want.some(function (el, i) { return cur[i] !== el; })) want.forEach(function (el) { row.appendChild(el); });
+    var hold = $('hold-sale-btn'); if (hold && hold.textContent.trim() === LAB_HOLD_OLD) hold.textContent = LAB_HOLD;
+    if (btn.textContent.trim() === LAB_OLD) btn.textContent = LAB_DONE;
+    var hb = $('held-sale-bar'); if (hb) hb.classList.toggle('cc-empty', !hb.querySelector('button'));
+    drawerLabel();
+  }
+  function undock() {
+    var row = $('cc-actions'); if (!row) return;
+    var bar = $('cart-sticky-bar'), btn = $('main-checkout-btn'), hb = $('held-sale-bar'), chip = $('cash-chip'), hold = $('hold-sale-btn'), res = $('resume-held-btn');
+    if (hb) { hb.classList.remove('cc-empty'); if (hold && hold.parentNode === row) hb.insertBefore(hold, hb.firstChild); if (res && res.parentNode === row) hb.appendChild(res); }
+    if (chip && chip.parentNode === row) { var table = $('cart-table'), wrap = table && (table.closest('.table-scroll') || table); if (wrap && wrap.parentNode) wrap.parentNode.insertBefore(chip, wrap); }
+    if (btn && btn.parentNode === row && bar) bar.insertBefore(btn, row);
+    if (hold && hold.textContent.trim() === LAB_HOLD) hold.textContent = LAB_HOLD_OLD;
+    if (btn && btn.textContent.trim() === LAB_DONE) btn.textContent = LAB_OLD;
+    if (chip && chip.textContent === '💵 Open Drawer') chip.textContent = '💵 Open cash drawer';
+    if (row.parentNode) row.parentNode.removeChild(row);
+  }
+
+  /* ---------------- scan light ---------------- */
+  function scanLight() {
+    var t = tab(), sc = $('cc-scan'); if (!t) return;
+    var on = t.classList.contains('active') && desk();
+    t.classList.toggle('cc-sales-on', on);
+    if (!sc || !on) return;
+    if (sc.textContent !== 'Scan ready') sc.textContent = 'Scan ready';
+    sc.classList.remove('pause');
+  }
+
+  /* ---------------- everything, kept in step ---------------- */
+  function apply() {
+    var t = tab(); if (!t) return;
+    var on = desk();
+    t.classList.toggle('ccp-on', on);
+    safe(cartFit);
+    safe(searchSetup); safe(headerPlace); safe(gridSetup); safe(installGrid); safe(drawBar);
+    if (on) safe(dock); else safe(undock);
+    safe(scanLight);
+  }
+  function wrapRender() {
+    var r = window.renderCart;
+    if (typeof r === 'function' && !r.__ccp) { var w = function () { var x = r.apply(this, arguments); safe(function () { if (desk()) dock(); }); return x; }; w.__ccp = true; window.renderCart = w; }
+    var h = window.renderHeldSaleBar;
+    if (typeof h === 'function' && !h.__ccp) { var w2 = function () { var x = h.apply(this, arguments); safe(function () { if (desk()) dock(); }); return x; }; w2.__ccp = true; window.renderHeldSaleBar = w2; }
+  }
+  function boot() {
+    apply(); wrapRender();
+    var n = 0, iv = setInterval(function () { n++; apply(); wrapRender(); if (n > 40) clearInterval(iv); }, 500);       // the app builds some of these lazily (the hold bar, the drawer chip, the bills bar)
+    setInterval(function () { safe(scanLight); }, 1000);
+    ['focusin', 'focusout', 'click'].forEach(function (ev) { document.addEventListener(ev, function () { setTimeout(function () { safe(scanLight); }, 0); }, true); });
+    window.addEventListener('resize', function () { safe(apply); });
+    if (window.matchMedia) { var mq = window.matchMedia(MQ); var ch = function () { safe(apply); }; if (mq.addEventListener) mq.addEventListener('change', ch); else if (mq.addListener) mq.addListener(ch); }
+    document.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || e.key !== 'F2' || e.ctrlKey || e.altKey || e.metaKey) return;
+      var t = tab(), inp = $('sales-search'); if (!t || !inp || !t.classList.contains('active')) return;
+      e.preventDefault(); inp.focus(); try { inp.select(); } catch (er) { /* cosmetic */ }
+    });
+    window.__ccp.apply = apply; window.__ccp.setCategory = function (k) { S.cat = k === '' || k == null ? (k === '' ? '' : null) : normCat(k); lastBar = ''; drawBar(); try { renderItemImageGrid(($('sales-search') || {}).value || ''); } catch (e) { /* none */ } };
+    window.__ccp.scanLight = scanLight;
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

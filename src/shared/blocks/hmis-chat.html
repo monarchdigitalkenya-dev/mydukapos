@@ -1,0 +1,240 @@
+<!-- HMIS CHAT (zip 359) ---------------------------------------------------------------------------------------------------------
+     A small floating chat button for staff inside the facility: one channel for everyone, one for each desk (Reception, Triage, Consultation,
+     Laboratory, Pharmacy, Cashier, Nursing/Ward, Maternity, Radiology, Management) and private one-to-one messages. Messages travel through
+     /api/hmis-chat (staff session required) and are kept for 14 days. Unread badge, soft sound, quick phrases and a patient tag.
+     The chat is for coordination between desks: keep clinical detail to what the other desk needs. -->
+<style id="hch-css">
+#hch-fab{position:fixed;right:16px;bottom:86px;z-index:99990;width:54px;height:54px;border-radius:50%;border:0;cursor:pointer;color:#fff;font-size:24px;display:none;align-items:center;justify-content:center;background:linear-gradient(135deg,#0a78e0,#0050b8);box-shadow:0 8px 22px rgba(0,60,140,.45);transition:transform .2s}
+#hch-fab:hover{transform:scale(1.07)}#hch-fab.on{display:flex}
+#hch-fab .bd{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:#de0a12;color:#fff;font-size:12px;font-weight:800;display:none;align-items:center;justify-content:center;border:2px solid #fff}
+#hch-fab.has .bd{display:flex}#hch-fab.has{animation:hchp 1.6s ease-in-out infinite}
+@keyframes hchp{50%{box-shadow:0 8px 22px rgba(222,10,18,.55)}}
+#hch-panel{position:fixed;right:16px;bottom:150px;z-index:99991;width:min(640px,calc(100vw - 24px));height:min(540px,calc(100vh - 170px));background:var(--card-bg,#fff);color:var(--dark,#1b2a4a);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;overflow:hidden;flex-direction:column;border:1px solid rgba(10,111,214,.25)}
+#hch-panel.open{display:flex}
+.hch-h{display:flex;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(120deg,#00186a,#0050b8 60%,#0a78e0);color:#fff}
+.hch-h b{flex:1;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.hch-h select,.hch-h button{border:0;border-radius:8px;padding:5px 8px;font:inherit;font-size:12.5px;cursor:pointer}
+.hch-h select{background:rgba(255,255,255,.18);color:#fff;max-width:112px;text-overflow:ellipsis}.hch-h select option{color:#000}.hch-h button{background:rgba(255,255,255,.18);color:#fff}
+.hch-b{flex:1;display:flex;min-height:0}
+.hch-l{width:172px;overflow:auto;background:#f1f6ff;border-right:1px solid #dbe6f7;padding:6px}
+.hch-l h6{margin:8px 6px 4px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#5b6b86}
+.hch-ci{display:flex;align-items:center;gap:6px;width:100%;text-align:left;border:0;background:transparent;border-radius:9px;padding:7px 8px;font:inherit;font-size:13.5px;cursor:pointer;color:inherit}
+.hch-ci:hover{background:#e1ecff}.hch-ci.on{background:#0a6fd6;color:#fff}.hch-ci span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hch-ci i{font-style:normal;background:#de0a12;color:#fff;border-radius:9px;min-width:18px;height:18px;font-size:11px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
+.hch-r{flex:1;display:flex;flex-direction:column;min-width:0}
+.hch-t{padding:8px 12px;font-weight:800;border-bottom:1px solid #e3eaf5;display:flex;align-items:center;gap:8px}.hch-t button{display:none;border:0;background:#eef5ff;border-radius:8px;padding:3px 9px;cursor:pointer}
+.hch-m{flex:1;overflow:auto;padding:10px 12px;background:#f8fbff;display:flex;flex-direction:column;gap:6px}
+.hch-m .e{margin:auto;text-align:center;color:#8a99b3;font-size:13px}
+.hch-g{max-width:82%;padding:7px 11px;border-radius:14px;background:#fff;border:1px solid #e3eaf5;font-size:14px;line-height:1.4;word-wrap:break-word;align-self:flex-start;border-bottom-left-radius:4px}
+.hch-g.me{align-self:flex-end;background:linear-gradient(135deg,#0a78e0,#0a6fd6);color:#fff;border-color:transparent;border-radius:14px;border-bottom-right-radius:4px}
+.hch-g small{display:block;font-size:11px;opacity:.75;margin-bottom:1px;font-weight:700}.hch-g time{display:block;font-size:10.5px;opacity:.65;text-align:right;margin-top:2px}
+.hch-q{display:flex;gap:5px;overflow-x:auto;padding:6px 10px 0;background:#fff}.hch-q button{white-space:nowrap;border:1px solid #cfe0fa;background:#f1f6ff;border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;color:#0050b8}
+.hch-fc{display:flex;align-items:center;gap:8px;margin:2px 0 4px;padding:7px 9px;border-radius:11px;background:rgba(10,111,214,.09);border:1px solid rgba(10,111,214,.25)}
+.hch-g.me .hch-fc{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.35)}
+.hch-fc .ic{font-size:24px}.hch-fc .nm{flex:1;min-width:0;font-weight:700;font-size:13px;word-break:break-all}.hch-fc .nm small{display:block;font-weight:400;opacity:.8}
+.hch-fa{display:flex;gap:5px;flex-wrap:wrap;margin:0 0 3px}.hch-fa button{border:0;border-radius:9px;padding:6px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:#0a6fd6;color:#fff}.hch-fa button.s{background:#fff;color:#0050b8;border:1px solid #bcd3f3}
+.hch-g.me .hch-fa button{background:#fff;color:#0050b8}
+.hch-f .at{background:#eef5ff;color:#0050b8;padding:9px 11px}
+.hch-f{display:flex;gap:6px;padding:8px 10px;background:#fff;align-items:flex-end}
+.hch-f textarea{flex:1;resize:none;border:1px solid #cfd8dc;border-radius:12px;padding:8px 10px;font:inherit;font-size:14px;max-height:90px;min-height:38px}
+.hch-f button{border:0;border-radius:12px;padding:9px 14px;font-weight:800;cursor:pointer;color:#fff;background:linear-gradient(135deg,#de0a12,#b30910)}.hch-f .pt{background:#eef5ff;color:#0050b8;padding:9px 11px}
+@media(max-width:620px){#hch-panel{right:0;left:0;bottom:0;width:100%;height:calc(100vh - 56px);border-radius:16px 16px 0 0}.hch-l{width:100%;border-right:0}.hch-r{display:none}#hch-panel.chat .hch-l{display:none}#hch-panel.chat .hch-r{display:flex}.hch-t button{display:inline-block}}
+@media print{#hch-fab,#hch-panel{display:none!important}}
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.hrxChat) return;
+    var DESKS = [['all', 'Everyone', '📢'], ['d:reception', 'Reception', '🛎️'], ['d:triage', 'Triage', '🩺'], ['d:consultation', 'Consultation', '👨‍⚕️'], ['d:laboratory', 'Laboratory', '🧪'], ['d:pharmacy', 'Pharmacy', '💊'], ['d:cashier', 'Cashier', '💰'], ['d:nursing', 'Nursing / Ward', '🏥'], ['d:maternity', 'Maternity', '🤰'], ['d:radiology', 'Radiology', '🩻'], ['d:management', 'Management', '🗂️']];
+    var QUICK = ['Please send the patient', 'Results are ready', 'Sample collected', 'Patient is on the way', 'Please check stock', 'Payment received', 'Need a doctor here', 'Thank you'];
+    var open = false, cur = 'all', store = {}, since = 0, unread = {}, lastRead = {}, timer = null, busy = false, fails = 0, me = { id: 'admin', name: 'Admin' }, mute = false, desk = '', inited = false, first = true, drafts = {};
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function lsGet(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* none */ } }
+    function who() { try { if (typeof currentServer !== 'undefined' && currentServer) return { id: String(currentServer.id), name: currentServer.name || 'Staff' }; } catch (e) { /* none */ } return { id: 'admin', name: (function () { try { return activeServerName(); } catch (e) { return 'Admin'; } })() }; }
+    function dmId(other) { return 'dm:' + [me.id, other].sort().join('|'); }
+    function dmOther(ch) { var p = ch.slice(3).split('|'); return p[0] === me.id ? p[1] : p[0]; }
+    function staffName(id) { if (id === 'admin') return 'Administrator'; try { var s = (typeof staff !== 'undefined' ? staff : []).find(function (x) { return String(x.id) === String(id); }); return s ? s.name : 'Staff'; } catch (e) { return 'Staff'; } }
+    function chName(ch) { var d = DESKS.find(function (x) { return x[0] === ch; }); return d ? d[2] + ' ' + d[1] : (ch.indexOf('dm:') === 0 ? '👤 ' + staffName(dmOther(ch)) : ch); }
+    function loggedIn() { try { var ids = ['registration-screen', 'login-screen', 'lock-screen']; for (var q = 0; q < ids.length; q++) { var rs = document.getElementById(ids[q]); if (rs && getComputedStyle(rs).display !== 'none' && rs.getClientRects().length) return false; } } catch (e) { /* none */ } return !!(typeof currentServer !== 'undefined' && currentServer) || (typeof ownerName !== 'undefined' && String(ownerName || '').trim().length > 0) || document.body.classList.contains('logged-in') || !!document.getElementById('snav'); }
+    function relevant(m) { if (m.fromId === me.id) return false; if (m.ch === 'all') return true; if (m.ch.indexOf('dm:') === 0) return true; return !!desk && m.ch === 'd:' + desk; }
+    function myChannels() { var l = DESKS.map(function (d) { return d[0]; }); try { (typeof staff !== 'undefined' ? staff : []).forEach(function (s) { if (String(s.id) !== me.id) l.push(dmId(String(s.id))); }); } catch (e) { /* none */ } if (me.id !== 'admin') l.push(dmId('admin')); Object.keys(store).forEach(function (c) { if (l.indexOf(c) < 0 && c.indexOf('dm:') === 0) l.push(c); }); return l.slice(0, 60); }
+    /* Transport. Normal: the cloud service. If the internet is down and a clinic-network (LAN) server address is set - or the app itself was opened
+       from that server - messages go over the local network instead (see lan-chat-server.mjs). */
+    var LAN = lsGet('pos_hch_lan', ''), onLanPage = !!window.__HMIS_LAN, mode = onLanPage ? 'lan' : 'cloud', cloudRetryAt = 0;
+    function post(url, body) {
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) {
+                if (!r.ok || j.error) { var e = new Error(j.error || ('Server said ' + r.status)); e.status = r.status; if (r.status === 503 || r.status === 502 || r.status === 504) e.network = true; throw e; }
+                return j;
+            });
+        }, function (err) { err.network = true; throw err; });
+    }
+    function setMode(m) {
+        if (m === mode) return; mode = m; since = 0; store = {}; unread = {}; first = true;
+        var t = $('hch-mode'); if (t) t.textContent = m === 'lan' ? '· LAN' : ''; try { renderList(); renderMsgs(); badge(); } catch (e) { /* none */ }
+    }
+    function lanUrl() { return String(LAN || '').replace(/\/+$/, '') + '/api/hmis-chat'; }
+    function api(body) {
+        body.who = { id: me.id, name: me.name };
+        if (onLanPage) return post(location.origin + '/api/hmis-chat', body);
+        if (mode === 'lan' && LAN && Date.now() < cloudRetryAt) return post(lanUrl(), body);
+        return post(apiUrl('/api/hmis-chat'), body).then(function (j) {
+            if (mode === 'lan') { setMode('cloud'); if (body.action === 'poll') { var sw = new Error('switched'); sw.switched = true; throw sw; } }   /* message ids differ between the two servers: start the list afresh */
+            return j;
+        }, function (e) {
+            if (e.network && LAN) { cloudRetryAt = Date.now() + 45000; setMode('lan'); if (body.action === 'poll') body.since = 0; return post(lanUrl(), body); }
+            throw e;
+        });
+    }
+    function setLan() {
+        var cur0 = LAN || 'http://192.168.1.10:8787';
+        var v = prompt('Clinic-network chat address (shown in the window of the LAN chat server).\nExample: http://192.168.1.10:8787\n\nLeave empty to turn this off.\n\nNote: if you are using the internet version of the app, your browser may block this. During an internet outage open the address http://<server>:8787/hospital/ instead.', cur0);
+        if (v === null) return; v = v.trim(); if (v && !/^https?:\/\/[^\s/]+$/i.test(v.replace(/\/+$/, ''))) { try { showToast('That does not look like an address like http://192.168.1.10:8787', true); } catch (e) { /* none */ } return; }
+        LAN = v.replace(/\/+$/, ''); lsSet('pos_hch_lan', LAN); try { showToast(LAN ? 'Clinic-network chat saved. It is used automatically when the internet is down.' : 'Clinic-network chat turned off.'); } catch (e) { /* none */ }
+    }
+    function build() {
+        if ($('hch-fab')) return;
+        var f = document.createElement('button'); f.type = 'button'; f.id = 'hch-fab'; f.setAttribute('aria-label', 'Staff chat'); f.title = 'Staff chat'; f.innerHTML = '💬<span class="bd" id="hch-bd">0</span>'; f.onclick = toggle; document.body.appendChild(f);
+        var p = document.createElement('div'); p.id = 'hch-panel'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'Staff chat');
+        p.innerHTML = '<div class="hch-h"><b>💬 Staff chat <small id="hch-mode" style="font-weight:400;opacity:.85"></small></b><select id="hch-desk" data-nocombo="1" title="Which desk are you working at? You get alerts for this desk."></select><button type="button" id="hch-lan" title="Chat over the clinic network when the internet is down">📶</button><button type="button" id="hch-snd" title="Sound">🔔</button><button type="button" id="hch-x" aria-label="Close">✕</button></div><div class="hch-b"><div class="hch-l" id="hch-l"></div><div class="hch-r"><div class="hch-t"><button type="button" id="hch-back">‹ Back</button><span id="hch-tt"></span></div><div class="hch-m" id="hch-m"></div><div class="hch-q" id="hch-q"></div><div class="hch-f"><button type="button" class="pt" id="hch-pt" title="Tag a patient">👤</button><button type="button" class="at" id="hch-at" title="Share a document to print (PDF, picture, Word, Excel)">📎</button><input type="file" id="hch-file" style="display:none" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.doc,.docx,.xls,.xlsx,.txt,.csv,image/*,application/pdf"><textarea id="hch-in" rows="1" placeholder="Type a message…" maxlength="1000"></textarea><button type="button" id="hch-send">Send</button></div></div></div>';
+        document.body.appendChild(p);
+        $('hch-x').onclick = toggle; $('hch-lan').onclick = setLan; if (onLanPage) { var mm = $('hch-mode'); if (mm) mm.textContent = '· LAN'; } $('hch-back').onclick = function () { p.classList.remove('chat'); };
+        $('hch-send').onclick = send; $('hch-pt').onclick = tagPatient; $('hch-at').onclick = function () { $('hch-file').click(); }; $('hch-file').onchange = function () { var f = this.files && this.files[0]; this.value = ''; if (f) shareFile(f); }; $('hch-m').addEventListener('click', fileClick);
+        $('hch-in').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+        $('hch-in').addEventListener('input', function () { drafts[cur] = this.value; });
+        $('hch-q').innerHTML = QUICK.map(function (q) { return '<button type="button">' + esc(q) + '</button>'; }).join('');
+        $('hch-q').onclick = function (e) { var b = e.target.closest('button'); if (b) { var i = $('hch-in'); i.value = (i.value ? i.value + ' ' : '') + b.textContent; i.focus(); drafts[cur] = i.value; } };
+        $('hch-l').onclick = function (e) { var b = e.target.closest('[data-ch]'); if (b) pick(b.getAttribute('data-ch')); };
+        $('hch-snd').onclick = function () { mute = !mute; lsSet('pos_hch_mute', mute); this.textContent = mute ? '🔕' : '🔔'; };
+        var sel = $('hch-desk'); sel.innerHTML = '<option value="">My desk: none</option>' + DESKS.filter(function (d) { return d[0] !== 'all'; }).map(function (d) { return '<option value="' + d[0].slice(2) + '">' + esc(d[1]) + '</option>'; }).join('');
+        sel.onchange = function () { desk = sel.value; lsSet('pos_hch_desk_' + me.id, desk); badge(); };
+    }
+    function guessDesk() { try { var s = (typeof staff !== 'undefined' ? staff : []).find(function (x) { return String(x.id) === me.id; }); var t = JSON.stringify(s && (s.roles || s.role || s.title) || '').toLowerCase(); var m = [['lab', 'laboratory'], ['pharm', 'pharmacy'], ['cash', 'cashier'], ['triage', 'triage'], ['reception', 'reception'], ['nurse', 'nursing'], ['matern', 'maternity'], ['radio', 'radiology'], ['doctor', 'consultation'], ['clinician', 'consultation'], ['consult', 'consultation']].find(function (x) { return t.indexOf(x[0]) >= 0; }); return m ? m[1] : ''; } catch (e) { return ''; } }
+    function identify() { var w = who(); if (w.id !== me.id || !inited) { me = w; lastRead = lsGet('pos_hch_read_' + me.id, {}); desk = lsGet('pos_hch_desk_' + me.id, null); if (desk == null) desk = guessDesk(); mute = !!lsGet('pos_hch_mute', false); inited = true; fails = 0; store = {}; since = 0; unread = {}; first = true; var s = $('hch-desk'); if (s) s.value = desk; var b = $('hch-snd'); if (b) b.textContent = mute ? '🔕' : '🔔'; } }
+    function renderList() {
+        var l = $('hch-l'); if (!l) return;
+        var item = function (ch) { var n = unread[ch] || 0; return '<button type="button" class="hch-ci' + (ch === cur ? ' on' : '') + '" data-ch="' + esc(ch) + '"><span>' + esc(chName(ch)) + '</span>' + (n ? '<i>' + n + '</i>' : '') + '</button>'; };
+        var dms = []; try { (typeof staff !== 'undefined' ? staff : []).forEach(function (s) { if (String(s.id) !== me.id) dms.push(dmId(String(s.id))); }); } catch (e) { /* none */ } if (me.id !== 'admin') dms.push(dmId('admin'));
+        l.innerHTML = '<h6>Channels</h6>' + DESKS.map(function (d) { return item(d[0]); }).join('') + '<h6>Direct messages</h6>' + (dms.length ? dms.map(item).join('') : '<p style="font-size:12px;color:#8a99b3;padding:4px 8px">Add staff in Management.</p>');
+    }
+    function fmt(ts) { var d = new Date(ts), t = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); return (new Date().toDateString() === d.toDateString()) ? t : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + t; }
+    /* ---- shared documents: the message carries [[file:id|name|mime|bytes]] (+ an optional caption); the file itself is fetched when someone opens it ---- */
+    var FRE = /^\[\[file:([a-z0-9]{10,40})\|([^|\]]*)\|([^|\]]*)\|(\d+)\]\]\n?([\s\S]*)$/, FCACHE = {};
+    function kb(n) { n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+    function icon(mime, name) { return /pdf/i.test(mime) || /\.pdf$/i.test(name) ? '📕' : /^image\//i.test(mime) ? '🖼️' : /word|\.docx?$/i.test(name) ? '📘' : /sheet|excel|\.xlsx?$|csv/i.test(name + mime) ? '📗' : '📄'; }
+    function body(x) {
+        var m = FRE.exec(String(x.text || '')); if (!m) return esc(x.text).replace(/\n/g, '<br>');
+        var fid = m[1], nm = m[2], mime = m[3], printable = /^image\//i.test(mime) || /pdf/i.test(mime) || /\.pdf$/i.test(nm);
+        return '<div class="hch-fc"><span class="ic">' + icon(mime, nm) + '</span><span class="nm">' + esc(nm) + '<small>' + esc(kb(m[4])) + '</small></span></div><div class="hch-fa" data-fid="' + fid + '"><button type="button" data-fa="open">👁 Open</button>' + (printable ? '<button type="button" data-fa="print">🖨 Print</button>' : '') + '<button type="button" class="s" data-fa="save">⬇ Save</button></div>' + (m[5] ? esc(m[5]).replace(/\n/g, '<br>') : '');
+    }
+    function b64blob(b64, mime) { var bin = atob(b64), n = bin.length, u = new Uint8Array(n); for (var i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: mime || 'application/octet-stream' }); }
+    function getFile(fid) {
+        if (FCACHE[fid]) return Promise.resolve(FCACHE[fid]);
+        return api({ action: 'file', fid: fid }).then(function (j) { var f = { name: j.name, mime: j.mime, url: URL.createObjectURL(b64blob(j.data, j.mime)) }; FCACHE[fid] = f; return f; });
+    }
+    function fileClick(e) {
+        var b = e.target.closest ? e.target.closest('[data-fa]') : null; if (!b) return;
+        var box = b.closest('[data-fid]'), act = b.getAttribute('data-fa'); if (!box) return;
+        var old = b.textContent; b.disabled = true; b.textContent = '…';
+        getFile(box.getAttribute('data-fid')).then(function (f) {
+            if (act === 'save') { var a = document.createElement('a'); a.href = f.url; a.download = f.name || 'document'; document.body.appendChild(a); a.click(); setTimeout(function () { a.remove(); }, 300); }
+            else if (act === 'open') { if (!window.open(f.url, '_blank')) try { showToast('Allow pop-ups to open the document.', true); } catch (x) { /* none */ } }
+            else printFile(f);
+        }).catch(function (err) { try { showToast(err.message || 'Could not open the document.', true); } catch (x) { /* none */ } }).then(function () { b.disabled = false; b.textContent = old; });
+    }
+    function printFile(f) {
+        var fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+        if (/^image\//i.test(f.mime)) {
+            document.body.appendChild(fr); var d = fr.contentWindow.document; d.open(); d.write('<!doctype html><html><head><meta charset="utf-8"><title>' + esc(f.name) + '</title><style>body{margin:0}img{max-width:100%;height:auto;display:block}</style></head><body><img src="' + f.url + '"></body></html>'); d.close();
+            var go = function () { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e2) { window.open(f.url, '_blank'); } setTimeout(function () { fr.remove(); }, 60000); };
+            var im = d.querySelector('img'); if (im && !im.complete) im.onload = go; else setTimeout(go, 150);
+        } else {
+            fr.src = f.url; document.body.appendChild(fr);
+            fr.onload = function () { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e3) { window.open(f.url, '_blank'); } setTimeout(function () { fr.remove(); }, 120000); };
+        }
+    }
+    function shrinkImg(file) {
+        return new Promise(function (res, rej) {
+            var im = new Image(), u = URL.createObjectURL(file);
+            im.onload = function () { var s = Math.min(1, 1700 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s); var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u); c.toBlob(function (bl) { bl ? res(bl) : rej(new Error('Could not prepare the picture.')); }, 'image/jpeg', 0.82); };
+            im.onerror = function () { URL.revokeObjectURL(u); rej(new Error('Could not read the picture.')); }; im.src = u;
+        });
+    }
+    function toB64(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = function () { rej(new Error('Could not read the file.')); }; r.readAsDataURL(blob); }); }
+    function shareFile(file) {
+        var ch = cur; if (!ch) { try { showToast('Open a conversation first.', true); } catch (x) { /* none */ } return; }
+        var prep = /^image\/(png|jpe?g|webp|gif)$/i.test(file.type) && file.size > 450 * 1024 ? shrinkImg(file).then(function (bl) { return { blob: bl, name: file.name.replace(/\.[^.]+$/, '') + '.jpg', mime: 'image/jpeg' }; }) : Promise.resolve({ blob: file, name: file.name, mime: file.type || 'application/octet-stream' });
+        try { showToast('Sharing ' + file.name + '…'); } catch (x) { /* none */ }
+        prep.then(function (p) {
+            if (p.blob.size > 900 * 1024) throw new Error('That file is too big to share (limit about 900 KB). Send a smaller or compressed copy.');
+            return toB64(p.blob).then(function (b64) { return api({ action: 'upload', name: p.name, mime: p.mime, data: b64 }).then(function (j) { return { fid: j.fid, p: p }; }); });
+        }).then(function (r) {
+            var cap = ($('hch-in').value || '').trim(), t = '[[file:' + r.fid + '|' + r.p.name.replace(/[|\]]/g, '') + '|' + r.p.mime + '|' + r.p.blob.size + ']]' + (cap ? '\n' + cap : '');
+            $('hch-in').value = ''; drafts[ch] = '';
+            return api({ action: 'send', channel: ch, text: t }).then(function () { poll(); try { showToast('Document shared.'); } catch (x) { /* none */ } });
+        }).catch(function (e) { try { showToast(e.message || 'Could not share the file.', true); } catch (x) { /* none */ } });
+    }
+    function renderMsgs() {
+        var m = $('hch-m'); if (!m) return; $('hch-tt').textContent = chName(cur);
+        var list = store[cur] || [], near = m.scrollHeight - m.scrollTop - m.clientHeight < 80 || m.getAttribute('data-ch') !== cur;
+        m.setAttribute('data-ch', cur);
+        m.innerHTML = list.length ? list.map(function (x) { var mine = x.fromId === me.id; return '<div class="hch-g' + (mine ? ' me' : '') + '">' + (mine || cur.indexOf('dm:') === 0 ? '' : '<small>' + esc(x.from) + '</small>') + body(x) + '<time>' + fmt(x.ts) + (x.pending ? ' · sending' : '') + '</time></div>'; }).join('') : '<div class="e">No messages yet.<br>Say hello 👋</div>';
+        if (near) m.scrollTop = m.scrollHeight;
+    }
+    function pick(ch) { cur = ch; unread[ch] = 0; markRead(ch); var i = $('hch-in'); if (i) i.value = drafts[ch] || ''; var p = $('hch-panel'); if (p) p.classList.add('chat'); renderList(); renderMsgs(); badge(); }
+    function markRead(ch) { var l = store[ch] || []; lastRead[ch] = l.length ? l[l.length - 1].ts : Date.now(); lsSet('pos_hch_read_' + me.id, lastRead); }
+    function badge() { var n = 0; Object.keys(unread).forEach(function (c) { if (unread[c] && (c === 'all' || c.indexOf('dm:') === 0 || (desk && c === 'd:' + desk))) n += unread[c]; }); var f = $('hch-fab'), b = $('hch-bd'); if (!f) return; f.classList.toggle('has', n > 0); if (b) b.textContent = n > 99 ? '99+' : n; }
+    function beep() { if (mute) return; try { var C = window.AudioContext || window.webkitAudioContext, c = new C(), o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = 880; g.gain.setValueAtTime(0.0001, c.currentTime); g.gain.exponentialRampToValueAtTime(0.18, c.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.35); o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + 0.4); setTimeout(function () { try { c.close(); } catch (e) { /* none */ } }, 600); } catch (e) { /* none */ } }
+    function ingest(msgs) {
+        var fresh = [];
+        msgs.forEach(function (m) {
+            var l = store[m.ch] || (store[m.ch] = []);
+            if (l.some(function (x) { return x.id === m.id; })) return;
+            var mine = l.findIndex(function (x) { return x.pending && x.fromId === m.fromId && x.text === m.text; }); if (mine >= 0) l.splice(mine, 1);
+            l.push(m); l.sort(function (a, b) { return a.ts - b.ts; }); if (l.length > 300) l.splice(0, l.length - 300);
+            if (m.id > since) since = m.id;
+            var seen = open && cur === m.ch && !document.hidden;
+            var base = lastRead[m.ch]; if (base === undefined) base = first ? Date.now() - 36e5 : 0;   /* a new sign-in only counts the last hour as unread */
+            if (!seen && m.fromId !== me.id && m.ts > base) { unread[m.ch] = (unread[m.ch] || 0) + 1; if (!first && relevant(m)) fresh.push(m); }
+        });
+        first = false;
+        if (fresh.length) { beep(); var m = fresh[fresh.length - 1]; try { showToast('💬 ' + (m.ch.indexOf('dm:') === 0 ? m.from : m.from + ' (' + chName(m.ch).replace(/^\S+\s/, '') + ')') + ': ' + m.text.slice(0, 80)); } catch (e) { /* none */ } }
+        if (open) { renderList(); renderMsgs(); if (unread[cur]) { unread[cur] = 0; markRead(cur); } } badge();
+    }
+    function poll() {
+        if (busy || !inited) return Promise.resolve(); if (navigator.onLine === false) return Promise.resolve();
+        busy = true;
+        return api({ action: 'poll', since: since, channels: myChannels() }).then(function (j) { fails = 0; if (j.me && j.me !== me.id && me.id === 'admin') { /* server knows a different id: keep client list in sync */ } ingest(j.msgs || []); }).catch(function (e) { if (e && e.switched) { tick.last = 0; return; } fails++; if (e && (e.status === 401 || e.status === 403)) fails = Math.max(fails, 6); }).then(function () { busy = false; });
+    }
+    function send() {
+        var i = $('hch-in'), t = (i.value || '').trim(); if (!t) return;
+        var ch = cur, tmp = { id: 'p' + Date.now(), ch: ch, fromId: me.id, from: me.name, text: t, ts: Date.now(), pending: true };
+        (store[ch] || (store[ch] = [])).push(tmp); i.value = ''; drafts[ch] = ''; renderMsgs();
+        api({ action: 'send', channel: ch, text: t }).then(function (j) { tmp.pending = false; tmp.id = j.id || tmp.id; if (j.id && j.id > since) { /* will arrive through poll; avoid duplicate */ } poll(); }).catch(function (e) { var l = store[ch] || []; var k = l.indexOf(tmp); if (k >= 0) l.splice(k, 1); i.value = t; renderMsgs(); try { showToast('Message not sent: ' + e.message, true); } catch (x) { /* none */ } });
+    }
+    function tagPatient() {
+        var i = $('hch-in'); var q = prompt('Patient name or number to mention:'); if (!q) return; q = q.trim().toLowerCase();
+        var hit = (typeof patients !== 'undefined' ? patients : []).filter(function (p) { return (p.name || '').toLowerCase().indexOf(q) >= 0 || String(p.id).toLowerCase().indexOf(q) >= 0; }).slice(0, 8);
+        if (!hit.length) { try { showToast('No patient found for "' + q + '".', true); } catch (e) { /* none */ } return; }
+        var p = hit.length === 1 ? hit[0] : hit[Number(prompt(hit.map(function (x, k) { return (k + 1) + '. ' + x.name + ' (' + x.id + ')'; }).join('\n') + '\n\nType the number:')) - 1];
+        if (!p) return; i.value = (i.value ? i.value + ' ' : '') + 'Patient: ' + p.name + ' (' + p.id + ')'; i.focus(); drafts[cur] = i.value;
+    }
+    function toggle() { identify(); open = !open; var p = $('hch-panel'); p.classList.toggle('open', open); if (open) { p.classList.remove('chat'); renderList(); renderMsgs(); poll(); if (window.innerWidth > 620) pick(cur); } }
+    function tick() {
+        try {
+            build(); var show = loggedIn(), f = $('hch-fab'); if (f) f.classList.toggle('on', show); if (!show) { if (open) toggle(); return; }
+            var w = who(); if (!inited || w.id !== me.id) identify();
+            /* Low-cost polling (every check is one small server call): 6 s while the chat is open, 60 s when closed, 3 min when nobody has touched
+               this computer for 15 minutes, and none at all while the tab is hidden (it checks once when the tab comes back). */
+            var every = open ? 6000 : 60000; if (Date.now() - lastTouch > 15 * 60000 && !open) every = 180000; if (fails >= 6) every = Math.max(every, 180000); else if (fails >= 3) every = Math.max(every, 90000);
+            if (document.hidden) return;
+            if (!tick.last || Date.now() - tick.last >= every) { tick.last = Date.now(); poll(); }
+        } catch (e) { /* next tick */ }
+    }
+    window.hrxChat = { open: function () { if (!open) toggle(); }, poll: poll };
+    var lastTouch = Date.now(); ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, function () { lastTouch = Date.now(); }, { passive: true, capture: true }); });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) { tick.last = 0; setTimeout(tick, 300); } });
+    setInterval(tick, 5000); setTimeout(tick, 1500);
+})();
+</script>

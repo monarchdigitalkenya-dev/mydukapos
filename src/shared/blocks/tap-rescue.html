@@ -142,3 +142,68 @@
     } catch (e) { /* cosmetic only */ }
 })();
 </script>
+<!-- POPUP FRONT (zip 356): the pop-up opened LAST is always in front.
+     Pop-ups are plain fixed full-screen boxes with hand-picked z-index values. When one is opened from inside another (Reset password from a
+     client's details in the Owner Console, a confirm or picker opened from a patient's page...) and both have the same (or a lower) z-index, the
+     new one opened BEHIND the one already showing: it looked like the button did nothing. Now, when a full-screen box becomes visible, the
+     topmost box at the centre of the screen is checked; if another box covers the new one, the new one is lifted just above it. Sign-in and
+     lock screens are never covered by a pop-up. Nothing else changes (toasts and small menus keep their own order). -->
+<script>
+(function () {
+    'use strict';
+    if (window.__popFrontOn) return; window.__popFrontOn = true;
+    var NEVER_COVER = /^(login-screen|registration-screen|boot-splash|app-lock-screen|lock-screen|pin-lock|license-lock|device-lock)$/;
+    function big(el) {
+        if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return false;
+        var cs; try { cs = getComputedStyle(el); } catch (e) { return false; }
+        if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none' || Number(cs.opacity) === 0) return false;
+        var r = el.getBoundingClientRect();
+        return r.width >= innerWidth * 0.6 && r.height >= innerHeight * 0.6;
+    }
+    function rootOf(el) { while (el && el !== document.body) { if (big(el)) return el; el = el.parentElement; } return null; }
+    function zOf(el) { var z = parseInt(getComputedStyle(el).zIndex, 10); return isFinite(z) ? z : 0; }
+    var pending = new Set(), raf = 0, shown = new WeakSet();
+    // the app's own page (its shell, a tab, the sidebar) is never "a pop-up": only boxes that were hidden and have just appeared are lifted
+    function isShell(el) {
+        if (/^(app|main|root|wrapper|page|layout|content|snav)|container$/i.test(el.id || '')) return true;
+        try { return !!el.querySelector('.tab-content, nav, header, #sales-tab'); } catch (e) { return true; }
+    }
+    function lift(el) {
+        if (!big(el)) { shown.delete(el); return; }
+        if (shown.has(el)) return;                    // already showing: a style change on an open box is not "opening" it
+        shown.add(el);
+        if (NEVER_COVER.test(el.id || '') || isShell(el)) return;
+        var cx = Math.round(innerWidth / 2), cy = Math.round(innerHeight / 2), stack;
+        try { stack = document.elementsFromPoint(cx, cy); } catch (e) { return; }
+        if (!stack || !stack.length || el.contains(stack[0])) return;          // already in front
+        var cover = rootOf(stack[0]);
+        if (!cover || cover === el || el.contains(cover) || cover.contains(el)) return;
+        if (NEVER_COVER.test(cover.id || '')) return;                          // a sign-in / lock screen stays on top
+        var z = Math.max(zOf(cover), zOf(el)) + 1;
+        el.style.setProperty('z-index', String(z), 'important');
+    }
+    function flush() { raf = 0; var list = Array.from(pending); pending.clear(); list.forEach(function (el) { try { lift(el); } catch (e) { /* cosmetic */ } }); }
+    function queue(el) { if (!el || el.nodeType !== 1) return; pending.add(el); if (!raf) raf = (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (f) { return setTimeout(f, 16); })(flush); }
+    function start() {
+        // whatever is already on screen when the page starts is not "just opened"
+        try { Array.prototype.forEach.call(document.body.children, function (c) { if (big(c)) shown.add(c); Array.prototype.forEach.call(c.children || [], function (g) { if (big(g)) shown.add(g); }); }); } catch (e) { /* none */ }
+        try {
+            // cheap filters first (no style lookups): a box is opened by setting its display, toggling an "open"-type class, or appending it to <body>
+            var OPENISH = /(^|[\s_-])(on|open|opened|show|shown|active|visible|modal|overlay|popup|dialog|ov)([\s_-]|$)/i;
+            new MutationObserver(function (muts) {
+                if (typeof document.elementsFromPoint !== 'function') return;          // nothing to measure with (e.g. a test window): leave the order alone
+                try { for (var i = 0; i < muts.length; i++) {
+                    var m = muts[i], t = m.target;
+                    if (m.type === 'attributes') {
+                        if (!t || t.nodeType !== 1) continue;
+                        if (m.attributeName === 'style') { var dsp = t.style && t.style.display; if (dsp === 'none') { shown.delete(t); continue; } if (!dsp && !(t.style && t.style.visibility)) continue; }
+                        else if (m.attributeName === 'class' && !OPENISH.test(String(t.className && t.className.baseVal != null ? t.className.baseVal : t.className))) { shown.delete(t); continue; }
+                        queue(t);
+                    } else if (t === document.body) for (var j = 0; j < m.addedNodes.length; j++) queue(m.addedNodes[j]);
+                } } catch (e) { /* cosmetic only: never disturb the page */ }
+            }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'open'] });
+        } catch (e) { /* old browser: pop-ups keep their own order */ }
+    }
+    if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>

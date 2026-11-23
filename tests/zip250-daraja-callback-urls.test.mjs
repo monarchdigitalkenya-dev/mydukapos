@@ -53,7 +53,7 @@ test('the STK prompt gives Safaricom a callback address with no "mpesa" / "safar
   } finally { f.restore(); }
 });
 
-test('Register Till URLs: neutral addresses, and a Till shop registers its TILL number (not the Store number)', async () => {
+test('Register Till URLs: neutral addresses (zip 358: path form, no query string), and a Till shop registers BOTH its Store number and its Till number', async () => {
   const s = await shop({ ...DARAJA, mpesaTransactionType: 'CustomerBuyGoodsOnline', mpesaPartyB: '5551234' });
   const f = fakeSafaricom(() => new Response(JSON.stringify({ ResponseCode: '0', ResponseDescription: 'Success' }), { status: 200 }));
   try {
@@ -61,13 +61,13 @@ test('Register Till URLs: neutral addresses, and a Till shop registers its TILL 
     const res = await reg.onRequestPost({ request, env: s.env });
     const d = await res.json();
     assert.equal(res.status, 200, JSON.stringify(d));
-    const sent = f.calls.find((c) => /registerurl/.test(c.url));
-    assert.equal(sent.body.ShortCode, '5551234');
-    assert.equal(d.shortCode, '5551234');
-    for (const u of [sent.body.ConfirmationURL, sent.body.ValidationURL]) assert.ok(!BAD.test(new URL(u).pathname), u);
-    assert.match(sent.body.ConfirmationURL, /\/api\/pay-cb-till-confirm\?c=/);
-    assert.match(sent.body.ValidationURL, /\/api\/pay-cb-till-validate\?c=/);
-    assert.ok(!/&k=/.test(JSON.stringify(d)) || /•••/.test(JSON.stringify(d)), 'key not shown to the page');
+    const sent = f.calls.filter((c) => /registerurl/.test(c.url));
+    assert.deepEqual(sent.map((c) => c.body.ShortCode), ['4000001', '5551234']);
+    assert.equal(d.shortCode, '4000001 + 5551234');
+    for (const c of sent) for (const u of [c.body.ConfirmationURL, c.body.ValidationURL]) { assert.ok(!BAD.test(new URL(u).pathname), u); assert.equal(new URL(u).search, '', u); }
+    assert.match(sent[0].body.ConfirmationURL, /\/api\/pcb\/[^/]+\/[a-f0-9]+\/c$/);
+    assert.match(sent[0].body.ValidationURL, /\/api\/pcb\/[^/]+\/[a-f0-9]+\/v$/);
+    assert.ok(/•••/.test(JSON.stringify(d)), 'key not shown to the page');
   } finally { f.restore(); }
 });
 

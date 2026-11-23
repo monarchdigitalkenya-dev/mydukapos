@@ -76,7 +76,7 @@
     /* profile */
     #fr-profile { position: fixed; inset: 0; z-index: 10000; background: var(--overlay-bg, rgba(44,62,80,.92)); display: none; align-items: center; justify-content: center; padding: 12px; }
     #fr-profile.fr-open { display: flex; }
-    #fr-profile .fr-sheet { background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); width: 100%; max-width: 720px; max-height: 94vh; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+    #fr-profile .fr-sheet { background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); width: 100%; max-width: 720px; max-height: calc(94vh / var(--pos-z,1)); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
     #fr-profile .fr-head { display: flex; gap: 14px; align-items: center; padding: 18px 20px 12px; border-bottom: 1px solid var(--border-color, #e1e6ea); }
     #fr-profile .fr-head h2 { margin: 0; font-size: 20px; padding: 0; }
     #fr-profile .fr-head small { opacity: .7; font-size: 13px; }
@@ -102,7 +102,7 @@
     .fr-more { display: block; margin: 8px auto 0; }
     @media (max-width: 600px) {
         #fr-profile { padding: 0; align-items: flex-end; }
-        #fr-profile .fr-sheet { max-height: 96vh; border-radius: 16px 16px 0 0; }
+        #fr-profile .fr-sheet { max-height: calc(96vh / var(--pos-z,1)); border-radius: 16px 16px 0 0; }
         #fr-profile .fr-body { padding: 14px 14px 20px; }
         .fr-tabs, #fr-profile .fr-head, #fr-profile .fr-hact { padding-left: 14px; padding-right: 14px; }
         .fr-tab { padding: 10px 9px; font-size: 13px; }
@@ -131,7 +131,7 @@
         bills: function () { return bills; }, returns: function () { return returns; }, debts: function () { return debts; }
     };
     function arr(name) { try { var v = GET[name](); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
-    function custs() { return arr('customers'); }
+    function custs() { return arr('customers').filter(function (c) { return c && !c._deleted && !c.mergedInto; }); }      /* zip 328: a profile that was merged into another is gone from every screen */
     function money(n) { return 'KES ' + (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function dateOf(ts) { var d = new Date(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); }
     function dateTimeOf(ts) { var d = new Date(ts); return isNaN(d) ? '' : dateOf(ts) + ', ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
@@ -154,11 +154,26 @@
         var m = {}; bs.forEach(function (b) { if (b && b.id != null) m[b.id] = b; });
         billIdx = { n: bs.length, map: m }; return m;
     }
+    /* zip 328: a profile's key is its normalised phone, or its own id when it has no phone (name-only customers). A record that carries a customerId belongs to that
+       profile whatever phone it was typed with; an older record with only a phone belongs to whoever owns that phone (a merged profile's old numbers included). */
+    function ckey(c) { return c ? (np(c.phone) || ('id:' + c.id)) : ''; }
+    var altIdx = { n: -1, m: null };
+    function altMap() {
+        var l = custs(); var sig = l.length + ':' + l.reduce(function (t, c) { return t + (Array.isArray(c.altPhones) ? c.altPhones.length : 0); }, 0);
+        if (altIdx.m && altIdx.n === sig) return altIdx.m;
+        var m = {}; l.forEach(function (c) { (Array.isArray(c.altPhones) ? c.altPhones : []).forEach(function (a) { var k = np(a); if (k) m[k] = ckey(c); }); });
+        altIdx = { n: sig, m: m }; return m;
+    }
+    function recKey(r) {
+        if (!r) return '';
+        if (r.customerId != null && r.customerId !== '' && typeof custResolve === 'function') { var c = custResolve(r.customerId); if (c) return ckey(c); }
+        var p = np(r.customerPhone || r.mpesaPhone || r.phone);
+        return p ? (altMap()[p] || p) : '';
+    }
     function salePhone(s) {
         if (!s) return '';
-        var p = s.customerPhone || s.mpesaPhone;
-        if (p) return np(p);
-        if (s.billId != null) { var b = billMap()[s.billId]; if (b) return np(b.customerPhone || b.mpesaPhone); }
+        var k = recKey(s); if (k) return k;
+        if (s.billId != null) { var b = billMap()[s.billId]; if (b) return recKey(b); }
         return '';
     }
     function findCust(phone) {
@@ -168,17 +183,21 @@
         return null;
     }
     function salesOf(c) {
-        var n = np(c.phone); if (!n) return [];
+        var n = ckey(c); if (!n) return [];
         return arr('salesLog').filter(function (s) { return s && salePhone(s) === n; });
     }
     function saleTotal(s) { return (Number(s.cashAmount) || 0) + (Number(s.mpesaAmount) || 0) + (Number(s.cardAmount) || 0); }
     function billsOf(c) {
-        var n = np(c.phone); if (!n) return [];
-        return arr('bills').filter(function (b) { return b && np(b.customerPhone || b.mpesaPhone) === n; });
+        var n = ckey(c); if (!n) return [];
+        return arr('bills').filter(function (b) { return b && recKey(b) === n; });
     }
     function returnsOf(c) {
-        var n = np(c.phone); if (!n) return [];
-        return arr('returns').filter(function (r) { return r && r.customerPhone && np(r.customerPhone) === n; });
+        var n = ckey(c); if (!n) return [];
+        return arr('returns').filter(function (r) { return r && recKey(r) === n; });
+    }
+    function contractsOf(c) {
+        var n = ckey(c); if (!n) return [];
+        return arr('contracts').filter(function (k) { return k && recKey(k) === n; });
     }
     function billTotal(b) { try { if (typeof billTotalOf === 'function') return Number(billTotalOf(b)) || 0; } catch (e) { /* below */ } return Number(b.total) || 0; }
 
@@ -198,16 +217,17 @@
         });
         statCache = { key: key, map: m, at: Date.now() }; return m;
     }
+    window.frOwedOf = function (c) { try { return (owedMap()[ckey(c)] || 0); } catch (e) { return 0; } };   /* zip 369: what this customer still owes (used by Delete customer) */
     function owedMap() {
         var m = {};
         arr('bills').forEach(function (b) {
             if (!b || b.voided || b.closed) return;
-            var p = np(b.customerPhone || b.mpesaPhone); if (!p) return;
+            var p = recKey(b); if (!p) return;
             var out = billTotal(b) - (Number(b.amountPaid) || 0);
             if (out > 0.004) m[p] = (m[p] || 0) + out;
         });
         arr('debts').forEach(function (d) {   /* zip 262: recorded debts are money owed too - same rule as the customer ledger */
-            if (!d) return; var p = np(d.phone); if (!p) return;
+            if (!d) return; var p = recKey(d); if (!p) return;
             var out = (Number(d.amount) || 0) - (Array.isArray(d.payments) ? d.payments : []).reduce(function (t, x) { return t + (Number(x && x.amount) || 0); }, 0);
             if (out > 0.004) m[p] = (m[p] || 0) + out;
         });
@@ -216,6 +236,7 @@
 
     /* the old per-app helper compared phones with === ; this one treats 0712.. and +254712.. as the same person, like registration does */
     window.customerPurchaseCount = function (phone) { var e = statMap()[np(phone)]; return e ? e.count : 0; };
+    window.custKeyOf = ckey;
 
     /* ---------------- navigation ---------------- */
     function tabButton(id) { return document.querySelector('.tab-link[data-tab="' + id + '"]'); }
@@ -342,12 +363,13 @@
             '<button type="button" class="fr-x" id="fr-cust-clear" aria-label="Remove customer from this sale" hidden>&times;</button></div>' +
             '<ul class="fr-cust-list" id="fr-cust-list" role="listbox" aria-label="Matching customers" hidden></ul>' +
             '<div class="fr-newbox" id="fr-newbox" hidden><div class="fr-row"><div><label for="fr-new-name">Customer name <span style="font-weight:normal;opacity:.7">(optional)</span></label><input type="text" id="fr-new-name" autocomplete="off" placeholder="e.g. Jane Wanjiru"></div>' +
-            '<div><label for="fr-new-phone">Phone number <span style="color:var(--danger,#E74C3C)">*</span></label><input type="tel" id="fr-new-phone" inputmode="tel" autocomplete="off" placeholder="e.g. 0712345678" aria-describedby="fr-new-err"></div></div>' +
+            '<div><label for="fr-new-phone">Phone number <span style="color:var(--danger,#E74C3C)">*</span></label><input type="tel" id="fr-new-phone" inputmode="tel" autocomplete="off" placeholder="e.g. 0712345678" aria-describedby="fr-new-err"></div>' +
+            '<div><label for="fr-new-id">ID number <span style="font-weight:normal;opacity:.7">(optional)</span></label><input type="text" id="fr-new-id" autocomplete="off" inputmode="numeric" placeholder="e.g. 12345678"></div></div>' +
             '<p class="fr-err" id="fr-new-err" role="alert"></p><div class="fr-actions" style="justify-content:flex-start"><button type="button" class="fr-btn fr-primary" id="fr-new-ok">Attach to this sale</button><button type="button" class="fr-btn" id="fr-new-cancel">Cancel</button></div>' +
             '<p class="fr-hint" style="font-size:12px;opacity:.7;margin:8px 0 0">The customer is only saved once the sale goes through.</p></div>' +
             '<div class="fr-status" id="fr-status" role="status" aria-live="polite"></div>';
         grp.appendChild(w);
-        els = { q: $('fr-cust-q'), list: $('fr-cust-list'), clear: $('fr-cust-clear'), status: $('fr-status'), box: $('fr-newbox'), nn: $('fr-new-name'), np: $('fr-new-phone'), err: $('fr-new-err') };
+        els = { q: $('fr-cust-q'), list: $('fr-cust-list'), clear: $('fr-cust-clear'), status: $('fr-status'), box: $('fr-newbox'), nn: $('fr-new-name'), np: $('fr-new-phone'), ni: $('fr-new-id'), err: $('fr-new-err') };
         els.q.addEventListener('input', onType);
         els.q.addEventListener('keydown', onKey);
         els.q.addEventListener('focus', function () { if (els.q.value.trim()) onType(); });
@@ -368,7 +390,7 @@
             var hit = (nm && nm.indexOf(q) !== -1) || (byPhone && ((d.length >= 2 && (pn.indexOf(d) !== -1 || ph.replace(/\D/g, '').indexOf(d) !== -1)) || ph.toLowerCase().indexOf(q) !== -1));
             if (!hit) return;
             var rank = (pn === np(q) && d.length >= 7) ? 0 : (nm.indexOf(q) === 0 ? 1 : 2);
-            out.push({ c: c, rank: rank, count: (st[pn] || {}).count || 0 });
+            out.push({ c: c, rank: rank, count: (st[ckey(c)] || {}).count || 0 });
         });
         out.sort(function (a, b) { return a.rank - b.rank || b.count - a.count || String(a.c.name || '').localeCompare(String(b.c.name || '')); });
         return out.slice(0, 8);
@@ -430,25 +452,35 @@
         if (li.dataset.add) { openNew(); return; }
         var m = shown[Number(li.dataset.i)]; if (m) attach(m.c);
     }
+    /* zip 328: tell the checkout WHICH saved profile is attached (by id), so the sale is linked to that one profile whatever the phone box says */
+    function hook(c, nw) {
+        window.__checkoutCustomerId = c ? c.id : null; window.__checkoutNew = nw || null;
+        try { if (typeof window.custOnAttach === 'function') window.custOnAttach(c, nw); } catch (e) { /* the receipt-details box is an extra */ }
+    }
     function attach(c) {
         S = { cust: c, newName: '', newPhone: '', mode: 'existing' };
-        setOrig(c.phone);
+        hook(c, null);
+        setOrig(c.phone || '');
         els.q.value = c.name || c.phone; closeList(); els.box.hidden = true; renderStatus();
     }
-    function detach() { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; setOrig(''); els.box.hidden = true; renderStatus(); }
-    function resetField(clearText) { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; if (clearText && els.q) els.q.value = ''; setOrig(''); if (els.box) els.box.hidden = true; if (els.list) closeList(); renderStatus(); }
+    function detach() { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; hook(null, null); setOrig(''); els.box.hidden = true; renderStatus(); }
+    function resetField(clearText) { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; hook(null, null); if (clearText && els.q) els.q.value = ''; setOrig(''); if (els.box) els.box.hidden = true; if (els.list) closeList(); renderStatus(); }
 
     function openNew() {
         var t = els.q.value.trim(); closeList();
-        els.nn.value = phoneLike(t) ? '' : t; els.np.value = phoneLike(t) ? t : ''; els.err.textContent = '';
+        els.nn.value = phoneLike(t) ? '' : t; els.np.value = phoneLike(t) ? t : ''; if (els.ni) els.ni.value = ''; els.err.textContent = '';
         els.box.hidden = false; (phoneLike(t) ? els.nn : els.np).focus();
     }
     function confirmNew() {
         var phone = els.np.value.trim(), name = els.nn.value.trim();
         if (!validPhone(phone)) { els.err.textContent = 'Enter a valid phone number, for example 0712345678. A phone number is needed to save a customer.'; els.np.focus(); return; }
+        var idv = els.ni ? els.ni.value.trim() : '';
+        if (idv && typeof custIdKey === 'function' && !custIdKey(idv)) { els.err.textContent = 'The ID number looks too short.'; els.ni.focus(); return; }
         var dup = findCust(phone);
+        if (!dup && idv && typeof findCustomerMatches === 'function') { var byId = findCustomerMatches({ idNumber: idv }).byId; if (byId.length) dup = byId[0]; }      /* zip 328: the same ID is the same person */
         if (dup) { els.box.hidden = true; S = { cust: null, newName: '', newPhone: '', mode: 'dup', dup: dup }; renderStatus(); return; }
-        S = { cust: null, newName: name, newPhone: phone, mode: 'new' };
+        S = { cust: null, newName: name, newPhone: phone, newId: idv, mode: 'new' };
+        hook(null, { name: name, phone: phone, idNumber: idv });
         setOrig(phone); els.q.value = name || phone; els.box.hidden = true; renderStatus();
     }
 
@@ -456,9 +488,9 @@
         if (!els.status) return;
         var s = els.status, h = '', cls = 'fr-status';
         if (S.mode === 'existing' && S.cust) {
-            var c = S.cust, tok = Number(c.tokens) || 0; var owed = owedMap()[np(c.phone)] || 0;
+            var c = S.cust, tok = Number(c.tokens) || 0; var owed = owedMap()[ckey(c)] || 0;
             cls += ' fr-on';
-            h = '<span>Attached: <b>' + esc(c.name || 'Unnamed customer') + '</b> &middot; ' + esc(c.phone) + (tok ? ' &middot; ' + tok + ' tokens' : '') + (owed > 0 ? ' &middot; owes ' + money(owed) : '') + '</span>';
+            h = '<span>Attached: <b>' + esc(c.name || 'Unnamed customer') + '</b> &middot; ' + esc(c.phone || 'no phone') + (tok ? ' &middot; ' + tok + ' tokens' : '') + (owed > 0 ? ' &middot; owes ' + money(owed) : '') + '</span>';
             els.clear.hidden = false;
         } else if (S.mode === 'new') {
             cls += ' fr-new';
@@ -483,6 +515,7 @@
         var v = (o.value || '').trim();
         var mine = S.mode === 'existing' ? S.cust.phone : (S.mode === 'new' ? S.newPhone : '');
         if (S.mode === 'dup') return;
+        if (S.mode === 'existing' && S.cust && !np(S.cust.phone) && !v) return;       /* zip 328: a name-only customer has no phone to keep in the box */
         if (v === (mine || '')) return;
         if (!v) { resetField(true); return; }                 /* sale finished (or someone cleared it) */
         var c = findCust(v);
@@ -519,7 +552,7 @@
         var log = arr('salesLog'); var last = log[log.length - 1];
         if (!last || last.tokensEarned || last.voided) return;
         var age = Date.now() - (Date.parse(last.timestamp) || 0);
-        if (age > 60000 || salePhone(last) !== np(c.phone)) return;
+        if (age > 60000 || salePhone(last) !== ckey(c)) return;
         last.tokensEarned = gained;
         clearTimeout(saveT);
         saveT = setTimeout(function () { try { if (typeof safeSetItem === 'function') safeSetItem('pos_sales_log', JSON.stringify(arr('salesLog'))); } catch (e) { /* saved with the next sale */ } }, 1500);
@@ -531,7 +564,7 @@
     var listLimit = 30, listKey = '';
     function ensureListTools() {
         var s = $('customers-search-input'); if (!s || $('fr-cust-sort')) return;
-        s.setAttribute('aria-label', 'Search customers by name or phone');
+        s.setAttribute('aria-label', 'Search customers by name, phone or ID number'); try { s.placeholder = 'Search by name, phone' + (typeof custIsManager === 'function' && custIsManager() ? ' or ID number' : '') + '…'; } catch (e) { /* placeholder only */ }
         var sel = document.createElement('select'); sel.id = 'fr-cust-sort'; sel.setAttribute('aria-label', 'Sort customers');
         sel.innerHTML = '<option value="new">Newest first</option><option value="name">Name A&ndash;Z</option><option value="buys">Most purchases</option><option value="spend">Highest spend</option><option value="owed">Owes most</option>';
         sel.onchange = function () { window.renderCustomersList(); };
@@ -554,10 +587,11 @@
             var p = el.querySelector('[data-fr="phonebook"]'); if (p) p.onclick = function () { importCustomersFromPhonebook(); };
             return;
         }
+        var ik = ''; try { ik = custIsManager() ? custIdKey(q) : ''; } catch (e) { ik = ''; }      /* zip 328: the ID number is searchable by the Admin and managers only */
         var rows = all.filter(function (c) {
             if (!c) return false; if (!q) return true;
-            return String(c.name || '').toLowerCase().indexOf(q) !== -1 || String(c.phone || '').toLowerCase().indexOf(q) !== -1 || (qd.length >= 2 && np(c.phone).indexOf(qd) !== -1);
-        }).map(function (c) { var n = np(c.phone); var s = st[n] || { count: 0, spend: 0, last: 0 }; return { c: c, count: s.count, spend: s.spend, last: s.last, owed: ow[n] || 0 }; });
+            return String(c.name || '').toLowerCase().indexOf(q) !== -1 || String(c.phone || '').toLowerCase().indexOf(q) !== -1 || (qd.length >= 2 && np(c.phone).indexOf(qd) !== -1) || (ik && custIdKey(c.idNumber).indexOf(ik) !== -1);
+        }).map(function (c) { var n = ckey(c); var s = st[n] || { count: 0, spend: 0, last: 0 }; return { c: c, count: s.count, spend: s.spend, last: s.last, owed: ow[n] || 0 }; });
         rows.sort(function (a, b) {
             if (sort === 'name') return String(a.c.name || '\uffff').localeCompare(String(b.c.name || '\uffff'));
             if (sort === 'buys') return b.count - a.count;
@@ -569,10 +603,11 @@
         if (cnt) cnt.textContent = rows.length === all.length ? plural(all.length, 'customer') : 'Showing ' + rows.length + ' of ' + all.length + ' customers';
         if (!rows.length) { el.innerHTML = '<div class="fr-empty"><h4>No matches</h4><p>No customer matches &ldquo;' + esc(qEl.value.trim()) + '&rdquo;. Check the spelling or try part of the phone number.</p></div>'; return; }
         var page = rows.slice(0, listLimit);
-        el.innerHTML = page.map(function (r) {
+        var dupBar = typeof window.custDupBar === 'function' ? window.custDupBar() : '';
+        el.innerHTML = dupBar + page.map(function (r) {
             var c = r.c; var nm = c.name || 'Unnamed customer'; var tok = Number(c.tokens) || 0;
-            var pills = (r.owed > 0 ? '<span class="fr-pill fr-warn">Owes ' + esc(money(r.owed)) + '</span> ' : '') + (tok ? '<span class="fr-pill fr-good">' + tok + ' tokens</span>' : '');
-            return '<button type="button" class="fr-crow" data-id="' + esc(c.id) + '" aria-label="Open ' + esc(nm) + '"><span class="fr-av" aria-hidden="true">' + esc((nm.trim()[0] || '?').toUpperCase()) + '</span><span class="fr-cmain"><strong>' + esc(nm) + '</strong><small>' + esc(c.phone) + ' &middot; ' + plural(r.count, 'purchase') + (r.last ? ' &middot; last ' + esc(dateOf(r.last)) : '') + '</small></span><span>' + pills + '</span></button>';
+            var pills = (c.idNumber ? '<span class="fr-pill">ID ' + esc(custMaskId(c.idNumber)) + '</span> ' : '') + (r.owed > 0 ? '<span class="fr-pill fr-warn">Owes ' + esc(money(r.owed)) + '</span> ' : '') + (tok ? '<span class="fr-pill fr-good">' + tok + ' tokens</span>' : '');
+            return '<button type="button" class="fr-crow" data-id="' + esc(c.id) + '" aria-label="Open ' + esc(nm) + '"><span class="fr-av" aria-hidden="true">' + esc((nm.trim()[0] || '?').toUpperCase()) + '</span><span class="fr-cmain"><strong>' + esc(nm) + '</strong><small>' + esc(c.phone || 'no phone') + ' &middot; ' + plural(r.count, 'purchase') + (r.last ? ' &middot; last ' + esc(dateOf(r.last)) : '') + '</small></span><span>' + pills + '</span></button>';
         }).join('') + (rows.length > page.length ? '<button type="button" class="fr-btn fr-more" data-fr="more">Show ' + Math.min(30, rows.length - page.length) + ' more</button>' : '');
         el.querySelectorAll('.fr-crow').forEach(function (b) { b.onclick = function () { window.openCustomerProfileModal(b.dataset.id); }; });
         var m = el.querySelector('[data-fr="more"]'); if (m) m.onclick = function () { listLimit += 30; window.renderCustomersList(); };
@@ -583,7 +618,7 @@
        ====================================================================================================================== */
     var origOpen = typeof window.openCustomerProfileModal === 'function' ? window.openCustomerProfileModal : null;
     var P = { id: null, tab: 'overview', txLimit: 15, opener: null };
-    var TABS_ALL = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & balances'], ['acct', 'Statement'], ['loyalty', 'Loyalty']];
+    var TABS_ALL = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & balances'], ['contracts', 'Contracts'], ['acct', 'Statement'], ['loyalty', 'Loyalty']];
     var TABS = TABS_ALL;
     /* Production has no loyalty feature at all (no tiers, no award on a sale): its profile has no Loyalty tab rather than a tab pointing at settings that do not exist */
     function loyaltySupported() { try { return typeof computeTokensEarned === 'function' && typeof awardTokensForSale === 'function'; } catch (e) { return false; } }
@@ -613,11 +648,11 @@
     function closeProfile() { var d = $('fr-profile'); if (d) d.classList.remove('fr-open'); P.id = null; try { if (P.opener && document.body.contains(P.opener)) P.opener.focus(); } catch (e) { /* cosmetic */ } }
     window.openCustomerProfileModal = function (id) {
         var c = custById(id); if (!c) return;
-        TABS = (loyaltySupported() ? TABS_ALL : TABS_ALL.slice(0, 4)).filter(function (x) { return x[0] !== 'acct' || typeof window.customerLedgerBuild === 'function'; });   /* Services keeps its own statement */
-        ensureProfile(); $('fr-p-inv').hidden = typeof window.printCustomerInvoice !== 'function'; P.id = id; P.tab = 'overview'; P.per = 'full'; P.txLimit = 15; P.opener = document.activeElement;
+        TABS = (loyaltySupported() ? TABS_ALL : TABS_ALL.filter(function (x) { return x[0] !== 'loyalty'; })).filter(function (x) { return (x[0] !== 'acct' || typeof window.customerLedgerBuild === 'function') && (x[0] !== 'contracts' || typeof window.contractOpen === 'function'); });   /* Services keeps its own statement; Water has no contracts */
+        ensureProfile(); $('fr-p-inv').hidden = typeof window.printCustomerInvoice !== 'function'; P.id = id; P.tab = 'overview'; P.per = 'full'; P.txLimit = 15; P.showId = false; P.opener = document.activeElement;
         $('fr-p-name').textContent = c.name || 'Unnamed customer';
         $('fr-p-av').textContent = ((c.name || '?').trim()[0] || '?').toUpperCase();
-        $('fr-p-meta').textContent = c.phone + (c.createdAt > 946684800000 ? ' · customer since ' + dateOf(c.createdAt) : '');
+        $('fr-p-meta').textContent = (c.phone || 'no phone') + (c.idNumber && typeof custMaskId === 'function' ? ' · ID ' + custMaskId(c.idNumber) : '') + (c.createdAt > 946684800000 ? ' · customer since ' + dateOf(c.createdAt) : '');
         $('fr-profile').classList.add('fr-open');
         renderProfile(); $('fr-p-close').focus();
     };
@@ -638,7 +673,7 @@
         var c = custById(P.id); if (!c) { closeProfile(); return; }
         renderTabs();
         var body = $('fr-p-body');
-        body.innerHTML = P.tab === 'tx' ? txHtml(c) : P.tab === 'bills' ? billsHtml(c) : P.tab === 'acct' ? acctHtml(c) : P.tab === 'loyalty' ? loyaltyHtml(c) : overviewHtml(c);
+        body.innerHTML = P.tab === 'tx' ? txHtml(c) : P.tab === 'bills' ? billsHtml(c) : P.tab === 'contracts' ? contractsHtml(c) : P.tab === 'acct' ? acctHtml(c) : P.tab === 'loyalty' ? loyaltyHtml(c) : overviewHtml(c);
         wireBody(body, c);
     }
     function saleStatus(s) {
@@ -671,14 +706,35 @@
     }
     function sortedSales(c) { return salesOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); }); }
 
+    /* zip 328: who this customer is: phone(s), ID number (masked; the Admin / a manager can show it), notes, and every recorded change (an ID is shown masked there too) */
+    function detailsHtml(c) {
+        var mg = false; try { mg = custIsManager(); } catch (e) { mg = false; }
+        var alt = Array.isArray(c.altPhones) && c.altPhones.length ? ' &middot; also ' + c.altPhones.map(esc).join(', ') : '';
+        var idTxt = c.idNumber ? esc(P.showId && mg ? c.idNumber : custMaskId(c.idNumber)) + (mg ? ' <button type="button" class="fr-link" data-showid="1">' + (P.showId ? 'hide' : 'show') + '</button>' : '') : '&mdash;';
+        var mh = (Array.isArray(c.mergeHistory) ? c.mergeHistory : []).map(function (m) { return '<div class="fr-sub">Merged ' + esc(dateTimeOf(m.at)) + ' by ' + esc(m.by || '—') + ': ' + m.merged.map(function (x) { return esc(x.name || 'unnamed') + ' (' + esc(x.phone || 'no phone') + ')'; }).join(', ') + '</div>'; }).join('');
+        var hs = (Array.isArray(c.history) ? c.history : []).slice(-5).reverse().map(function (h) { return '<div class="fr-sub">' + esc(dateTimeOf(h.at)) + ' · ' + esc(h.by || '—') + ' · ' + esc(h.field) + ': ' + esc(h.from || '—') + ' &rarr; ' + esc(h.to || '—') + '</div>'; }).join('');
+        return '<div class="fr-card"><div class="fr-top"><b>Customer details</b><span><button type="button" class="fr-btn" data-edit="1">Edit</button></span></div>' +
+            '<div class="fr-sub">Phone: ' + esc(c.phone || '—') + alt + '</div><div class="fr-sub">ID number: ' + idTxt + '</div>' + (c.notes ? '<div class="fr-sub">Notes: ' + esc(c.notes) + '</div>' : '') +
+            '<div class="fr-sub">Status: ' + esc(c.status || 'active') + (c.createdAt > 946684800000 ? ' · customer since ' + esc(dateOf(c.createdAt)) : '') + '</div>' + ((mh || hs) ? '<details><summary>Change history</summary>' + mh + hs + '</details>' : '') + '</div>';
+    }
+    function contractsHtml(c) {
+        var list = contractsOf(c).sort(function (a, b) { return (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0); });
+        if (!list.length) return '<div class="fr-empty"><div class="fr-ico">' + IC.box + '</div><h4>No contracts</h4><p>Stock issued to this customer under a contract is listed here with its items, status and a button to reprint the agreement. Issuing never counts as a sale.</p></div>';
+        return list.map(function (k) {
+            var st = k.cancelled ? '<span class="fr-pill fr-bad">Cancelled</span>' : k.status === 'closed' ? '<span class="fr-pill fr-good">Closed</span>' : '<span class="fr-pill fr-warn">Open</span>';
+            var items = Object.keys(k.items || {}).map(function (code) { var i = k.items[code]; return esc((i.name || code) + ' × ' + i.qtyCarried + (i.unit && i.unit !== 'pcs' ? ' ' + i.unit : '')); }).join(', ');
+            return '<div class="fr-card"><div class="fr-top"><b>' + esc(k.contractNo || String(k.id).slice(-8)) + '</b><span>' + st + '</span></div><div class="fr-sub">' + esc(dateTimeOf(k.createdAt)) + (k.issuedBy ? ' · Issued by ' + esc(k.issuedBy) : '') + '</div><div class="fr-sub">' + (items || 'No items') + '</div>' +
+                '<button type="button" class="fr-btn" style="margin-top:8px" data-contract="' + esc(k.id) + '">Open / reprint</button></div>';
+        }).join('');
+    }
     function overviewHtml(c) {
         var sales = sortedSales(c); var live = sales.filter(function (s) { return !s.voided; });
         var spend = live.reduce(function (t, s) { return t + saleTotal(s); }, 0);
-        var owed = owedMap()[np(c.phone)] || 0; var tok = Number(c.tokens) || 0; var credit = Number(c.storeCredit) || 0;
+        var owed = owedMap()[ckey(c)] || 0; var tok = Number(c.tokens) || 0; var credit = Number(c.storeCredit) || 0;
         var tiles = '<div class="fr-tiles"><div class="fr-tile"><b>' + esc(money(spend)) + '</b><span>Total spent</span></div><div class="fr-tile"><b>' + live.length + '</b><span>Purchases</span></div><div class="fr-tile"><b>' + (live.length ? esc(dateOf(live[0].timestamp)) : '&mdash;') + '</b><span>Last purchase</span></div><div class="fr-tile"><b>' + esc(money(owed)) + '</b><span>Balance owed (bills &amp; debts)</span></div>' +
             (credit > 0 ? '<div class="fr-tile"><b>' + esc(money(credit)) + '</b><span>Store credit</span></div>' : '') + (loyaltySupported() && (tok > 0 || loyaltyOn()) ? '<div class="fr-tile"><b>' + tok + '</b><span>Loyalty tokens</span></div>' : '') + '</div>';
-        if (!sales.length && !billsOf(c).length) return tiles + '<div class="fr-empty"><div class="fr-ico">' + IC.cart + '</div><h4>No purchases yet</h4><p>Sales made for this customer will appear here with their receipts, payments and tokens. Start a sale and attach this customer to begin.</p></div>';
-        return tiles + '<div class="fr-h5">Latest activity</div>' + sales.slice(0, 3).map(saleCard).join('') + (sales.length > 3 ? '<button type="button" class="fr-btn fr-more" data-goto="tx">See all ' + sales.length + ' transactions</button>' : '');
+        if (!sales.length && !billsOf(c).length) return detailsHtml(c) + tiles + '<div class="fr-empty"><div class="fr-ico">' + IC.cart + '</div><h4>No purchases yet</h4><p>Sales made for this customer will appear here with their receipts, payments and tokens. Start a sale and attach this customer to begin.</p></div>';
+        return detailsHtml(c) + tiles + '<div class="fr-h5">Latest activity</div>' + sales.slice(0, 3).map(saleCard).join('') + (sales.length > 3 ? '<button type="button" class="fr-btn fr-more" data-goto="tx">See all ' + sales.length + ' transactions</button>' : '');
     }
     function txHtml(c) {
         var sales = sortedSales(c); var rets = returnsOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); });
@@ -696,7 +752,7 @@
     }
     function billsHtml(c) {
         var bs = billsOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); });
-        var dl = arr('debts').filter(function (d) { return d && np(d.phone) === np(c.phone); });
+        var dl = arr('debts').filter(function (d) { return d && recKey(d) === ckey(c); });
         if (!bs.length && !dl.length) return '<div class="fr-empty"><div class="fr-ico">' + IC.users + '</div><h4>No bills or credit</h4><p>Pay Later bills for this customer, with every part-payment and the balance still owed, will be listed here separately from completed sales.</p></div>';
         var nd = new Date(), today = nd.getFullYear() + '-' + ('0' + (nd.getMonth() + 1)).slice(-2) + '-' + ('0' + nd.getDate()).slice(-2);   /* the shop's own calendar day, not UTC */
         return bs.map(function (b) {
@@ -706,7 +762,7 @@
             var hist = (Array.isArray(b.paymentHistory) ? b.paymentHistory : []).map(function (p) { return '<tr><td>' + esc(dateOf(p.timestamp)) + '</td><td>' + esc(p.method || '') + '</td><td>' + esc(money(p.amount)) + '</td></tr>'; }).join('');
             return '<div class="fr-card"><div class="fr-top"><b>' + esc(money(total)) + ' bill</b><span>' + st + overdue + '</span></div><div class="fr-sub">' + esc(dateOf(b.timestamp)) + (b.refNumber ? ' · ' + esc(b.refNumber) : '') + (b.dueDate ? ' · Due ' + esc(b.dueDate) : ' · No due date') + '</div>' +
                 '<div class="fr-sub">Paid ' + esc(money(paid)) + ' · <b>Balance ' + esc(money(out)) + '</b></div>' +
-                '<details><summary>Payments (' + (Array.isArray(b.paymentHistory) ? b.paymentHistory.length : 0) + ')</summary>' + (hist ? '<table class="fr-lines"><thead><tr><th>Date</th><th>Method</th><th>Amount</th></tr></thead><tbody>' + hist + '</tbody></table>' : '<p class="fr-sub">No payments recorded yet.</p>') + '</details></div>';
+                '<details><summary>Payments (' + (Array.isArray(b.paymentHistory) ? b.paymentHistory.length : 0) + ')</summary>' + (hist ? '<table class="fr-lines"><thead><tr><th>Date</th><th>Method</th><th>Amount</th></tr></thead><tbody>' + hist + '</tbody></table>' : '<p class="fr-sub">No payments recorded yet.</p>') + '</details>' + (typeof printOpenBillInvoice === 'function' && out > 0.004 && !b.voided ? '<button type="button" class="fr-btn" style="margin-top:8px" data-bill="' + esc(b.id) + '">View bill / reprint</button>' : '') + '</div>';
         }).join('') + dl.map(function (d) {
             var paid = (Array.isArray(d.payments) ? d.payments : []).reduce(function (t, x) { return t + (Number(x && x.amount) || 0); }, 0), out = Math.max(0, (Number(d.amount) || 0) - paid);
             return '<div class="fr-card"><div class="fr-top"><b>' + esc(money(d.amount)) + ' debt</b><span>' + (out <= 0.004 ? '<span class="fr-pill fr-good">Paid</span>' : '<span class="fr-pill fr-warn">' + (paid > 0 ? 'Part-paid' : 'Unpaid') + '</span>') + '</span></div><div class="fr-sub">' + esc(dateOf(d.createdAt)) + (d.notes ? ' · ' + esc(d.notes) : '') + '</div><div class="fr-sub">Paid ' + esc(money(paid)) + ' · <b>Balance ' + esc(money(out)) + '</b></div></div>';
@@ -757,6 +813,10 @@
         });
         body.querySelectorAll('[data-per]').forEach(function (b) { b.onclick = function () { P.per = b.dataset.per; var y = body.scrollTop; renderProfile(); body.scrollTop = y; }; });
         body.querySelectorAll('[data-act]').forEach(function (b) { b.onclick = function () { acctAct(b.dataset.act); }; });
+        body.querySelectorAll('[data-edit]').forEach(function (b) { b.onclick = function () { if (typeof window.custEditProfile === 'function') window.custEditProfile(c.id, function () { var nm = custById(c.id) || c; $('fr-p-name').textContent = nm.name || 'Unnamed customer'; renderProfile(); }); }; });
+        body.querySelectorAll('[data-showid]').forEach(function (b) { b.onclick = function () { P.showId = !P.showId; var y = body.scrollTop; renderProfile(); body.scrollTop = y; }; });
+        body.querySelectorAll('[data-bill]').forEach(function (b) { b.onclick = function () { try { closeProfile(); printOpenBillInvoice('bill', b.dataset.bill); } catch (e) { toast('Could not open that bill.', true); } }; });
+        body.querySelectorAll('[data-contract]').forEach(function (b) { b.onclick = function () { try { closeProfile(); window.contractOpen(b.dataset.contract); } catch (e) { toast('Could not open that contract.', true); } }; });
         body.querySelectorAll('[data-goto]').forEach(function (b) { b.onclick = function () { P.tab = b.dataset.goto; renderProfile(); body.scrollTop = 0; }; });
         body.querySelectorAll('[data-goto-tab]').forEach(function (b) { b.onclick = function () { closeProfile(); goTab(b.dataset.gotoTab); }; });
         var more = body.querySelector('[data-more]'); if (more) more.onclick = function () { P.txLimit += 15; var y = body.scrollTop; renderProfile(); body.scrollTop = y; };

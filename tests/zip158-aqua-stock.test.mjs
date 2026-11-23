@@ -56,14 +56,14 @@ test('W4: production with one material listed twice is checked as one total; a m
   w.eval("products.find(p => p.code === 'CAP').productionRecipe = [{ materialId: 'mat-1', qtyPerUnit: 3 }, { materialId: 'mat-1', qtyPerUnit: 3 }]; renderProductionTargetSelect()");
   d.getElementById('production-target-select').innerHTML = '<option value="product:CAP">x</option>'; d.getElementById('production-target-select').value = 'product:CAP';
   d.getElementById('production-qty-input').value = '1';
-  w.eval('submitProduction()');
+  w.eval('submitProduction(); AquaMat.pNoRecipe(true); AquaMat.pGo()');
   assert.equal(J(w, "rawMaterials[0].stockQty"), 5, '6 needed, 5 there: refused');
   assert.equal(stock(w, 'CAP', PROD), 10);
   // the bale's bottle was deleted: nothing may be consumed for a run that cannot credit anything
   w.eval("products.find(p => p.code === 'BALE').productionRecipe = [{ materialId: 'mat-1', qtyPerUnit: 1 }]; products.splice(products.findIndex(p => p.code === 'BTL'), 1)");
   d.getElementById('production-target-select').innerHTML = '<option value="product:BALE">x</option>'; d.getElementById('production-target-select').value = 'product:BALE';
   d.getElementById('production-qty-input').value = '2';
-  w.eval('submitProduction()');
+  w.eval('submitProduction(); AquaMat.pNoRecipe(true); AquaMat.pGo()');
   assert.equal(J(w, "rawMaterials[0].stockQty"), 5, 'materials untouched');
   assert.equal(J(w, 'productionLog.length'), 0);
   b.close();
@@ -73,7 +73,7 @@ test('W5: production of a tracked bale credits whole bottles', async () => {
   const b = await app(); const { w, d } = b;
   d.getElementById('production-target-select').innerHTML = '<option value="product:TRK">x</option>'; d.getElementById('production-target-select').value = 'product:TRK';
   d.getElementById('production-qty-input').value = '1.3';
-  w.eval('submitProduction()');
+  w.eval('submitProduction(); AquaMat.pNoRecipe(true); AquaMat.pGo()');
   const bs = J(w, "products.find(p => p.code === 'TRK').bottleStock");
   assert.equal(bs, Math.round(bs), 'no 31.2 bottles');
   b.close();

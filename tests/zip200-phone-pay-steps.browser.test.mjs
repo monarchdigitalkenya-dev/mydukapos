@@ -61,6 +61,8 @@ async function open(browser, base, app, { width = 390, height = 844, reuse = nul
     await ctx.addInitScript(([h, inv, water, shop]) => {
       if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
       const pre = water ? 'aqua_' : 'pos_';
+      // as tests/helpers.mjs: cash float (on by default since zip 292) and whole-shilling rounding (zip 233) are off unless a test asks - these tests are about the phone screens
+      localStorage.setItem('pos_cash_config', JSON.stringify([{ id: 'cfg', enabled: false, updatedAt: 1 }])); localStorage.setItem('pos_round_up', '0');
       localStorage.setItem(pre + 'pw_hash', h); localStorage.setItem(pre + 'biz_name', 'Test Shop');
       for (const k of ['pos_notif_prompt_last', 'pos_cd_detect_last', 'aqua_notif_prompt_last']) localStorage.setItem(k, String(Date.now()));   // no "turn on notifications" banner over the bottom bar
       if (water) {
@@ -96,7 +98,13 @@ async function openSettingsCard(page) {
   await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-paymethods"]'); if (b) b.click(); });
   await page.waitForFunction(() => !!document.getElementById('pos-phonetill-panel') && !!document.querySelector('#pos-phonetill-panel .ptl-sw'), null, { timeout: 8000 });
 }
-const flip = (page, id) => page.evaluate((i) => { const l = document.getElementById(i).closest('label'); l.scrollIntoView({ block: 'center' }); }, id).then(() => page.click('label.ptl-sw:has(#' + id + ')'));
+// opening a Settings section smooth-scrolls the page to the top; on a phone that takes a moment. Wait until it has stopped (the switch is
+// where it will stay) - otherwise the switch slides away under the tap, as it would under a finger.
+const flip = (page, id) => page.evaluate(async (i) => {
+  const l = document.getElementById(i).closest('label');
+  const still = async () => { let last = '', same = 0; for (let k = 0; k < 240 && same < 4; k++) { await new Promise((r) => requestAnimationFrame(r)); const b = l.getBoundingClientRect(); const now = b.top + '|' + scrollY; same = now === last ? same + 1 : 0; last = now; } };
+  await still(); l.scrollIntoView({ block: 'center' }); await still();
+}, id).then(() => page.click('label.ptl-sw:has(#' + id + ')'));
 const toSales = async (page) => { await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="sales-tab"]'); if (b) b.click(); }); await page.waitForTimeout(400); await clearBanners(page); };
 // opens the cart sheet with two items in it (a hidden box is only meaningful to check where it would be drawn)
 const sheetUp = async (page, app) => { await toSales(page); if (!(await page.evaluate(() => Object.keys(currentCart).length))) await addTwo(page, app); await page.click('#mobile-cart-fab'); await page.waitForTimeout(350); };

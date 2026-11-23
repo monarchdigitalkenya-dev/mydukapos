@@ -40,7 +40,7 @@ test('the catalogue is valid: unique ids, known categories and artwork, honest p
 
 test('homepage keeps every id the page script fills in, links to Hardware, and every public page has the Hardware link', () => {
   const h = read('index.html');
-  for (const id of ['hero-headline', 'hero-subhead', 'demo-duration-hero-cta', 'price-amount-hero', 'apps', 'pricing', 'hardware', 'home-featured', 'home-systems', 'home-offers']) assert.ok(h.includes('id="' + id + '"'), id);
+  for (const id of ['hero-headline', 'hero-subhead', 'price-amount-hero', 'apps', 'pricing', 'hardware', 'home-featured']) assert.ok(h.includes('id="' + id + '"'), id);      // zip 307: complete systems and offers live on /shop (linked from the hardware section)
   assert.ok(h.includes('href="/shop"') && h.includes('/premium.css') && h.includes('/motion.js'));
   for (const f of ['faq', 'contact', 'offers', 'terms', 'privacy', 'cookies', 'acceptable-use', 'shop']) assert.ok(read(f + '.html').includes('href="/shop"'), f);
 });
@@ -90,7 +90,7 @@ test('homepage: hero text enters in order and finishes visible within a second; 
     await a.p.waitForTimeout(1500);
     const late = await a.p.evaluate(() => Array.from(document.querySelectorAll('.hero .pm-in')).map((e) => +getComputedStyle(e).opacity));
     assert.ok(late.every((o) => o > 0.99), 'every hero piece ends fully visible: ' + late);
-    assert.equal(await a.p.evaluate(() => !!document.querySelector('#hero-art-pos svg') && !!document.querySelector('#hero-art-printer svg') && !!document.querySelector('#hero-art-scanner svg')), true, 'hero devices drawn');
+    assert.equal(await a.p.evaluate(() => { const b = document.getElementById('hp-film-play'); const r = b && b.getBoundingClientRect(); return !!r && r.width > 200 && r.height > 100; }), true, 'zip 307: the hero shows the real app (the film poster), not a drawn scene');
     assert.ok(await a.p.evaluate(() => document.querySelectorAll('#home-featured .pc').length) >= 1 && await a.p.evaluate(() => !document.getElementById('hardware').hidden), 'featured hardware drawn from the catalogue');
     await a.p.evaluate(() => window.scrollTo(0, 400)); await a.p.waitForTimeout(250);
     assert.equal(await a.p.evaluate(() => document.querySelector('header.site-nav').classList.contains('pm-scrolled')), true, 'nav tightens on scroll');

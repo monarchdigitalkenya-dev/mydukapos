@@ -1,0 +1,9 @@
+## Zip 296 - Paid bills can't be paid twice, Open-orders drawer on Service Orders only, Card in split, UX polish
+
+- **Paid bill leaves the list at once; no second payment:** after Settle, `renderBillsAwaitingPayment()` and the Open-orders list refresh immediately (before, the row stayed until you changed tab, so the same bill was paid up to three times). `confirmTabSettle` and `settleTabDirect` now refuse a bill that is not OPEN ("already settled - nothing was recorded again"); no second sale is written.
+- **Open-orders drawer (Hotel):** closes whenever you leave Service Orders (`performTabSwitch`), so it no longer follows you to every tab.
+- **Split payment now takes Card (Hotel, Shop, Water - the apps that have a Card payment at the counter):** an optional third amount; typing Cash/M-Pesa/Card keeps the three adding up to the total; checkout records `cardAmount`; the M-Pesa prompt, balance line, clearing and cart reset know about it. Leaving Card empty behaves exactly as before. Hospital, Pharmacy, Production and Services have no Card payment at their counters, so they are unchanged.
+- **UX pass (Hotel, layout only - no business logic):** Service Orders: compact "Open orders" button, 3-column (phone: 2-column) order fields, cashier hint and scan code folded into "More tools". Bills: search box, All/Unpaid/Part-paid chips, Settle stays prominent while Print/Update/History/Remind/Void move into a "More" menu, 2-up summary cards on phones. Settings: search that filters the settings tabs (also by words inside each tab), horizontally scrolling tab row on phones.
+- Service-worker version `zip-296`. Tests: `split-card-and-bill-guard-296` (9).
+- Not done: tablet side-by-side Sales Counter (the cart table clipped at 820px, so it was reverted); sidebar already grouped, left as is; Settings are not regrouped into the 8 proposed sections and device-only vs shop-wide labels are not added (needs a per-setting review).
+

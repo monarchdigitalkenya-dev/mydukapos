@@ -1,0 +1,250 @@
+<!-- HMIS INPATIENT (zip 367) ----------------------------------------------------------------------------------------------------------
+     Hospital only. The in-patient (admission) adjustments asked for by the clinic ("POS adjustment - In patient"):
+       - the old nursing "Chart" is now the PATIENT FILE: vitals, diagnosis, SOAP, lab, radiology, treatment and services that came from the
+         outpatient / clinic consultation are collected automatically, with the ward's clinical notes, medicines given, meals and bed history;
+         it can be printed and downloaded, and it stays available after discharge;
+       - the admission window gets Lab, Radiology and Clinical notes (Cardex) tabs for extra tests / imaging / progress notes while admitted;
+       - meals can be edited / removed, "Charges" is "Services";
+       - NO payment is taken in the ward: "Send to cashier" puts the accumulated bill (extra services, labs, imaging, meals, bed & nursing so far)
+         on the cashier's Patient Bill; the cashier collects it and prints the receipt, statement or invoice;
+       - wards can be renamed (Male ward, Female ward, Paediatric ward ...) after they are generated; beds are untouched.
+     Money rules: this block only ADDS unpaid charges (idempotent - a double tap never charges twice) or removes UNPAID / zero-price meals.
+     It never edits a paid charge, a sale or stock. -->
+<script>
+(function () {
+  'use strict';
+  var W = window;
+  var TABS = { file: 1, lab: 1, rad: 1, notes: 1 };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function r2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+  function money(n) { return 'KES ' + r2(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function fdt(t) { return t ? new Date(t).toLocaleString('en-GB') : '-'; }
+  function A() { return W.hmisIpApi; }
+  function val(id) { var e = $(id); return e ? String(e.value || '') : ''; }
+
+  /* ============================ the patient file ============================ */
+  function vitalsText(v) {
+    if (!v || typeof v !== 'object') return '';
+    var out = [];
+    if (v.bp) out.push('BP ' + v.bp); if (v.pulse) out.push('Pulse ' + v.pulse); if (v.temp) out.push('Temp ' + v.temp); if (v.spo2) out.push('SpO2 ' + v.spo2 + '%');
+    if (v.weightKg) out.push('Weight ' + v.weightKg + ' kg'); if (v.heightCm) out.push('Height ' + v.heightCm + ' cm'); if (v.bmi) out.push('BMI ' + v.bmi);
+    return out.join(' · ');
+  }
+  function labValues(rec) {
+    var vals = rec.fields || {}, out = [], def = null;
+    try { def = (W.hmisLab && W.hmisLab.tests ? W.hmisLab.tests() : []).find(function (t) { return t.name === rec.testName; }); } catch (e) { def = null; }
+    if (def && def.fields) def.fields.forEach(function (f) { var v = vals[f.k]; if (v != null && v !== '') out.push(f.label + ': ' + v + (f.unit ? ' ' + f.unit : '')); });
+    if (!out.length && rec.resultText) out.push(rec.resultText + (rec.resultUnits ? ' ' + rec.resultUnits : ''));
+    return out.join('; ');
+  }
+  function labState(rec) {
+    if (rec.stage === 'verified') return 'Verified'; if (rec.stage === 'final' || rec.status === 'completed') return 'Result ready'; return 'Pending';
+  }
+  /* everything that belongs to this admission, collected from the records already on the system - nothing is copied or changed */
+  function model(a) {
+    var pid = a.patientId, patient = (typeof patients !== 'undefined' ? patients : []).find(function (p) { return p.id === pid; }) || {};
+    var end = a.dischargedAt || Date.now();
+    var all = (typeof visits !== 'undefined' ? visits : []).filter(function (v) { return v && v.patientId === pid; }).sort(function (x, y) { return (x.timestamp || 0) - (y.timestamp || 0); });
+    var prior = all.filter(function (v) { return (v.timestamp || 0) <= a.admittedAt + 6 * 3600000; });
+    var admitting = prior.length ? prior[prior.length - 1] : null;                                         // the consultation the doctor admitted from
+    var during = all.filter(function (v) { return v !== admitting && (v.timestamp || 0) > a.admittedAt && (v.timestamp || 0) <= end + 6 * 3600000; });
+    var consults = (admitting ? [admitting] : []).concat(during);
+    var since = Math.min(a.admittedAt, admitting ? (admitting.timestamp || a.admittedAt) : a.admittedAt) - 6 * 3600000;
+    var refs = {}; consults.forEach(function (v) { if (v.ref) refs[v.ref] = 1; });
+    var labs = (typeof labResults !== 'undefined' ? labResults : []).filter(function (t) { return t && t.patientId === pid && ((t.requestedAt || 0) >= since && (t.requestedAt || 0) <= end + 6 * 3600000 || (t.visitRef && refs[t.visitRef])); }).sort(function (x, y) { return (x.requestedAt || 0) - (y.requestedAt || 0); });
+    var rads = (typeof radiologyOrders !== 'undefined' ? radiologyOrders : []).filter(function (o) { return o && o.patientId === pid && ((o.requestedAt || 0) >= since && (o.requestedAt || 0) <= end + 6 * 3600000 || (o.visitRef && refs[o.visitRef])); }).sort(function (x, y) { return (x.requestedAt || 0) - (y.requestedAt || 0); });
+    var api = A(), acct = api ? api.acct(a) : null;
+    return { a: a, patient: patient, consults: consults, labs: labs, rads: rads, notes: (a.notes || []).slice().sort(function (x, y) { return x.timestamp - y.timestamp; }), mar: (a.mar || []).slice().sort(function (x, y) { return x.at - y.at; }), acct: acct, admitting: admitting };
+  }
+  function secTitle(t) { return '<div class="hc-grp" style="margin-top:12px">' + t + '</div>'; }
+  function table(head, rows) { return rows.length ? '<table class="hc-tbl"><thead><tr>' + head.map(function (h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (r) { return '<tr>' + r.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>' : ''; }
+  function noteLabel(t) { try { return NURSING_NOTE_TYPE_LABELS[t] || t; } catch (e) { return t; } }
+  function fileHtml(a) {
+    var m = model(a), p = m.patient, h = '';
+    h += '<div class="hc-card"><strong>' + esc(p.name || '(removed patient)') + '</strong> (' + esc(a.patientId) + ')' + (p.age != null && p.age !== '' ? ' · ' + esc(p.age) + ' yrs' : '') + (p.gender || p.sex ? ' · ' + esc(p.gender || p.sex) : '') + (p.phone ? ' · ' + esc(p.phone) : '') +
+      '<div class="hc-note" style="margin:3px 0 0">Admitted ' + fdt(a.admittedAt) + ' · ' + esc(a.bedLabel) + ' (' + esc(a.wardType) + ')' + (a.dischargedAt ? ' · Discharged ' + fdt(a.dischargedAt) : ' · still admitted') + '</div>' +
+      '<div class="hc-note" style="margin:3px 0 0"><b>Admission reason:</b> ' + esc(a.diagnosis || '-') + '</div>' + (a.dischargeSummary ? '<div class="hc-note" style="margin:3px 0 0"><b>Discharge summary:</b> ' + esc(a.dischargeSummary) + '</div>' : '') + '</div>';
+    if (!m.consults.length) h += '<p class="hc-note">No outpatient / clinic consultation is on record for this patient around this admission. Anything recorded in the ward is below.</p>';
+    m.consults.forEach(function (v, i) {
+      var dxs = (v.diagnoses && v.diagnoses.length ? v.diagnoses.map(function (d) { return d.name || d.dx || d.diagnosis || ''; }).filter(Boolean) : (v.diagnosis ? [v.diagnosis] : []));
+      h += secTitle((i === 0 && v === m.admitting ? '🩺 Consultation that led to the admission' : '🩺 Consultation during the stay') + ' · ' + fdt(v.timestamp) + (v.seenBy ? ' · ' + esc(v.seenBy) : ''));
+      var vt = vitalsText(v.vitals); h += '<div class="hc-note" style="margin:2px 0"><b>Vitals:</b> ' + (vt ? esc(vt) : 'not recorded') + '</div>';
+      h += '<div class="hc-note" style="margin:2px 0"><b>Diagnosis:</b> ' + (dxs.length ? dxs.map(esc).join('; ') : 'not recorded') + (v.icd10Code ? ' (' + esc(v.icd10Code) + ')' : '') + '</div>';
+      if (v.soap) h += '<div class="hc-note" style="margin:2px 0"><b>SOAP</b> — S: ' + esc(v.soap.s || '-') + ' · O: ' + esc(v.soap.o || '-') + ' · A: ' + esc(v.soap.a || '-') + ' · P: ' + esc(v.soap.p || '-') + '</div>';
+      if (v.notes) h += '<div class="hc-note" style="margin:2px 0"><b>Notes:</b> ' + esc(v.notes) + '</div>';
+      if ((v.medications || []).length) h += '<div class="hc-note" style="margin:2px 0"><b>Treatment prescribed:</b> ' + v.medications.map(function (x) { return esc(x.name) + (x.qty ? ' x' + esc(x.qty) : '') + (x.dosage ? ' (' + esc(x.dosage) + ')' : ''); }).join('; ') + '</div>';
+      if ((v.services || []).length) h += '<div class="hc-note" style="margin:2px 0"><b>Services:</b> ' + v.services.map(function (x) { return esc(x.name) + (x.qty > 1 ? ' x' + esc(x.qty) : ''); }).join('; ') + '</div>';
+    });
+    h += secTitle('🧪 Laboratory');
+    h += m.labs.length ? table(['Test', 'Requested', 'Status', 'Result'], m.labs.map(function (t) { return [esc(t.testName), fdt(t.requestedAt), esc(labState(t)), esc(labValues(t) || '-') + (t.flag && t.flag !== 'normal' ? ' <b>(' + esc(t.flag) + ')</b>' : '')]; })) : '<p class="hc-note">No laboratory tests.</p>';
+    h += secTitle('🩻 Radiology');
+    h += m.rads.length ? table(['Study', 'Requested', 'Status', 'Findings / impression'], m.rads.map(function (o) { return [esc(o.modality + ' ' + o.study), fdt(o.requestedAt), esc(String(o.status || '')), o.report ? esc(o.report.findings) + '<br><b>Impression:</b> ' + esc(o.report.impression) : '-']; })) : '<p class="hc-note">No imaging.</p>';
+    h += secTitle('💊 Medicines given in the ward (MAR)');
+    h += m.mar.length ? table(['Time', 'Medicine', 'Dose / route', 'Outcome'], m.mar.map(function (x) { return [fdt(x.at), esc(x.drug), esc((x.dose || '') + ' ' + (x.route || '')), esc(x.status) + (x.reason ? ' — ' + esc(x.reason) : '')]; })) : '<p class="hc-note">None recorded.</p>';
+    h += secTitle('📝 Clinical notes / Cardex');
+    h += m.notes.length ? table(['Time', 'Type', 'By', 'Note'], m.notes.map(function (n) { return [fdt(n.timestamp), esc(noteLabel(n.type)), esc(n.staffName || ''), esc(n.text)]; })) : '<p class="hc-note">No notes yet.</p>';
+    var segs = a.bedHistory || [];
+    if (segs.length) { h += secTitle('🛏️ Bed history'); h += table(['Bed', 'From', 'To', 'Reason'], segs.map(function (s) { return [esc(s.bed + ' (' + s.ward + ')'), fdt(s.from), s.to ? fdt(s.to) : 'now', esc(s.reason || '')]; })); }
+    if ((a.leaves || []).length) { h += secTitle('🚶 Leave of absence'); h += table(['From', 'To', 'Reason'], a.leaves.map(function (l) { return [fdt(l.from), l.to ? fdt(l.to) : 'on leave', esc(l.reason || '')]; })); }
+    var ac = m.acct;
+    if (ac) {
+      h += secTitle('💼 Account');
+      var lines = (ac.lines || []).slice().sort(function (x, y) { return x.createdAt - y.createdAt; });
+      h += lines.length ? table(['Date', 'Item', 'Qty', 'Amount', 'Status'], lines.map(function (c) { return [fdt(c.createdAt), esc(c.name), esc(c.qty), money(c.price * c.qty), esc(c.status)]; })) : '';
+      h += '<div class="hc-card ' + (ac.balance > 0 ? 'warn' : 'ok') + '" style="margin-top:8px">Bed &amp; nursing: <b>' + money(ac.bed) + '</b> · Total: <b>' + money(ac.total) + '</b> · Paid at cashier: <b>' + money(ac.chargePaid) + '</b> · Deposit: <b>' + money(ac.deposit) + '</b><div class="hc-tot">' + (ac.balance >= 0 ? 'Balance due: ' + money(ac.balance) : 'Credit: ' + money(-ac.balance)) + '</div></div>';
+    }
+    return h;
+  }
+  function fileText(a) {
+    var tmp = document.createElement('div'); tmp.innerHTML = fileHtml(a).replace(/<\/(tr|div|p|h\d)>/g, '\n').replace(/<\/(td|th)>/g, ' | ').replace(/<br\s*\/?>/g, '\n');
+    return (tmp.textContent || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  function fileDoc(a) {
+    var biz = ''; try { biz = businessName || 'Hospital'; } catch (e) { biz = 'Hospital'; }
+    var api = A();
+    return '<h2 style="text-align:center">' + esc(biz) + '</h2><h3 style="text-align:center;margin-top:0">PATIENT FILE — ' + esc(api ? api.pname(a) : '') + '</h3>' + fileHtml(a) + '<p style="font-size:11px;color:#666">Printed ' + esc(fdt(Date.now())) + '</p>';
+  }
+  function filePrint(a) {
+    try { $('sales-report-body').innerHTML = fileDoc(a); lastReportText = fileText(a); $('sales-report-modal').style.display = 'flex'; } catch (e) { toast('Could not open the print view.', true); }
+  }
+  function fileDownload(a) {
+    var api = A(), name = (api ? api.pname(a) : 'patient').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'patient';
+    var html = '<!doctype html><html><head><meta charset="utf-8"><title>Patient file - ' + esc(name) + '</title><style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 14px;color:#222}table{border-collapse:collapse;width:100%;margin:6px 0}th,td{border:1px solid #ccc;padding:5px 7px;font-size:13px;text-align:left}th{background:#f2f4f5}.hc-grp{font-weight:700;margin-top:14px;border-bottom:2px solid #333}.hc-note{font-size:13px;margin:3px 0}.hc-card{border:1px solid #ccc;border-radius:8px;padding:8px;margin:8px 0}</style></head><body>' + fileDoc(a) + '</body></html>';
+    var blob = new Blob([html], { type: 'text/html' }), url = URL.createObjectURL(blob), l = document.createElement('a');
+    l.href = url; l.download = 'PatientFile_' + name + '_' + new Date(a.admittedAt).toISOString().slice(0, 10) + '.html'; document.body.appendChild(l); l.click(); l.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    toast('Patient file downloaded.');
+  }
+  W.hmisPatientFile = { html: fileHtml, text: fileText, print: function (id) { var a = A().adm(id); if (a) filePrint(a); }, download: function (id) { var a = A().adm(id); if (a) fileDownload(a); }, open: function (id) { A().open(id, 'file'); } };
+
+  /* ============================ tabs: file / lab / radiology / notes ============================ */
+  function labTab(a, open) {
+    var api = A(), cat = []; try { cat = (W.hmisLab ? W.hmisLab.tests() : []).filter(function (t) { return t.active !== false; }); } catch (e) { cat = []; }
+    var mine = (typeof labResults !== 'undefined' ? labResults : []).filter(function (t) { return t && t.patientId === a.patientId && (t.admissionId === a.id || (t.requestedAt || 0) >= a.admittedAt); }).sort(function (x, y) { return (y.requestedAt || 0) - (x.requestedAt || 0); });
+    var h = '<p class="hc-note">Extra tests for this patient while admitted. They are added to the admission bill and sent to the laboratory; the result appears here and in the File.</p>';
+    if (open) h += '<div class="hc-grid"><div><label for="ipx-lab">Test (from the lab catalogue, or type one)</label><input id="ipx-lab" list="ipx-lab-dl" placeholder="e.g. Full Blood Count"><datalist id="ipx-lab-dl">' + cat.map(function (t) { return '<option value="' + esc(t.name) + '">'; }).join('') + '</datalist></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ipx="lab-request">➕ Request test</button></div>';
+    h += mine.length ? table(['Test', 'Requested', 'Status', 'Result'], mine.map(function (t) { return [esc(t.testName), fdt(t.requestedAt) + '<div class="hc-note" style="margin:0">' + esc(t.requestedBy || '') + '</div>', esc(labState(t)), esc(labValues(t) || '-') + (t.flag && t.flag !== 'normal' ? ' <b>(' + esc(t.flag) + ')</b>' : '')]; })) : '<p class="hc-note">No tests requested yet.</p>';
+    return h;
+  }
+  function radTab(a, open) {
+    var mods = []; try { mods = RAD_MODALITIES; } catch (e) { mods = ['X-ray', 'Ultrasound', 'CT', 'MRI', 'Other']; }
+    var mine = (typeof radiologyOrders !== 'undefined' ? radiologyOrders : []).filter(function (o) { return o && o.patientId === a.patientId && (o.admissionId === a.id || (o.requestedAt || 0) >= a.admittedAt); }).sort(function (x, y) { return (y.requestedAt || 0) - (x.requestedAt || 0); });
+    var h = '<p class="hc-note">X-ray, ultrasound or other imaging needed after admission. It is added to the admission bill and appears in the Radiology department; the report shows here and in the File.</p>';
+    if (open) h += '<div class="hc-grid"><div><label for="ipx-rmod">Imaging type</label><select id="ipx-rmod">' + mods.map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('') + '</select></div><div><label for="ipx-rstudy">Study / body part</label><input id="ipx-rstudy" placeholder="e.g. Chest PA"></div><div><label for="ipx-rwhy">Clinical indication (required)</label><input id="ipx-rwhy" placeholder="e.g. suspected pneumonia"></div><div><label for="ipx-rpri">Priority</label><select id="ipx-rpri"><option value="routine">Routine</option><option value="urgent">Urgent</option><option value="emergency">Emergency</option></select></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ipx="rad-request">➕ Request imaging</button></div>';
+    h += mine.length ? table(['Study', 'Requested', 'Status', 'Findings / impression'], mine.map(function (o) { return [esc(o.modality + ' ' + o.study) + '<div class="hc-note" style="margin:0">' + esc(o.orderNo || '') + '</div>', fdt(o.requestedAt), esc(String(o.status || '')), o.report ? esc(o.report.findings) + '<br><b>Impression:</b> ' + esc(o.report.impression) : '-']; })) : '<p class="hc-note">No imaging requested yet.</p>';
+    return h;
+  }
+  function notesTab(a, open) {
+    var types = []; try { types = Object.keys(NURSING_NOTE_TYPE_LABELS); } catch (e) { types = ['nurse-note']; }
+    var notes = (a.notes || []).slice().sort(function (x, y) { return y.timestamp - x.timestamp; });
+    var h = '<p class="hc-note">Progress of the patient written by the nurse, doctor or anyone caring for them (Cardex). Entries are kept in the patient file and cannot be deleted.</p>';
+    if (open) h += '<div class="hc-grid"><div><label for="ipx-ntype">Type</label><select id="ipx-ntype">' + types.map(function (t) { return '<option value="' + esc(t) + '">' + esc(noteLabel(t)) + '</option>'; }).join('') + '</select></div></div><label for="ipx-ntext" style="display:block;margin-top:6px">Note</label><textarea id="ipx-ntext" rows="3" class="hc-in" style="width:100%" placeholder="e.g. BP 118/76, patient comfortable, no complaints"></textarea><div style="margin:8px 0"><button class="hc-btn g" data-ipx="note-save">💾 Save entry</button></div>';
+    h += notes.length ? table(['Time', 'Type', 'By', 'Note'], notes.map(function (n) { return [fdt(n.timestamp), esc(noteLabel(n.type)), esc(n.staffName || ''), esc(n.text)]; })) : '<p class="hc-note">No entries yet.</p>';
+    return h;
+  }
+  function render(tab, a, open) {
+    if (tab === 'file') return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="hc-btn" data-ipx="file-print">🖨️ Print file</button><button class="hc-btn" data-ipx="file-download">⬇️ Download file</button></div><p class="hc-note">This file collects the consultation (vitals, diagnosis, SOAP, lab, radiology, treatment, services) automatically, then adds everything recorded in the ward.</p>' + fileHtml(a);
+    if (tab === 'lab') return labTab(a, open);
+    if (tab === 'rad') return radTab(a, open);
+    return notesTab(a, open);
+  }
+  W.hmisAdjIp = { has: function (t) { return !!TABS[t]; }, render: render };
+
+  /* ============================ actions ============================ */
+  function cur() { var api = A(); if (!api) return null; var st = api.state(); var a = api.adm(st.id); return a ? { a: a, api: api, st: st } : null; }
+  function ensureRef(a) { if (!a.chargeRef) a.chargeRef = (typeof newVisitRef === 'function' ? newVisitRef() : 'ADM-' + a.id); return a.chargeRef; }
+  function sendToCashier() {
+    var c = cur(); if (!c || c.a.status !== 'admitted') return; var a = c.a, api = c.api;
+    ensureRef(a);
+    var A1 = api.acct(a), added = 0;
+    if (A1.bedDue > 0.004) {
+      var days = typeof admissionDaysSoFar === 'function' ? admissionDaysSoFar(a) : '';
+      var rec = api.postCharge(a, { kind: 'bed', name: 'Bed & nursing to ' + new Date().toLocaleDateString('en-GB') + (days !== '' ? ' (' + days + ' day(s), ' + a.bedLabel + ')' : ''), qty: 1, price: A1.bedDue, postKey: 'bed|' + a.id + '|' + Math.round(A1.bed * 100) + '|' + Math.round(A1.bedSent * 100) });
+      if (rec) added = A1.bedDue;
+    }
+    var A2 = api.acct(a), due = r2(A2.unpaid.reduce(function (s, x) { return s + (Number(x.price) || 0) * (Number(x.qty) || 0); }, 0));
+    if (!(due > 0.004)) { toast('Nothing is waiting for the cashier: every item on this admission is already paid (or there are no charges yet).', true); api.refresh(); return; }
+    a.cashierSends = (a.cashierSends || []).concat([{ at: Date.now(), by: api.who(), unpaid: due, bedAdded: added, ref: a.chargeRef }]);
+    api.audit('Admission bill sent to cashier', api.pname(a), money(due) + ' (' + a.chargeRef + ')');
+    api.stamp(a); api.persist(); api.refresh();
+    toast('Sent to the cashier: ' + money(due) + '. The patient pays at Sales Counter → Patient Bill; no payment is taken in the ward.');
+  }
+  function mealRemove(id) {
+    var c = cur(); if (!c) return; var ch = patientCharges.find(function (x) { return x.id === id && x.admissionId === c.a.id; });
+    if (!ch || ch.status === 'void') return;
+    if (!(ch.status === 'unpaid' || (Number(ch.price) || 0) * (Number(ch.qty) || 0) === 0)) { toast('A paid meal cannot be removed here.', true); return; }
+    if (!window.confirm('Remove "' + ch.name + '" (' + (ch.mealDate || '') + ')?')) return;
+    ch.status = 'void'; ch.updatedAt = Date.now(); ch.voidBy = c.api.who();
+    c.api.audit('Meal removed', c.api.pname(c.a), ch.name); c.api.stamp(c.a); c.api.persist(); if (c.st.editMeal === id) c.st.editMeal = null; c.api.refresh(); toast('Meal removed.');
+  }
+  function saveNote() {
+    var c = cur(); if (!c || c.a.status !== 'admitted') return; var text = val('ipx-ntext').trim(), type = val('ipx-ntype') || 'nurse-note';
+    if (!text) { toast('Write the note first.', true); return; }
+    var a = c.a; a.notes = a.notes || []; a.notes.push({ id: genSaleId(), timestamp: Date.now(), type: type, text: text, staffName: c.api.who() });
+    c.api.audit('Chart entry', c.api.pname(a), noteLabel(type) + ': ' + text); c.api.stamp(a); c.api.persist(); c.api.refresh(); toast('Entry saved.');
+  }
+  function requestLab() {
+    var c = cur(); if (!c || c.a.status !== 'admitted') return; var a = c.a, name = val('ipx-lab').trim();
+    if (!name) { toast('Choose or type the test.', true); return; }
+    var id = addLabTestRequest(a.patientId, name), t = labResults.find(function (x) { return x.id === id; }); if (!t) return;
+    name = t.testName || name;                                                                              // the lab may have resolved it to the catalogue name
+    var cat = null, svc = null; try { cat = (W.hmisLab ? W.hmisLab.tests() : []).find(function (x) { return x.name === name; }); } catch (e) { cat = null; }
+    try { svc = catalogServiceByName(name); } catch (e) { svc = null; }
+    var price = cat && cat.price > 0 ? cat.price : (svc ? Number(svc.price) || 0 : 0);
+    var rec = c.api.postCharge(a, { kind: 'lab', name: 'Lab Test: ' + name, code: (cat && cat.code) || (svc ? svc.code : '') || '', qty: 1, price: price, labId: id, postKey: 'lab|' + id });
+    t.admissionId = a.id; t.visitRef = a.chargeRef; t.payStatus = 'billed'; if (rec) t.price = price;
+    try { safeSetItem('pos_lab_results', JSON.stringify(labResults)); } catch (e) { /* none */ }
+    c.api.audit('Lab requested (inpatient)', c.api.pname(a), name + (price ? ' ' + money(price) : '')); c.api.stamp(a); c.api.persist();
+    try { renderLaboratoryTab(); } catch (e) { /* none */ } c.api.refresh(); toast('Requested "' + name + '"' + (price > 0 ? ' - ' + money(price) + ' added to the admission bill.' : '. Set its price in the Price List so it is billed.'));
+  }
+  function requestRad() {
+    var c = cur(); if (!c || c.a.status !== 'admitted') return; var a = c.a;
+    var o = requestRadiology(a.patientId, val('ipx-rmod'), val('ipx-rstudy'), val('ipx-rwhy'), val('ipx-rpri'));
+    if (!o) return;                                                                                         // requestRadiology already told the user what is missing
+    ensureRef(a);
+    var ch = patientCharges.find(function (x) { return x.id === o.chargeId; });
+    if (ch) { ch.ref = a.chargeRef; ch.admissionId = a.id; ch.updatedAt = Date.now(); }                   // the imaging is billed on the admission
+    o.visitRef = a.chargeRef; o.admissionId = a.id;
+    try { safeSetItem('pos_radiology_orders', JSON.stringify(radiologyOrders)); } catch (e) { /* none */ }
+    c.api.stamp(a); c.api.persist(); try { renderLaboratoryTab(); } catch (e) { /* none */ } c.api.refresh(); toast('Imaging requested and added to the admission bill.');
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('#hc-ip [data-ipx]') : null; if (!b) return;
+    var act = b.getAttribute('data-ipx'), id = b.getAttribute('data-id'), c = cur(); if (!c) return;
+    if (act === 'send-cashier') sendToCashier();
+    else if (act === 'meal-edit') { c.st.editMeal = id; c.api.refresh(); }
+    else if (act === 'meal-edit-cancel') { c.st.editMeal = null; c.api.refresh(); }
+    else if (act === 'meal-rm') mealRemove(id);
+    else if (act === 'note-save') saveNote();
+    else if (act === 'lab-request') requestLab();
+    else if (act === 'rad-request') requestRad();
+    else if (act === 'file-print') filePrint(c.a);
+    else if (act === 'file-download') fileDownload(c.a);
+  });
+
+  /* ============================ discharge: the bed balance goes to the cashier, never taken in the ward ============================ */
+  W.hmisInpBedBalance = function (a) { var api = A(); if (!api) return null; var x = api.acct(a); return { bedSent: x.bedSent, bedDue: x.bedDue }; };
+  W.hmisInpSendBedAtDischarge = function (a, amount, days) {
+    var api = A(); if (!api || !(amount > 0)) return null; ensureRef(a);
+    return api.postCharge(a, { kind: 'bed', name: 'Bed & nursing - final (' + days + ' day(s), ' + a.bedLabel + ')', qty: 1, price: r2(amount), postKey: 'bedfinal|' + a.id });
+  };
+
+  /* ============================ wards: rename after they are generated ============================ */
+  window.hmisAdjRenameWard = function (oldName) {
+    var cur0 = String(oldName || ''), idx = tables.indexOf(cur0); if (idx < 0) return;
+    var nn = window.prompt('New name for "' + cur0 + '"\n\nFor example: Male ward, Female ward, Paediatric ward, Male surgical/medical ward, Female surgical/medical ward, Amenity', cur0);
+    if (nn == null) return; nn = nn.replace(/\s+/g, ' ').trim();
+    if (!nn || nn === cur0) return;
+    if (nn.length > 60) { toast('Use a shorter name (up to 60 letters).', true); return; }
+    if (tables.some(function (t) { return t.toLowerCase() === nn.toLowerCase(); })) { toast('Another ward already has that name.', true); return; }
+    tables[idx] = nn;
+    if (tableStates[cur0]) { tableStates[nn] = tableStates[cur0]; delete tableStates[cur0]; }
+    try { safeSetItem('pos_tables', JSON.stringify(tables)); safeSetItem('pos_table_states', JSON.stringify(tableStates)); } catch (e) { /* none */ }
+    try { logAudit('Ward renamed', cur0, '-> ' + nn); } catch (e) { /* none */ }
+    try { queuePush(); } catch (e) { /* none */ }
+    try { renderTablesRoomsLists(); renderSalesLocationSelect(); } catch (e) { /* none */ }
+    toast('Renamed to "' + nn + '". Beds are unchanged.');
+  };
+})();
+</script>

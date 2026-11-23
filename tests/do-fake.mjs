@@ -20,7 +20,7 @@ export function fakeDoState() {
   return { storage: { sql, transactionSync(fn) { db.exec('BEGIN'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } } } };
 }
 
-export async function makeBinding({ failOn } = {}) {
+export async function makeBinding({ failOn, env } = {}) {
   const { ShopStore } = await import(pathToFileURL(path.join(ROOT, 'wildcard-router/shop-store.js')).href);
   const stores = new Map();
   const binding = {
@@ -29,7 +29,7 @@ export async function makeBinding({ failOn } = {}) {
     get: (id) => ({
       fetch: async (url, opts) => {
         if (failOn && String(url).endsWith(failOn)) return new Response('{"error":"boom"}', { status: 500 });
-        if (!stores.has(id)) stores.set(id, new ShopStore(fakeDoState(), {}));
+        if (!stores.has(id)) stores.set(id, new ShopStore(fakeDoState(), env || {}));
         return stores.get(id).fetch(new Request(url, opts));
       },
     }),

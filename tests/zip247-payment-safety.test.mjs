@@ -429,20 +429,24 @@ test('the app asks for the Admin password before a payment-gateway save, sends o
     // a manager can be chosen and the cancel path sends nothing
     w.eval("window.staff = [{ id: 'm1', name: 'Mary', isManager: true }, { id: 'c1', name: 'Cate' }]");
   } finally { close(); }
-  const b2 = await boot('index.html', { fetch, wait: 900, webcrypto: true });
+  // zip 311: the second window counts only ITS OWN requests (a late timer of the first, closed window used to land in the shared list now and then)
+  const seen2 = [];
+  const fetch2 = async (url, init) => { seen2.push(String(url)); return fetch(url, init); };
+  const b2 = await boot('index.html', { fetch: fetch2, wait: 900, webcrypto: true });
   try {
-    const before = seen.length;
+    await new Promise((r) => setTimeout(r, 300));
+    const before = seen2.length;
     const p = b2.w.fetch('/api/gateway-config', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ which: 'daraja' }) });
     await new Promise((r) => setTimeout(r, 60));
     b2.d.getElementById('pay-confirm-no').click();
     const res = await p;
     assert.equal(res.status, 403); assert.equal((await res.json()).code, 'pay_confirm_cancelled');
-    assert.equal(seen.length, before, 'cancelled: no request left the device');
+    assert.ok(!seen2.slice(before).some((u) => /gateway-config/.test(u)), 'cancelled: the payment change never left the device: ' + JSON.stringify(seen2.slice(before)));
   } finally { b2.close(); }
 });
 
 // ---------------------------------------------------------------- 11. the service worker no longer cries "update"
-const SW_FILES = ['sw.js', ...['water', 'hotel', 'hospital', 'production', 'services', 'pharmacy', 'owner', 'chama'].map((a) => `${a}/sw.js`)];
+const SW_FILES = ['sw.js', ...['water', 'hotel', 'hospital', 'production', 'services', 'pharmacy', 'owner'].map((a) => `${a}/sw.js`)];
 function loadSw(file, { fetchImpl, cachesImpl, clients = [], href }) {
   const handlers = {};
   const code = fs.readFileSync(path.join(ROOT, file), 'utf8').replace('NAVIGATION_NETWORK_TIMEOUT_MS = 3500', 'NAVIGATION_NETWORK_TIMEOUT_MS = 40');
@@ -494,7 +498,10 @@ for (const file of SW_FILES) {
     assert.equal(await (await (await caches.open(`${id}-shell-abc`)).match('./index.html')).text(), 'THE APP v2');
     await (await nav(h, `https://x.test${root}?c=1`, kept)).text(); await Promise.all(kept.splice(0));
     assert.equal(told.length, 1, 'the same release again: silent');
-    assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /SW_VERSION = 'zip-268'/);
+    // every release bumps the version; what matters is that it is a release name and the SAME in every app (one deploy = one version)
+    const ver = (f) => (/SW_VERSION = '(zip-\d+)'/.exec(fs.readFileSync(path.join(ROOT, f), 'utf8')) || [])[1];
+    assert.ok(ver(file), file + ': SW_VERSION is a release name');
+    assert.equal(ver(file), ver('sw.js'), file + ': same release as the Shop app');
   });
 }
 

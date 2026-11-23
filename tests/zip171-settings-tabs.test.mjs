@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
 
 const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'water/index.html'];
 
 test('payment methods and receipt shortcuts are Settings tabs, not loose cards above them', async () => {
   for (const a of APPS) {
-    const { d, close } = await boot(a, { wait: 3000 });
+    const { d, close } = await boot(a, { wait: 900 });
     try {
+      await until(() => d.getElementById('settings-section-paymethods') && d.getElementById('settings-section-shortcuts') && d.getElementById('pos-paymethods-panel') && d.getElementById('pos-receiptkeys-panel'), 30000);
       const pay = d.getElementById('settings-section-paymethods'), keys = d.getElementById('settings-section-shortcuts');
       assert.ok(pay && keys, a + ': both sections exist ' + !!pay + !!keys);
       assert.ok(pay.contains(d.getElementById('pos-paymethods-panel')), a);

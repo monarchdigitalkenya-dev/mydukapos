@@ -1,0 +1,80 @@
+<!-- KCB SANDBOX PAYLOAD (zip 389) ---------------------------------------------------------------------------------------------------------
+     After an M-Pesa prompt sent through KCB Buni in SANDBOX, the server returns the exact request it sent to KCB (address, headers with the login
+     token hidden, JSON body) and KCB's answer (kcbDebug, see mpesa-stkpush.js). This shows it in a popup with Copy buttons, so it can be pasted
+     straight into an email to KCB. Shown only when that field comes back: never in production, never for Daraja / Co-op / Paywave / Pesapal. -->
+<style>
+#kcbx-ov{position:fixed;inset:0;z-index:2147483200;background:rgba(15,23,42,.6);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:16px 10px}
+#kcbx-ov.on{display:flex}
+#kcbx-ov .kcbx-dlg{background:var(--bg-surface,#fff);color:var(--dark,#1f2d3a);width:100%;max-width:760px;border-radius:14px;padding:16px 18px;box-sizing:border-box;box-shadow:0 18px 50px rgba(0,0,0,.35);font-family:inherit}
+#kcbx-ov h3{margin:0 0 4px;font-size:18px}
+#kcbx-ov .kcbx-sub{margin:0 0 10px;font-size:13px;color:#475569}
+#kcbx-ov .kcbx-st{display:inline-block;font-weight:700;font-size:12.5px;border-radius:8px;padding:3px 10px;margin-bottom:8px}
+#kcbx-ov .kcbx-ok{background:#dcfce7;color:#166534}#kcbx-ov .kcbx-bad{background:#fee2e2;color:#991b1b}
+#kcbx-ov pre{margin:0;max-height:52vh;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre;-webkit-user-select:text;user-select:text}
+#kcbx-ov .kcbx-act{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
+#kcbx-ov .kcbx-act button{width:auto;margin:0;padding:10px 16px;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;border:1px solid #cbd5e1;background:#fff;color:#0f172a}
+#kcbx-ov .kcbx-act button.main{background:#14532d;border-color:#14532d;color:#fff}
+#kcbx-ov .kcbx-note{font-size:12px;color:#64748b;margin-top:8px}
+#kcbx-ov .kcbx-done{font-size:12.5px;color:#15803d;font-weight:700;min-height:18px;margin-top:6px}
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__kcbx) return; window.__kcbx = true;
+    var LAST = null;
+    function el() {
+        var o = document.getElementById('kcbx-ov');
+        if (o) return o;
+        o = document.createElement('div'); o.id = 'kcbx-ov'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true');
+        o.innerHTML = '<div class="kcbx-dlg"><h3>KCB sandbox: request sent to KCB</h3><p class="kcbx-sub">The exact STK push request this till\'s server sent to KCB Buni. Copy it and paste it in your email to KCB.</p>'
+            + '<div id="kcbx-st"></div><pre id="kcbx-pre"></pre><div class="kcbx-done" id="kcbx-done"></div>'
+            + '<div class="kcbx-act"><button type="button" data-k="all">Copy with KCB\'s answer</button><button type="button" class="main" data-k="req">Copy request</button><button type="button" data-k="close">Close</button></div>'
+            + '<p class="kcbx-note">Shown only in KCB Sandbox. The login token is hidden; the Pass Key and phone number are real - mask them if the email goes outside.</p></div>';
+        document.body.appendChild(o);
+        o.addEventListener('click', function (e) {
+            var k = e.target && e.target.getAttribute && e.target.getAttribute('data-k');
+            if (e.target === o || k === 'close') { o.classList.remove('on'); return; }
+            if (k === 'req' || k === 'all') copy(k === 'all' ? LAST.all : LAST.req);
+        });
+        return o;
+    }
+    function copy(text) {
+        var done = function (ok) { var d = document.getElementById('kcbx-done'); if (d) d.textContent = ok ? 'Copied. Paste it into your email.' : 'Select the text above and copy it.'; };
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { fallback(text) ? done(true) : done(false); }); return; }
+        } catch (e) { /* fall back */ }
+        done(fallback(text));
+    }
+    function fallback(text) {
+        try { var t = document.createElement('textarea'); t.value = text; t.setAttribute('readonly', ''); t.style.cssText = 'position:fixed;left:-9999px;top:0'; document.body.appendChild(t); t.select(); var ok = document.execCommand('copy'); t.remove(); return !!ok; } catch (e) { return false; }
+    }
+    function show(dbg, error) {
+        var reqs = (dbg && Array.isArray(dbg.requests)) ? dbg.requests : []; if (!reqs.length) return;
+        var r = reqs[reqs.length - 1];
+        var request = { method: r.method || 'POST', url: r.url, headers: r.headers, body: r.body };
+        var withAnswer = { request: request, kcbAnswer: r.response || (r.error ? { error: r.error } : null) };
+        LAST = { req: JSON.stringify(request, null, 2), all: JSON.stringify(withAnswer, null, 2) };
+        var o = el();
+        var ok = !error && r.response && r.response.status >= 200 && r.response.status < 300;
+        document.getElementById('kcbx-st').innerHTML = '<span class="kcbx-st ' + (ok ? 'kcbx-ok">KCB accepted the request' : 'kcbx-bad">KCB did not accept it' + (error ? ': ' + String(error).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }) : '')) + '</span>';
+        document.getElementById('kcbx-pre').textContent = LAST.all;
+        document.getElementById('kcbx-done').textContent = '';
+        o.classList.add('on');
+    }
+    window.kcbSandboxShow = show;
+    var f = window.fetch;
+    if (typeof f !== 'function') return;
+    window.fetch = function (input, init) {
+        var url = ''; try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) { url = ''; }
+        var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        var p = f.apply(this, arguments);
+        if (method === 'POST' && /\/api\/mpesa-stkpush(\?|$)/.test(url)) {
+            p.then(function (res) {
+                try { res.clone().json().then(function (j) { if (j && j.kcbDebug) show(j.kcbDebug, j.error); }, function () { /* not JSON */ }); } catch (e) { /* none */ }
+            }, function () { /* the caller handles the network error */ });
+        }
+        return p;
+    };
+})();
+</script>
+<!-- /KCB SANDBOX PAYLOAD -->

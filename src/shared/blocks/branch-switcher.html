@@ -49,7 +49,15 @@
     function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
     function allowed() { try { return typeof branchSwitchingAllowed === 'function' && branchSwitchingAllowed(); } catch (e) { return false; } }
     function summary() { try { return branchesSummaryCache || null; } catch (e) { return null; } }
-    function branches() { var s = summary(); return (s && Array.isArray(s.branches)) ? s.branches : []; }
+    // zip 309: the Business HQ name and code ("Westlands · WLD") where the owner has set them; a SUSPENDED branch is not offered (except the one
+    // this device is in, which then shows the suspension screen anyway)
+    function branches() {
+        var s = summary(), list = (s && Array.isArray(s.branches)) ? s.branches : [];
+        return list.filter(function (b) { return b.isSelf || b.status !== 'suspended'; }).map(function (b) {
+            var nm = b.hqName || b.label || b.slug || 'Branch';
+            return Object.assign({}, b, { label: b.code ? nm + ' \u00b7 ' + b.code : nm });
+        });
+    }
     function self() { return branches().filter(function (b) { return b.isSelf; })[0] || null; }
     function viewing() { try { return viewedBranchId; } catch (e) { return 'self'; } }
     function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }

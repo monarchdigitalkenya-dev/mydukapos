@@ -1,0 +1,160 @@
+<!-- HMIS REG (zip 345) ----------------------------------------------------------------------------------------------------------
+     Patient registration, made quicker:
+       - County, Sub-county and Ward / region are ONE box each that you can type in, search in, or open as a dropdown. Kenya's 47 counties, 290
+         sub-counties and Nairobi's 85 wards are built in (works offline). Nairobi is listed first. Anything not on the list can still be typed.
+       - Pick a county and the sub-county list shrinks to that county; pick a sub-county and the ward list shrinks to it.
+       - The patient you just registered (or edited) is put in front of Reception straight away with the "Where are you going today?" buttons,
+         and everyone registered in the last hours who has not been sent on yet sits under the search box as a tap-to-send chip.
+       - The Edit button in the patient registry looks and works like Register: same form, same buttons, then the same "send them on" card.
+     Classes / ids: hreg-*. Nothing here saves, prices or routes anything by itself. -->
+<style id="hreg-css">
+.hreg-cb { position: relative; display: block; }
+.hreg-cb > input { width: 100%; box-sizing: border-box; padding-right: 44px; }
+.hreg-caret { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: var(--muted, #6b7f84); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.hreg-caret:hover { background: var(--tint-accent, #e4f3ee); color: var(--accent-strong, #0b6d55); }
+.hreg-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 60; max-height: 280px; overflow-y: auto; margin: 0; padding: 6px; list-style: none; background: var(--bg-surface, #fff); color: var(--dark, #10272a); border: 1px solid var(--border-color, #d6e2ea); border-radius: 12px; box-shadow: 0 12px 32px rgba(8, 24, 26, .22); -webkit-overflow-scrolling: touch; }
+.hreg-list[hidden] { display: none; }
+.hreg-opt { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 11px 12px; border-radius: 8px; font-size: 15px; cursor: pointer; line-height: 1.25; }
+.hreg-opt small { font-size: 12px; color: var(--muted, #6b7f84); white-space: nowrap; }
+.hreg-opt.on, .hreg-opt:hover { background: var(--tint-accent, #e4f3ee); }
+.hreg-opt mark { background: transparent; color: var(--accent-strong, #0b6d55); font-weight: 800; }
+.hreg-none { padding: 12px; font-size: 13.5px; color: var(--muted, #6b7f84); }
+.hreg-head { padding: 6px 12px 4px; font-size: 12px; font-weight: 700; color: var(--muted, #6b7f84); }
+#hreg-recent { margin: 10px 0 0; }
+#hreg-recent:empty { display: none; }
+#hreg-recent .hreg-rt { font-size: 13px; font-weight: 700; margin: 0 0 6px; color: var(--accent-strong, #0b6d55); }
+#hreg-recent .hreg-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+#hreg-recent button { border: 1px solid var(--accent, #0e8567); background: var(--tint-accent, #e4f3ee); color: var(--accent-strong, #0b6d55); border-radius: 999px; padding: 9px 14px; font-size: 14px; font-weight: 700; cursor: pointer; min-height: 40px; }
+#hreg-recent button small { font-weight: 500; opacity: .8; margin-left: 4px; }
+#hreg-recent button:hover { background: var(--accent, #0e8567); color: #fff; }
+#reception-search-card.hreg-flash > .panel { animation: hregFlash 1.4s ease-out 1; }
+@keyframes hregFlash { 0% { box-shadow: 0 0 0 0 rgba(14, 133, 103, .55); } 100% { box-shadow: 0 0 0 16px rgba(14, 133, 103, 0); } }
+/* the registry's Edit button looks like the Register button */
+#patients-table button[onclick^="editPatient"] { background: var(--accent, #0e8567); color: #fff; border: 0; border-radius: 10px; padding: 8px 14px; font-weight: 700; min-height: 38px; }
+#patients-table button[onclick^="editPatient"]:hover { background: var(--accent-strong, #0b6d55); }
+html body.hmu #reception-registration-panel > .form-group.hreg-loc { grid-column: auto; }
+@media (prefers-reduced-motion: reduce) { #reception-search-card.hreg-flash > .panel { animation: none; } }
+</style>
+<script id="hreg-geo" type="application/json">{"counties":[{"code":"047","name":"Nairobi","subcounties":[{"name":"Westlands","wards":["Kitisuru","Parklands/Highridge","Karura","Kangemi","Mountain View"]},{"name":"Dagoretti North","wards":["Kilimani","Kawangware","Gatina","Kileleshwa","Kabiro"]},{"name":"Dagoretti South","wards":["Mutu-ini","Ngand'o","Riruta","Uthiru/Ruthimitu","Waithaka"]},{"name":"Lang'ata","wards":["Karen","Nairobi West","Mugumo-ini","South C","Nyayo Highrise"]},{"name":"Kibra","wards":["Laini Saba","Lindi","Makina","Woodley/Kenyatta Golf Course","Sarang'ombe"]},{"name":"Roysambu","wards":["Githurai","Kahawa West","Zimmerman","Roysambu","Kahawa"]},{"name":"Kasarani","wards":["Clay City","Mwiki","Kasarani","Njiru","Ruai"]},{"name":"Ruaraka","wards":["Babadogo","Utalii","Mathare North","Lucky Summer","Korogocho"]},{"name":"Embakasi South","wards":["Imara Daima","Kwa Njenga","Kwa Reuben","Pipeline","Kware"]},{"name":"Embakasi North","wards":["Kariobangi North","Dandora Area I","Dandora Area II","Dandora Area III","Dandora Area IV"]},{"name":"Embakasi Central","wards":["Kayole North","Kayole Central","Kayole South","Komarock","Matopeni/Spring Valley"]},{"name":"Embakasi East","wards":["Upper Savanna","Lower Savanna","Embakasi","Utawala","Mihang'o"]},{"name":"Embakasi West","wards":["Umoja I","Umoja II","Mowlem","Kariobangi South"]},{"name":"Makadara","wards":["Makongeni","Maringo/Hamza","Harambee","Viwandani"]},{"name":"Kamukunji","wards":["Pumwani","Eastleigh North","Eastleigh South","Airbase","California"]},{"name":"Starehe","wards":["Nairobi Central","Ngara","Ziwani/Kariokor","Pangani","Landimawe","Nairobi South"]},{"name":"Mathare","wards":["Hospital","Mabatini","Huruma","Ngei","Mlango Kubwa","Kiamaiko"]}]},{"code":"030","name":"Baringo","subcounties":[{"name":"Tiaty","wards":[]},{"name":"Baringo North","wards":[]},{"name":"Baringo Central","wards":[]},{"name":"Baringo South","wards":[]},{"name":"Mogotio","wards":[]},{"name":"Eldama Ravine","wards":[]}]},{"code":"036","name":"Bomet","subcounties":[{"name":"Sotik","wards":[]},{"name":"Chepalungu","wards":[]},{"name":"Bomet East","wards":[]},{"name":"Bomet Central","wards":[]},{"name":"Konoin","wards":[]}]},{"code":"039","name":"Bungoma","subcounties":[{"name":"Mount Elgon","wards":[]},{"name":"Sirisia","wards":[]},{"name":"Kabuchai","wards":[]},{"name":"Bumula","wards":[]},{"name":"Kanduyi","wards":[]},{"name":"Webuye East","wards":[]},{"name":"Webuye West","wards":[]},{"name":"Kimilili","wards":[]},{"name":"Tongaren","wards":[]}]},{"code":"040","name":"Busia","subcounties":[{"name":"Teso North","wards":[]},{"name":"Teso South","wards":[]},{"name":"Nambale","wards":[]},{"name":"Matayos","wards":[]},{"name":"Butula","wards":[]},{"name":"Funyula","wards":[]},{"name":"Budalangi","wards":[]}]},{"code":"028","name":"Elgeyo-Marakwet","subcounties":[{"name":"Marakwet East","wards":[]},{"name":"Marakwet West","wards":[]},{"name":"Keiyo North","wards":[]},{"name":"Keiyo South","wards":[]}]},{"code":"014","name":"Embu","subcounties":[{"name":"Manyatta","wards":[]},{"name":"Runyenjes","wards":[]},{"name":"Mbeere South","wards":[]},{"name":"Mbeere North","wards":[]}]},{"code":"007","name":"Garissa","subcounties":[{"name":"Garissa Township","wards":[]},{"name":"Balambala","wards":[]},{"name":"Lagdera","wards":[]},{"name":"Dadaab","wards":[]},{"name":"Fafi","wards":[]},{"name":"Ijara","wards":[]}]},{"code":"043","name":"Homa Bay","subcounties":[{"name":"Kasipul","wards":[]},{"name":"Kabondo Kasipul","wards":[]},{"name":"Karachuonyo","wards":[]},{"name":"Rangwe","wards":[]},{"name":"Homa Bay Town","wards":[]},{"name":"Ndhiwa","wards":[]},{"name":"Suba North","wards":[]},{"name":"Suba South","wards":[]}]},{"code":"011","name":"Isiolo","subcounties":[{"name":"Isiolo North","wards":[]},{"name":"Isiolo South","wards":[]}]},{"code":"034","name":"Kajiado","subcounties":[{"name":"Kajiado North","wards":[]},{"name":"Kajiado Central","wards":[]},{"name":"Kajiado East","wards":[]},{"name":"Kajiado West","wards":[]},{"name":"Kajiado South","wards":[]}]},{"code":"037","name":"Kakamega","subcounties":[{"name":"Lugari","wards":[]},{"name":"Likuyani","wards":[]},{"name":"Malava","wards":[]},{"name":"Lurambi","wards":[]},{"name":"Navakholo","wards":[]},{"name":"Mumias West","wards":[]},{"name":"Mumias East","wards":[]},{"name":"Matungu","wards":[]},{"name":"Butere","wards":[]},{"name":"Khwisero","wards":[]},{"name":"Shinyalu","wards":[]},{"name":"Ikolomani","wards":[]}]},{"code":"035","name":"Kericho","subcounties":[{"name":"Kipkelion East","wards":[]},{"name":"Kipkelion West","wards":[]},{"name":"Ainamoi","wards":[]},{"name":"Bureti","wards":[]},{"name":"Belgut","wards":[]},{"name":"Sigowet/Soin","wards":[]}]},{"code":"022","name":"Kiambu","subcounties":[{"name":"Gatundu South","wards":[]},{"name":"Gatundu North","wards":[]},{"name":"Juja","wards":[]},{"name":"Thika Town","wards":[]},{"name":"Ruiru","wards":[]},{"name":"Githunguri","wards":[]},{"name":"Kiambu","wards":[]},{"name":"Kiambaa","wards":[]},{"name":"Kabete","wards":[]},{"name":"Kikuyu","wards":[]},{"name":"Limuru","wards":[]},{"name":"Lari","wards":[]}]},{"code":"003","name":"Kilifi","subcounties":[{"name":"Kilifi North","wards":[]},{"name":"Kilifi South","wards":[]},{"name":"Kaloleni","wards":[]},{"name":"Rabai","wards":[]},{"name":"Ganze","wards":[]},{"name":"Malindi","wards":[]},{"name":"Magarini","wards":[]}]},{"code":"020","name":"Kirinyaga","subcounties":[{"name":"Mwea","wards":[]},{"name":"Gichugu","wards":[]},{"name":"Ndia","wards":[]},{"name":"Kirinyaga Central","wards":[]}]},{"code":"045","name":"Kisii","subcounties":[{"name":"Bonchari","wards":[]},{"name":"South Mugirango","wards":[]},{"name":"Bomachoge Borabu","wards":[]},{"name":"Bobasi","wards":[]},{"name":"Bomachoge Chache","wards":[]},{"name":"Nyaribari Masaba","wards":[]},{"name":"Nyaribari Chache","wards":[]},{"name":"Kitutu Chache North","wards":[]},{"name":"Kitutu Chache South","wards":[]}]},{"code":"042","name":"Kisumu","subcounties":[{"name":"Kisumu East","wards":[]},{"name":"Kisumu West","wards":[]},{"name":"Kisumu Central","wards":[]},{"name":"Seme","wards":[]},{"name":"Nyando","wards":[]},{"name":"Muhoroni","wards":[]},{"name":"Nyakach","wards":[]}]},{"code":"015","name":"Kitui","subcounties":[{"name":"Mwingi North","wards":[]},{"name":"Mwingi West","wards":[]},{"name":"Mwingi Central","wards":[]},{"name":"Kitui West","wards":[]},{"name":"Kitui Rural","wards":[]},{"name":"Kitui Central","wards":[]},{"name":"Kitui East","wards":[]},{"name":"Kitui South","wards":[]}]},{"code":"002","name":"Kwale","subcounties":[{"name":"Msambweni","wards":[]},{"name":"Lunga Lunga","wards":[]},{"name":"Matuga","wards":[]},{"name":"Kinango","wards":[]}]},{"code":"031","name":"Laikipia","subcounties":[{"name":"Laikipia West","wards":[]},{"name":"Laikipia East","wards":[]},{"name":"Laikipia North","wards":[]}]},{"code":"005","name":"Lamu","subcounties":[{"name":"Lamu East","wards":[]},{"name":"Lamu West","wards":[]}]},{"code":"016","name":"Machakos","subcounties":[{"name":"Masinga","wards":[]},{"name":"Yatta","wards":[]},{"name":"Kangundo","wards":[]},{"name":"Matungulu","wards":[]},{"name":"Kathiani","wards":[]},{"name":"Mavoko","wards":[]},{"name":"Machakos Town","wards":[]},{"name":"Mwala","wards":[]}]},{"code":"017","name":"Makueni","subcounties":[{"name":"Mbooni","wards":[]},{"name":"Kilome","wards":[]},{"name":"Kaiti","wards":[]},{"name":"Makueni","wards":[]},{"name":"Kibwezi West","wards":[]},{"name":"Kibwezi East","wards":[]}]},{"code":"009","name":"Mandera","subcounties":[{"name":"Mandera West","wards":[]},{"name":"Banissa","wards":[]},{"name":"Mandera North","wards":[]},{"name":"Mandera South","wards":[]},{"name":"Mandera East","wards":[]},{"name":"Lafey","wards":[]}]},{"code":"010","name":"Marsabit","subcounties":[{"name":"Moyale","wards":[]},{"name":"North Horr","wards":[]},{"name":"Saku","wards":[]},{"name":"Laisamis","wards":[]}]},{"code":"012","name":"Meru","subcounties":[{"name":"Igembe South","wards":[]},{"name":"Igembe Central","wards":[]},{"name":"Igembe North","wards":[]},{"name":"Tigania West","wards":[]},{"name":"Tigania East","wards":[]},{"name":"North Imenti","wards":[]},{"name":"Buuri","wards":[]},{"name":"Central Imenti","wards":[]},{"name":"South Imenti","wards":[]}]},{"code":"044","name":"Migori","subcounties":[{"name":"Rongo","wards":[]},{"name":"Awendo","wards":[]},{"name":"Suna East","wards":[]},{"name":"Suna West","wards":[]},{"name":"Uriri","wards":[]},{"name":"Nyatike","wards":[]},{"name":"Kuria West","wards":[]},{"name":"Kuria East","wards":[]}]},{"code":"001","name":"Mombasa","subcounties":[{"name":"Changamwe","wards":[]},{"name":"Jomvu","wards":[]},{"name":"Kisauni","wards":[]},{"name":"Nyali","wards":[]},{"name":"Likoni","wards":[]},{"name":"Mvita","wards":[]}]},{"code":"021","name":"Murang'a","subcounties":[{"name":"Kangema","wards":[]},{"name":"Mathioya","wards":[]},{"name":"Kiharu","wards":[]},{"name":"Kigumo","wards":[]},{"name":"Maragwa","wards":[]},{"name":"Kandara","wards":[]},{"name":"Gatanga","wards":[]}]},{"code":"032","name":"Nakuru","subcounties":[{"name":"Molo","wards":[]},{"name":"Njoro","wards":[]},{"name":"Naivasha","wards":[]},{"name":"Gilgil","wards":[]},{"name":"Kuresoi South","wards":[]},{"name":"Kuresoi North","wards":[]},{"name":"Subukia","wards":[]},{"name":"Rongai","wards":[]},{"name":"Bahati","wards":[]},{"name":"Nakuru Town West","wards":[]},{"name":"Nakuru Town East","wards":[]}]},{"code":"029","name":"Nandi","subcounties":[{"name":"Tinderet","wards":[]},{"name":"Aldai","wards":[]},{"name":"Nandi Hills","wards":[]},{"name":"Chesumei","wards":[]},{"name":"Emgwen","wards":[]},{"name":"Mosop","wards":[]}]},{"code":"033","name":"Narok","subcounties":[{"name":"Kilgoris","wards":[]},{"name":"Emurua Dikirr","wards":[]},{"name":"Narok North","wards":[]},{"name":"Narok East","wards":[]},{"name":"Narok South","wards":[]},{"name":"Narok West","wards":[]}]},{"code":"046","name":"Nyamira","subcounties":[{"name":"Kitutu Masaba","wards":[]},{"name":"West Mugirango","wards":[]},{"name":"North Mugirango","wards":[]},{"name":"Borabu","wards":[]}]},{"code":"018","name":"Nyandarua","subcounties":[{"name":"Kinangop","wards":[]},{"name":"Kipipiri","wards":[]},{"name":"Ol Kalou","wards":[]},{"name":"Ol Jorok","wards":[]},{"name":"Ndaragwa","wards":[]}]},{"code":"019","name":"Nyeri","subcounties":[{"name":"Tetu","wards":[]},{"name":"Kieni","wards":[]},{"name":"Mathira","wards":[]},{"name":"Othaya","wards":[]},{"name":"Mukurweini","wards":[]},{"name":"Nyeri Town","wards":[]}]},{"code":"025","name":"Samburu","subcounties":[{"name":"Samburu West","wards":[]},{"name":"Samburu North","wards":[]},{"name":"Samburu East","wards":[]}]},{"code":"041","name":"Siaya","subcounties":[{"name":"Ugenya","wards":[]},{"name":"Ugunja","wards":[]},{"name":"Alego Usonga","wards":[]},{"name":"Gem","wards":[]},{"name":"Bondo","wards":[]},{"name":"Rarieda","wards":[]}]},{"code":"006","name":"Taita-Taveta","subcounties":[{"name":"Taveta","wards":[]},{"name":"Wundanyi","wards":[]},{"name":"Mwatate","wards":[]},{"name":"Voi","wards":[]}]},{"code":"004","name":"Tana River","subcounties":[{"name":"Garsen","wards":[]},{"name":"Galole","wards":[]},{"name":"Bura","wards":[]}]},{"code":"013","name":"Tharaka-Nithi","subcounties":[{"name":"Maara","wards":[]},{"name":"Chuka/Igambang'ombe","wards":[]},{"name":"Tharaka","wards":[]}]},{"code":"026","name":"Trans Nzoia","subcounties":[{"name":"Kwanza","wards":[]},{"name":"Endebess","wards":[]},{"name":"Saboti","wards":[]},{"name":"Kiminini","wards":[]},{"name":"Cherangany","wards":[]}]},{"code":"023","name":"Turkana","subcounties":[{"name":"Turkana North","wards":[]},{"name":"Turkana West","wards":[]},{"name":"Turkana Central","wards":[]},{"name":"Loima","wards":[]},{"name":"Turkana South","wards":[]},{"name":"Turkana East","wards":[]}]},{"code":"027","name":"Uasin Gishu","subcounties":[{"name":"Soy","wards":[]},{"name":"Turbo","wards":[]},{"name":"Moiben","wards":[]},{"name":"Ainabkoi","wards":[]},{"name":"Kapseret","wards":[]},{"name":"Kesses","wards":[]}]},{"code":"038","name":"Vihiga","subcounties":[{"name":"Vihiga","wards":[]},{"name":"Sabatia","wards":[]},{"name":"Hamisi","wards":[]},{"name":"Luanda","wards":[]},{"name":"Emuhaya","wards":[]}]},{"code":"008","name":"Wajir","subcounties":[{"name":"Wajir North","wards":[]},{"name":"Wajir East","wards":[]},{"name":"Tarbaj","wards":[]},{"name":"Wajir West","wards":[]},{"name":"Eldas","wards":[]},{"name":"Wajir South","wards":[]}]},{"code":"024","name":"West Pokot","subcounties":[{"name":"Kapenguria","wards":[]},{"name":"Sigor","wards":[]},{"name":"Kacheliba","wards":[]},{"name":"Pokot South","wards":[]}]}]}</script>
+<script id="hreg-js">
+(function () {
+    'use strict';
+    if (window.__hreg) return; window.__hreg = true;
+    function $(id) { return document.getElementById(id); }
+    var GEO = [];
+    try { GEO = JSON.parse(($('hreg-geo') || {}).textContent || '{}').counties || []; } catch (e) { GEO = []; }
+    function norm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[’'`´]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function countyOf(name) { var n = norm(name); if (!n) return null; for (var i = 0; i < GEO.length; i++) { var g = norm(GEO[i].name); if (g === n || g === n + ' city' || n === g + ' city' || n === g + ' county') return GEO[i]; } return null; }
+    function subOf(c, name) { var n = norm(name); if (!c || !n) return null; for (var i = 0; i < c.subcounties.length; i++) if (norm(c.subcounties[i].name) === n) return c.subcounties[i]; return null; }
+    function allSubs() { var out = []; GEO.forEach(function (c) { c.subcounties.forEach(function (s) { out.push({ label: s.name, hint: c.name, county: c.name }); }); }); return out; }
+    function allWards(c) { var out = []; (c ? [c] : GEO).forEach(function (cc) { cc.subcounties.forEach(function (s) { (s.wards || []).forEach(function (w) { out.push({ label: w, hint: s.name, county: cc.name, sub: s.name }); }); }); }); return out; }
+    // ---- the option lists, each depending on what the boxes above hold
+    var SOURCES = {
+        'patient-county-input': function () { return GEO.map(function (c) { return { label: c.name, hint: c.subcounties.length + ' sub-counties' }; }); },
+        'patient-subcounty-input': function () {
+            var c = countyOf(($('patient-county-input') || {}).value);
+            return c ? c.subcounties.map(function (s) { return { label: s.name }; }) : allSubs();
+        },
+        'patient-ward-input': function () {
+            var c = countyOf(($('patient-county-input') || {}).value), s = subOf(c, ($('patient-subcounty-input') || {}).value);
+            if (s) return (s.wards || []).map(function (w) { return { label: w }; });
+            return allWards(c);
+        }
+    };
+    function build(id) {
+        var input = $(id); if (!input || input.getAttribute('data-hreg')) return;
+        input.setAttribute('data-hreg', '1');
+        input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list'); input.setAttribute('aria-expanded', 'false'); input.setAttribute('autocomplete', 'off');
+        var wrap = document.createElement('span'); wrap.className = 'hreg-cb';
+        input.parentNode.insertBefore(wrap, input); wrap.appendChild(input);
+        var caret = document.createElement('button'); caret.type = 'button'; caret.className = 'hreg-caret'; caret.tabIndex = -1; caret.setAttribute('aria-label', 'Show the list'); caret.textContent = '▾';
+        var list = document.createElement('ul'); list.className = 'hreg-list'; list.hidden = true; list.setAttribute('role', 'listbox'); list.id = id + '-list'; input.setAttribute('aria-controls', list.id);
+        wrap.appendChild(caret); wrap.appendChild(list);
+        var items = [], cur = -1, showAll = false;
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); cur = -1; }
+        function mark(label, q) {
+            if (!q) return esc(label);
+            var i = norm(label).indexOf(norm(q)); if (i < 0 || label.length !== norm(label).length) return esc(label);
+            return esc(label.slice(0, i)) + '<mark>' + esc(label.slice(i, i + q.length)) + '</mark>' + esc(label.slice(i + q.length));
+        }
+        function render() {
+            var q = showAll ? '' : input.value.trim(), nq = norm(q), all = (SOURCES[id] || function () { return []; })();
+            var starts = [], has = [];
+            all.forEach(function (o) { var n = norm(o.label); if (!nq) starts.push(o); else if (n.indexOf(nq) === 0) starts.push(o); else if (n.indexOf(nq) > 0 || (o.hint && norm(o.hint).indexOf(nq) >= 0)) has.push(o); });
+            items = starts.concat(has).slice(0, 120);
+            if (!all.length) { close(); return; }                       // nothing to suggest (e.g. wards outside Nairobi): plain typing
+            list.innerHTML = items.length
+                ? items.map(function (o, i) { return '<li class="hreg-opt" role="option" data-i="' + i + '"><span>' + mark(o.label, q) + '</span>' + (o.hint ? '<small>' + esc(o.hint) + '</small>' : '') + '</li>'; }).join('')
+                : '<li class="hreg-none">No match - keep typing, what you type is saved as written.</li>';
+            list.hidden = false; input.setAttribute('aria-expanded', 'true'); cur = items.length && nq ? 0 : -1; paint();
+        }
+        function paint() { Array.prototype.forEach.call(list.querySelectorAll('.hreg-opt'), function (li, i) { li.classList.toggle('on', i === cur); if (i === cur && li.scrollIntoView) li.scrollIntoView({ block: 'nearest' }); }); }
+        function pick(o) {
+            if (!o) return;
+            input.value = o.label;
+            // choosing a sub-county or ward with nothing above it fills what it belongs to
+            if (id === 'patient-subcounty-input' && o.county && !($('patient-county-input') || {}).value) $('patient-county-input').value = o.county;
+            if (id === 'patient-ward-input') { if (o.county && !($('patient-county-input') || {}).value) $('patient-county-input').value = o.county; if (o.sub && !($('patient-subcounty-input') || {}).value) $('patient-subcounty-input').value = o.sub; }
+            // a new county / sub-county empties the boxes below it when they no longer fit
+            if (id === 'patient-county-input') { var c = countyOf(o.label), sb = $('patient-subcounty-input'); if (sb && sb.value && c && !subOf(c, sb.value)) sb.value = ''; var wd = $('patient-ward-input'); if (wd && wd.value && !subOf(c, sb && sb.value)) wd.value = ''; }
+            if (id === 'patient-subcounty-input') { var c2 = countyOf(($('patient-county-input') || {}).value), s2 = subOf(c2, o.label), w2 = $('patient-ward-input'); if (w2 && w2.value && (!s2 || (s2.wards || []).indexOf(w2.value) < 0)) w2.value = ''; }
+            input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
+            close();
+        }
+        input.addEventListener('focus', function () { showAll = !input.value; render(); });
+        input.addEventListener('click', function () { if (list.hidden) { showAll = !input.value; render(); } });
+        input.addEventListener('input', function () { showAll = false; render(); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); if (list.hidden) { showAll = !input.value; render(); } else if (items.length) { cur = (cur + 1) % items.length; paint(); } }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { cur = (cur - 1 + items.length) % items.length; paint(); } }
+            else if (e.key === 'Enter') { if (!list.hidden && cur >= 0 && items[cur]) { e.preventDefault(); pick(items[cur]); } }
+            else if (e.key === 'Escape') { close(); }
+            else if (e.key === 'Tab') { if (!list.hidden && cur >= 0 && items[cur] && input.value.trim() && norm(items[cur].label).indexOf(norm(input.value)) === 0) pick(items[cur]); else close(); }
+        });
+        input.addEventListener('blur', function () { setTimeout(close, 160); });
+        caret.addEventListener('mousedown', function (e) { e.preventDefault(); });
+        caret.addEventListener('click', function () { if (!list.hidden) { close(); return; } input.focus(); showAll = true; render(); });
+        list.addEventListener('mousedown', function (e) { e.preventDefault(); });          // keep the focus in the box
+        list.addEventListener('click', function (e) { var li = e.target.closest && e.target.closest('.hreg-opt'); if (li) pick(items[+li.getAttribute('data-i')]); });
+    }
+    // ---- Reception: the patient who was just registered is right there
+    function dayAgo() { return Date.now() - 12 * 3600 * 1000; }
+    function waiting() {
+        var out = [];
+        try {
+            patients.forEach(function (p) {
+                if (!p || p._deleted || !(+p.registeredAt > dayAgo())) return;
+                if (queue.some(function (q) { return q.patientId === p.id && q.status !== 'done'; })) return;          // already sent on
+                out.push(p);
+            });
+        } catch (e) { return []; }
+        return out.sort(function (a, b) { return b.registeredAt - a.registeredAt; }).slice(0, 8);
+    }
+    function recent() {
+        var panel = $('reception-search-picker'); if (!panel) return;
+        var box = $('hreg-recent');
+        if (!box) { box = document.createElement('div'); box.id = 'hreg-recent'; panel.parentNode.insertBefore(box, panel.nextSibling); }
+        var w = waiting(), sig = w.map(function (p) { return p.id + ':' + (p.name || '') + ':' + (p.updatedAt || ''); }).join('|');   // zip 356: an edited name shows at once (the chip kept the old name)
+        if (box.getAttribute('data-sig') === sig) return;
+        box.setAttribute('data-sig', sig);
+        box.innerHTML = w.length ? '<div class="hreg-rt">🆕 Registered, not sent on yet - tap a name</div><div class="hreg-chips">' + w.map(function (p) {
+            return '<button type="button" onclick="hregPick(\'' + String(p.id).replace(/[\\\']/g, '') + '\')">' + esc(p.name) + '<small>' + esc(p.id) + '</small></button>';
+        }).join('') + '</div>' : '';
+    }
+    window.hregPick = function (id) {
+        try { if (typeof onReceptionPatientPicked === 'function') onReceptionPatientPicked(id); } catch (e) { return; }
+        var card = $('reception-search-card'); if (card) { card.classList.remove('hreg-flash'); void card.offsetWidth; card.classList.add('hreg-flash'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+    };
+    window.hregAfterSave = function (id, isNew) {
+        if (!id) return;
+        var btn = $('reception-tab-btn');
+        recent();
+        var panel = $('reception-search-picker'); if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        window.hregPick(id);
+        void btn; void isNew;
+    };
+    function run() { try { ['patient-county-input', 'patient-subcounty-input', 'patient-ward-input'].forEach(build); recent(); } catch (e) { /* next tick */ } }
+    run(); document.addEventListener('DOMContentLoaded', run); setInterval(run, 1500);
+})();
+</script>

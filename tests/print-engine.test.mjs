@@ -76,7 +76,7 @@ test('the reference receipt (attached photo) on 58 mm: every field on its own li
   assert.ok(g.includes('Predator Shin-Guards (Black)'), 'the name on a line of its own');
   assert.ok(g.includes('#00012    1pcs  350.00  350.00 A'), 'qty / price / amount under their headings');
   assert.ok(g.includes('ITEM       QTY   PRICE    AMOUNT'));
-  assert.ok(g.includes('TOTAL                 KES 350.00'));
+  assert.ok(g.includes('TOTAL KES 350.00'), 'the grand total is one big bold row on half the columns');
   assert.ok(g.includes('CASH                  KES 400.00'));
   assert.ok(g.includes('CHANGE                 KES 50.00'));
   assert.ok(g.includes('A    16%        301.72     48.28'), 'VAT figures unchanged');

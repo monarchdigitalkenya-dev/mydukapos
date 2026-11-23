@@ -68,6 +68,13 @@ per-item columns (they still are in "Total Stock Value — Retail").
   (58 mm / 80 mm). Follows the Reference Number / Barcode switches where a module has them (Hotel).
 * Needs a printer that can print raster images (practically every ESC/POS thermal printer). Not tested on physical printers.
 
+## Big bold TOTAL (every app)
+The grand total on receipts and bills (TOTAL / DUE NOW) prints in double-size bold on screen, in the system print dialog, over
+USB/Bluetooth (ESC/POS `GS ! 0x11`), as a picture at non-standard letter sizes, and in the shared PDF. Its row is laid out on HALF
+the paper's columns (`receiptBigTotalRows`), so it fills the roll once doubled; on 58 mm the amount usually sits on its own big
+line. `receiptBigTotalFlags` decides which lines are big, so every output agrees. The A4 customer invoice's TOTAL OUTSTANDING is 26 px bold.
+Test note: the 7 pt golden hash in `tests/receipt-size.test.mjs` pins the old bytes and must be regenerated.
+
 ## Still to do
 * Not verified on physical printers - do one test print per mode (system dialog, USB, Bluetooth).
 * If a receipt is still faint after this, check the **printer's own** density/darkness setting and the paper (thermal paper ages).

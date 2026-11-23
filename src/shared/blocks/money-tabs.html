@@ -1,0 +1,284 @@
+<!-- MONEY TABS (zip 369) -----------------------------------------------------------------------------------------------------------------
+     Two simple tabs that sit in plain view instead of being buried in bigger screens:
+       💸 EXPENSES  - "money going out" in one small form: amount, tap a category, say what for, Save. Today's expenses are listed right under it.
+                      It fills the Profits & Expenses form and presses ITS Add Expense, so the amount, the reports, the sync and the permissions
+                      are the ones that were already there (nothing is counted twice, nothing is recorded differently).
+       🛒 PURCHASES - "stock I bought": supplier, then each item with how many and what it cost, Save. It fills the Restock sheet and presses ITS
+                      Complete Restock, so stock goes up, the cost is logged as an expense and the goods-received note prints exactly as before.
+                      (Scanning, photo capture and spreadsheet import stay in the Restock tab.)
+     The Water app keeps its own restocking screen: there the existing tab is simply renamed Purchases. Ids: mt-*. -->
+<style id="mt-css">
+.mt-wrap { max-width: 760px; }
+.mt-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e3e8ec); border-radius: 14px; padding: 14px; margin: 0 0 14px; }
+.mt-card h3 { margin: 0 0 4px; }
+.mt-sub { margin: 0 0 12px; font-size: 13px; opacity: .75; }
+.mt-amount { width: 100%; box-sizing: border-box; font-size: 30px; font-weight: 800; padding: 10px 12px; border-radius: 12px; text-align: left; }
+.mt-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.mt-chip { width: auto; margin: 0; padding: 9px 14px; border-radius: 999px; border: 1.5px solid var(--border-color, #cfd8de); background: var(--bg-surface, #fff); color: inherit; font-size: 14px; font-weight: 700; cursor: pointer; min-height: 42px; transition: transform .12s ease, background .12s ease, border-color .12s ease; }
+.mt-chip:active { transform: scale(.95); }
+.mt-chip.on { background: #16a085; border-color: #16a085; color: #fff; }
+.mt-save { width: 100%; margin-top: 12px; min-height: 48px; font-size: 16px; font-weight: 800; border-radius: 12px; border: 0; background: #16a085; color: #fff; cursor: pointer; }
+.mt-save:disabled { opacity: .55; }
+.mt-save.mt-blue { background: #2980b9; }
+.mt-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--border-color, #eef1f3); font-size: 14px; }
+.mt-row:last-child { border-bottom: 0; }
+.mt-row .mt-what { flex: 1; min-width: 0; }
+.mt-row .mt-what small { display: block; opacity: .65; font-size: 12px; }
+.mt-row b { white-space: nowrap; }
+.mt-del { width: auto; margin: 0; padding: 4px 9px; border-radius: 8px; border: 1px solid #e6b0aa; background: transparent; color: #b03a2e; cursor: pointer; min-height: 32px; }
+.mt-totals { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.mt-total { flex: 1; min-width: 130px; border-radius: 12px; padding: 9px 12px; background: var(--bg-surface-alt, #f4f6f7); }
+.mt-total b { display: block; font-size: 20px; }
+.mt-total span { font-size: 12px; opacity: .7; }
+.mt-line { display: grid; grid-template-columns: 1fr 70px 90px 100px 28px; gap: 6px; margin: 0 0 8px; align-items: center; }
+.mt-line.mt-batch { grid-template-columns: 1fr 70px 90px 90px 100px 130px 28px; }
+.mt-line input { min-height: 40px; box-sizing: border-box; width: 100%; }
+.mt-x { width: auto; margin: 0; padding: 0; border: 0; background: transparent; font-size: 20px; cursor: pointer; color: #b03a2e; }
+.mt-lab { font-size: 13px; font-weight: 700; display: block; margin: 10px 0 0; }
+.mt-link { background: none; border: 0; color: #2980b9; font-weight: 700; cursor: pointer; padding: 4px 0; width: auto; margin: 0; }
+.mt-empty { opacity: .65; font-size: 13px; padding: 6px 2px; }
+.mt-pop { animation: mt-pop .22s ease-out; }
+@keyframes mt-pop { from { transform: translateY(4px); opacity: .4; } to { transform: none; opacity: 1; } }
+@media (max-width: 560px) { .mt-line, .mt-line.mt-batch { grid-template-columns: 1fr 1fr; } .mt-line .mt-x { justify-self: end; } }
+@media (prefers-reduced-motion: reduce) { .mt-pop { animation: none; } .mt-chip { transition: none; } }
+</style>
+<script id="mt-js">
+(function () {
+  'use strict';
+  var EXP = 'expenses-tab', EXP_BTN = 'expenses-tab-btn', PUR = 'purchases-tab', PUR_BTN = 'purchases-tab-btn';
+  var CATS = [['Food', '🍲'], ['Transport', '🚗'], ['Rent', '🏠'], ['Utilities', '💡'], ['Wages', '👷'], ['Other', '📦']];
+  var S = { cat: 'Food', day: '', lines: null, saving: false, pay: 'full', paid: '' };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { return 'KES ' + (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+  function todayStr() { try { if (typeof todayDateString === 'function') return todayDateString(); } catch (e) { /* fall back */ } var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function dayOf(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function list() { try { return (typeof expenses !== 'undefined' && Array.isArray(expenses)) ? expenses.filter(function (e) { return e && !e._deleted; }) : []; } catch (e) { return []; } }
+  function hasExpenses() { try { return typeof addExpense === 'function' && !!$('expense-amount-input') && !!$('expense-category-input'); } catch (e) { return false; } }
+  function hasPurchases() { try { return typeof restockDraft !== 'undefined' && typeof completeRestock === 'function' && !!$('restock-supplier-select'); } catch (e) { return false; } }
+  function batchApp() { var th = document.querySelector('#restock-rows-table thead'); return !!(th && /batch/i.test(th.textContent || '')); }
+  function amt(e) { return (Number(e.amount) || 0) + (Number(e.transactionCost) || 0); }
+
+  /* ======================================================= EXPENSES ======================================================= */
+  function renderExpenses(force) {
+    var host = $(EXP); if (!host) return;
+    var typing = document.activeElement && /^mt-e-/.test(document.activeElement.id || '');
+    var td = todayStr(); if (!S.day) S.day = td;
+    var all = list(), dayList = all.filter(function (e) { return dayOf(e.timestamp) === S.day; }).sort(function (a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+    var dayTotal = dayList.reduce(function (t, e) { return t + amt(e); }, 0);
+    var mon = S.day.slice(0, 7), monTotal = all.filter(function (e) { return dayOf(e.timestamp).slice(0, 7) === mon; }).reduce(function (t, e) { return t + amt(e); }, 0);
+    var keep = { a: ($('mt-e-amount') || {}).value || '', n: ($('mt-e-note') || {}).value || '', c: ($('mt-e-charge') || {}).value || '' };
+    if (typing && !force) { paintList(dayList, dayTotal, monTotal); return; }   /* phones keep focus on the last field after a tap, so taps pass force */
+    host.innerHTML = '<div class="mt-wrap mt-pop">' +
+      '<div class="mt-card"><h3>💸 Expenses</h3><p class="mt-sub">Money that went out of the business. Type the amount, tap what it was for, save.</p>' +
+      '<input id="mt-e-amount" class="mt-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Amount (KES)" aria-label="Amount in KES" value="' + esc(keep.a) + '">' +
+      '<div class="mt-chips" role="group" aria-label="What was it for">' + CATS.map(function (c) { return '<button type="button" class="mt-chip' + (S.cat === c[0] ? ' on' : '') + '" data-mt="cat" data-v="' + c[0] + '" aria-pressed="' + (S.cat === c[0]) + '">' + c[1] + ' ' + c[0] + '</button>'; }).join('') + '</div>' +
+      '<input id="mt-e-note" type="text" placeholder="What was it for? (optional) e.g. lunch for staff" aria-label="What was it for" style="width:100%; box-sizing:border-box; min-height:44px;" value="' + esc(keep.n) + '">' +
+      '<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">Add an M-Pesa / bank charge</summary><input id="mt-e-charge" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Charge (KES)" style="margin-top:6px; width:100%; box-sizing:border-box; min-height:42px;" value="' + esc(keep.c) + '"></details>' +
+      '<button type="button" class="mt-save" data-mt="save-exp">✅ Save expense</button></div>' +
+      '<div class="mt-card"><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;"><h3 style="margin:0; flex:1;">' + (S.day === td ? 'Today' : esc(S.day)) + '</h3>' +
+      '<input type="date" id="mt-e-day" value="' + esc(S.day) + '" aria-label="Choose a day" style="min-height:38px;"></div>' +
+      '<div class="mt-totals"><div class="mt-total"><b id="mt-e-daytot">' + kes(dayTotal) + '</b><span>spent this day</span></div><div class="mt-total"><b id="mt-e-montot">' + kes(monTotal) + '</b><span>spent in ' + esc(mon) + '</span></div></div>' +
+      '<div id="mt-e-list"></div>' +
+      '<button type="button" class="mt-link" data-mt="goto" data-v="profits-tab">📈 See the profit report</button></div></div>';
+    paintList(dayList, dayTotal, monTotal);
+  }
+  function paintList(dayList, dayTotal, monTotal) {
+    var el = $('mt-e-list'); if (!el) return;
+    if ($('mt-e-daytot')) $('mt-e-daytot').textContent = kes(dayTotal); if ($('mt-e-montot')) $('mt-e-montot').textContent = kes(monTotal);
+    el.innerHTML = dayList.length ? dayList.map(function (e) {
+      var t = new Date(e.timestamp);
+      return '<div class="mt-row"><div class="mt-what"><b style="white-space:normal">' + esc(e.category || 'Other') + '</b>' + (e.description ? ' · ' + esc(e.description) : '') + '<small>' + t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + (e.auto ? ' · automatic' : '') + (e.transactionCost ? ' · charge ' + kes(e.transactionCost) : '') + '</small></div><b>' + kes(e.amount) + '</b>' +
+        '<button type="button" class="mt-del" data-mt="del" data-id="' + esc(e.id) + '" aria-label="Delete this expense">🗑️</button></div>';
+    }).join('') : '<p class="mt-empty">Nothing spent on this day yet.</p>';
+  }
+  function saveExpense() {
+    if (!hasExpenses()) { toast('Expenses are not available on this screen.', true); return; }
+    var a = parseFloat(($('mt-e-amount') || {}).value);
+    if (isNaN(a) || a <= 0) { toast('Type the amount first.', true); var f = $('mt-e-amount'); if (f) f.focus(); return; }
+    $('expense-category-input').value = S.cat; $('expense-amount-input').value = String(a);
+    $('expense-description-input').value = (($('mt-e-note') || {}).value || '').trim();
+    var ch = (($('mt-e-charge') || {}).value || '').trim(); var tc = $('expense-transaction-cost-input'); if (tc) tc.value = ch;
+    var before = list().length;
+    addExpense();                                    // the app's own Add Expense: the same record, the same reports
+    if (list().length > before) { S.day = todayStr(); S.cat = 'Food'; var x = $('mt-e-amount'); if (x) x.value = ''; x = $('mt-e-note'); if (x) x.value = ''; x = $('mt-e-charge'); if (x) x.value = ''; if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); renderExpenses(); }
+  }
+
+  /* ======================================================= PURCHASES ======================================================= */
+  function newLine() { return { name: '', qty: '', cost: '', price: '', batchNo: '', expiryDate: '' }; }
+  function renderPurchases(force) {
+    var host = $(PUR); if (!host) return;
+    if (!S.lines) S.lines = [newLine()];
+    var typing = document.activeElement && /^mt-p-/.test(document.activeElement.id || '');
+    if (typing && !force) return;
+    try { var rs = $('restock-supplier-select'); if (rs && rs.options.length <= 1 && typeof supplierOptionsHtml === 'function') rs.innerHTML = supplierOptionsHtml(rs.value); } catch (e0) { /* the list is then filled when Restock is opened */ }   // the supplier list is only drawn when Restock is opened
+    var batch = batchApp(), sup = $('restock-supplier-select'), supVal = ($('mt-p-sup') || {}).value || '', ref = ($('mt-p-ref') || {}).value || '';
+    var names = []; try { names = inventory.filter(function (p) { return p && p.type !== 'service' && !p._deleted; }).map(function (p) { return p.name; }); } catch (e) { names = []; }
+    var recent = list().filter(function (e) { return e.category === 'Restock'; }).sort(function (a, b) { return new Date(b.timestamp) - new Date(a.timestamp); }).slice(0, 8);
+    host.innerHTML = '<div class="mt-wrap mt-pop"><div class="mt-card"><h3>🛒 Purchases</h3><p class="mt-sub">Stock you bought. Add each item with how many you got and what one cost. Saving adds it to your stock and records the money spent.</p>' +
+      '<label style="font-size:13px; font-weight:700;">Bought from (optional)</label><select id="mt-p-sup" style="width:100%; min-height:44px; margin:4px 0 10px;">' + (sup ? sup.innerHTML : '<option value="">— No supplier —</option>') + '</select>' +
+      '<div class="mt-line' + (batch ? ' mt-batch' : '') + '" style="font-size:12px; font-weight:700; opacity:.7;"><span>Item (pick or type a new one)</span><span>How many</span><span>Cost each</span><span>Sells at</span>' + (batch ? '<span>Batch no.</span><span>Expiry</span>' : '') + '<span></span></div>' +
+      S.lines.map(function (l, i) {
+        return '<div class="mt-line' + (batch ? ' mt-batch' : '') + '"><input id="mt-p-n' + i + '" data-suggest="mtp" data-row="' + i + '" autocomplete="off" placeholder="Type a name or code - pick from the list" value="' + esc(l.name) + '" data-mt-f="name" data-i="' + i + '">' +
+          '<input id="mt-p-q' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="Qty" value="' + esc(l.qty) + '" data-mt-f="qty" data-i="' + i + '">' +
+          '<input id="mt-p-c' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="KES" value="' + esc(l.cost) + '" data-mt-f="cost" data-i="' + i + '">' +
+          '<input id="mt-p-s' + i + '" type="number" inputmode="decimal" min="0" step="any" placeholder="Sell (optional)" value="' + esc(l.price) + '" data-mt-f="price" data-i="' + i + '">' +
+          (batch ? '<input id="mt-p-b' + i + '" type="text" placeholder="Batch" value="' + esc(l.batchNo) + '" data-mt-f="batchNo" data-i="' + i + '"><input id="mt-p-e' + i + '" type="date" value="' + esc(l.expiryDate) + '" data-mt-f="expiryDate" data-i="' + i + '">' : '') +
+          '<button type="button" class="mt-x" data-mt="rm-line" data-i="' + i + '" aria-label="Remove this item"' + (S.lines.length === 1 ? ' style="visibility:hidden"' : '') + '>×</button></div>';
+      }).join('') +
+      '<button type="button" class="mt-link" data-mt="add-line">+ Add another item</button>' +
+      '<input id="mt-p-ref" type="text" placeholder="Invoice / delivery note no. (optional)" style="width:100%; box-sizing:border-box; min-height:42px; margin-top:8px;" value="' + esc(ref) + '">' +
+      (canPay() ? '<label class="mt-lab">Payment</label><div class="mt-chips">' + [['full', '💵 Paid in full'], ['part', '➗ Part paid'], ['credit', '📒 On credit (pay later)']].map(function (o) { return '<label class="mt-chip' + (S.pay === o[0] ? ' on' : '') + '"><input type="radio" name="mt-pay" value="' + o[0] + '" style="display:none"' + (S.pay === o[0] ? ' checked' : '') + '>' + o[1] + '</label>'; }).join('') + '</div>' +
+        (S.pay === 'part' ? '<input id="mt-p-paid" type="number" inputmode="decimal" min="0" step="any" placeholder="Paid now (KES)" value="' + esc(S.paid || '') + '" style="width:100%; min-height:44px; box-sizing:border-box;">' : '') +
+        (S.pay !== 'full' ? '<p class="mt-sub">What is not paid now is recorded as owed to the supplier you chose above. Pay it later in the Suppliers tab.</p>' : '') : '') +
+      '<div class="mt-totals" style="margin-top:12px;"><div class="mt-total"><b id="mt-p-total">' + kes(total()) + '</b><span>total of this purchase</span></div></div>' +
+      '<button type="button" class="mt-save mt-blue" data-mt="save-pur">✅ Save purchase</button>' +
+      '<p class="mt-sub" style="margin-top:10px;">Have a delivery note photo, a barcode scanner or a spreadsheet? Use <button type="button" class="mt-link" data-mt="goto" data-v="restock-tab">Restock</button> - it does the same thing with more options.</p></div>' +
+      '<div class="mt-card"><h3>Recent purchases</h3>' + (recent.length ? recent.map(function (e) { return '<div class="mt-row"><div class="mt-what">' + esc(e.description || 'Restock') + '<small>' + new Date(e.timestamp).toLocaleDateString('en-GB') + '</small></div><b>' + kes(e.amount) + '</b></div>'; }).join('') : '<p class="mt-empty">No purchases recorded yet.</p>') + '</div></div>';
+    if (supVal && $('mt-p-sup')) $('mt-p-sup').value = supVal;
+  }
+  function total() { return (S.lines || []).reduce(function (t, l) { return t + (parseFloat(l.qty) || 0) * (parseFloat(l.cost) || 0); }, 0); }
+  function canPay() { return !!$('sup-choice'); }      // the Restock tab's own Paid in full / Part paid / On credit choice (it keeps the supplier's account)
+  function supplierName() {
+    var id = ($('mt-p-sup') || {}).value || ''; if (!id) return '';
+    try { var s = suppliers.find(function (x) { return x && String(x.id) === String(id); }); if (s) return s.name || ''; } catch (e) { /* fall through */ }
+    var o = $('mt-p-sup') && $('mt-p-sup').selectedOptions && $('mt-p-sup').selectedOptions[0]; return o ? (o.textContent || '').trim() : '';
+  }
+  // picking an item (or variant) from the drop-down fills this line with its exact code, name and last cost
+  window.itemSuggestHooks = window.itemSuggestHooks || {};
+  window.itemSuggestHooks.mtp = function (e, i) {
+    var l = S.lines && S.lines[i]; if (!l) return null;
+    l.name = e.name; l.code = e.code || ''; if (e.cost > 0 && !(parseFloat(l.cost) >= 0 && l.cost !== '')) l.cost = String(e.cost);
+    renderPurchases(true); return $('mt-p-q' + i);
+  };
+  function savePurchase() {
+    if (!hasPurchases()) { toast('Purchases are not available on this screen.', true); return; }
+    var lines = (S.lines || []).filter(function (l) { return (l.name || '').trim() || (parseFloat(l.qty) || 0) > 0; });
+    if (!lines.length) { toast('Add at least one item.', true); return; }
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i];
+      if (!(l.name || '').trim()) { toast('Every line needs an item name.', true); return; }
+      if (!(parseFloat(l.qty) > 0)) { toast('"' + l.name + '": type how many you got.', true); return; }
+      if (!(parseFloat(l.cost) >= 0) || l.cost === '') { toast('"' + l.name + '": type what one cost.', true); return; }
+    }
+    var inv = []; try { inv = inventory; } catch (e) { inv = []; }
+    restockDraft = lines.map(function (l, n) {
+      var nm = l.name.trim(), hit = inv.find(function (p) { return p && !p._deleted && p.type !== 'service' && ((p.name || '').trim().toLowerCase() === nm.toLowerCase() || (p.code || '').toLowerCase() === nm.toLowerCase()); });
+      var vh = null; try { vh = !hit && typeof restockVariantByCode === 'function' ? restockVariantByCode(l.code || nm) : null; } catch (e2) { vh = null; }   // a variant: by its code, or "Socks (Large)"
+      var row = { rowId: (typeof restockRowSeq !== 'undefined' ? restockRowSeq++ : 9000 + n), code: vh ? (vh.variant.code || '') : (hit ? (hit.code || '') : ''), name: vh ? vh.item.name + ' (' + vh.variant.name + ')' : (hit ? hit.name : nm), unit: (vh ? vh.item.unit : (hit && hit.unit)) || 'pcs', qty: String(l.qty), cost: String(l.cost), wholesaleSell: '', sellPrice: String(l.price || '') };
+      if (batchApp()) { row.batchNo = l.batchNo || ''; row.expiryDate = l.expiryDate || ''; }
+      return row;
+    });
+    $('restock-supplier-select').value = ($('mt-p-sup') || {}).value || '';
+    var rf = $('restock-reference-input'); if (rf) rf.value = (($('mt-p-ref') || {}).value || '').trim();
+    var mode = canPay() ? S.pay : 'full', owed = total(), paidNow = parseFloat(S.paid) || 0;
+    if (mode !== 'full' && !supplierName()) { toast('Choose the supplier you owe (or pick "Paid in full").', true); return; }
+    if (mode === 'part' && !(paidNow > 0 && paidNow < owed)) { toast('For "Part paid" type an amount more than 0 and less than the total (KES ' + owed.toFixed(2) + ').', true); return; }
+    if (canPay()) {      // fill the Restock tab's own payment choice, then press its Complete Restock
+      var rd = document.querySelector('[name="sup-pay"][value="' + mode + '"]'); if (rd) rd.checked = true;
+      var pa = $('sup-paid-amount'); if (pa) pa.value = mode === 'part' ? String(paidNow) : '';
+      try { if (typeof supPaintRestockChoice === 'function') supPaintRestockChoice(); } catch (e1) { /* the choice is read when Complete Restock runs */ }
+    }
+    var before = list().length;
+    try { if (typeof renderRestockRows === 'function') renderRestockRows(); } catch (e) { /* the sheet is redrawn by completeRestock */ }
+    var res; try { res = completeRestock(); } catch (e) { toast('The purchase was not saved: ' + (e && e.message || 'unknown error'), true); return; }   // the app's own Complete Restock: stock, expense, goods-received note
+    var tries = 0;
+    function settle() {                               // the app may finish a moment later (it can wait on the device), so look again before saying it failed
+      if (list().length > before) {
+        S.pay = 'full'; S.paid = ''; S.lines = [newLine()]; renderPurchases(true); return;
+      }
+      if (++tries < 14) { setTimeout(settle, 150); return; }
+      toast('The purchase was not saved - read the red message and fix that line.', true);
+    }
+    Promise.resolve(res).then(settle, settle);
+  }
+
+  /* ======================================================= events + tabs ======================================================= */
+  function onClick(ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-mt]') : null; if (!t) return;
+    var a = t.getAttribute('data-mt');
+    if (a === 'cat') { S.cat = t.getAttribute('data-v'); renderExpenses(true); var f = $('mt-e-note'); if (f) f.focus(); }
+    else if (a === 'save-exp') saveExpense();
+    else if (a === 'del') { if (typeof deleteExpense === 'function') { deleteExpense(t.getAttribute('data-id')); renderExpenses(true); } }
+    else if (a === 'goto') { var b = document.querySelector('.tab-link[data-tab="' + t.getAttribute('data-v') + '"]'); if (b) b.click(); }
+    else if (a === 'add-line') { S.lines.push(newLine()); renderPurchases(true); var n = $('mt-p-n' + (S.lines.length - 1)); if (n) n.focus(); }
+    else if (a === 'rm-line') { S.lines.splice(parseInt(t.getAttribute('data-i'), 10), 1); if (!S.lines.length) S.lines = [newLine()]; renderPurchases(true); }
+    else if (a === 'save-pur') savePurchase();
+  }
+  function onInput(ev) {
+    var t = ev.target; if (!t) return;
+    if (t.name === 'mt-pay') { S.pay = t.value; renderPurchases(true); return; }
+    if (t.id === 'mt-p-paid') { S.paid = t.value; return; }
+    if (t.id === 'mt-e-day') { S.day = t.value || todayStr(); renderExpenses(true); return; }
+    var f = t.getAttribute && t.getAttribute('data-mt-f'); if (!f || !S.lines) return;
+    var i = parseInt(t.getAttribute('data-i'), 10); if (S.lines[i]) { S.lines[i][f] = t.value; if (f === 'name') S.lines[i].code = ''; }   // typing again forgets the picked code
+    var tt = $('mt-p-total'); if (tt) tt.textContent = kes(total());
+  }
+  function place(id, btnId, label, beforeSel) {
+    var host = $(id);
+    if (!host) { var anchor = $('sales-tab'); if (!anchor) return false; host = document.createElement('div'); host.id = id; host.className = 'tab-content'; anchor.parentNode.insertBefore(host, anchor.nextSibling); host.addEventListener('click', onClick); host.addEventListener('input', onInput); host.addEventListener('change', onInput); }
+    if (!$(btnId)) {
+      var ref = document.querySelector(beforeSel) || $('sales-tab-btn'); if (!ref) return false;
+      var nb = document.createElement('button'); nb.id = btnId; nb.className = 'tab-link'; nb.setAttribute('data-tab', id); nb.setAttribute('onclick', "guardedSwitchTab(event, '" + id + "')"); nb.textContent = label;
+      if (ref.getAttribute('data-tab') === 'sales-tab') ref.parentNode.insertBefore(nb, ref.nextSibling); else ref.parentNode.insertBefore(nb, ref);
+      nb.addEventListener('click', function () { setTimeout(id === EXP ? function () { S.day = todayStr(); renderExpenses(); } : function () { renderPurchases(); }, 0); });
+    }
+    return true;
+  }
+  function addRole(item, after) {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && !LOCKABLE_TABS.some(function (t) { return t.id === item.id; })) { var i = LOCKABLE_TABS.findIndex(function (t) { return t.id === after; }); LOCKABLE_TABS.splice(i >= 0 ? i : LOCKABLE_TABS.length, 0, item); }
+      if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === item.id; })) ROLE_TABS.push(item);
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  // staff who could already add expenses / restock keep that, through the new tabs
+  function migrate() {
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return; var changed = false;
+      staff.forEach(function (m) {
+        if (!m || m.mtMigrated) return; m.mtMigrated = true; changed = true;
+        if (!Array.isArray(m.roles)) return;
+        if (m.roles.indexOf('profits-tab') >= 0 && m.roles.indexOf(EXP) < 0 && hasExpenses()) { m.roles.push(EXP); m.updatedAt = Date.now(); }
+        if ((m.roles.indexOf('restock-tab') >= 0 || m.roles.indexOf('restocking-tab') >= 0) && m.roles.indexOf(PUR) < 0 && hasPurchases()) { m.roles.push(PUR); m.updatedAt = Date.now(); }
+      });
+      if (changed) { safeSetItem('pos_staff', JSON.stringify(staff)); try { queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  // the Profit Report used to carry the whole Add-Expense form and Recurring Expenses on top of the report: tuck both into
+  // closed sections (the inputs stay in the page, so the Expenses tab still drives the app's own addExpense())
+  function tuck(h4Re, title, hint) {
+    var hs = document.querySelectorAll('#profits-tab h4');
+    for (var i = 0; i < hs.length; i++) {
+      if (!h4Re.test((hs[i].textContent || '').trim())) continue;
+      var box = hs[i].closest('.panel') || null, tab = $('profits-tab');
+      if (!box || !tab || box === tab || box.closest('details.mt-tuck')) return;
+      var det = document.createElement('details'); det.className = 'mt-tuck'; det.style.cssText = 'margin:0 0 14px; border:1px solid #e0e6ea; border-radius:12px; background:#f7f9fb;';
+      var sm = document.createElement('summary'); sm.style.cssText = 'cursor:pointer; padding:12px 14px; font-weight:700; min-height:44px; box-sizing:border-box;'; sm.textContent = title + ' ' + hint;
+      box.parentNode.insertBefore(det, box); det.appendChild(sm); det.appendChild(box); box.style.margin = '0'; box.style.border = '0'; return;
+    }
+  }
+  function tidyProfits() {
+    if (!$(EXP) || !$('profits-tab')) return;
+    tuck(/^\+\s*Add Expense/i, '➕ Add an expense here', '(the 💸 Expenses tab is quicker)');
+  }
+  var DONE = { exp: false, pur: false, water: false };
+  function ensure() {
+    if (hasExpenses() && !DONE.exp && place(EXP, EXP_BTN, '💸 Expenses', '.tab-link[data-tab="profits-tab"]')) { addRole({ id: EXP, label: '💸 Expenses' }, 'profits-tab'); DONE.exp = true; }
+    if (hasPurchases() && !DONE.pur && place(PUR, PUR_BTN, '🛒 Purchases', '.tab-link[data-tab="restock-tab"]')) { addRole({ id: PUR, label: '🛒 Purchases' }, 'restock-tab'); DONE.pur = true; }
+    if (!hasPurchases() && !DONE.water) {      // Aqua keeps its own restocking screen: it is only renamed so it is easy to find
+      var wb = document.querySelector('.tab-link[data-tab="restocking-tab"]');
+      if (wb) { wb.textContent = '🛒 Purchases'; try { if (typeof LOCKABLE_TABS !== 'undefined') LOCKABLE_TABS.forEach(function (t) { if (t.id === 'restocking-tab') t.label = '🛒 Purchases'; }); if (typeof ROLE_TABS !== 'undefined') ROLE_TABS.forEach(function (t) { if (t.id === 'restocking-tab') t.label = '🛒 Purchases'; }); } catch (e) { /* label only */ } DONE.water = true; }
+    }
+    try { tidyProfits(); } catch (e) { /* cosmetic */ }
+    return DONE.exp || DONE.pur || DONE.water;
+  }
+  function boot() {
+    var n = 0;
+    (function tick() { try { if (ensure() && n === 3) migrate(); } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 300 : 1500); })();
+    setInterval(function () { try { var e = $(EXP); if (e && e.classList.contains('active') && !(document.activeElement && /^mt-e-/.test(document.activeElement.id || ''))) renderExpenses(); } catch (x) { /* next time */ } }, 8000);
+  }
+  window.MT = { __v: 369, renderExpenses: renderExpenses, renderPurchases: renderPurchases, saveExpense: saveExpense, savePurchase: savePurchase, state: S };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

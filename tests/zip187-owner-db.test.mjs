@@ -12,7 +12,7 @@ import { patchToml, parseDatabaseId } from '../tools/setup-owner-db.mjs';
 // zip 187 — the OWNER database (binding OWNER_DB): a best-effort READ MODEL of the Owner Console list. KV stays the source of truth.
 const load = (f) => import(pathToFileURL(path.join(ROOT, 'functions/api', f)).href);
 const q = (d, sql, ...a) => d.query(sql, ...a);
-const mkEnv = (extra = {}) => { const kv = makeKV(); kv.data.set('owner-session:tok', { value: '1' }); return { OWNER_DB: makeD1(), mydukapos_kv: kv, RETRY_BASE_MS: 0, OWNER_DB_PAUSE_MS: '300000', ...extra }; };
+const mkEnv = (extra = {}) => { const kv = makeKV(); kv.data.set('owner-session:tok', { value: '1' }); return { OWNER_DB: makeD1(), mydukapos_kv: kv, OWNER_LEGACY_INCOME_FORMS: '1', RETRY_BASE_MS: 0, OWNER_DB_PAUSE_MS: '300000', ...extra }; };
 const noDb = () => { const e = mkEnv(); delete e.OWNER_DB; return e; };
 const kvIndex = (e) => JSON.parse(e.mydukapos_kv.data.get('license-index:v1')?.value || '[]');
 const rows = (e) => q(e.OWNER_DB, `select * from owner_clients order by id`);

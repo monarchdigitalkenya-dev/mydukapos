@@ -6,7 +6,7 @@ Owner Console -> **Permanent** tab -> **Download Permanent Shops Backup** / **Re
 | Where | What | In the package |
 |---|---|---|
 | KV | licence `license:<id>`, subdomain `slug:<slug>`, licence index, `pos-data:state:<id>` + archives + mode flag, receipts, QR menus, till / M-PESA records, branch groups, ledger outbox ... | yes (every key that names the shop), licence/slug/index rebuilt on restore |
-| D1 `LEDGER_DB` | every table with a `client_id` column (sales, payments, bills, returns, stock, orders, payroll, chama, LPG, till ...) - table layout is read from the live database and shipped in the package | yes |
+| D1 `LEDGER_DB` | every table with a `client_id` column (sales, payments, bills, returns, stock, orders, payroll, LPG, till ...) - table layout is read from the live database and shipped in the package | yes |
 | D1 `LEDGER_AUDIT_DB` | append-only audit rows | yes (restored first) |
 | Durable Object `SHOP_STORE` | working state of "database" shops | yes |
 | R2 `MEDIA` | product / menu / radiology / reference pictures | yes (tick "Include shop pictures"); pictures stored in KV travel with the KV keys |
@@ -64,3 +64,10 @@ With *Include prices, discounts, payment ledger and platform settings* ticked th
 4. **Check**: open two shops by their permanent links, sign in with the old password / PIN, open Till and Billing, send a test STK.
 5. **Daraja / Paywave**: if the domain is unchanged the registered callback URLs keep working (callback keys travelled). If the domain changed, register the Till URLs again from each shop.
 6. **Switch DNS** last; keep the old deployment untouched for a week as a fallback.
+
+## Zip 269 additions
+Branch-group data (warehouse stock `store_items` / `store_movements`, group receipt settings and payment accounts), the shared e-mail sign-in record (`account-recovery-account:<e-mail>`), picture metadata and the audit-trigger switch are covered; see CHANGELOG (Zip 269) and `docs/MIGRATION_TO_NEW_ACCOUNT.md` (limits, what is copied by hand).
+
+## Zip 270 additions
+- **Download only some shops:** the backup dialog lists every permanent shop with a tick box. Untick the shops you do not want. If every box is ticked you get the normal full backup. Keep the shops of one branch group together (the group's warehouse data travels with its first ticked shop).
+- **Restore only some shops:** every shop in the restore preview has a Restore box. An unticked shop is skipped completely. Running the restore again later with the other shops ticked is safe (it adds only what is missing).

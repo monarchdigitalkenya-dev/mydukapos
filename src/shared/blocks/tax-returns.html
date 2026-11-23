@@ -1,0 +1,511 @@
+<!-- TAX & RETURNS (zip 304) ------------------------------------------------------------------------------------------------------------
+     A "🧾 Tax & Returns" tab in every POS app (after Profits & Expenses, in the sidebar's Reports folder). It COMPILES the records the app already keeps
+     so the owner can review them and prepare a tax return BY HAND. It is NOT a KRA filing, NOT an eTIMS invoice and submits nothing anywhere.
+     WHAT IT READS (never writes): salesLog (the same records as Daily Sales / Reports: voided sales are left out, the delivery fee is standard-rated),
+     returns (Returned Goods), bills (open credit sales, shown apart), inventory (items whose tax class is not set are listed for review).
+     TAX OF A LINE: its own vatCategory, stamped on the line when it went into the cart (so a later change to the item never rewrites an old sale) and the
+     rate in force ON THE SALE'S DATE, from an append-only rate history (pos_tax_cfg.rates). A rate change is effective from the moment it is made and is
+     never back-dated, so every past sale keeps the rate it was sold at. Prices in MyDuka INCLUDE VAT: tax = gross x rate / (100 + rate).
+     ROUNDING: every line in whole cents (half away from zero); totals are sums of the rounded lines, so the register and the summary always add up.
+     OFFLINE: works offline from this device's records; a sale this device has not yet sent to the server is marked "Not yet synced" (sales journal).
+     Settings travel with the shop's other settings (extraSettingsCollect / Apply, newest wins; rate histories are merged). Visibility follows the
+     Profits & Expenses tab (staff who cannot see Profits cannot see Tax). Ids / names: tx-*, txr*. -->
+<style id="tx-css">
+#tax-tab .tx-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; max-width: 100%; }
+#tax-tab .tx-wrap > * { min-width: 0; }
+#tax-tab .tx-bar > div { min-width: 0; }
+#tax-tab .tx-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e3e8ee); border-radius: 14px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+#tax-tab .tx-card h3 { margin: 0 0 4px; font-size: 17px; }
+#tax-tab .tx-sub { margin: 0 0 12px; font-size: 13px; color: var(--text-muted, #667085); line-height: 1.5; }
+#tax-tab .tx-banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: #fff7e6; border: 1px solid #f5c26b; color: #6b4a00; font-size: 13px; line-height: 1.5; }
+#tax-tab .tx-banner b { color: #4a3300; }
+#tax-tab .tx-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+#tax-tab .tx-bar label { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted, #667085); margin: 0 0 3px; }
+#tax-tab .tx-bar input, #tax-tab .tx-bar select { min-height: 40px; }
+#tax-tab .tx-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; }
+#tax-tab .tx-tabs button { border: 1px solid var(--border-color, #d0d5dd); background: var(--bg-surface, #fff); color: inherit; border-radius: 999px; padding: 8px 14px; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; min-height: 38px; }
+#tax-tab .tx-tabs button[aria-selected="true"] { background: #1d3557; border-color: #1d3557; color: #fff; }
+#tax-tab .tx-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+#tax-tab .tx-kpi { border: 1px solid var(--border-color, #e3e8ee); border-radius: 12px; padding: 12px 14px; background: var(--bg-surface-alt, #f8fafc); }
+#tax-tab .tx-kpi small { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted, #667085); text-transform: uppercase; letter-spacing: .04em; }
+#tax-tab .tx-kpi > b { display: block; font-size: 20px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+#tax-tab .tx-kpi > span { display: block; font-size: 12px; color: var(--text-muted, #667085); margin-top: 4px; line-height: 1.4; }
+#tax-tab .tx-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border-color, #e3e8ee); border-radius: 12px; }
+#tax-tab table.tx-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+#tax-tab table.tx-t th { position: sticky; top: 0; background: var(--bg-surface-alt, #f2f4f7); text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #475467); padding: 9px 10px; white-space: nowrap; }
+#tax-tab table.tx-t td { padding: 8px 10px; border-top: 1px solid var(--border-color, #eaecf0); vertical-align: top; }
+#tax-tab table.tx-t td.n, #tax-tab table.tx-t th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#tax-tab table.tx-t tfoot td { font-weight: 800; background: var(--bg-surface-alt, #f8fafc); }
+#tax-tab .tx-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 800; white-space: nowrap; }
+#tax-tab .tx-chip.ok { background: #e7f6ec; color: #1e7b3c; }
+#tax-tab .tx-chip.warn { background: #fff4e0; color: #9a5b00; }
+#tax-tab .tx-chip.bad { background: #fde8e8; color: #b42318; }
+#tax-tab .tx-chip.mute { background: #eef2f6; color: #475467; }
+#tax-tab .tx-how { font-size: 12.5px; color: var(--text-muted, #667085); line-height: 1.55; margin: 8px 0 0; }
+#tax-tab .tx-btn { min-height: 40px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border-color, #d0d5dd); background: var(--bg-surface, #fff); color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+#tax-tab .tx-btn.pri { background: #1d3557; border-color: #1d3557; color: #fff; }
+#tax-tab .tx-btn:disabled { opacity: .55; cursor: not-allowed; }
+#tax-tab .tx-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#tax-tab .tx-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+#tax-tab .tx-field label { display: block; font-size: 13px; font-weight: 700; margin: 0 0 4px; }
+#tax-tab .tx-field .tx-hint { font-size: 12px; color: var(--text-muted, #667085); margin: 4px 0 0; line-height: 1.45; }
+#tax-tab .tx-msg { font-size: 13px; margin: 8px 0 0; min-height: 1em; }
+#tax-tab .tx-msg.err { color: #b42318; }
+#tax-tab .tx-msg.ok { color: #1e7b3c; }
+#tax-tab details.tx-more { border: 1px dashed var(--border-color, #d0d5dd); border-radius: 12px; padding: 10px 12px; }
+#tax-tab details.tx-more > summary { cursor: pointer; font-weight: 700; }
+#tax-tab .tx-empty { padding: 18px; text-align: center; color: var(--text-muted, #667085); font-size: 13.5px; }
+#tax-tab .tx-pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 8px; font-size: 13px; }
+@media (max-width: 600px) { #tax-tab .tx-bar > div, #tax-tab .tx-bar .tx-row { flex: 1 1 100%; } #tax-tab .tx-bar input, #tax-tab .tx-bar select { width: 100%; } #tax-tab .tx-row .tx-btn { flex: 1 1 calc(50% - 8px); } #tax-tab .tx-card { padding: 14px 12px; } #tax-tab .tx-kpi > b { font-size: 18px; } }
+@media (prefers-reduced-motion: no-preference) { #tax-tab .tx-card { animation: txIn .18s ease-out; } @keyframes txIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } } }
+@media print {
+  body.tx-printing > *:not(#tx-print) { display: none !important; }
+  #tx-print { display: block !important; font: 11px Arial, sans-serif; color: #000; }
+  #tx-print table { width: 100%; border-collapse: collapse; } #tx-print td, #tx-print th { border: 1px solid #999; padding: 3px 5px; text-align: left; } #tx-print .n { text-align: right; }
+}
+#tx-print { display: none; }
+</style>
+<script id="tx-js">
+(function () {
+  'use strict';
+  if (window.__txInit) return; window.__txInit = true;
+  var ID = 'tax-tab', BTN = 'tax-tab-btn', KEY = (window.__LOG_KEYS && /^aqua_/.test(window.__LOG_KEYS.salesLog || '')) ? 'aqua_tax_cfg' : 'pos_tax_cfg';
+  var GUIDE_REVIEWED = '2026-10-20';                    // when the KRA guidance text below was last checked against kra.go.ke
+  var CLASS = {
+    A: { label: 'Standard-rated', short: 'Standard', explain: 'Taxable at the standard VAT rate.' },
+    B: { label: 'Other rate (B)', short: 'Rate B', explain: 'A second rate you set. KRA says the 8% rate on petroleum was deleted by the Finance Act 2023 - check before using it.' },
+    Z: { label: 'Zero-rated', short: 'Zero-rated', explain: 'Taxable at 0% (Second Schedule, VAT Act 2013). Reported, but no VAT charged.' },
+    E: { label: 'Exempt', short: 'Exempt', explain: 'Not taxable (First Schedule, VAT Act 2013). No VAT, and no input tax claim on related costs.' },
+    N: { label: 'Not applicable / out of scope', short: 'Out of scope', explain: 'Not a VAT supply (e.g. not a sale of goods or services).' },
+  };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  // the app's own globals (top-level let/const are not on window, so each is read by name, guarded)
+  function g(name) {
+    try {
+      switch (name) {
+        case 'salesLog': return typeof salesLog === 'undefined' ? undefined : salesLog;
+        case 'returns': return typeof returns === 'undefined' ? undefined : returns;
+        case 'bills': return typeof bills === 'undefined' ? undefined : bills;
+        case 'inventory': return typeof inventory === 'undefined' ? undefined : inventory;
+        case 'businessName': return typeof businessName === 'undefined' ? undefined : businessName;
+        case 'etimsPin': return typeof etimsPin === 'undefined' ? undefined : etimsPin;
+        case 'VAT_RATE_A': return typeof VAT_RATE_A === 'undefined' ? undefined : VAT_RATE_A;
+        case 'VAT_RATE_B': return typeof VAT_RATE_B === 'undefined' ? undefined : VAT_RATE_B;
+      }
+    } catch (e) { /* not in this app */ }
+    return undefined;
+  }
+  function arr(name) { var v = g(name); return Array.isArray(v) ? v : []; }
+  function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+  function cents(v) { var n = num(v) * 100; return n < 0 ? -Math.round(-n) : Math.round(n); }      // half away from zero
+  function kes(c) { var v = (c || 0) / 100; return 'KES ' + v.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function plain(c) { return ((c || 0) / 100).toFixed(2); }
+  function curA() { var v = g('VAT_RATE_A'); return typeof v === 'number' && isFinite(v) ? v : 16; }
+  function curB() { var v = g('VAT_RATE_B'); return typeof v === 'number' && isFinite(v) ? v : 8; }
+
+  /* ---------------- settings (shop-wide; travels with the shop's settings) ---------------- */
+  function blank() { return { v: 1, vatRegistered: null, rates: [], reg: [], basis: 'received', reviewNote: '', updatedAt: 0 }; }
+  function load() { try { var o = JSON.parse(localStorage.getItem(KEY) || 'null'); if (o && typeof o === 'object') { var b = blank(); for (var k in o) b[k] = o[k]; if (!Array.isArray(b.rates)) b.rates = []; if (!Array.isArray(b.reg)) b.reg = []; return b; } } catch (e) { /* fresh */ } return blank(); }
+  var C = load();
+  function save(touch) { if (touch) C.updatedAt = Date.now(); try { (typeof safeSetItem === 'function' ? safeSetItem : function (k, v) { localStorage.setItem(k, v); })(KEY, JSON.stringify(C)); } catch (e) { /* memory only */ } if (touch) { try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* next change sends it */ } } }
+  // append-only rate history: { from: ms, A, B }. Seeded once with the rates found on this device (applied to all earlier sales, and said so on screen).
+  function sortRates(list) { return list.slice().sort(function (a, b) { return (a.from || 0) - (b.from || 0); }); }
+  function mergeRates(a, b) {
+    var all = sortRates((a || []).concat(b || []).filter(function (r) { return r && isFinite(Number(r.from)) && isFinite(Number(r.A)) && isFinite(Number(r.B)); }));
+    var out = [];
+    all.forEach(function (r) { var last = out[out.length - 1]; if (last && Number(last.A) === Number(r.A) && Number(last.B) === Number(r.B)) return; if (last && last.from === r.from) { out[out.length - 1] = r; return; } out.push({ from: Number(r.from), A: Number(r.A), B: Number(r.B), seed: !!r.seed }); });
+    return out;
+  }
+  function trackRates() {
+    var A = curA(), B = curB(), r = sortRates(C.rates), last = r[r.length - 1];
+    if (!last) { C.rates = [{ from: 0, A: A, B: B, seed: true, seededAt: Date.now() }]; save(false); return; }     // a seed never travels by itself (a fresh device must not overwrite the shop's history)
+    if (Number(last.A) !== A || Number(last.B) !== B) { C.rates = mergeRates(C.rates, [{ from: Date.now(), A: A, B: B }]); save(true); }
+  }
+  function rateAt(cat, t) {
+    if (cat === 'Z' || cat === 'E' || cat === 'N' || cat === 'C') return 0;
+    var r = sortRates(C.rates), hit = null;
+    for (var i = 0; i < r.length; i++) if ((r[i].from || 0) <= t) hit = r[i];
+    if (!hit) hit = r[0] || { A: curA(), B: curB() };
+    return cat === 'B' ? Number(hit.B) : Number(hit.A);
+  }
+  function registeredAt(t) {           // VAT registration (a REPORTING setting), with effective dates; null = not answered yet
+    var list = (C.reg || []).slice().sort(function (a, b) { return a.from - b.from; }), hit = null;
+    for (var i = 0; i < list.length; i++) if (list[i].from <= t) hit = list[i];
+    if (hit) return !!hit.on;
+    if (list.length) return null;                                         // a sale from before the first answer: as it was then (not answered)
+    return C.vatRegistered === null || C.vatRegistered === undefined ? null : !!C.vatRegistered;
+  }
+  try {
+    var ec = window.extraSettingsCollect;
+    if (typeof ec === 'function' && !ec.__tx) { var wc = function () { var r = ec.apply(this, arguments) || {}; if (C.updatedAt) r.taxReturns = C; return r; }; wc.__tx = true; window.extraSettingsCollect = wc; }
+    var ea = window.extraSettingsApply;
+    if (typeof ea === 'function' && !ea.__tx) {
+      var wa = function (data) {
+        var r = ea.apply(this, arguments);
+        try {
+          var inc = data && data.taxReturns;
+          if (inc && typeof inc === 'object') {
+            var merged = mergeRates(C.rates, inc.rates);
+            var newer = (inc.updatedAt || 0) > (C.updatedAt || 0);
+            if (newer) { var keepRates = merged; var keepReg = mergeReg(C.reg, inc.reg); C = Object.assign(blank(), inc); C.rates = keepRates; C.reg = keepReg; save(false); }
+            else if (JSON.stringify(merged) !== JSON.stringify(mergeRates(C.rates, []))) { C.rates = merged; C.reg = mergeReg(C.reg, inc.reg); save(false); }
+            if (isOpen()) render();
+          }
+        } catch (e) { /* local only */ }
+        return r;
+      };
+      wa.__tx = true; window.extraSettingsApply = wa;
+    }
+  } catch (e) { /* settings stay on this device */ }
+  function mergeReg(a, b) { var seen = {}, out = []; (a || []).concat(b || []).forEach(function (x) { if (!x || !isFinite(Number(x.from))) return; var k = x.from + ':' + !!x.on; if (seen[k]) return; seen[k] = 1; out.push({ from: Number(x.from), on: !!x.on }); }); return out.sort(function (p, q) { return p.from - q.from; }); }
+
+  /* ---------------- the records ---------------- */
+  function syncState(id) {
+    try { if (typeof window.salesJournalIsPending === 'function') return window.salesJournalIsPending('salesLog', id) ? 'pending' : 'synced'; } catch (e) { /* unknown */ }
+    return 'unknown';
+  }
+  function dayFrom(s) { var b = typeof bizDayBounds === 'function' ? bizDayBounds(s) : null; return b ? b.from : new Date(s + 'T00:00:00').getTime(); }
+  function dayTo(s) { var b = typeof bizDayBounds === 'function' ? bizDayBounds(s) : null; return b ? b.to : new Date(s + 'T23:59:59.999').getTime(); }
+  function payLabel(s) {
+    var m = String(s.paymentMethod || '').toLowerCase();
+    var parts = [];
+    if (num(s.cashAmount)) parts.push('Cash'); if (num(s.mpesaAmount)) parts.push('M-Pesa'); if (num(s.cardAmount)) parts.push('Card');
+    if (!parts.length) parts.push(m ? m.charAt(0).toUpperCase() + m.slice(1) : 'Not recorded');
+    return parts.join(' + ');
+  }
+  function lineCat(l) { var c = l && l.vatCategory; if (c === 'C') return 'Z'; return CLASS[c] ? c : null; }
+  // One period: every line of every sale, with its tax worked out; voided sales and returns kept apart (never counted as positive sales)
+  function compile(fromMs, toMs) {
+    var sales = arr('salesLog'), out = { lines: [], voided: [], returns: [], exchanges: [], openBills: [], byCat: {}, unsynced: 0, assumed: 0, sales: 0, discount: 0 };
+    var bn = g('businessName');
+    Object.keys(CLASS).forEach(function (k) { out.byCat[k] = { gross: 0, net: 0, vat: 0, lines: 0, rates: {} }; });
+    var saleIndex = {};
+    sales.forEach(function (s) {
+      if (!s || s._deleted) return;
+      if (s.refNumber) saleIndex[s.refNumber] = s;
+      var t = new Date(s.timestamp).getTime(); if (!(t >= fromMs && t <= toMs)) return;
+      if (s.voided) { out.voided.push({ s: s, t: t, gross: cents((s.items || []).reduce(function (a, l) { return a + num(l.price) * num(l.qty); }, 0)) }); return; }
+      out.sales++;
+      var st = syncState(s.id); if (st === 'pending') out.unsynced++;
+      out.discount += cents(s.totalDiscount || 0);
+      var reg = registeredAt(t);
+      var items = (s.items || []).slice();
+      var fee = typeof saleDeliveryFee === 'function' ? num(saleDeliveryFee(s)) : 0;
+      if (fee > 0) items.push({ name: 'Delivery fee', price: fee, qty: 1, vatCategory: 'A', _fee: true });
+      items.forEach(function (l) {
+        if (!l) return;
+        var gross = cents(num(l.price) * num(l.qty)); if (!gross) return;
+        var cat = lineCat(l), assumed = false;
+        if (!cat) { cat = 'A'; assumed = true; out.assumed++; }
+        var rate = reg === false ? 0 : rateAt(cat, t);
+        var vat = rate > 0 ? cents(gross / 100 * rate / (100 + rate)) : 0;
+        var row = { s: s, t: t, l: l, cat: cat, rate: rate, gross: gross, vat: vat, net: gross - vat, assumed: assumed, sync: st, reg: reg, isPay: l.unit === 'payment' || !!l.isPayment };
+        out.lines.push(row);
+        var b = out.byCat[cat]; b.gross += gross; b.vat += vat; b.net += gross - vat; b.lines++; b.rates[rate] = (b.rates[rate] || 0) + vat;
+      });
+    });
+    arr('returns').forEach(function (r) {
+      if (!r) return; var t = new Date(r.timestamp).getTime(); if (!(t >= fromMs && t <= toMs)) return;
+      var src = r.refNumber ? saleIndex[r.refNumber] : null, line = null;
+      if (src) (src.items || []).some(function (l) { if (l && l.code != null && String(l.code) === String(r.itemCode)) { line = l; return true; } return false; });
+      var cat = line ? (lineCat(line) || 'A') : null, price = line ? num(line.price) : null;
+      var gross = price != null ? cents(price * num(r.qty)) : null;
+      var st = src ? new Date(src.timestamp).getTime() : t;
+      var rate = cat ? (registeredAt(st) === false ? 0 : rateAt(cat, st)) : null;
+      var vat = gross != null && rate > 0 ? cents(gross / 100 * rate / (100 + rate)) : (gross != null ? 0 : null);
+      var row = { r: r, t: t, src: src, cat: cat, rate: rate, gross: gross, vat: vat };
+      if (r.type === 'exchange') out.exchanges.push(row); else out.returns.push(row);
+    });
+    arr('bills').forEach(function (b) {
+      if (!b || b.voided || b._deleted || b.status === 'fully_paid' || b.paid === true) return;
+      var t = new Date(b.timestamp).getTime(); if (!(t >= fromMs && t <= toMs)) return;
+      var tot = cents((b.items || []).reduce(function (a, l) { return a + (l && l.unit !== 'payment' ? num(l.price) * num(l.qty) : 0); }, 0));
+      var paid = cents(b.amountPaid || 0);
+      out.openBills.push({ b: b, t: t, total: tot, paid: paid, due: Math.max(0, tot - paid) });
+    });
+    out.gross = out.lines.reduce(function (a, x) { return a + x.gross; }, 0);
+    out.vat = out.lines.reduce(function (a, x) { return a + x.vat; }, 0);
+    out.retGross = out.returns.reduce(function (a, x) { return a + (x.gross || 0); }, 0);
+    out.retVat = out.returns.reduce(function (a, x) { return a + (x.vat || 0); }, 0);
+    out.retUnknown = out.returns.filter(function (x) { return x.gross == null; }).length;
+    out.voidGross = out.voided.reduce(function (a, x) { return a + x.gross; }, 0);
+    out.biz = bn;
+    return out;
+  }
+  function needsReview() {
+    return arr('inventory').filter(function (p) { return p && !p.deleted && p.type !== 'ingredient' && (!p.vatCategory || p.vatCategory === 'C'); });
+  }
+
+  /* ---------------- screen ---------------- */
+  var S = { view: 'overview', from: '', to: '', page: 0, q: '' };
+  function monthRange(offset) {
+    var d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + offset);
+    var y = d.getFullYear(), m = d.getMonth();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var last = new Date(y, m + 1, 0).getDate();
+    return { from: y + '-' + pad(m + 1) + '-01', to: y + '-' + pad(m + 1) + '-' + pad(last) };
+  }
+  function isOpen() { var t = $(ID); return !!(t && t.classList.contains('active')); }
+  function catChip(c) { var k = { A: 'ok', B: 'warn', Z: 'mute', E: 'mute', N: 'mute' }[c] || 'mute'; return '<span class="tx-chip ' + k + '">' + esc(CLASS[c] ? CLASS[c].short : c) + '</span>'; }
+  function syncChip(s) { return s === 'pending' ? '<span class="tx-chip warn" title="Saved on this device, waiting to reach the server">Not yet synced</span>' : s === 'synced' ? '<span class="tx-chip ok">Synced</span>' : '<span class="tx-chip mute">-</span>'; }
+  function fmtT(t) { var d = new Date(t); return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
+  function shell() {
+    var t = $(ID); if (!t || t.querySelector('.tx-wrap')) return;
+    if (!S.from) { var r = monthRange(-1); S.from = r.from; S.to = r.to; }
+    t.innerHTML = '<div class="tx-wrap">'
+      + '<div class="tx-banner" role="note"><span style="font-size:20px">🧾</span><div><b>For your review and manual filing.</b> These are MyDuka-generated summaries of the sales recorded in this app. They are <b>not</b> an official KRA tax return, <b>not</b> KRA electronic tax invoices (eTIMS) and nothing here is sent to KRA. Check the tax treatment of your goods and your filing duties against official KRA guidance before you file.</div></div>'
+      + '<div class="tx-card"><div class="tx-bar">'
+      + '<div><label for="tx-period">Period</label><select id="tx-period"><option value="last">Last month</option><option value="this">This month</option><option value="custom">Choose dates</option></select></div>'
+      + '<div><label for="tx-from">From</label><input type="date" id="tx-from"></div><div><label for="tx-to">To</label><input type="date" id="tx-to"></div>'
+      + '<div style="flex:1"></div><div class="tx-row"><button type="button" class="tx-btn" data-tx="csv-register">⬇️ Register (CSV)</button><button type="button" class="tx-btn" data-tx="csv-summary">⬇️ Summary (CSV)</button><button type="button" class="tx-btn" data-tx="csv-returns">⬇️ Returns (CSV)</button><button type="button" class="tx-btn pri" data-tx="print">🖨️ Print / PDF</button></div></div>'
+      + '<div class="tx-tabs" role="tablist" style="margin-top:12px">'
+      + ['overview:Overview', 'register:Sales tax register', 'returns:Returns & adjustments', 'setup:Tax setup', 'guide:KRA guidance'].map(function (p) { var a = p.split(':'); return '<button type="button" role="tab" data-v="' + a[0] + '" aria-selected="' + (S.view === a[0]) + '">' + esc(a[1]) + '</button>'; }).join('')
+      + '</div></div><div id="tx-body"></div></div>';
+    $('tx-from').value = S.from; $('tx-to').value = S.to;
+    t.addEventListener('change', function (e) {
+      if (e.target.id === 'tx-period') { var v = e.target.value; if (v !== 'custom') { var r2 = monthRange(v === 'this' ? 0 : -1); S.from = r2.from; S.to = r2.to; $('tx-from').value = S.from; $('tx-to').value = S.to; } S.page = 0; render(); }
+      else if (e.target.id === 'tx-from' || e.target.id === 'tx-to') { $('tx-period').value = 'custom'; S.from = $('tx-from').value; S.to = $('tx-to').value; S.page = 0; render(); }
+    });
+    t.addEventListener('input', function (e) { if (e.target.id === 'tx-q') { clearTimeout(shell.t); var v = e.target.value; shell.t = setTimeout(function () { S.q = v; S.page = 0; render(true); }, 250); } });
+    t.addEventListener('click', onClick);
+  }
+  function range() {
+    var f = S.from || monthRange(-1).from, to = S.to || monthRange(-1).to;
+    if (f > to) { var x = f; f = to; to = x; }
+    return { from: dayFrom(f), to: dayTo(to), fromS: f, toS: to };
+  }
+  function render(keepFocus) {
+    try { trackRates(); } catch (e) { /* history optional */ }
+    shell();
+    var body = $('tx-body'); if (!body) return;
+    Array.prototype.forEach.call(document.querySelectorAll('#tax-tab .tx-tabs button'), function (b) { b.setAttribute('aria-selected', String(b.getAttribute('data-v') === S.view)); });
+    var R = range(), d = compile(R.from, R.to);
+    var h = '';
+    if (S.view === 'overview') h = overview(d, R);
+    else if (S.view === 'register') h = register(d);
+    else if (S.view === 'returns') h = returnsView(d);
+    else if (S.view === 'setup') h = setup();
+    else h = guide();
+    var q = keepFocus && document.activeElement && document.activeElement.id === 'tx-q' ? document.activeElement.selectionStart : null;
+    body.innerHTML = h;
+    if (q !== null && $('tx-q')) { $('tx-q').focus(); try { $('tx-q').setSelectionRange(q, q); } catch (e) { /* ok */ } }
+  }
+  function regLine() {
+    var r = registeredAt(Date.now());
+    if (r === null) return '<div class="tx-banner" style="background:#eef4ff;border-color:#b2ccff;color:#1d3a8a"><span>ℹ️</span><div>Tell MyDuka whether this business is <b>registered for VAT</b> (Tax setup). Until then the figures below assume it is, which is how receipts already show VAT.</div></div>';
+    if (r === false) return '<div class="tx-banner" style="background:#eef4ff;border-color:#b2ccff;color:#1d3a8a"><span>ℹ️</span><div>This business is marked as <b>not registered for VAT</b>, so no output VAT is worked out. Sales are still grouped by tax class. The Finance Act 2026 says an invoice showing VAT should only be issued for a taxable supply: if your receipts print VAT, switch that off in Settings → Receipt Settings.</div></div>';
+    return '';
+  }
+  function overview(d, R) {
+    var rv = needsReview();
+    var cats = ['A', 'B', 'Z', 'E', 'N'];
+    var rows = cats.map(function (c) {
+      var b = d.byCat[c]; if (!b.lines) return '';
+      var rates = Object.keys(b.rates).map(Number).sort(function (x, y) { return x - y; });
+      return '<tr><td>' + catChip(c) + ' ' + esc(CLASS[c].label) + '</td><td class="n">' + (rates.length ? rates.map(function (x) { return x + '%'; }).join(', ') : '0%') + '</td><td class="n">' + b.lines + '</td><td class="n">' + kes(b.gross) + '</td><td class="n">' + kes(b.net) + '</td><td class="n">' + kes(b.vat) + '</td></tr>';
+    }).join('');
+    var netAfter = d.gross - d.retGross, vatAfter = d.vat - d.retVat;
+    var hasB = d.byCat.B.lines > 0;
+    return regLine()
+      + (d.unsynced ? '<div class="tx-banner"><span>📶</span><div><b>' + d.unsynced + ' sale' + (d.unsynced === 1 ? '' : 's') + ' in this period ' + (d.unsynced === 1 ? 'is' : 'are') + ' saved on this device but not yet on the server.</b> They are included once (each sale has one id, so they are not counted again when they sync) and are marked "Not yet synced" in the register and the export. Other devices may hold sales this one has not received yet: open the app online before filing.</div></div>' : '')
+      + '<div class="tx-card"><h3>Summary · ' + esc(R.fromS) + ' to ' + esc(R.toS) + '</h3><p class="tx-sub">From ' + d.sales + ' sale' + (d.sales === 1 ? '' : 's') + ' (the same records as Daily Sales and Reports). Voided sales are left out and listed under Returns &amp; adjustments.</p>'
+      + '<div class="tx-kpis">'
+      + '<div class="tx-kpi"><small>Total gross sales</small><b>' + kes(d.gross) + '</b><span>What customers paid, VAT included, before returns.</span></div>'
+      + '<div class="tx-kpi"><small>Taxable at standard rate</small><b>' + kes(d.byCat.A.net) + '</b><span>Value without VAT of standard-rated lines.</span></div>'
+      + '<div class="tx-kpi"><small>Zero-rated sales</small><b>' + kes(d.byCat.Z.gross) + '</b><span>0% VAT, still reported.</span></div>'
+      + '<div class="tx-kpi"><small>Exempt sales</small><b>' + kes(d.byCat.E.gross) + '</b><span>No VAT.</span></div>'
+      + '<div class="tx-kpi"><small>Output VAT on sales</small><b>' + kes(d.vat) + '</b><span>VAT included in your selling prices. <b>Not</b> the amount payable: input VAT on purchases and other adjustments are not included.</span></div>'
+      + '<div class="tx-kpi"><small>Returns (valid)</small><b>' + kes(d.retGross) + '</b><span>' + d.returns.length + ' return' + (d.returns.length === 1 ? '' : 's') + ', VAT ' + kes(d.retVat) + (d.retUnknown ? '; ' + d.retUnknown + ' without a matching sale (value unknown)' : '') + '.</span></div>'
+      + '<div class="tx-kpi"><small>Net sales after returns</small><b>' + kes(netAfter) + '</b><span>Output VAT after returns: ' + kes(vatAfter) + '</span></div>'
+      + '<div class="tx-kpi"><small>Discounts given</small><b>' + kes(d.discount) + '</b><span>Already taken off the line prices above (shown for information).</span></div>'
+      + '</div>'
+      + '<h3 style="margin-top:16px">By tax class and rate</h3><div class="tx-scroll"><table class="tx-t"><thead><tr><th>Tax class</th><th class="n">Rate</th><th class="n">Lines</th><th class="n">Gross (incl. VAT)</th><th class="n">Net (excl. VAT)</th><th class="n">VAT</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="tx-empty">No sales in this period.</td></tr>') + '</tbody>'
+      + '<tfoot><tr><td>Total</td><td></td><td class="n">' + d.lines.length + '</td><td class="n">' + kes(d.gross) + '</td><td class="n">' + kes(d.gross - d.vat) + '</td><td class="n">' + kes(d.vat) + '</td></tr></tfoot></table></div>'
+      + '<p class="tx-how"><b>How these figures are worked out.</b> MyDuka prices include VAT. For each line: gross = price × quantity; VAT = gross × rate ÷ (100 + rate); net = gross − VAT, each rounded to the cent; totals are the sums of the rounded lines. The rate used is the one in force on the date of the sale (see Tax setup → Rate history) and the tax class is the one stamped on the line when it was sold. A payment towards a credit bill carries that bill’s tax mix. Delivery fees count as standard-rated. Gross sales here equal the Reports tab total for the same dates.'
+      + (d.assumed ? ' <b>' + d.assumed + ' line' + (d.assumed === 1 ? '' : 's') + ' had no tax class</b> and were counted as standard-rated (marked "assumed" in the register).' : '') + '</p>'
+      + (hasB ? '<p class="tx-how" style="color:#9a5b00"><b>Rate B is in use.</b> KRA’s VAT page says the 8% rate on petroleum products was deleted by the Finance Act 2023. Check that these items are classed correctly.</p>' : '')
+      + '</div>'
+      + (d.openBills.length ? '<div class="tx-card"><h3>Credit sales not yet paid (' + d.openBills.length + ')</h3><p class="tx-sub">Goods supplied on credit in this period are counted in the figures above only when they are paid (each payment carries the bill’s tax mix). VAT can be due on the supply or invoice date, not the payment date: review these with your tax adviser.</p><div class="tx-scroll"><table class="tx-t"><thead><tr><th>Date</th><th>Customer</th><th class="n">Bill total</th><th class="n">Paid</th><th class="n">Still owed</th></tr></thead><tbody>'
+        + d.openBills.map(function (x) { return '<tr><td>' + esc(fmtT(x.t)) + '</td><td>' + esc(x.b.customerName || '-') + '</td><td class="n">' + kes(x.total) + '</td><td class="n">' + kes(x.paid) + '</td><td class="n">' + kes(x.due) + '</td></tr>'; }).join('') + '</tbody></table></div></div>' : '')
+      + (rv.length ? '<div class="tx-card"><h3>⚠️ Items whose tax class needs review (' + rv.length + ')</h3><p class="tx-sub">These items have no tax class saved, so new sales of them are recorded as standard-rated. Open Inventory → Edit item → VAT category to set the right one. MyDuka never guesses a class for you.</p><div class="tx-scroll" style="max-height:260px"><table class="tx-t"><thead><tr><th>Item</th><th>Code</th><th class="n">Price</th></tr></thead><tbody>'
+        + rv.slice(0, 200).map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td>' + esc(p.code || '') + '</td><td class="n">' + kes(cents(p.price)) + '</td></tr>'; }).join('') + '</tbody></table></div>' + (rv.length > 200 ? '<p class="tx-how">Showing the first 200.</p>' : '') + '</div>' : '');
+  }
+  var PAGE = 100;
+  function filteredLines(d) {
+    var q = (S.q || '').trim().toLowerCase();
+    return !q ? d.lines : d.lines.filter(function (x) { return (String(x.s.refNumber || x.s.id) + ' ' + (x.l.name || '') + ' ' + (x.s.customerName || '') + ' ' + (x.s.servedBy || '')).toLowerCase().indexOf(q) >= 0; });
+  }
+  function register(d) {
+    var list = filteredLines(d), pages = Math.max(1, Math.ceil(list.length / PAGE)); if (S.page >= pages) S.page = pages - 1;
+    var slice = list.slice(S.page * PAGE, S.page * PAGE + PAGE);
+    var tg = list.reduce(function (a, x) { return a + x.gross; }, 0), tv = list.reduce(function (a, x) { return a + x.vat; }, 0);
+    return regLine() + '<div class="tx-card"><h3>Sales tax register</h3><p class="tx-sub">One row per sale line. Search by receipt number, item, customer or staff. The CSV export has every row of the period' + (S.q ? ' (this search is not applied to the export)' : '') + '.</p>'
+      + '<div class="tx-row" style="margin-bottom:8px"><input type="search" id="tx-q" placeholder="Search receipt, item, customer…" value="' + esc(S.q) + '" style="flex:1;min-width:200px;min-height:40px"></div>'
+      + '<div class="tx-scroll"><table class="tx-t"><thead><tr><th>Date &amp; time</th><th>Receipt</th><th>Item / service</th><th class="n">Qty</th><th class="n">Price</th><th>Tax class</th><th class="n">Rate</th><th class="n">Net</th><th class="n">VAT</th><th class="n">Gross</th><th>Payment</th><th>Status</th></tr></thead><tbody>'
+      + (slice.length ? slice.map(function (x) {
+          return '<tr><td style="white-space:nowrap">' + esc(fmtT(x.t)) + '</td><td>' + esc(x.s.refNumber || x.s.id) + (x.s.soldViaBranch ? '<br><small>' + esc(x.s.soldViaBranch) + '</small>' : '') + '</td><td>' + esc(x.l.name || '') + (x.isPay ? ' <span class="tx-chip mute">bill payment</span>' : '') + (x.assumed ? ' <span class="tx-chip warn" title="No tax class on this line: counted as standard-rated">assumed</span>' : '') + '</td><td class="n">' + esc(num(x.l.qty)) + '</td><td class="n">' + kes(cents(x.l.price)) + '</td><td>' + catChip(x.cat) + '</td><td class="n">' + (x.reg === false ? 'n/a' : x.rate + '%') + '</td><td class="n">' + kes(x.net) + '</td><td class="n">' + kes(x.vat) + '</td><td class="n">' + kes(x.gross) + '</td><td>' + esc(payLabel(x.s)) + (x.s.paid === false ? ' <span class="tx-chip bad">unpaid</span>' : '') + '</td><td>' + syncChip(x.sync) + '</td></tr>';
+        }).join('') : '<tr><td colspan="12" class="tx-empty">No sale lines' + (S.q ? ' match this search' : ' in this period') + '.</td></tr>')
+      + '</tbody><tfoot><tr><td colspan="7">Total (' + list.length + ' line' + (list.length === 1 ? '' : 's') + ')</td><td class="n">' + kes(tg - tv) + '</td><td class="n">' + kes(tv) + '</td><td class="n">' + kes(tg) + '</td><td colspan="2"></td></tr></tfoot></table></div>'
+      + (pages > 1 ? '<div class="tx-pager"><button type="button" class="tx-btn" data-tx="prev"' + (S.page === 0 ? ' disabled' : '') + '>‹ Previous</button><span>Page ' + (S.page + 1) + ' of ' + pages + '</span><button type="button" class="tx-btn" data-tx="next"' + (S.page >= pages - 1 ? ' disabled' : '') + '>Next ›</button></div>' : '') + '</div>';
+  }
+  function returnsView(d) {
+    return '<div class="tx-card"><h3>Returns</h3><p class="tx-sub">Goods returned in this period (Returned Goods tab). The value and VAT come from the original receipt line at the rate of the original sale. A return with no matching receipt is shown but not valued: nothing is invented.</p>'
+      + '<div class="tx-scroll"><table class="tx-t"><thead><tr><th>Date</th><th>Item</th><th class="n">Qty</th><th>Original receipt</th><th>Tax class</th><th class="n">Value (incl. VAT)</th><th class="n">VAT</th><th>Reason</th></tr></thead><tbody>'
+      + (d.returns.length ? d.returns.map(function (x) { return '<tr><td>' + esc(fmtT(x.t)) + '</td><td>' + esc(x.r.itemName || '') + '</td><td class="n">' + esc(num(x.r.qty)) + '</td><td>' + esc(x.r.refNumber || '-') + (x.src ? '' : ' <span class="tx-chip warn">not found</span>') + '</td><td>' + (x.cat ? catChip(x.cat) : '<span class="tx-chip warn">unknown</span>') + '</td><td class="n">' + (x.gross == null ? 'Missing' : kes(x.gross)) + '</td><td class="n">' + (x.vat == null ? 'Missing' : kes(x.vat)) + '</td><td>' + esc(x.r.reason || '') + '</td></tr>'; }).join('') : '<tr><td colspan="8" class="tx-empty">No returns in this period.</td></tr>')
+      + '</tbody><tfoot><tr><td colspan="5">Total</td><td class="n">' + kes(d.retGross) + '</td><td class="n">' + kes(d.retVat) + '</td><td></td></tr></tfoot></table></div></div>'
+      + '<div class="tx-card"><h3>Voided sales (reversals)</h3><p class="tx-sub">A voided sale is left out of every total above (it is not counted as a sale and then again as a minus). Listed here for your audit trail.</p><div class="tx-scroll"><table class="tx-t"><thead><tr><th>Sale date</th><th>Receipt</th><th class="n">Value</th><th>Voided by</th><th>Reason</th></tr></thead><tbody>'
+      + (d.voided.length ? d.voided.map(function (x) { return '<tr><td>' + esc(fmtT(x.t)) + '</td><td>' + esc(x.s.refNumber || x.s.id) + '</td><td class="n">' + kes(x.gross) + '</td><td>' + esc(x.s.voidedBy || '-') + '</td><td>' + esc(x.s.voidReason || '-') + '</td></tr>'; }).join('') : '<tr><td colspan="5" class="tx-empty">No voided sales in this period.</td></tr>')
+      + '</tbody><tfoot><tr><td colspan="2">Total voided</td><td class="n">' + kes(d.voidGross) + '</td><td colspan="2"></td></tr></tfoot></table></div></div>'
+      + (d.exchanges.length ? '<div class="tx-card"><h3>Exchanges (' + d.exchanges.length + ')</h3><p class="tx-sub">An exchange is recorded as a new sale of the replacement goods with the returned item’s value taken off, so it is already in the sales figures once. Shown for information only, not subtracted again.</p></div>' : '');
+  }
+  function setup() {
+    var r = registeredAt(Date.now()), rates = sortRates(C.rates);
+    var admin = !(function () { try { return typeof currentServer !== 'undefined' && !!currentServer; } catch (e) { return false; } })();
+    return '<div class="tx-card"><h3>Tax setup</h3><p class="tx-sub">These choices apply to the whole shop (every device). Only the owner / admin can change them.</p><div class="tx-grid2">'
+      + '<div class="tx-field"><label for="tx-reg">Is this business registered for VAT?</label><select id="tx-reg"' + (admin ? '' : ' disabled') + '><option value="">Not answered yet</option><option value="yes"' + (r === true ? ' selected' : '') + '>Yes, registered for VAT</option><option value="no"' + (r === false ? ' selected' : '') + '>No, not registered</option></select><p class="tx-hint">A <b>reporting</b> setting only: it does not register you with KRA or decide whether you must register (KRA: required when taxable sales reach KES 5 million in a year). It takes effect from today; earlier sales keep the setting they had.</p></div>'
+      + '<div class="tx-field"><label>Tax-inclusive prices</label><div style="font-size:14px;padding:8px 0">✅ Your selling prices <b>include</b> VAT.</div><p class="tx-hint">VAT is worked out of the price, never added on top: a KES 116 item at 16% is KES 100 + KES 16 VAT. This is how every MyDuka till already works, so receipts and this report always agree.</p></div>'
+      + '<div class="tx-field"><label>Current rates</label><div style="font-size:14px;padding:8px 0">Standard (A): <b>' + curA() + '%</b> · Rate B: <b>' + curB() + '%</b> · Zero-rated, Exempt, Out of scope: <b>0%</b></div><p class="tx-hint">Change them in Settings → Tax &amp; Alerts. A change applies to sales from that moment on and is added to the history below; past sales are never re-rated.</p></div>'
+      + '<div class="tx-field"><label>Item tax classes</label><p class="tx-hint" style="font-size:13px">Each item has its own class (Inventory → Edit item → VAT category): ' + Object.keys(CLASS).map(function (c) { return '<b>' + esc(CLASS[c].label) + '</b> - ' + esc(CLASS[c].explain); }).join(' ') + ' New items get Standard unless you choose otherwise; items with no class are listed for review on the Overview.</p></div>'
+      + '</div><p class="tx-msg" id="tx-setup-msg"></p></div>'
+      + '<div class="tx-card"><h3>Rate history</h3><p class="tx-sub">Append-only: each row applies from its date until the next row.' + (rates[0] && rates[0].seed ? ' The first row is the rates found when this report was first opened' + (rates[0].seededAt ? ' (' + esc(new Date(rates[0].seededAt).toLocaleDateString('en-GB')) + ')' : '') + '; sales before that are assumed to have used them.' : '') + '</p><div class="tx-scroll"><table class="tx-t"><thead><tr><th>From</th><th class="n">Standard (A)</th><th class="n">Rate B</th></tr></thead><tbody>'
+      + rates.slice().reverse().map(function (x) { return '<tr><td>' + (x.from ? esc(fmtT(x.from)) : 'The beginning') + '</td><td class="n">' + esc(x.A) + '%</td><td class="n">' + esc(x.B) + '%</td></tr>'; }).join('') + '</tbody></table></div>'
+      + ((C.reg || []).length ? '<h3 style="margin-top:14px">VAT registration history</h3><div class="tx-scroll"><table class="tx-t"><thead><tr><th>From</th><th>Registered for VAT</th></tr></thead><tbody>' + C.reg.slice().reverse().map(function (x) { return '<tr><td>' + esc(fmtT(x.from)) + '</td><td>' + (x.on ? 'Yes' : 'No') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '') + '</div>';
+  }
+  function guide() {
+    return '<div class="tx-card"><h3>KRA guidance (summary)</h3><p class="tx-sub">Last checked against kra.go.ke on <b>' + esc(GUIDE_REVIEWED) + '</b>. Tax rules change: always confirm on the official pages before filing.</p>'
+      + '<ul style="font-size:13.5px;line-height:1.7;margin:0 0 0 18px;padding:0">'
+      + '<li>VAT general rate 16%; zero-rated supplies (Second Schedule, VAT Act 2013) 0%; exempt supplies (First Schedule) are not taxable.</li>'
+      + '<li>The 8% rate on petroleum products was deleted by the Finance Act, 2023.</li>'
+      + '<li>Registration is required once taxable supplies reach KES 5 million in a year (voluntary registration below that is possible).</li>'
+      + '<li>VAT returns and payment are due on or before the 20th day of the following month, filed on iTax.</li>'
+      + '<li>Every VAT-registered taxpayer must be on eTIMS, and tax invoices must be generated from eTIMS. This tab does not replace eTIMS.</li>'
+      + '<li>Finance Act 2026 (most changes from 1 July 2026): an invoice showing VAT should only be issued for a taxable supply; some items moved between exempt, zero-rated and standard (for example dialysers and scrap metal became exempt).</li>'
+      + '<li><b>Output VAT</b> = VAT on your sales. <b>Input VAT</b> = VAT on your purchases that you may be able to claim. What you pay KRA is broadly output minus allowable input VAT and other adjustments, which this app does not record, so no "VAT payable" is shown here.</li>'
+      + '</ul><p class="tx-how">Official pages: <a href="https://www.kra.go.ke/individual/filing-paying/types-of-taxes/value-added-tax" target="_blank" rel="noopener">KRA - Value Added Tax</a> · <a href="https://www.kra.go.ke/finance-act-2026-what-it-means-for-you" target="_blank" rel="noopener">KRA - Finance Act 2026</a> · <a href="https://etims.kra.go.ke" target="_blank" rel="noopener">eTIMS</a></p></div>';
+  }
+
+  /* ---------------- exports (always the whole period, same numbers as the screen) ---------------- */
+  function csvCell(v) { var s = String(v == null ? '' : v); return /[",\n\r]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; }
+  function download(name, rows) {
+    var csv = '﻿' + rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
+    try { var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+    catch (e) { if (typeof showToast === 'function') showToast('Could not create the file on this device.', true); }
+  }
+  function head(R) {
+    return [['MyDuka-generated report for review and manual filing - NOT an official KRA return or eTIMS invoice'], ['Business', g('businessName') || 'Missing'], ['KRA PIN', g('etimsPin') || 'Missing (not set in eTIMS settings)'], ['Period', R.fromS + ' to ' + R.toS], ['Generated', new Date().toLocaleString('en-GB')], ['VAT registered (reporting setting)', registeredAt(Date.now()) === null ? 'Not answered' : registeredAt(Date.now()) ? 'Yes' : 'No'], []];
+  }
+  function exportRegister() {
+    var R = range(), d = compile(R.from, R.to), rows = head(R);
+    rows.push(['Date', 'Time', 'Receipt / transaction', 'Branch', 'Item / service', 'Quantity', 'Unit price (incl. VAT)', 'Sale discount (whole sale)', 'Tax class', 'Tax rate %', 'Net taxable amount', 'VAT amount', 'Gross line total', 'Payment method', 'Payment status', 'Return / void status', 'Sync status', 'Class note']);
+    d.lines.forEach(function (x) { var dt = new Date(x.t); rows.push([dt.toLocaleDateString('en-GB'), dt.toLocaleTimeString('en-GB'), x.s.refNumber || x.s.id, x.s.soldViaBranch || '', x.l.name || '', num(x.l.qty), plain(cents(x.l.price)), x.s.totalDiscount ? plain(cents(x.s.totalDiscount)) : '', CLASS[x.cat].label, x.reg === false ? 'n/a (not VAT-registered)' : x.rate, plain(x.net), plain(x.vat), plain(x.gross), payLabel(x.s), x.s.paid === false ? 'Unpaid' : 'Paid', x.isPay ? 'Payment towards a credit bill' : 'Completed sale', x.sync === 'pending' ? 'Not yet synced' : x.sync === 'synced' ? 'Synced' : 'Unknown', x.assumed ? 'No class on line: counted as standard-rated' : '']); });
+    rows.push([]); rows.push(['Totals', '', '', '', '', '', '', '', '', '', plain(d.gross - d.vat), plain(d.vat), plain(d.gross)]);
+    download('tax-register_' + R.fromS + '_' + R.toS + '.csv', rows);
+  }
+  function exportSummary() {
+    var R = range(), d = compile(R.from, R.to), rows = head(R);
+    rows.push(['Tax class', 'Rate(s) %', 'Lines', 'Gross (incl. VAT)', 'Net (excl. VAT)', 'VAT']);
+    Object.keys(CLASS).forEach(function (c) { var b = d.byCat[c]; if (!b.lines) return; rows.push([CLASS[c].label, Object.keys(b.rates).join(' / ') || '0', b.lines, plain(b.gross), plain(b.net), plain(b.vat)]); });
+    rows.push(['Total', '', d.lines.length, plain(d.gross), plain(d.gross - d.vat), plain(d.vat)]);
+    rows.push([]); rows.push(['Returns (valid)', '', d.returns.length, plain(d.retGross), plain(d.retGross - d.retVat), plain(d.retVat)]);
+    rows.push(['Net after returns', '', '', plain(d.gross - d.retGross), plain((d.gross - d.vat) - (d.retGross - d.retVat)), plain(d.vat - d.retVat)]);
+    rows.push(['Voided sales (excluded from totals)', '', d.voided.length, plain(d.voidGross)]);
+    rows.push(['Discounts given (already in line prices)', '', '', plain(d.discount)]);
+    rows.push(['Sales not yet synced (included once)', '', d.unsynced]);
+    rows.push([]); rows.push(['Output VAT is not VAT payable: input VAT on purchases and other adjustments are not included.']);
+    rows.push(['Method: prices include VAT; per line VAT = gross x rate / (100 + rate), rounded to the cent; totals are sums of lines; rate in force on the sale date.']);
+    download('tax-summary_' + R.fromS + '_' + R.toS + '.csv', rows);
+  }
+  function exportReturns() {
+    var R = range(), d = compile(R.from, R.to), rows = head(R);
+    rows.push(['Type', 'Date', 'Item', 'Quantity', 'Original receipt', 'Tax class', 'Rate %', 'Value incl. VAT', 'VAT', 'Reason / note']);
+    d.returns.forEach(function (x) { rows.push(['Return', new Date(x.t).toLocaleString('en-GB'), x.r.itemName || '', num(x.r.qty), x.r.refNumber || 'Missing', x.cat ? CLASS[x.cat].label : 'Unknown', x.rate == null ? 'Unknown' : x.rate, x.gross == null ? 'Missing' : plain(x.gross), x.vat == null ? 'Missing' : plain(x.vat), x.r.reason || '']); });
+    d.voided.forEach(function (x) { rows.push(['Voided sale (excluded)', new Date(x.t).toLocaleString('en-GB'), '', '', x.s.refNumber || x.s.id, '', '', plain(x.gross), '', x.s.voidReason || '']); });
+    d.exchanges.forEach(function (x) { rows.push(['Exchange (already netted in sales)', new Date(x.t).toLocaleString('en-GB'), x.r.itemName || '', num(x.r.qty), x.r.refNumber || '', '', '', '', '', x.r.reason || '']); });
+    download('tax-returns-adjustments_' + R.fromS + '_' + R.toS + '.csv', rows);
+  }
+  function printReport() {
+    var R = range(), d = compile(R.from, R.to);
+    var p = $('tx-print'); if (!p) { p = document.createElement('div'); p.id = 'tx-print'; document.body.appendChild(p); }
+    var rows = Object.keys(CLASS).map(function (c) { var b = d.byCat[c]; return b.lines ? '<tr><td>' + esc(CLASS[c].label) + '</td><td class="n">' + esc(Object.keys(b.rates).join(' / ') || '0') + '%</td><td class="n">' + plain(b.gross) + '</td><td class="n">' + plain(b.net) + '</td><td class="n">' + plain(b.vat) + '</td></tr>' : ''; }).join('');
+    p.innerHTML = '<h2 style="margin:0">' + esc(g('businessName') || 'Business') + ' - Sales tax summary</h2><p>KRA PIN: ' + esc(g('etimsPin') || 'Missing') + ' · Period ' + esc(R.fromS) + ' to ' + esc(R.toS) + ' · Printed ' + esc(new Date().toLocaleString('en-GB')) + '</p>'
+      + '<p><b>MyDuka-generated report for review and manual filing. Not an official KRA tax return and not an eTIMS tax invoice.</b></p>'
+      + '<table><tr><th>Tax class</th><th>Rate</th><th>Gross (KES, incl. VAT)</th><th>Net (KES)</th><th>VAT (KES)</th></tr>' + rows + '<tr><th>Total</th><th></th><th class="n">' + plain(d.gross) + '</th><th class="n">' + plain(d.gross - d.vat) + '</th><th class="n">' + plain(d.vat) + '</th></tr></table>'
+      + '<p>Returns: ' + d.returns.length + ', value KES ' + plain(d.retGross) + ', VAT KES ' + plain(d.retVat) + '. Net sales after returns KES ' + plain(d.gross - d.retGross) + ', output VAT after returns KES ' + plain(d.vat - d.retVat) + '. Voided sales (excluded): ' + d.voided.length + ' (KES ' + plain(d.voidGross) + '). Not yet synced: ' + d.unsynced + '.</p>'
+      + '<p>Output VAT is not the VAT payable: input VAT and other adjustments are not included. Method: prices include VAT; VAT per line = gross x rate / (100 + rate), rounded to the cent; rate in force on the sale date.</p>';
+    document.body.classList.add('tx-printing');
+    var done = function () { document.body.classList.remove('tx-printing'); window.removeEventListener('afterprint', done); };
+    window.addEventListener('afterprint', done);
+    try { window.print(); } catch (e) { /* no print here */ }
+    setTimeout(done, 60000);
+  }
+  function onClick(e) {
+    var t = e.target.closest ? e.target.closest('[data-v],[data-tx]') : null; if (!t) return;
+    if (t.hasAttribute('data-v')) { S.view = t.getAttribute('data-v'); S.page = 0; render(); return; }
+    var a = t.getAttribute('data-tx');
+    if (a === 'csv-register') exportRegister(); else if (a === 'csv-summary') exportSummary(); else if (a === 'csv-returns') exportReturns(); else if (a === 'print') printReport();
+    else if (a === 'prev') { S.page = Math.max(0, S.page - 1); render(); } else if (a === 'next') { S.page++; render(); }
+  }
+  document.addEventListener('change', function (e) {
+    if (!e.target || e.target.id !== 'tx-reg') return;
+    var v = e.target.value, msg = $('tx-setup-msg');
+    if (v === '') return;
+    var on = v === 'yes', now = Date.now();
+    C.vatRegistered = on; C.reg = mergeReg(C.reg, [{ from: now, on: on }]); save(true);
+    if (msg) { msg.className = 'tx-msg ok'; msg.textContent = 'Saved. From now on sales are reported as ' + (on ? 'VAT-registered' : 'not VAT-registered') + '. Earlier sales are unchanged.'; }
+  });
+
+  /* ---------------- the tab ---------------- */
+  function ensure() {
+    var anchor = $('profits-tab'); if (!anchor) return false;
+    if (!$(ID)) { var d = document.createElement('div'); d.id = ID; d.className = 'tab-content'; anchor.parentNode.insertBefore(d, anchor.nextSibling); }
+    var pb = document.querySelector('.tab-link[data-tab="profits-tab"]');
+    if (pb && !$(BTN)) {
+      var nb = document.createElement('button'); nb.id = BTN; nb.className = 'tab-link'; nb.type = 'button'; nb.setAttribute('data-tab', ID);
+      nb.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')"); nb.textContent = '🧾 Tax & Returns';
+      pb.parentNode.insertBefore(nb, pb.nextSibling);
+      nb.addEventListener('click', function () { setTimeout(function () { if (isOpen()) render(); }, 0); });
+    }
+    // staff: the app's own role rules decide (applyServerVisibility / isTabLocked: Tax & Returns is a role of its own). The owner always sees it.
+    var b = $(BTN), serving = false;
+    try { serving = typeof currentServer !== 'undefined' && !!currentServer; } catch (e) { serving = false; }
+    if (b && pb && !serving) { var want = (pb.classList.contains('ptl-tab-off')) ? 'none' : ''; if (b.style.display !== want) b.style.display = want; }
+    return true;
+  }
+  // staff who had the FULL Profits role keep seeing these figures: Tax & Returns is added to their roles ONCE (flag txMigrated); the admin can untick it.
+  // "Add expenses only" never gets it (it hides the figures).
+  function migrate() {
+    try {
+      if (typeof staff === 'undefined' || !Array.isArray(staff)) return;
+      var changed = false;
+      staff.forEach(function (m) {
+        if (!m || m.txMigrated) return;
+        m.txMigrated = true; changed = true;
+        if (Array.isArray(m.roles) && m.roles.indexOf('profits-tab') >= 0 && m.roles.indexOf(ID) < 0) { m.roles.push(ID); m.updatedAt = Date.now(); }
+      });
+      if (changed) { if (typeof safeSetItem === 'function') safeSetItem(window.__LOG_KEYS && /^aqua_/.test(window.__LOG_KEYS.salesLog || '') ? 'aqua_staff' : 'pos_staff', JSON.stringify(staff)); try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* next change sends it */ } }
+    } catch (e) { /* ok */ }
+  }
+  function register2() {
+    try {
+      if (typeof LOCKABLE_TABS !== 'undefined' && Array.isArray(LOCKABLE_TABS) && !LOCKABLE_TABS.some(function (t) { return t.id === ID; })) {
+        var i = LOCKABLE_TABS.findIndex(function (t) { return t.id === 'profits-tab'; });
+        LOCKABLE_TABS.splice(i >= 0 ? i + 1 : LOCKABLE_TABS.length, 0, { id: ID, label: '🧾 Tax & Returns' });
+      }
+      if (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS) && !ROLE_TABS.some(function (t) { return t.id === ID; })) ROLE_TABS.push({ id: ID, label: '🧾 Tax & Returns' });
+      if (typeof lockedTabs !== 'undefined' && Array.isArray(lockedTabs) && localStorage.getItem('pos_tx_lock_init') !== '1') {
+        localStorage.setItem('pos_tx_lock_init', '1');
+        if (lockedTabs.indexOf('profits-tab') >= 0 && lockedTabs.indexOf(ID) < 0) { lockedTabs.push(ID); if (typeof safeSetItem === 'function') safeSetItem('pos_locked_tabs', JSON.stringify(lockedTabs)); }
+      }
+    } catch (e) { /* the tab still works for the admin */ }
+  }
+  window.taxReturns = { compile: compile, rateAt: rateAt, registeredAt: registeredAt, render: render, config: function () { return JSON.parse(JSON.stringify(C)); }, csvCell: csvCell, cents: cents, trackRates: trackRates };
+  function boot() {
+    var n = 0;
+    try { migrate(); } catch (e) { /* ok */ }
+    (function tick() { try { if (ensure()) { register2(); trackRates(); } } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 250 : 1000); })();
+    setInterval(function () { try { ensure(); trackRates(); } catch (e) { /* cosmetic */ } }, 4000);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

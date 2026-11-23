@@ -61,6 +61,8 @@ async function open(browser, base, app, { width = 390, height = 844, reuse = nul
     await ctx.addInitScript(([h, inv, water, shop]) => {
       if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
       const pre = water ? 'aqua_' : 'pos_';
+      // as tests/helpers.mjs: cash float (on by default since zip 292) and whole-shilling rounding (zip 233) are off unless a test asks - these tests are about the phone screens
+      localStorage.setItem('pos_cash_config', JSON.stringify([{ id: 'cfg', enabled: false, updatedAt: 1 }])); localStorage.setItem('pos_round_up', '0');
       localStorage.setItem(pre + 'pw_hash', h); localStorage.setItem(pre + 'biz_name', 'Test Shop');
       for (const k of ['pos_notif_prompt_last', 'pos_cd_detect_last', 'aqua_notif_prompt_last']) localStorage.setItem(k, String(Date.now()));   // no "turn on notifications" banner over the bottom bar
       if (water) {
@@ -89,6 +91,9 @@ async function withApps(fn) {
   try { await fn(browser, base); } finally { await browser.close(); srv.close(); }
 }
 const salesCount = (page) => page.evaluate(() => (typeof salesLog !== 'undefined' && Array.isArray(salesLog)) ? salesLog.length : -1);
+// the customer phone BOX: since the phone-book picker ("Search name or phone") the raw input is hidden inside it on purpose, so what the
+// cashier sees is the box around it (.ptl-phone-group / its form group)
+const phoneBox = (id) => `.ptl-phone-group:has(#${id}), .form-group:has(> #${id}), .form-group:has(> * > #${id})`;
 const vis = (page, sel) => page.evaluate((s) => { const e = document.querySelector(s); if (!e) return false; const cs = getComputedStyle(e); const r = e.getBoundingClientRect(); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0; }, sel);
 async function openSettingsCard(page) {
   await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="settings-tab"]'); if (b) b.click(); });
@@ -96,7 +101,13 @@ async function openSettingsCard(page) {
   await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-view"]'); if (b) b.click(); });
   await page.waitForFunction(() => !!document.getElementById('pos-phonetill-panel') && !!document.querySelector('#pos-phonetill-panel .ptl-sw'), null, { timeout: 8000 });
 }
-const flip = (page, id) => page.evaluate((i) => { const l = document.getElementById(i).closest('label'); l.scrollIntoView({ block: 'center' }); }, id).then(() => page.click('label.ptl-sw:has(#' + id + ')'));
+// opening a Settings section smooth-scrolls the page to the top; on a phone that takes a moment. Wait until it has stopped (the switch is
+// where it will stay) - otherwise the switch slides away under the tap, as it would under a finger.
+const flip = (page, id) => page.evaluate(async (i) => {
+  const l = document.getElementById(i).closest('label');
+  const still = async () => { let last = '', same = 0; for (let k = 0; k < 240 && same < 4; k++) { await new Promise((r) => requestAnimationFrame(r)); const b = l.getBoundingClientRect(); const now = b.top + '|' + scrollY; same = now === last ? same + 1 : 0; last = now; } };
+  await still(); l.scrollIntoView({ block: 'center' }); await still();
+}, id).then(() => page.click('label.ptl-sw:has(#' + id + ')'));
 const toSales = async (page) => { await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="sales-tab"]'); if (b) b.click(); }); await page.waitForTimeout(400); await clearBanners(page); };
 // opens the cart sheet with two items in it (a hidden box is only meaningful to check where it would be drawn)
 const sheetUp = async (page, app) => { await toSales(page); if (!(await page.evaluate(() => Object.keys(currentCart).length))) await addTwo(page, app); await page.click('#mobile-cart-fab'); await page.waitForTimeout(350); };
@@ -182,7 +193,7 @@ test('a cart line stays whole at 320 px wide too (long name, big amounts)', { sk
     const app = APPS[1];
     const c2 = await browser.newContext({ viewport: { width: 320, height: 640 }, isMobile: true, hasTouch: true });
     await c2.route('**/api/**', (r) => r.abort());
-    await c2.addInitScript(([h, inv]) => { if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_notif_prompt_last', String(Date.now())); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T'); localStorage.setItem('pos_inventory', JSON.stringify(inv)); }, [H, INV.map((p) => ({ ...p, price: p.price * 1234.5 }))]);
+    await c2.addInitScript(([h, inv]) => { if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_cash_config', JSON.stringify([{ id: 'cfg', enabled: false, updatedAt: 1 }])); localStorage.setItem('pos_round_up', '0'); localStorage.setItem('pos_notif_prompt_last', String(Date.now())); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T'); localStorage.setItem('pos_inventory', JSON.stringify(inv)); }, [H, INV.map((p) => ({ ...p, price: p.price * 1234.5 }))]);
     const page = await c2.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(String(e.message || e)));
     await page.goto(base + '/' + app.file); await page.waitForTimeout(1300);
     await page.evaluate(() => { document.getElementById('login-screen').style.display = 'none'; });
@@ -213,7 +224,8 @@ for (const app of APPS) {
       await openSettingsCard(page);
       assert.equal(await page.evaluate(() => document.getElementById('pos-phonetill-panel').parentNode.id), 'settings-section-view');
       // (a) delivery: pick Delivery first, then switch the choice off -> walk-in, toggle and form hidden
-      await page.evaluate(() => { setOrderType('delivery'); });
+      // zip 293: choosing Delivery opens the delivery details pop-up over the page; tapping outside it closes it and KEEPS delivery (dlvDone)
+      await page.evaluate(() => { setOrderType('delivery'); if (typeof dlvDone === 'function') dlvDone(); });
       assert.equal(await page.evaluate(() => orderType), 'delivery');
       await flip(page, 'ptl-sw-delivery'); await page.waitForTimeout(300);
       assert.equal(await page.evaluate(() => orderType), 'walkin', 'forced back to walk-in');
@@ -222,23 +234,23 @@ for (const app of APPS) {
       assert.equal(await vis(page, '#order-type-toggle'), false, 'the whole Walk-In / Delivery toggle is hidden');
       assert.equal(await vis(page, '#delivery-details-group'), false);
       await sheetDown(page);
-      await page.evaluate(() => { setOrderType('delivery'); });
+      await page.evaluate(() => { setOrderType('delivery'); if (typeof dlvDone === 'function') dlvDone(); });
       assert.equal(await page.evaluate(() => orderType), 'walkin', 'it can never end up on delivery while the choice is hidden');
       // (b) customer phone: type one, hide the box -> hidden, emptied
       await sheetUp(page, app); await toPay(page);
-      assert.equal(await vis(page, '#' + app.phone), true, 'the phone box shows while the switch is on');
+      assert.equal(await vis(page, phoneBox(app.phone)), true, 'the phone box shows while the switch is on');
       await page.evaluate((id) => { document.getElementById(id).value = '0712345678'; }, app.phone);
       await sheetDown(page);
       await openSettingsCard(page);
       await flip(page, 'ptl-sw-phone'); await page.waitForTimeout(300);
       await sheetUp(page, app); await toPay(page);
-      assert.equal(await vis(page, '#' + app.phone), false, 'the phone box is hidden');
+      assert.equal(await vis(page, phoneBox(app.phone)), false, 'the phone box is hidden');
       assert.equal(await page.evaluate((id) => document.getElementById(id).value, app.phone), '', 'a number typed earlier is dropped');
       // the settings are shop settings: they are in the sync payload (the same hook the payment methods use)
       assert.deepEqual(await page.evaluate(() => extraSettingsCollect().phoneTill), { phone: false, delivery: false, tables: true });
       // a sale still completes with the box hidden and empty
       const before = await salesCount(page);
-      assert.equal(await vis(page, '#' + app.phone), false, 'still hidden inside the sheet');
+      assert.equal(await vis(page, phoneBox(app.phone)), false, 'still hidden inside the sheet');
       await page.evaluate(() => { const t = document.getElementById('cash-tendered-input'); if (t) { t.value = '1000'; t.dispatchEvent(new Event('input', { bubbles: true })); } });
       await page.tap('#main-checkout-btn');
       await page.waitForFunction((b) => salesLog.length > b, before, { timeout: 15000 });
@@ -251,7 +263,7 @@ for (const app of APPS) {
       const again = await open(browser, base, app, { reuse: { ctx } });
       await sheetUp(again.page, app);
       assert.equal(await vis(again.page, '#order-type-toggle'), false, 'delivery choice still hidden after a reload');
-      assert.equal(await vis(again.page, '#' + app.phone), false, 'phone box still hidden after a reload');
+      assert.equal(await vis(again.page, phoneBox(app.phone)), false, 'phone box still hidden after a reload');
       await sheetDown(again.page);
       assert.equal(await again.page.evaluate(() => document.documentElement.classList.contains('ptl-no-delivery') && document.documentElement.classList.contains('ptl-no-phone')), true);
       // ... and the switches show it
@@ -262,7 +274,7 @@ for (const app of APPS) {
       await sheetUp(again.page, app);
       assert.equal(await vis(again.page, '#order-type-toggle'), true, 'the Walk-In / Delivery choice is back');
       await toPay(again.page);
-      assert.equal(await vis(again.page, '#' + app.phone), true, 'the phone box is back');
+      assert.equal(await vis(again.page, phoneBox(app.phone)), true, 'the phone box is back');
       assert.deepEqual(errors, []); assert.deepEqual(again.errors, []);
       await ctx.close();
     });
@@ -448,11 +460,11 @@ test('the pay-later bill still gets its phone number while the phone box is swit
     await addTwo(page, app);
     await page.click('#mobile-cart-fab'); await page.waitForTimeout(300);
     await toPay(page);                                                       // zip 200: the phone box lives on the payment screen
-    assert.equal(await vis(page, '#sms-checkout-phone-input'), false);
+    assert.equal(await vis(page, phoneBox('sms-checkout-phone-input')), false);
     await page.evaluate(() => setPaymentMethod('bill')); await page.waitForTimeout(200);
-    assert.equal(await vis(page, '#sms-checkout-phone-input'), true, 'Bill keeps the box: the bill is saved against that number');
+    assert.equal(await vis(page, phoneBox('sms-checkout-phone-input')), true, 'Bill keeps the box: the bill is saved against that number');
     await page.evaluate(() => setPaymentMethod('cash')); await page.waitForTimeout(200);
-    assert.equal(await vis(page, '#sms-checkout-phone-input'), false);
+    assert.equal(await vis(page, phoneBox('sms-checkout-phone-input')), false);
     assert.deepEqual(errors, []);
     await ctx.close();
   });

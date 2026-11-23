@@ -37,7 +37,7 @@ test('HOTEL end to end: room type & rate → reservation → no double selling �
   assert.match(await w.eval(`hospReserveRoom({ room: 'Room 205', arrive: '${ymd(0)}', depart: '${ymd(1)}', guest: 'Walk-in' }).then(x => String(x))`), /null/, 'an occupied room cannot be reserved for tonight');
   // room service to the room (kitchen ticket says ROOM SERVICE)
   await w.eval("routeOrderToTab('Room 205'); currentPaymentMethod = 'tab'; addToCart('BRK'); checkoutCart()");
-  assert.match(w.eval('window.__tickets[window.__tickets.length - 1]'), /ROOM 205 · Room service[\s\S]*Full English Breakfast/);
+  assert.match(w.eval('window.__tickets[window.__tickets.length - 1]'), /ROOM 205\s+Room service[\s\S]*Full English Breakfast/);
   // drinks at the restaurant, charged to the room (folio)
   await w.eval("routeOrderToTab('Table 05'); currentPaymentMethod = 'tab'; addToCart('TSK'); addToCart('TSK'); checkoutCart()");
   const t5 = J(w, "findOpenTabByLabel('Table 05').id");

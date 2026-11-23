@@ -1,0 +1,131 @@
+<!-- HMIS AI (zip 364) -------------------------------------------------------------------------------------------------------
+     "Ask the AI for more insights": under the Dashboard Insights card and under Reports > Business insights. Only AGGREGATE figures for the chosen
+     period are sent (totals, shares, counts, medicine names) - never a patient name, phone number or any record. The answer is a handful of short
+     observations, kept on this device for 3 days so nothing is re-asked unless the manager presses the button again. It uses the same Gemini keys as
+     the Capture List (the clinic's own key in Settings > AI Capture List, or the platform pool). Nothing happens until the button is pressed. -->
+<style>
+.hai { margin: 14px 0 4px; border-radius: 16px; padding: 14px 16px 12px; background: linear-gradient(135deg, #f3ecff 0%, #eaf3ff 55%, #e9fbf5 100%); border: 1.5px solid #d7c9f5; box-shadow: 0 6px 18px rgba(88, 60, 170, .10); position: relative; overflow: hidden; text-align: left; }
+.hai::before { content: ""; position: absolute; right: -30px; top: -30px; width: 120px; height: 120px; border-radius: 50%; background: radial-gradient(circle, rgba(124, 92, 255, .18), transparent 70%); pointer-events: none; }
+.hai-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hai-h b { font-size: 15px; color: #3d2a86; }
+.hai-h small { color: #6a6490; font-size: 12px; flex: 1 1 200px; }
+.hai-btn { border: 0; cursor: pointer; border-radius: 999px; padding: 9px 16px; font: 700 13px system-ui, sans-serif; color: #fff; background: linear-gradient(135deg, #7c5cff, #2d7ff9); box-shadow: 0 6px 14px rgba(70, 90, 230, .3); transition: transform .15s, box-shadow .15s; }
+.hai-btn:hover { transform: translateY(-1px); box-shadow: 0 9px 18px rgba(70, 90, 230, .38); }
+.hai-btn[disabled] { opacity: .6; cursor: progress; transform: none; }
+.hai-btn.sec { background: #fff; color: #3d2a86; box-shadow: none; border: 1.5px solid #cdbff3; }
+.hai-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 9px; }
+.hai-list li { background: #fff; border-radius: 12px; padding: 10px 12px 10px 14px; border-left: 5px solid #7c5cff; box-shadow: 0 2px 8px rgba(40, 40, 90, .06); font-size: 14px; line-height: 1.45; color: #25264a; }
+.hai-list li.good { border-left-color: #1f9d63; } .hai-list li.watch { border-left-color: #e5a100; } .hai-list li.idea { border-left-color: #7c5cff; }
+.hai-list li b { display: block; font-size: 13.5px; color: #1d1d3f; margin-bottom: 2px; }
+.hai-tag { display: inline-block; font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: 1px; }
+.hai-list li.good .hai-tag { background: #dff5ea; color: #137a4b; } .hai-list li.watch .hai-tag { background: #fff0cc; color: #8a6200; } .hai-list li.idea .hai-tag { background: #ece6ff; color: #4a32b5; }
+.hai-note { margin: 10px 0 0; font-size: 11.5px; color: #6a6490; }
+.hai-err { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; background: #fff1f0; color: #9b2a1f; font-size: 13px; }
+.hai-busy { margin: 12px 0 2px; display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: #3d2a86; }
+.hai-dot { width: 10px; height: 10px; border-radius: 50%; background: #7c5cff; animation: haipulse 1s ease-in-out infinite; } .hai-dot:nth-child(2) { animation-delay: .15s; } .hai-dot:nth-child(3) { animation-delay: .3s; }
+@keyframes haipulse { 0%, 100% { transform: scale(.6); opacity: .5; } 50% { transform: scale(1.1); opacity: 1; } }
+@media print { .hai { display: none !important; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    var CK = 'pos_hmis_ai', TTL = 3 * 86400000;
+    var FACTS = {}, BUSY = {}, ERR = {};
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function arr(name) { try { switch (name) { case 'inventory': return typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; case 'salesLog': return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []; default: return []; } } catch (e) { return []; } }
+    function cacheAll() { try { return JSON.parse(localStorage.getItem(CK) || '{}') || {}; } catch (e) { return {}; } }
+    function cacheGet(key) { var c = cacheAll()[key]; return c && c.at && Date.now() - c.at < TTL && Array.isArray(c.items) ? c : null; }
+    function cachePut(key, items) {
+        try { var all = cacheAll(), now = Date.now(); Object.keys(all).forEach(function (k) { if (!all[k] || now - all[k].at > TTL) delete all[k]; }); all[key] = { at: now, items: items }; var ks = Object.keys(all); if (ks.length > 12) ks.sort(function (a, b) { return all[a].at - all[b].at; }).slice(0, ks.length - 12).forEach(function (k) { delete all[k]; }); localStorage.setItem(CK, JSON.stringify(all)); } catch (e) { /* not remembered */ }
+    }
+    var TAG = { good: 'Going well', watch: 'Keep an eye', idea: 'Idea' };
+    function inner(key) {
+        var c = cacheGet(key), h = '<div class="hai-h"><b>🤖 AI insights</b><small>Only totals are sent for this period - never patient names or details.</small>';
+        if (BUSY[key]) return h + '</div><div class="hai-busy"><span class="hai-dot"></span><span class="hai-dot"></span><span class="hai-dot"></span><span>Reading your figures…</span></div>';
+        h += '<button type="button" class="hai-btn' + (c ? ' sec' : '') + '" data-ai-run="1">' + (c ? '↻ Refresh' : '✨ Ask the AI for more insights') + '</button></div>';
+        if (ERR[key]) h += '<div class="hai-err">' + esc(ERR[key]) + '</div>';
+        if (c) h += '<ul class="hai-list">' + c.items.map(function (x) { var k = TAG[x.kind] ? x.kind : 'idea'; return '<li class="' + k + '"><b><span class="hai-tag">' + TAG[k] + '</span>' + esc(x.title) + '</b>' + esc(x.text) + '</li>'; }).join('') + '</ul><p class="hai-note">Written by an AI from the totals for this period, ' + esc(new Date(c.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })) + '. It can be wrong - check it against your records before acting.</p>';
+        return h;
+    }
+    function refresh(key) { Array.prototype.forEach.call(document.querySelectorAll('[data-ai-box]'), function (el) { if (el.getAttribute('data-ai-box') === key) el.innerHTML = inner(key); }); }
+    function html(key, facts) { FACTS[key] = facts; return '<div class="hai" data-ai-box="' + esc(key) + '">' + inner(key) + '</div>'; }
+    function friendly(msg) {
+        msg = String(msg || '');
+        if (/not been enabled|add your own|Gemini/i.test(msg)) return 'The AI is not switched on yet. Add a free Gemini key in Settings > AI Capture List, then try again.';
+        if (/quota|rate|limit/i.test(msg)) return 'The AI is busy right now (quota reached). Wait a few minutes and try again.';
+        return msg || 'The AI could not answer just now. Please try again.';
+    }
+    function run(key) {
+        if (BUSY[key]) return; var facts = FACTS[key];
+        if (!facts) { ERR[key] = 'Open the report again, then press the button.'; return refresh(key); }
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) { ERR[key] = 'You are offline. AI insights need the internet.'; return refresh(key); }
+        BUSY[key] = true; ERR[key] = ''; refresh(key);
+        var ctl = typeof AbortController === 'function' ? new AbortController() : null, to = setTimeout(function () { if (ctl) ctl.abort(); }, 45000);
+        fetch(typeof apiUrl === 'function' ? apiUrl('/api/ai-capture-list') : '/api/ai-capture-list', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ insights: { period: facts.period || '', facts: facts } }), signal: ctl ? ctl.signal : undefined })
+            .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (o) { if (!o.ok || !o.j || !Array.isArray(o.j.insights)) throw new Error((o.j && o.j.error) || 'The AI could not answer just now.'); cachePut(key, o.j.insights); })
+            .catch(function (e) { ERR[key] = e && e.name === 'AbortError' ? 'The AI took too long. Please try again.' : friendly(e && e.message); })
+            .then(function () { clearTimeout(to); BUSY[key] = false; refresh(key); });
+    }
+    document.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-ai-run]') : null; if (!b) return; var box = b.closest('[data-ai-box]'); if (box) { e.preventDefault(); run(box.getAttribute('data-ai-box')); } });
+
+    /* ---- aggregate figures, never records ---- */
+    function n0(x) { x = Number(x); return isFinite(x) ? x : 0; }
+    function clean(o) { return JSON.parse(JSON.stringify(o)); }
+    function dashFacts(d) {
+        var A = d.A || {}, P = d.P || {}, V = d.V || {}, VP = d.VP || {}, f = { period: d.range && d.range.text, comparedWith: d.range && d.range.cmp, days: d.range && d.range.days, facility: 'hospital / clinic' };
+        if (d.money) {
+            f.revenueKES = Math.round(n0(A.revenue)); f.previousRevenueKES = Math.round(n0(P.revenue)); f.payments = n0(A.count); f.previousPayments = n0(P.count);
+            f.revenueByDepartmentKES = Object.keys(A.dept || {}).map(function (k) { return { department: k, revenue: Math.round(n0(A.dept[k].rev)), payments: n0(A.dept[k].n) }; }).filter(function (x) { return x.revenue > 0; });
+            f.paymentsByMethod = { cash: n0(A.method && A.method.cash && A.method.cash.n), mpesa: n0(A.method && A.method.mpesa && A.method.mpesa.n), card: n0(A.method && A.method.card && A.method.card.n), other: n0(A.method && A.method.other && A.method.other.n) };
+            if (d.hasCost) { f.costOfMedicinesKES = Math.round(n0(A.cogs)); f.grossMarginPercent = A.revenue > 0 ? Math.round((A.revenue - A.cogs) / A.revenue * 100) : null; }
+            f.expensesKES = Math.round(n0(d.expTotal));
+            f.topExpenseCategories = Object.keys(d.expCat || {}).map(function (k) { return { category: k, amountKES: Math.round(n0(d.expCat[k])) }; }).sort(function (a, b) { return b.amountKES - a.amountKES; }).slice(0, 4);
+            if (d.recv) f.stillToCollect = { totalKES: Math.round(n0(d.recv.total)), unpaidPatientBills: n0(d.recv.unpaidBills), overduePayLaterBills: n0(d.recv.overdue) };
+        }
+        f.consultations = n0(V.n); f.previousConsultations = n0(VP.n);
+        if (d.peakHour >= 0) f.busiestHour = { hour: d.peakHour, consultations: n0(d.peakVal) };
+        if (V.dow && d.range && d.range.days >= 3) { var nm = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], bi = 0; V.dow.forEach(function (x, i) { if (x > V.dow[bi]) bi = i; }); if (V.dow[bi] > 0) f.busiestWeekday = { day: nm[bi], consultations: V.dow[bi] }; }
+        f.patientsSeen = n0(d.seen); f.newlyRegisteredAmongThem = n0(d.firstTime);
+        if (d.flow && d.flow.avgWaitMin != null) f.averageWaitMinutesToday = n0(d.flow.avgWaitMin);
+        f.stock = { expiredStillInStock: (d.expired || []).length, outOfStock: (d.out || []).length, lowStock: (d.low || []).length, expiringSoon: (d.expiring || []).length, outOfStockExamples: (d.out || []).slice(0, 6).map(function (r) { return String(r.name || '').slice(0, 60); }) };
+        return clean(f);
+    }
+    function salesFacts(range) {
+        var sales = []; try { sales = typeof reportSales === 'function' ? reportSales(range) : []; } catch (e) { sales = []; }
+        var tot = function (s) { try { return typeof reportSaleTotal === 'function' ? n0(reportSaleTotal(s)) : 0; } catch (e) { return 0; } };
+        var hours = []; for (var h = 0; h < 24; h++) hours.push({ n: 0, v: 0 }); var dows = []; for (var k = 0; k < 7; k++) dows.push({ n: 0, v: 0 }); var items = {}, meth = {}, staff = {}, sum = 0;
+        sales.forEach(function (s) { var d = new Date(s.timestamp), t = tot(s); sum += t; hours[d.getHours()].n++; hours[d.getHours()].v += t; dows[d.getDay()].n++; dows[d.getDay()].v += t; var m = s.paymentMethod || 'other'; meth[m] = (meth[m] || 0) + 1; var w = s.servedBy || '?'; staff[w] = (staff[w] || 0) + t;
+            (s.items || []).forEach(function (it) { if (it.unit === 'payment' || it.isPayment) return; var nm = String(it.name || it.code || '?').slice(0, 60); items[nm] = items[nm] || { q: 0, v: 0 }; items[nm].q += n0(it.qty); items[nm].v += n0(it.price) * n0(it.qty); }); });
+        var peakH = 0, bestH = 0, bestD = 0; hours.forEach(function (x, i) { if (x.n > hours[peakH].n) peakH = i; if (x.v > hours[bestH].v) bestH = i; }); dows.forEach(function (x, i) { if (x.v > dows[bestD].v) bestD = i; });
+        var dn = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], inv = arr('inventory').filter(function (p) { return p && p.type !== 'service'; });
+        var top = Object.keys(items).map(function (k) { return { item: k, qty: Math.round(items[k].q * 100) / 100, valueKES: Math.round(items[k].v) }; }).sort(function (a, b) { return b.valueKES - a.valueKES; }).slice(0, 8);
+        var sv = Object.keys(staff).map(function (k) { return staff[k]; }).sort(function (a, b) { return b - a; });
+        var f = { period: range && range.label ? range.label : (range && range.from ? new Date(range.from).toLocaleDateString('en-GB') + ' to ' + new Date(range.to).toLocaleDateString('en-GB') : 'selected period'), facility: 'hospital / clinic pharmacy and cashier', salesCount: sales.length, totalKES: Math.round(sum), averageSaleKES: sales.length ? Math.round(sum / sales.length) : 0,
+            busiestHourBySales: sales.length ? { hour: peakH, sales: hours[peakH].n } : null, bestEarningHour: sales.length ? { hour: bestH, amountKES: Math.round(hours[bestH].v) } : null, bestWeekday: sales.length ? { day: dn[bestD], amountKES: Math.round(dows[bestD].v) } : null,
+            salesByHour: hours.map(function (x) { return x.n; }), salesByWeekday: dows.map(function (x, i) { return { day: dn[i].slice(0, 3), sales: x.n }; }), paymentMethods: meth, topItemsByValue: top,
+            cashiers: sv.length, topCashierSharePercent: sv.length && sum > 0 ? Math.round(sv[0] / sum * 100) : null,
+            stockItems: inv.length, outOfStock: inv.filter(function (p) { return n0(p.qty) <= 0; }).length };
+        return clean(f);
+    }
+    window.hmisAi = { html: html, run: run, dashFacts: dashFacts, salesFacts: salesFacts };
+
+    /* Reports > Business insights: add the box under the report each time it is drawn */
+    function wrapReports() {
+        var o = window.reportsGenerate; if (typeof o !== 'function' || o.__hai) return false;
+        var w = function (kind) {
+            var r = o.apply(this, arguments);
+            try {
+                if (kind === 'insights') {
+                    var out = document.getElementById('reports-output'), range = typeof reportsRange === 'function' ? reportsRange() : null;
+                    if (out && range && !out.querySelector('[data-ai-box]')) { var key = 'rep:' + new Date(range.from).toDateString() + '|' + new Date(range.to).toDateString(), div = document.createElement('div'); div.innerHTML = html(key, salesFacts(range)); out.appendChild(div.firstChild); }
+                }
+            } catch (e) { /* the report itself is unaffected */ }
+            return r;
+        };
+        w.__hai = true; window.reportsGenerate = w; return true;
+    }
+    var tries = 0, iv = setInterval(function () { tries++; if (wrapReports() || tries > 40) clearInterval(iv); }, 500);
+})();
+</script>
+<!-- /HMIS AI -->

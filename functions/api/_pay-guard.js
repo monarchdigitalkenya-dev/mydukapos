@@ -13,6 +13,7 @@ import { proofMatches, isSealedProof } from './_device-auth.js';
 import { readState, shopMode, shopCall } from './_state-store.js';
 import { staffRecord } from './_staff-auth.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
+import { secEvent } from './_sec-events.js';
 
 async function shopSecrets(env, clientId) {
   if ((await shopMode(env, clientId)) === 'do') {
@@ -60,13 +61,14 @@ export async function requirePayProof(request, env, clientId, cors = {}) {
   if (proof.a) {
     if (!hasPassword) return { denied: null, who: { kind: 'unprotected', name: 'Admin (no password set)' } };
     const ok = (secrets.pwHash && await proofMatches(proof.p, secrets.pwHash)) || (secrets.adminPwHash && await proofMatches(proof.p, secrets.adminPwHash));
-    if (!ok) return { denied: reply(cors, 403, 'pay_confirm_failed', 'Incorrect password.'), who: null };
+    if (!ok) { await secEvent(env, 'pay_proof_failed', { route: 'payment-settings', shop: clientId }); return { denied: reply(cors, 403, 'pay_confirm_failed', 'Incorrect password.'), who: null }; }
     return { denied: null, who: { kind: 'admin', name: 'Admin' } };
   }
 
   let m = null;
   try { m = await staffRecord(env, clientId, proof.s); } catch (e) { return busy(); }
   if (!m || m.outdated || m.removed || !m.isManager || !m.pinHash || !(await proofMatches(proof.p, m.pinHash))) {
+    await secEvent(env, 'pay_proof_failed', { route: 'payment-settings', shop: clientId });
     return { denied: reply(cors, 403, 'pay_confirm_failed', 'Incorrect PIN, or that person is not a manager. Use the Admin password or a manager PIN.'), who: null };
   }
   return { denied: null, who: { kind: 'manager', name: String(m.name || 'Manager').slice(0, 60) } };

@@ -20,7 +20,7 @@
 // untouched. Getting this condition wrong in either direction either hides
 // the new public site or, far worse, breaks an existing client's link.
 
-import { LEGAL_PAGES, APEX_PAGES, APEX_FILES, PRODUCT_PAGES, SITE_NAME, isApexRequest } from './_site.js';
+import { LEGAL_PAGES, APEX_PAGES, APEX_FILES, PRODUCT_PAGES, SITE_NAME, isApexRequest, isTenantHost, canonicalOrigin } from './_site.js';
 
 // `wrangler pages deploy .` uploads the WHOLE project folder as public files, so without this the live site would serve the source of the
 // tests, the shared code, the tools, the design notes (SYNC_AUTH_DESIGN.md describes exactly which endpoints a leaked link exposes),
@@ -43,29 +43,52 @@ export function isInternalPath(pathname) {
 //     apex only. They live in /public-site/; the apex used to serve only "/" from there, so the relative links on those pages had nothing at the
 //     root to point at.
 //   * Every other host (a client's shop) gets `X-Robots-Tag: noindex, nofollow` on its pages: a shop's POS is private and must never be searchable.
-const servePublic = (env, request, file) => env.ASSETS.fetch(new Request(new URL('/public-site/' + file, request.url), request));
+// zip 282: Pages answers a request for "x.html" with a 308 to the clean name "x" (its own clean-URL rule). Handing that redirect to the visitor sent
+// /faq, /terms, /products/<id>, ... to an internal /public-site/... address (and a product page lost its own title and description). When the asset
+// store redirects to another file inside /public-site/, that file is fetched here instead; any other answer passes through unchanged.
+const servePublic = async (env, request, file) => {
+  const res = await env.ASSETS.fetch(new Request(new URL('/public-site/' + file, request.url), request));
+  if (res && res.status >= 300 && res.status < 400) {
+    const loc = res.headers.get('Location') || '';
+    let to = null; try { to = new URL(loc, request.url); } catch (e) { to = null; }
+    if (to && to.origin === new URL(request.url).origin && to.pathname.startsWith('/public-site/')) return env.ASSETS.fetch(new Request(to, request));
+  }
+  return res;
+};
 
 // /products/<id>: app.html with this product's own title, description, canonical URL and structured data (the page itself is filled in by script).
 async function serveProductPage(env, request, key) {
   const res = await servePublic(env, request, 'app.html');
   if (!res || res.status !== 200) return res;
   const p = PRODUCT_PAGES[key];
-  const origin = new URL(request.url).origin;
+  const origin = canonicalOrigin(env);                          // the canonical production origin, never a preview / pages.dev host
   const url = `${origin}/products/${key}`;
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   const title = `${p.name} — ${SITE_NAME}, point of sale for Kenyan business`;
-  const ld = { '@context': 'https://schema.org', '@type': 'SoftwareApplication', name: p.name, applicationCategory: 'BusinessApplication', operatingSystem: 'Android, iOS, Windows, any modern browser', description: p.description, url, publisher: { '@type': 'Organization', name: SITE_NAME, url: origin } };
+  const ld = { '@context': 'https://schema.org', '@graph': [
+    { '@type': 'SoftwareApplication', name: p.name, applicationCategory: 'BusinessApplication', operatingSystem: 'Android, iOS, Windows, any modern browser', description: p.description, url, publisher: { '@type': 'Organization', name: SITE_NAME, url: origin } },
+    // zip 288: breadcrumb trail, matching the page's real position (Home > product). Names are the same ones shown on the home page cards.
+    { '@type': 'BreadcrumbList', itemListElement: [{ '@type': 'ListItem', position: 1, name: SITE_NAME, item: origin + '/' }, { '@type': 'ListItem', position: 2, name: p.name, item: url }] },
+  ] };
   const tags = [
     `<link rel="canonical" href="${esc(url)}">`,
     `<meta name="description" content="${esc(p.description)}">`,
     `<meta property="og:type" content="website"><meta property="og:site_name" content="${SITE_NAME}">`,
     `<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(p.description)}">`,
     `<meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(origin + '/img/og-default.png')}">`,
-    `<meta name="twitter:card" content="summary_large_image">`,
+    `<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(p.description)}">`,
     `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`,
   ].join('\n');
   let html = await res.text();
-  html = html.replace('<!--@seo-->', tags).replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
+  // the page's static default description is dropped: one description per page. zip 282: the title swap used to sit INSIDE this comment (it never ran,
+  // so every product page carried the generic "product details" title); it is code again.
+  html = html.replace(/<meta name="description"[^>]*>\s*/i, '').replace('<!--@seo-->', tags).replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
+  // zip 288: a crawler's FIRST response used to say "Loading…" in the main heading and have an empty summary and an empty image description (the page
+  // script fills them in afterwards). The real heading, one-line summary and an image description are now in the served HTML; the script still
+  // replaces them with the same (or the owner's customised) text.
+  html = html.replace('<h1 id="p-name">Loading…</h1>', `<h1 id="p-name">${esc(p.name)}</h1>`)
+             .replace('<p id="p-tagline"></p>', `<p id="p-tagline">${esc(p.description)}</p>`)
+             .replace('<img id="p-screenshot" src="" alt="">', `<img id="p-screenshot" src="" alt="${esc(p.name)} screenshot">`);
   const headers = new Headers(res.headers);
   headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.delete('Content-Length'); headers.delete('ETag');
@@ -85,8 +108,13 @@ export async function onRequest(context) {
   let path = url.pathname;
   if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
 
-  // legal pages: every host
-  if (path in LEGAL_PAGES && env.ASSETS) return servePublic(env, request, LEGAL_PAGES[path] + '.html');
+  // legal pages: ONE canonical copy on the apex. A client's own subdomain (or an old relative /terms link on one) is sent there with a permanent
+  // redirect, so Terms and Privacy never resolve inside a tenant host (no duplicate indexable copies, no tenant nav around them).
+  // A *.pages.dev preview, localhost and the apex itself still serve the page directly.
+  if (path in LEGAL_PAGES) {
+    if (isTenantHost(request, env)) return Response.redirect(canonicalOrigin(env) + path, 301);
+    if (env.ASSETS) return servePublic(env, request, LEGAL_PAGES[path] + '.html');
+  }
 
   // the legal pages' stylesheet, on every host too (they are linked from a client's own sign-up screen)
   if (path === '/site.css' && env.ASSETS) return servePublic(env, request, 'site.css');

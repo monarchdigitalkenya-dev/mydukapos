@@ -1,0 +1,312 @@
+<!-- HMIS ADJUST (zip 371) -------------------------------------------------------------------------------------------------------------
+     Hospital only. The adjustments asked for by the clinic (POS adjustments list):
+       1. the consultation no longer has its own "Procedures / Nursing / Other fees" rows - Send to Cashier / Add Charge (under Billing) is the one place;
+       2. the doctor SEES lab results (view / print) but never enters, edits, verifies or deletes one - that is the laboratory's job;
+       3. the consultation fee starts blank (optional) instead of an automatic 500;
+       4. a past visit can be edited (diagnosis, SOAP, medicines, labs) - the record is amended with a reason and the original is kept; anything NEW
+          that costs money goes to the cashier as a new unpaid charge under the same reference; and "Draft & send to cashier" sends the fee, lab
+          tests and medicines to the cashier while the visit is still a draft (Save visit stays independent and never charges a line twice);
+       5. a visit can carry a second / third diagnosis (Malaria + Typhoid ...);
+       6. the laboratory can delete a whole released result, only with a manager PIN or the management password and a reason; the deleted
+          result is kept on the test (deletedResults) and the test goes back to "pending" so it can be run again.
+     Money rules: nothing here ever changes a paid charge, a sale or stock. Charges are only ADDED (new lines) or, while still unpaid, reduced / cancelled. -->
+<style>
+    #hadj-edit-banner { background: #fff6e5; border: 1px solid #f0b95a; border-left: 5px solid #e67e22; border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; font-size: 13px; color: #6b4300; }
+    #hadj-edit-banner button { margin-left: 8px; }
+    #patient-visit-modal.hadj-editing #cw-send-cashier,
+    #patient-visit-modal.hadj-editing #cw-draft-cashier,
+    #patient-visit-modal.hadj-editing .cw-foot button[onclick="cwSaveDraft()"],
+    #patient-visit-modal.hadj-editing .cw-foot button[onclick="printPrescription()"] { display: none; }
+    .hadj-dx-row { border: 1px solid var(--border-color, #dfe6e9); border-left: 4px solid #0e7490; border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; background: var(--bg-surface, #fff); }
+    .hadj-dx-row .hadj-dx-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; }
+    .hadj-dx-row input, .hadj-dx-row select { width: 100%; box-sizing: border-box; margin: 0 0 6px; }
+    #hadj-appr { position: fixed; inset: 0; z-index: 10100; background: rgba(15, 30, 45, .6); display: none; align-items: center; justify-content: center; padding: 14px; }
+    #hadj-appr.on { display: flex; }
+    #hadj-appr .hadj-box { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 14px; max-width: 460px; width: 100%; padding: 18px; box-shadow: 0 18px 50px rgba(0, 0, 0, .35); }
+    #hadj-appr h3 { margin: 0 0 6px; }
+    #hadj-appr label { display: block; font-size: 12px; font-weight: 700; margin: 10px 0 4px; }
+    #hadj-appr textarea, #hadj-appr input, #hadj-appr select { width: 100%; box-sizing: border-box; margin: 0; }
+    #hadj-appr .hadj-err { color: #c0392b; font-weight: 700; font-size: 13px; min-height: 18px; margin-top: 8px; }
+    #hadj-appr .hadj-act { display: flex; gap: 8px; margin-top: 12px; }
+    #hadj-appr .hadj-act button { flex: 1; margin: 0; }
+</style>
+<script>
+(function () {
+  'use strict';
+  var W = window, EDIT = null;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function r2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+  function kes(n) { return 'KES ' + r2(n).toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+  function parseIcd(raw) { var m = String(raw || '').trim().match(/^([A-Z][0-9]{2}(?:\.[0-9A-Z]+)?)\s*-\s*(.+)$/); return m ? { code: m[1], label: m[2].trim() } : null; }
+
+  /* ---------------- 5. more than one diagnosis ---------------- */
+  var MAX_EXTRA = 4;
+  function dxRows() { var host = $('visit-dx-extra'); return host ? Array.prototype.slice.call(host.querySelectorAll('.hadj-dx-row')) : []; }
+  function renumber() {
+    dxRows().forEach(function (r, i) { var b = r.querySelector('.hadj-dx-no'); if (b) b.textContent = 'Diagnosis ' + (i + 2); });
+    var add = $('visit-dx-add-btn'); if (add) add.style.display = dxRows().length >= MAX_EXTRA ? 'none' : '';
+  }
+  function addDxRow(d) {
+    var host = $('visit-dx-extra'); if (!host || dxRows().length >= MAX_EXTRA) return null;
+    d = d || {};
+    var row = document.createElement('div'); row.className = 'hadj-dx-row';
+    row.innerHTML = '<div class="hadj-dx-head"><b class="hadj-dx-no"></b><button type="button" class="settings-small-btn" style="background:var(--danger);color:#fff;" aria-label="Remove this diagnosis" data-hadj-dx-del="1">✕</button></div>' +
+      '<input type="text" class="hadj-dx-name" placeholder="e.g. Typhoid, anaemia, pneumonia" value="' + esc(d.name || '') + '">' +
+      '<input type="text" class="hadj-dx-icd" list="icd10-datalist" placeholder="ICD-10 code (optional)" value="' + esc(d.icd || '') + '">' +
+      '<select class="hadj-dx-type"><option value="secondary">Secondary</option><option value="provisional">Provisional</option><option value="final">Final</option><option value="differential">Differential</option></select>';
+    host.appendChild(row);
+    var t = row.querySelector('.hadj-dx-type'); t.value = d.type || 'secondary';
+    renumber(); return row;
+  }
+  function readExtraDx() { return dxRows().map(function (r) { return { name: r.querySelector('.hadj-dx-name').value.trim(), icd: r.querySelector('.hadj-dx-icd').value.trim(), type: r.querySelector('.hadj-dx-type').value }; }).filter(function (x) { return x.name || x.icd; }); }
+  function setExtraDx(list) { var host = $('visit-dx-extra'); if (!host) return; host.innerHTML = ''; (Array.isArray(list) ? list : []).slice(0, MAX_EXTRA).forEach(addDxRow); renumber(); }
+  function clearDx() { setExtraDx([]); }
+  window.hmisAdjAddDx = function () { var r = addDxRow({}); if (r) { var i = r.querySelector('.hadj-dx-name'); if (i) i.focus(); } };
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[data-hadj-dx-del]') : null; if (!b) return;
+    var row = b.closest('.hadj-dx-row'); if (row) { row.remove(); renumber(); }
+  });
+  document.addEventListener('input', function (e) {      // picking an ICD-10 code fills an empty diagnosis name, like the first diagnosis does
+    var t = e.target; if (!t || !t.classList || !t.classList.contains('hadj-dx-icd')) return;
+    var p = parseIcd(t.value), name = t.closest('.hadj-dx-row').querySelector('.hadj-dx-name'); if (p && name && !name.value.trim()) name.value = p.label;
+  });
+  // The diagnosis text stored on the visit joins every diagnosis (so slips, reports and statements show them all); visit.diagnoses keeps them apart with their codes.
+  function composeDx(dxTyped, soapA) {
+    var extras = readExtraDx().filter(function (x) { return x.name; }), list = [];
+    var icd = null; try { icd = typeof parseIcd10Input === 'function' ? parseIcd10Input() : null; } catch (e) { icd = null; }
+    var typ = ($('visit-dx-type-input') || {}).value || 'provisional';
+    if (dxTyped) list.push({ name: dxTyped, icd10Code: icd ? icd.code : null, icd10Label: icd ? icd.label : null, type: typ });
+    extras.forEach(function (x) { var p = parseIcd(x.icd); list.push({ name: x.name, icd10Code: p ? p.code : null, icd10Label: p ? p.label : null, type: x.type || 'secondary' }); });
+    if (!list.length) return { diagnosis: soapA || 'Diagnosis pending', list: [], pending: !soapA };
+    return { diagnosis: list.map(function (x) { return x.name; }).join(' + '), list: list, pending: false };
+  }
+
+  /* ---------------- 4a. edit a past visit ---------------- */
+  function banner(v) {
+    var el = $('hadj-edit-banner'); if (!el) return;
+    if (!v) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.style.display = 'block';
+    el.innerHTML = '✏️ <b>Editing visit ' + esc(v.ref || '') + '</b> from ' + new Date(v.timestamp).toLocaleString('en-GB') + '. Everything on this visit can be changed; the change is saved on the same visit with your reason and the original is kept. ' +
+      'Medicines, lab tests or fees you ADD go to the cashier as new charges. Charges already paid are never changed. <button type="button" class="settings-small-btn" onclick="hmisAdj.cancelEdit()">Cancel editing</button>';
+  }
+  function exitUi() {
+    EDIT = null; var m = $('patient-visit-modal'); if (m) m.classList.remove('hadj-editing');
+    banner(null); var sv = $('cw-save-visit'); if (sv) sv.textContent = 'Save visit';
+  }
+  function editVisit(id) {
+    var v = visits.find(function (x) { return x.id === id; });
+    if (!v || v.voided) return;
+    if (typeof currentVisitPatientId === 'undefined' || !currentVisitPatientId || v.patientId !== currentVisitPatientId) { toast('Open this patient\'s consultation first.', true); return; }
+    if (!EDIT) { try { cwSaveDraft(true); } catch (e) { /* the typed visit is kept as a draft first */ } }
+    EDIT = { id: v.id }; cwDraftOff = true;
+    var dxs = Array.isArray(v.diagnoses) && v.diagnoses.length ? v.diagnoses : [{ name: v.diagnosis, icd10Code: v.icd10Code, icd10Label: v.icd10Label, type: v.diagnosisType }];
+    var first = dxs[0] || {}, pend = !first.name || first.name === 'Diagnosis pending';
+    $('visit-diagnosis-input').value = pend ? '' : first.name;
+    $('visit-icd10-input').value = first.icd10Code ? first.icd10Code + ' - ' + (first.icd10Label || '') : '';
+    $('visit-dx-type-input').value = v.diagnosisType || first.type || 'provisional';
+    setExtraDx(dxs.slice(1).map(function (d) { return { name: d.name, icd: d.icd10Code ? d.icd10Code + ' - ' + (d.icd10Label || '') : '', type: d.type || 'secondary' }; }));
+    var so = v.soap || {}; ['s', 'o', 'a', 'p'].forEach(function (k) { $('visit-soap-' + k + '-input').value = so[k] || ''; });
+    $('visit-notes-input').value = v.notes || '';
+    $('visit-consultation-fee-input').value = Number(v.consultationFee) > 0 ? String(v.consultationFee) : '';
+    var cs = $('visit-consult-svc'); if (cs) cs.value = '';
+    visitMedicationDraft = (v.medications || []).map(function (m) {
+      return m.notStocked ? { code: '', qty: String(m.qty || 1), dosage: m.dosage || '', saleMode: 'piece', notStocked: true, freeName: m.name || '', give: 'take-home' }
+        : { code: m.code, qty: String(m.qty || 1), dosage: m.dosage || '', saleMode: m.saleMode || 'piece', notStocked: false, freeName: '', give: m.give || 'take-home' };
+    });
+    renderVisitMedicationRows();
+    currentVisitRef = v.ref || currentVisitRef; visitLabIds = []; visitServiceDraft = []; renderVisitServiceRows();
+    setVisitType('outpatient'); setVisitBillTo(v.billTo || 'patient');
+    var dsp = $('visit-disposition-select'); if (dsp) dsp.value = '';
+    var m = $('patient-visit-modal'); if (m) m.classList.add('hadj-editing');
+    var sv = $('cw-save-visit'); if (sv) sv.textContent = 'Save changes';
+    banner(v); try { cwStatus('Editing ' + (v.ref || 'visit'), 'warn'); } catch (e) { /* none */ }
+    try { renderPatientLabResults(v.patientId); rqRenderConsult(); } catch (e) { /* none */ }
+    var body = m && m.querySelector('.cw-body'); if (body) body.scrollTop = 0; if (m) m.scrollTop = 0;
+    try { var bx = $('hadj-edit-banner'); if (bx && bx.scrollIntoView) bx.scrollIntoView({ block: 'nearest' }); } catch (e) { /* none */ }
+  }
+  window.hmisAdjEditVisit = editVisit;
+  function cancelEdit() { var pid = typeof currentVisitPatientId !== 'undefined' ? currentVisitPatientId : null; exitUi(); if (pid) openPatientVisitModal(pid); }
+
+  function medRecords(resolved, notStocked) {
+    return resolved.map(function (x) { var give = x.give || 'take-home'; return { code: x.product.code, name: x.product.name, qty: x.qty, unit: x.saleMode === 'piece' ? 'pcs' : x.product.unit, dosage: x.dosage, saleMode: x.saleMode || null, give: give, adminFee: give !== 'take-home' ? (Number(x.product.adminFee) || 0) : 0 }; })
+      .concat(notStocked.map(function (m) { return { code: '', name: m.name, qty: m.qty, unit: 'pcs', dosage: m.dosage, notStocked: true }; }));
+  }
+  function sig(o) { return JSON.stringify(o); }
+  function applyEdit(ctx) {
+    var v = EDIT && visits.find(function (x) { return x.id === EDIT.id; });
+    if (!v) { toast('That visit is no longer on file.', true); exitUi(); return; }
+    var patient = ctx.patient, ref = v.ref, now = Date.now();
+    var soapNow = (function () { var g = function (k) { return $('visit-soap-' + k + '-input').value.trim(); }; var o = { s: g('s'), o: g('o'), a: g('a'), p: g('p') }; return (o.s || o.o || o.a || o.p) ? o : null; })();
+    var dxType = $('visit-dx-type-input').value || 'provisional';
+    var afterMeds = medRecords(ctx.resolvedMeds, ctx.notStockedMeds);
+    var before = { diagnosis: v.diagnosis || '', diagnoses: v.diagnoses || null, icd10Code: v.icd10Code || null, diagnosisType: v.diagnosisType || 'provisional', soap: v.soap || null, notes: v.notes || '', medications: (v.medications || []).map(function (m) { return { name: m.name, qty: m.qty, dosage: m.dosage || '', give: m.give || '' }; }), consultationFee: Number(v.consultationFee) || 0 };
+    var after = { diagnosis: ctx.diagnosis, diagnoses: ctx.dxList.length > 1 ? ctx.dxList : null, icd10Code: ctx.icd10 ? ctx.icd10.code : null, diagnosisType: dxType, soap: soapNow, notes: ctx.notes, medications: afterMeds.map(function (m) { return { name: m.name, qty: m.qty, dosage: m.dosage || '', give: m.give || '' }; }), consultationFee: ctx.fee };
+    var newLabs = (visitLabIds || []).filter(function (id) { var t = labResults.find(function (x) { return x.id === id; }); return t && !t.chargeId; });
+    if (sig(before) === sig(after) && !newLabs.length) { toast('No change made.'); return; }
+    var reason = askRequiredReason('Reason for editing this visit (required). The original stays on the record:');
+    if (reason === null) return;
+
+    var billable = (v.billTo || 'patient') === 'patient', notes = [], hadIds = {}, base = { ref: ref, visitId: v.id, patientId: patient.id, patientName: patient.name };
+    patientCharges.forEach(function (c) { hadIds[c.id] = 1; });
+    var cancelCharge = function (c, why) { c.status = 'cancelled'; c.cancelReason = why; c.cancelledBy = activeServerName(); c.cancelledAt = now; c.updatedAt = now; };
+    if (billable) {
+      // medicines: only the DIFFERENCE moves money
+      var oldQ = {}, newQ = {};
+      (v.medications || []).forEach(function (m) { if (m.code) oldQ[m.code] = (oldQ[m.code] || 0) + (Number(m.qty) || 0); });
+      ctx.resolvedMeds.forEach(function (m) { newQ[m.product.code] = (newQ[m.product.code] || 0) + m.qty; });
+      Object.keys(Object.assign({}, oldQ, newQ)).forEach(function (code) {
+        var d = r2((newQ[code] || 0) - (oldQ[code] || 0)); if (!d) return;
+        var product = inventory.find(function (p) { return p.code === code; }), pname = product ? product.name : code;
+        if (d > 0) {
+          var m = ctx.resolvedMeds.find(function (x) { return x.product.code === code; }); if (!m) return;
+          addPatientCharge(Object.assign({}, base, { kind: 'medication', name: product.name, code: code, qty: d, price: getEffectivePrice(product, m.saleMode), unit: m.saleMode === 'piece' ? 'pcs' : (product.unit || 'pcs'), saleMode: m.saleMode || null, dosage: m.dosage || '', isService: false, vatCategory: product.vatCategory || 'A', editedVisit: true }));
+          if (m.give && m.give !== 'take-home' && Number(product.adminFee) > 0 && !(oldQ[code] > 0)) addPatientCharge(Object.assign({}, base, { kind: 'service', name: 'Administration fee — ' + product.name + ' (' + cwGiveLabel(m.give) + ')', code: '', qty: 1, price: Number(product.adminFee), unit: 'use', isService: true, vatCategory: product.vatCategory || 'A', adminFeeFor: code, editedVisit: true }));
+        } else {
+          var cut = -d;
+          patientCharges.filter(function (c) { return c.ref === ref && c.patientId === patient.id && c.kind === 'medication' && c.code === code && c.status === 'unpaid'; }).sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); }).forEach(function (c) {
+            if (cut <= 0) return; var take = Math.min(cut, Number(c.qty) || 0);
+            if (take >= c.qty) cancelCharge(c, 'Removed when the visit was edited: ' + reason); else { c.qty = r2(c.qty - take); c.updatedAt = now; }
+            cut = r2(cut - take);
+          });
+          if (cut > 0) notes.push(pname + ' x' + cut + ' was already paid or billed - not refunded here (use a Return in Daily Sales if the patient is refunded)');
+        }
+      });
+      // consultation fee
+      var oldFee = Number(v.consultationFee) || 0, newFee = ctx.fee;
+      if (newFee !== oldFee) {
+        var cc = patientCharges.find(function (c) { return c.ref === ref && c.patientId === patient.id && c.kind === 'consultation' && c.status === 'unpaid'; });
+        if (cc) { if (newFee > 0) { cc.price = newFee; cc.updatedAt = now; } else cancelCharge(cc, 'Fee removed when the visit was edited: ' + reason); }
+        else if (newFee > 0 && oldFee === 0) addPatientCharge(Object.assign({}, base, { kind: 'consultation', name: (cwConsultName() || 'Consultation Fee'), code: '', qty: 1, price: newFee, unit: 'use', isService: true, vatCategory: 'A', editedVisit: true }));
+        else if (newFee > oldFee) addPatientCharge(Object.assign({}, base, { kind: 'consultation', name: 'Consultation Fee (adjustment)', code: '', qty: 1, price: r2(newFee - oldFee), unit: 'use', isService: true, vatCategory: 'A', editedVisit: true }));
+        else notes.push('The consultation fee was lowered from ' + kes(oldFee) + ' to ' + kes(newFee) + ' but the old fee is already paid or billed - not refunded here');
+      }
+      // new lab tests
+      if (newLabs.length) createVisitCharges(v, patient, [], 0, [], newLabs);
+    } else if (newLabs.length || before.consultationFee !== after.consultationFee || sig(before.medications) !== sig(after.medications)) {
+      notes.push('This visit is billed to an institution / no charge: no charge was added or changed - adjust the claim or bill yourself');
+    }
+    var sent = patientCharges.filter(function (c) { return !hadIds[c.id] && c.status === 'unpaid'; });
+    var sentTotal = r2(sent.reduce(function (a, c) { return a + (Number(c.price) || 0) * (Number(c.qty) || 1); }, 0));
+
+    if (!Array.isArray(v.amendments)) v.amendments = [];
+    v.amendments.push({ id: genSaleId(), at: now, by: activeServerName(), reason: reason, kind: 'visit-edit', before: before, after: after, notes: notes });
+    logAudit('Visit edited', patient.name, (ref || v.id) + ': ' + reason + (sent.length ? ' (' + sent.length + ' new charge(s) ' + kes(sentTotal) + ')' : ''));
+    v.diagnosis = ctx.diagnosis; v.diagnoses = ctx.dxList.length > 1 ? ctx.dxList : undefined;
+    v.icd10Code = ctx.icd10 ? ctx.icd10.code : null; v.icd10Label = ctx.icd10 ? ctx.icd10.label : null; v.diagnosisType = dxType;
+    v.soap = soapNow; v.notes = ctx.notes; v.medications = afterMeds; v.consultationFee = ctx.fee; v.diagnosisPending = !!(ctx.dxList.length === 0 && (!ctx.diagnosis || ctx.diagnosis === 'Diagnosis pending'));
+    v.updatedAt = now;
+    safeSetItem('pos_visits', JSON.stringify(visits));
+    safeSetItem('pos_lab_results', JSON.stringify(labResults));
+    savePatientCharges(); queuePush();
+    toast('Visit updated - the original is kept on the record.' + (sent.length ? ' ' + sent.length + ' new charge(s) (' + kes(sentTotal) + ') sent to the cashier under ' + ref + '.' : '') + (notes.length ? ' Note: ' + notes.join('; ') + '.' : ''), notes.length > 0);
+    var pid = patient.id; exitUi(); openPatientVisitModal(pid);
+  }
+
+  /* ---------------- 4b. draft that can go to the cashier ---------------- */
+  function draftToCashier() {
+    if (typeof currentVisitPatientId === 'undefined' || !currentVisitPatientId) return;
+    if (EDIT) { toast('Finish or cancel the edit first.', true); return; }
+    var patient = patients.find(function (p) { return p.id === currentVisitPatientId; }); if (!patient) return;
+    if (visitBillTo !== 'patient') { toast('This visit is not billed to the patient, so there is nothing for the cashier to collect.', true); return; }
+    var fee = parseFloat($('visit-consultation-fee-input').value) || 0;
+    if (fee < 0) { toast('The consultation fee can’t be negative.', true); return; }
+    try { window.__cwConsultName = cwConsultName(); } catch (e) { /* default name */ }
+    var meds = [], bad = [];
+    visitMedicationDraft.forEach(function (row) {
+      if (row.notStocked || !row.code) return;
+      var product = inventory.find(function (p) { return p.code === row.code; }); if (!product) return;
+      var qty = parseQtyInput(row.qty); if (isNaN(qty) || qty <= 0) { bad.push(product.name); return; }
+      meds.push({ product: product, qty: qty, dosage: (row.dosage || '').trim(), saleMode: product.dualUnit ? (row.saleMode === 'box' ? 'box' : 'piece') : undefined, give: row.give || 'take-home' });
+    });
+    if (bad.length) { toast('Enter a valid quantity for ' + bad.join(', ') + '.', true); return; }
+    var services = visitServiceDraft.map(function (sv) { return Object.assign({}, sv); });
+    if (!(fee > 0) && !meds.length && !services.length && !visitLabIds.length) { toast('Add a consultation fee, medicine or lab test before sending the draft to the cashier.', true); return; }
+    var ref = currentVisitRef || newVisitRef(); currentVisitRef = ref;
+    var had = {}; patientCharges.forEach(function (c) { had[c.id] = 1; });
+    createVisitCharges({ ref: ref, id: null }, patient, meds, fee, services, visitLabIds.slice());
+    var made = patientCharges.filter(function (c) { return !had[c.id] && c.ref === ref; });
+    var total = r2(made.reduce(function (a, c) { return a + (Number(c.price) || 0) * (Number(c.qty) || 1); }, 0));
+    try { cwSaveDraft(true); } catch (e) { /* the charges are saved either way */ }
+    try { rqRenderConsult(); cwRenderFlow(patient.id); renderPatientLabResults(patient.id); } catch (e) { /* none */ }
+    toast(made.length ? 'Draft sent to the cashier - ' + made.length + ' line(s), ' + kes(total) + '. Reference ' + ref + '. The visit stays a draft until you press Save visit; nothing is charged twice.' : 'Everything in this draft is already with the cashier - nothing was added twice.');
+  }
+  window.hmisAdjDraftToCashier = draftToCashier;
+
+  /* ---------------- 6. delete a released lab result (manager PIN / management password) ---------------- */
+  var DEL = null;
+  function apprBox() {
+    var m = $('hadj-appr');
+    if (!m) { m = document.createElement('div'); m.id = 'hadj-appr'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.innerHTML = '<div class="hadj-box" id="hadj-appr-in"></div>'; document.body.appendChild(m); }
+    return m;
+  }
+  function closeAppr() { DEL = null; var m = $('hadj-appr'); if (m) { m.classList.remove('on'); $('hadj-appr-in').innerHTML = ''; } }
+  function deleteResult(id) {
+    var t = labResults.find(function (x) { return x.id === id; });
+    if (!t || t.status !== 'completed') { toast('Only a released result can be deleted this way.', true); return; }
+    DEL = { id: id, busy: false };
+    var mgrs = (typeof staff !== 'undefined' ? staff : []).filter(function (s) { return s && s.isManager && !s.removed && s.pinHash; });
+    var hasPw = !!localStorage.getItem('pos_admin_pw_hash');
+    var m = apprBox();
+    $('hadj-appr-in').innerHTML = '<h3>🗑️ Delete lab result</h3>' +
+      '<div style="font-size:13px;color:#566;">' + esc(t.testName) + ' &mdash; ' + esc(typeof patientNameById === 'function' ? patientNameById(t.patientId) : '') + '<br>Result: <b>' + esc((t.resultText || '').slice(0, 120)) + '</b></div>' +
+      '<div class="rq-warn" style="background:#fff6e5;border-left:4px solid #e67e22;padding:8px 12px;border-radius:8px;font-size:13px;color:#8a4b08;margin:10px 0 0;">The whole result is removed and the test goes back to <b>pending</b> so it can be run again. The deleted result is kept in the test\'s history with who deleted it and who approved it.</div>' +
+      '<label for="hadj-reason">Reason (required) - e.g. false positive, pre- or post-analytical error</label><textarea id="hadj-reason" rows="2" maxlength="300"></textarea>' +
+      '<label for="hadj-approver">Approved by</label><select id="hadj-approver">' + (hasPw || !mgrs.length ? '<option value="__admin">Management password</option>' : '<option value="__admin">Management password' + (typeof isAdminServing === 'function' && isAdminServing() ? ' (not set yet)' : '') + '</option>') +
+        mgrs.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' (manager PIN)</option>'; }).join('') + '</select>' +
+      '<label for="hadj-pw">Password / PIN</label><input type="password" id="hadj-pw" autocomplete="off" inputmode="text">' +
+      '<div class="hadj-err" id="hadj-err"></div>' +
+      '<div class="hadj-act"><button type="button" class="settings-small-btn" onclick="hmisAdj.closeAppr()">Cancel</button><button type="button" class="btn-main" style="background:#c0392b;" onclick="hmisAdj.confirmDelete()">Delete result</button></div>';
+    m.classList.add('on'); setTimeout(function () { var r = $('hadj-reason'); if (r) r.focus(); }, 30);
+  }
+  async function approverOk(sel, pw) {
+    if (sel === '__admin') {
+      var stored = localStorage.getItem('pos_admin_pw_hash');
+      if (!stored) return (typeof isAdminServing === 'function' && isAdminServing()) ? { ok: true, name: 'Admin (no management password set)' } : { ok: false, err: 'No management password is set. Ask the owner to set it, or pick a manager.' };
+      if (!pw) return { ok: false, err: 'Enter the management password.' };
+      return (await hashMatches(await hashPassword(pw), stored)) ? { ok: true, name: 'Management password' } : { ok: false, err: 'Incorrect management password.' };
+    }
+    var mgr = staff.find(function (s) { return s.id === sel && s.isManager && !s.removed; });
+    if (!mgr || !mgr.pinHash) return { ok: false, err: 'That manager has no PIN set.' };
+    if (!pw) return { ok: false, err: 'Enter the manager PIN.' };
+    return (await hashMatches(await hashPassword(pw), mgr.pinHash)) ? { ok: true, name: mgr.name + ' (Manager)' } : { ok: false, err: 'Incorrect PIN.' };
+  }
+  async function confirmDelete() {
+    if (!DEL || DEL.busy) return;
+    var err = $('hadj-err'), reason = ($('hadj-reason').value || '').trim();
+    if (!reason) { err.textContent = 'A reason is required.'; return; }
+    DEL.busy = true; err.textContent = '';
+    var ap; try { ap = await approverOk($('hadj-approver').value, $('hadj-pw').value); } catch (e) { ap = { ok: false, err: 'Could not check the approval. Try again.' }; }
+    if (!DEL) return;
+    if (!ap.ok) { err.textContent = ap.err; DEL.busy = false; $('hadj-pw').value = ''; return; }
+    var t = labResults.find(function (x) { return x.id === DEL.id; });
+    if (!t) { closeAppr(); return; }
+    var now = Date.now();
+    if (!Array.isArray(t.deletedResults)) t.deletedResults = [];
+    t.deletedResults.push({ id: genSaleId(), at: now, by: activeServerName(), approvedBy: ap.name, reason: reason,
+      result: { resultText: t.resultText || '', resultUnits: t.resultUnits || '', referenceRange: t.referenceRange || '', flag: t.flag || 'normal', fields: t.fields || null, comment: t.comment || '', stage: t.stage || null, resultAt: t.resultAt || null, resultBy: t.resultBy || '', verifiedAt: t.verifiedAt || null, verifiedBy: t.verifiedBy || '', amendments: t.amendments || [] } });
+    logAudit('Lab result deleted', typeof patientNameById === 'function' ? patientNameById(t.patientId) : '', t.testName + ' (' + reason + ') - approved by ' + ap.name);
+    t.resultText = ''; t.resultUnits = ''; t.referenceRange = ''; t.flag = 'normal'; t.fields = {}; t.comment = '';
+    t.resultAt = null; t.resultBy = ''; t.verifiedAt = null; t.verifiedBy = null; t.criticalAckAt = null; t.criticalAckBy = null; t.amendments = [];
+    if (t.stage) t.stage = 'requested';
+    t.status = 'pending'; t.updatedAt = now;
+    safeSetItem('pos_lab_results', JSON.stringify(labResults)); queuePush();
+    closeAppr();
+    try { renderLaboratoryTab(); if (typeof currentVisitPatientId !== 'undefined' && currentVisitPatientId) renderPatientLabResults(currentVisitPatientId); } catch (e) { /* none */ }
+    toast('Result deleted. The test is pending again.');
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Enter' && DEL && e.target && e.target.id === 'hadj-pw') { e.preventDefault(); confirmDelete(); } if (e.key === 'Escape' && DEL) closeAppr(); });
+
+  /* ---------------- wiring ---------------- */
+  W.hmisAdj = { composeDx: composeDx, readExtraDx: readExtraDx, setExtraDx: setExtraDx, clearDx: clearDx, editing: function () { return !!EDIT; }, applyEdit: applyEdit, cancelEdit: cancelEdit, editVisit: editVisit, draftToCashier: draftToCashier, deleteResult: deleteResult, confirmDelete: confirmDelete, closeAppr: closeAppr };
+  (function wrap() {
+    if (typeof openPatientVisitModal !== 'function' || typeof closePatientVisitModal !== 'function') { setTimeout(wrap, 400); return; }
+    if (openPatientVisitModal.__hadj) return;
+    var o = openPatientVisitModal, c = closePatientVisitModal;
+    W.openPatientVisitModal = function () { if (EDIT) exitUi(); var r = o.apply(this, arguments); try { renumber(); } catch (e) { /* none */ } return r; }; W.openPatientVisitModal.__hadj = true;
+    W.closePatientVisitModal = function () { if (EDIT) exitUi(); return c.apply(this, arguments); };
+    try { openPatientVisitModal = W.openPatientVisitModal; closePatientVisitModal = W.closePatientVisitModal; } catch (e) { /* the window property is what the page buttons use */ }
+  })();
+})();
+</script>

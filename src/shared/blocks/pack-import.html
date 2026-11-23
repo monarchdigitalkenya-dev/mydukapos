@@ -1,0 +1,569 @@
+<!-- PACK IMPORT (zip 346) ----------------------------------------------------------------------------------------------------------
+     "📥 Import boxes / packets / pieces": bring a stock list from Excel / CSV into Inventory WITH its package levels
+     (box > packet > piece), so every item can be sold, restocked and counted at each level.
+       - Reads TWO kinds of file:
+           1. The ready-to-fill template (download it from the pop-up): one row per item with plain number columns.
+           2. A supplier-style list with the text columns  "Whole/Carton/Bag | Pack/OUT/Dozen | Piece/Single"  with text like
+              "1 case=6 bottles", "OUT= 6 pcs", "1 box of 12 pkts", "1 dozen"  (it is read as well as it can be; what the file does not say,
+              for example how many packets are in a box, is shown in a table to type in - nothing is guessed).
+       - A preview shows what will be created. Rows with something missing are listed first with boxes to fill in.
+       - New items are created (stock = what was typed as opening boxes / loose packets / loose pieces). An item that already exists
+         (same name or barcode) is left alone unless "update package sizes" is chosen - stock is NEVER changed for an existing item.
+       - The package levels are the ones the Stock Engine already uses (product.packs), so selling at the counter by box / packet / piece,
+         restock by package and the "x Box + y Packet" label all work with no other change.
+     Ids / classes: pki-*. Logic is pure (window.__pki.*) so it can be tested without a screen. -->
+<style id="pki-css">
+#pki-ov { position: fixed; inset: 0; z-index: 100050; display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 12px; background: rgba(15, 23, 42, .6); }
+#pki-ov.on { display: flex; }
+#pki-card { width: 100%; max-width: 1100px; margin: auto; background: var(--bg-surface, #fff); color: var(--text-main, #2c3e50); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,.38); overflow: hidden; }
+.pki-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; color: #fff; background: linear-gradient(135deg, #7c2d12, #c2410c); }
+.pki-head h3 { margin: 0; flex: 1; font-size: 17px; color: #fff; }
+.pki-x { border: 0; background: rgba(255,255,255,.22); color: #fff; width: 38px; height: 38px; border-radius: 10px; font-size: 17px; cursor: pointer; }
+.pki-body { padding: 14px 16px 18px; max-height: calc(88vh / var(--pos-z, 1)); overflow: auto; }
+.pki-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+.pki-steps span { padding: 4px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 800; background: rgba(127,140,141,.16); }
+.pki-steps span.on { background: #c2410c; color: #fff; }
+.pki-note { font-size: 13px; padding: 9px 11px; border-radius: 9px; margin: 8px 0; background: rgba(41,128,185,.10); border-left: 4px solid #2980b9; }
+.pki-note.ok { background: rgba(39,174,96,.12); border-left-color: #27ae60; } .pki-note.warn { background: rgba(230,126,34,.14); border-left-color: #e67e22; } .pki-note.bad { background: rgba(192,57,43,.12); border-left-color: #c0392b; }
+.pki-drop { border: 2px dashed rgba(194,65,12,.55); border-radius: 14px; padding: 26px 14px; text-align: center; background: rgba(194,65,12,.05); }
+.pki-btn { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 800; font-size: 14px; cursor: pointer; background: #c2410c; color: #fff; min-height: 42px; }
+.pki-btn.sec { background: var(--light, #eef2f4); color: var(--text-main, #2c3e50); border: 1px solid var(--border-color, #d5dde2); }
+.pki-btn[disabled] { opacity: .5; cursor: not-allowed; }
+.pki-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.pki-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0; }
+.pki-kv div { border: 1px solid var(--border-color, #e1e6ea); border-radius: 11px; padding: 9px 11px; background: rgba(127,140,141,.06); }
+.pki-kv b { display: block; font-size: 20px; } .pki-kv span { font-size: 12px; color: var(--text-muted, #6b7780); }
+.pki-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 6px 0; }
+.pki-tbl { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
+.pki-tbl th { text-align: left; padding: 7px 6px; background: rgba(127,140,141,.14); position: sticky; top: 0; white-space: nowrap; }
+.pki-tbl td { padding: 5px 6px; border-bottom: 1px solid var(--border-color, #e3e8eb); vertical-align: middle; }
+.pki-tbl input[type="text"], .pki-tbl input[type="number"] { width: 70px; padding: 6px 7px; font-size: 13px; border: 1px solid var(--border-color, #cfd8dc); border-radius: 7px; background: var(--bg-surface, #fff); color: inherit; margin: 0; }
+.pki-tbl input.w { width: 92px; } .pki-tbl input.nm { width: 74px; }
+.pki-tbl tr.pki-bad td { background: rgba(230,126,34,.07); }
+.pki-chip { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 800; background: rgba(127,140,141,.18); white-space: nowrap; }
+.pki-chip.g { background: #d5f5e3; color: #1e8449; } .pki-chip.o { background: #fdebd0; color: #a0570b; } .pki-chip.r { background: #fadbd8; color: #922b21; } .pki-chip.b { background: #d6eaf8; color: #1b4f72; }
+.pki-small { font-size: 12px; color: var(--text-muted, #6b7780); }
+#pki-bar { margin: 0 0 12px; }
+@media (max-width: 600px) { .pki-body { padding: 12px; } .pki-btn { flex: 1 1 auto; } }
+@media print { #pki-ov, #pki-bar { display: none !important; } }
+</style>
+<script id="pki-js">
+(function () {
+    'use strict';
+    if (window.__pki) return;
+    var W = window;
+
+    /* ============================ 1. READING THE TEXT (pure) ============================ */
+    function clean(s) { return String(s == null ? '' : s).replace(/[*]/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function isNone(s) { return !s || /^(na|n\/a|nil|none|-|--|\.)$/i.test(s); }
+    function num(s) { var m = /(\d+(?:\.\d+)?)/.exec(String(s || '')); return m ? parseFloat(m[1]) : null; }
+    function cap(s) { s = String(s || '').trim(); return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s; }
+    function eq(a, b) { return String(a || '').toLowerCase() === String(b || '').toLowerCase(); }
+
+    // the word for what is sold singly: "1 pc" -> pcs, "1 bottle" -> bottle, "1kg, 0.75kg" -> kg
+    function pieceUnit(e) {
+        e = clean(e).toLowerCase(); if (isNone(e)) return { unit: 'pcs', note: '' };
+        if (/^\d*\.?\d*\s*kgs?\b/.test(e) || /\bkgs?\s*,/.test(e)) return { unit: 'kg', note: e.indexOf(',') >= 0 ? 'Sold by weight (' + e + ')' : '' };
+        if (/pack of\s*\d/.test(e)) return { unit: 'pack', note: 'Sold as "' + e + '"' };
+        var m = /^[\d.]*\s*([a-z`'\- ]+?)(?:\s*\(.*)?$/.exec(e); var w = m ? m[1].trim() : e;
+        if (/^p?\s*pcs?$/.test(w) || /^(pc|pcs|piece|pieces|p pc)$/.test(w)) return { unit: 'pcs', note: '' };
+        if (/^pack of/.test(w)) return { unit: 'pack', note: 'Sold as "' + e + '"' };
+        if (/^(litre|litres|ltr|ltrs)$/.test(w)) return { unit: 'ltr', note: '' };
+        if (/^(kg|kgs)$/.test(w)) return { unit: 'kg', note: '' };
+        w = w.replace(/s$/, ''); if (!w) return { unit: 'pcs', note: '' };
+        return { unit: w, note: '' };
+    }
+    function levelWord(s) {          // the name to show for a package
+        s = String(s || '').toLowerCase();
+        if (/dozen/.test(s)) return 'Dozen';
+        if (/\bout/.test(s)) return 'Outer';
+        if (/pkt|packet/.test(s)) return 'Packet';
+        if (/roll/.test(s)) return 'Roll pack';
+        if (/pack/.test(s)) return 'Pack';
+        if (/jar/.test(s)) return 'Jar';
+        return 'Packet';
+    }
+    function boxWord(s) {
+        var m = /(box|boxes|bag|bale|bundle|jerrican|crate|case|tray|carton|sack|outers?|pack)/i.exec(String(s || ''));
+        if (!m) return 'Box';
+        var w = m[1].toLowerCase(); if (w === 'boxes') w = 'box'; if (/^outers?$/.test(w)) w = 'outer';
+        return cap(w);
+    }
+    // text of the "pack / OUT / dozen" column -> { name, per } (per = pieces; null = the file does not say)
+    function parsePacket(d) {
+        d = clean(d); if (isNone(d)) return null;
+        var low = d.toLowerCase();
+        if (/^[\d,\s]+$/.test(d) || /multiples/.test(low)) return { name: 'Packet', per: null, why: 'Several packet sizes are listed (' + d + ') - type the one to use' };
+        if (/dozen/.test(low)) { var n = num(low); return { name: 'Dozen', per: (n && n > 1 ? n : 1) * 12 }; }
+        var m = /(?:=|\bof\b)\s*(\d+(?:\.\d+)?)/.exec(low);
+        if (m) return { name: levelWord(low), per: parseFloat(m[1]) };
+        m = /^(\d+(?:\.\d+)?)\s*(roll|pcs?|pieces?|sachets?|pairs?)\b/.exec(low);
+        if (m && parseFloat(m[1]) > 1) return { name: levelWord(low), per: parseFloat(m[1]) };
+        m = /^out\s*=?\s*(\d+(?:\.\d+)?)/.exec(low); if (m) return { name: 'Outer', per: parseFloat(m[1]) };
+        return { name: levelWord(low), per: null, why: 'The file does not say how many pieces are in a ' + levelWord(low).toLowerCase() };
+    }
+    // text of the "whole / carton / bag" column -> { name, count, of: 'pieces' | 'packets' | null }
+    function parseBox(c, pieceWord) {
+        c = clean(c); if (isNone(c)) return null;
+        var low = c.toLowerCase();
+        var o = /^out\s*=?\s*(\d+(?:\.\d+)?)?\s*(.*)$/.exec(low);
+        if (o) return { name: 'Outer', count: o[1] ? parseFloat(o[1]) : null, of: 'pieces', asPacket: true };
+        var bag = /(?:bag|sack|jerrican)\s*of\s*(\d+(?:\.\d+)?)\s*kgs?/.exec(low) || /^(\d+(?:\.\d+)?)\s*kgs?\s*(bag|sack)/.exec(low);
+        if (bag) return { name: /sack/.test(low) ? 'Sack' : 'Bag', count: parseFloat(bag[1]), of: 'pieces' };
+        // "1 case=6 bottles", "1 box of 12 pkts", "1 box (24 pcs)", "1 tray= 30 eggs"
+        var m = /^\s*\d*\s*([a-z ]+?)\s*(?:=|\bof\b|\()\s*(\d+(?:\.\d+)?)\s*([a-z`']*)/.exec(low);
+        if (m) {
+            var word = m[3] || '', kind = /^(pkts?|packets?|packs?|outers?|sachets?)$/.test(word) ? 'packets' : 'pieces';
+            // "1 bottle = 18 litres": the same thing as the piece itself - no box level
+            if (eq(m[1].replace(/s$/, ''), pieceWord) && !/^(pkts?|packets?|packs?)$/.test(word)) return { skip: true, note: 'A "' + c + '" is the piece itself' };
+            return { name: boxWord(m[1]), count: parseFloat(m[2]), of: kind, word: word.replace(/s$/, '') };
+        }
+        // "1 box", "1 bag", "1 bale", "1 outers" - exists, size not said
+        return { name: boxWord(low), count: null, of: null };
+    }
+    // the three text columns -> one item's structure
+    function parseLegacy(c, d, e) {
+        var pu = pieceUnit(e), issues = [], notes = []; if (pu.note) notes.push(pu.note);
+        var pk = parsePacket(d), bx = parseBox(c, pu.unit);
+        if (bx && bx.skip) { notes.push(bx.note); bx = null; }
+        if (bx && bx.asPacket) {       // "OUT= 6 pcs" typed in the first column
+            if (!pk) pk = { name: 'Outer', per: bx.count, why: bx.count ? '' : 'The file does not say how many pieces are in an outer' };
+            bx = null;
+        }
+        if (pk && pk.name === 'Pack' && pu.unit === 'pack') { notes.push('The pack is the piece itself'); pk = null; }
+        var r = { unit: pu.unit, pName: pk ? pk.name : '', pPer: pk ? pk.per : null, bName: bx ? bx.name : '', bPer: null, bPerOf: 'packets', notes: notes, orig: [clean(c), clean(d), clean(e)] };
+        if (pk && pk.why) issues.push(pk.why);
+        if (bx && pk && bx.of === 'pieces' && bx.word && pk.name.toLowerCase().indexOf(bx.word) >= 0) bx.of = 'packets';   // "1 case of 4 jars" + "1 jar of 72 pcs": the 4 counts jars
+        if (bx) {
+            if (bx.count == null) { issues.push('How many ' + (pk ? pk.name.toLowerCase() + 's' : r.unit) + ' in one ' + bx.name.toLowerCase() + '? The file does not say'); }
+            else if (pk && bx.of === 'pieces') {       // the box count is in pieces and there is a packet level: convert
+                if (pk.per && bx.count % pk.per === 0) r.bPer = bx.count / pk.per;
+                else if (pk.per) { issues.push('One ' + bx.name.toLowerCase() + ' holds ' + bx.count + ' pieces, which is not a whole number of ' + pk.per + '-piece ' + pk.name.toLowerCase() + 's'); }
+                else r.bPer = null;
+            } else if (pk && bx.of === 'packets') r.bPer = bx.count;
+            else if (!pk) { r.bPer = bx.count; r.bPerOf = 'pieces'; }   // no packet level: the box holds pieces
+            else r.bPer = bx.count;
+        }
+        r.issues = issues; return r;
+    }
+
+    /* ============================ 2. READING THE FILE (pure) ============================ */
+    function norm(h) { return String(h == null ? '' : h).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+    var COLS = {
+        name: ['item name', 'item', 'name', 'product', 'product name', 'description'],
+        category: ['category', 'group', 'type'],
+        unit: ['piece unit', 'sold singly as', 'unit', 'base unit', 'piece'],
+        pPer: ['pieces per packet', 'pieces in a packet', 'pieces in packet', 'packet size', 'per packet'],
+        pName: ['packet name', 'packet word', 'pack name'],
+        bPer: ['packets per box', 'packets in a box', 'packets in box', 'per box packets'],
+        bPieces: ['pieces per box', 'pieces in a box', 'pieces in box', 'box size', 'per box'],
+        bName: ['box name', 'box word', 'carton name'],
+        boxPrice: ['box price', 'price per box', 'selling price box', 'box selling price'],
+        pktPrice: ['packet price', 'price per packet', 'selling price packet', 'packet selling price'],
+        pcPrice: ['piece price', 'price per piece', 'selling price piece', 'piece selling price', 'price'],
+        boxCost: ['box cost', 'cost per box', 'buying price box', 'buying price per box'],
+        pcCost: ['piece cost', 'cost per piece', 'buying price piece', 'buying price per piece', 'cost'],
+        oBox: ['opening boxes', 'boxes', 'full boxes', 'boxes in stock'],
+        oPkt: ['opening loose packets', 'loose packets', 'opening packets', 'packets'],
+        oPc: ['opening loose pieces', 'loose pieces', 'opening pieces', 'pieces', 'quantity', 'qty'],
+        barcode: ['barcode', 'piece barcode', 'code', 'sku'],
+        pktBarcode: ['packet barcode'], boxBarcode: ['box barcode']
+    };
+    function findHeaderRow(rows) {
+        for (var i = 0; i < Math.min(rows.length, 15); i++) {
+            var r = (rows[i] || []).map(norm);
+            var hasName = r.some(function (x) { return COLS.name.indexOf(x) >= 0; });
+            var legacy = r.some(function (x) { return /whole|carton|bag/.test(x) && /\//.test(String((rows[i] || [])[r.indexOf(x)] || '')) || x === 'whole carton bag'; });
+            var tmpl = r.some(function (x) { return COLS.pPer.indexOf(x) >= 0 || COLS.bPer.indexOf(x) >= 0 || COLS.bPieces.indexOf(x) >= 0; });
+            if (hasName && (legacy || tmpl)) return { at: i, legacy: legacy && !tmpl };
+        }
+        return null;
+    }
+    function mapHeaders(hdr) {
+        var map = {}, n = hdr.map(norm);
+        function hit(k, h) { return COLS[k].some(function (al) { return h === al || (al.indexOf(' ') > 0 && h.indexOf(al + ' ') === 0); }); }   // "pieces per box (only if no packets)" counts as "pieces per box"
+        Object.keys(COLS).forEach(function (k) { for (var j = 0; j < n.length; j++) { if (hit(k, n[j]) && map[k] === undefined && !Object.keys(map).some(function (o) { return map[o] === j; })) { map[k] = j; break; } } });
+        return map;
+    }
+    function legacyCols(hdr) {     // S/No | Item Name | Whole/Carton/Bag | Pack/OUT/Dozen | Piece/Single
+        var n = hdr.map(norm), m = { name: -1, c: -1, d: -1, e: -1 };
+        n.forEach(function (h, i) {
+            if (m.name < 0 && COLS.name.indexOf(h) >= 0) m.name = i;
+            else if (m.c < 0 && /whole|carton|bag/.test(h)) m.c = i;
+            else if (m.d < 0 && /pack|out|dozen/.test(h)) m.d = i;
+            else if (m.e < 0 && /piece|single/.test(h)) m.e = i;
+        });
+        return m;
+    }
+    function cellNum(v) { if (v === '' || v == null) return null; var n = parseFloat(String(v).replace(/[, ]/g, '')); return isFinite(n) ? n : null; }
+    function mkRow(n, name) {
+        return { n: n, include: true, name: name, category: '', unit: 'pcs', pName: '', pPer: null, bName: '', bPer: null, bPerOf: 'packets',
+            price: { pc: null, pkt: null, box: null }, cost: { pc: null, box: null }, open: { box: null, pkt: null, pc: null }, barcode: '', pktBarcode: '', boxBarcode: '',
+            notes: [], issues: [], orig: null, source: 'template' };
+    }
+    // rows (array of arrays) -> { format, rows: [...], skipped }
+    function readSheet(rows) {
+        rows = (rows || []).map(function (r) { return Array.isArray(r) ? r : []; });
+        var h = findHeaderRow(rows);
+        if (!h) return { format: null, rows: [], error: 'I could not find the column headings. The first row should say "Item name" and either "Whole/Carton/Bag, Pack/OUT/Dozen, Piece/Single" or the template columns.' };
+        var hdr = rows[h.at], out = [], seen = 0;
+        if (h.legacy) {
+            var lc = legacyCols(hdr);
+            for (var i = h.at + 1; i < rows.length; i++) {
+                var r = rows[i], nm = clean(r[lc.name]); if (!nm) continue; seen++;
+                var p = parseLegacy(r[lc.c], r[lc.d], r[lc.e]), row = mkRow(i + 1, nm);
+                row.unit = p.unit; row.pName = p.pName; row.pPer = p.pPer; row.bName = p.bName; row.bPer = p.bPer; row.bPerOf = p.bPerOf; row.notes = p.notes; row.issues = p.issues.slice(); row.orig = p.orig; row.source = 'list';
+                out.push(row);
+            }
+            return { format: 'list', rows: out, headerAt: h.at };
+        }
+        var mp = mapHeaders(hdr);
+        for (var k = h.at + 1; k < rows.length; k++) {
+            var q = rows[k], g = function (key) { return mp[key] === undefined ? '' : q[mp[key]]; };
+            var name = clean(g('name')); if (!name) continue; seen++;
+            if (/^(example|e\.g\.)/i.test(name) && /example/i.test(name)) continue;
+            var t = mkRow(k + 1, name);
+            t.category = clean(g('category')); var un = clean(g('unit')); if (un) t.unit = pieceUnit('1 ' + un).unit;
+            t.pPer = cellNum(g('pPer')); t.pName = clean(g('pName')) || (t.pPer ? 'Packet' : '');
+            var bp = cellNum(g('bPer')), bpc = cellNum(g('bPieces'));
+            t.bName = clean(g('bName')) || ((bp || bpc) ? 'Box' : '');
+            if (bp) { t.bPer = bp; t.bPerOf = 'packets'; }
+            else if (bpc) { if (t.pPer) { if (bpc % t.pPer === 0) { t.bPer = bpc / t.pPer; t.bPerOf = 'packets'; } else t.issues.push('Pieces per box (' + bpc + ') is not a whole number of ' + t.pPer + '-piece packets'); } else { t.bPer = bpc; t.bPerOf = 'pieces'; } }
+            t.price = { pc: cellNum(g('pcPrice')), pkt: cellNum(g('pktPrice')), box: cellNum(g('boxPrice')) };
+            t.cost = { pc: cellNum(g('pcCost')), box: cellNum(g('boxCost')) };
+            t.open = { box: cellNum(g('oBox')), pkt: cellNum(g('oPkt')), pc: cellNum(g('oPc')) };
+            t.barcode = clean(g('barcode')); t.pktBarcode = clean(g('pktBarcode')); t.boxBarcode = clean(g('boxBarcode'));
+            out.push(t);
+        }
+        return { format: 'template', rows: out, headerAt: h.at };
+    }
+    // minimal CSV reader (quotes, commas, newlines)
+    function readCsv(text) {
+        var rows = [], row = [], cell = '', q = false, i = 0; text = String(text || '').replace(/^﻿/, '');
+        for (; i < text.length; i++) {
+            var ch = text[i];
+            if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+            else if (ch === '"') q = true;
+            else if (ch === ',') { row.push(cell); cell = ''; }
+            else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+            else if (ch !== '\r') cell += ch;
+        }
+        if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+        return rows;
+    }
+
+    /* ============================ 3. CHECK A ROW + BUILD ITS LEVELS ============================ */
+    function perOfRow(r) {            // pieces in one box (null when unknown)
+        if (!r.bPer) return null;
+        if (r.bPerOf === 'pieces') return r.bPer;
+        return r.pPer ? r.bPer * r.pPer : null;
+    }
+    function levelRows(r) {
+        var rows = [], used = {};
+        function uniq(nm) { var base = nm, k = 2; while (used[nm.toLowerCase()] || nm.toLowerCase() === String(r.unit).toLowerCase()) { nm = base + ' ' + k++; } used[nm.toLowerCase()] = 1; return nm; }
+        var pn = null;
+        if (r.pPer > 0) { pn = uniq(r.pName || 'Packet'); rows.push({ name: pn, parent: 'base', count: r.pPer, price: r.price.pkt || 0, barcode: r.pktBarcode }); }
+        if (r.bPer > 0) {
+            var bn = uniq(r.bName || 'Box');
+            if (r.bPerOf === 'pieces' || !pn) rows.push({ name: bn, parent: 'base', count: r.bPerOf === 'pieces' ? r.bPer : r.bPer, price: r.price.box || 0, barcode: r.boxBarcode });
+            else rows.push({ name: bn, parent: pn, count: r.bPer, price: r.price.box || 0, barcode: r.boxBarcode });
+        }
+        return rows;
+    }
+    // one row -> { issues[], packs[], baseQty, status }
+    function check(r, SE) {
+        var issues = (r.issues || []).slice(), packs = [];
+        if (!r.name) issues.push('No item name');
+        if (r.pPer != null && !(r.pPer > 0)) issues.push('Pieces per packet must be above 0');
+        if (r.bPer != null && !(r.bPer > 0)) issues.push('Count per ' + (r.bName || 'box').toLowerCase() + ' must be above 0');
+        // a packet / box word with no size: say so (the level is simply not created)
+        if (r.pName && !(r.pPer > 0) && !issues.some(function (x) { return /packet|outer|dozen|pack|roll|jar|pieces are in|listed/i.test(x); })) issues.push('How many pieces in one ' + r.pName.toLowerCase() + '?');
+        if (r.bName && !(r.bPer > 0) && !issues.some(function (x) { return /in one/i.test(x); })) issues.push('How many ' + (r.pPer ? 'packets' : 'pieces') + ' in one ' + r.bName.toLowerCase() + '?');
+        var lr = levelRows(r);
+        if (lr.length && SE && typeof SE.buildLevels === 'function') {
+            var res = SE.buildLevels(lr, r.unit, []);
+            if (res.ok) packs = res.packs; else issues.push(res.error);
+        } else if (lr.length) packs = lr;
+        var open = r.open || {}, perBox = perOfRow(r) || 0, perPkt = r.pPer > 0 ? r.pPer : 0;
+        var base = Math.round(((open.box || 0) * perBox + (open.pkt || 0) * perPkt + (open.pc || 0)) * 1000) / 1000;
+        if ((open.box > 0 && !perBox) || (open.pkt > 0 && !perPkt)) issues.push('Opening ' + (open.box > 0 && !perBox ? 'boxes' : 'packets') + ' typed but its size is unknown');
+        return { issues: issues, packs: packs, baseQty: base };
+    }
+    // dedupe the level list typed for one row against the Stock Engine and give back the product fields
+    function productFor(r, chk, code) {
+        var cost = r.cost.pc;
+        var perBox = perOfRow(r);
+        if (!(cost > 0) && r.cost.box > 0 && perBox) cost = Math.round(r.cost.box / perBox * 1e6) / 1e6;
+        var price = r.price.pc;
+        if (!(price > 0)) {     // no piece price typed: work it out from a packet / box price when there is one
+            if (r.price.pkt > 0 && r.pPer > 0) price = Math.round(r.price.pkt / r.pPer * 100) / 100;
+            else if (r.price.box > 0 && perBox) price = Math.round(r.price.box / perBox * 100) / 100;
+        }
+        var p = { code: code, type: 'item', name: r.name, qty: chk.baseQty, price: price > 0 ? price : 0, wholesalePrice: cost > 0 ? cost : 0, wholesaleSellingPrice: 0, unit: r.unit || 'pcs', vatCategory: 'A', image: null };
+        if (r.category) p.category = r.category;
+        if (r.barcode) p.barcode = r.barcode;
+        if (chk.packs.length) p.packs = chk.packs;
+        return p;
+    }
+
+    /* ============================ 4. THE PLAN AND THE APPLY (touch the inventory) ============================ */
+    function inv() { try { return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : null; } catch (e) { return null; } }
+    function SEng() { return W.SE || null; }
+    function lowName(s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+    function existingFor(r, list) {
+        var nm = lowName(r.name), bc = String(r.barcode || '').toLowerCase();
+        return (list || []).find(function (p) { return p && p._deleted !== true && p.type !== 'service' && (lowName(p.name) === nm || (bc && (String(p.barcode || '').toLowerCase() === bc || String(p.code || '').toLowerCase() === bc))); }) || null;
+    }
+    function nextCode(list, used) {
+        var have = {}; (list || []).forEach(function (p) { if (p && p.code != null) have[String(p.code).toLowerCase()] = 1; });
+        var mx = 0; (list || []).forEach(function (p) { if (p && /^\d+$/.test(String(p.code))) mx = Math.max(mx, parseInt(p.code, 10)); });
+        used.n = Math.max(used.n || 0, mx);
+        var c; do { used.n++; c = String(used.n).padStart(5, '0'); } while (have[c.toLowerCase()]);
+        return c;
+    }
+    // opts.updateExisting: true -> an item that exists gets its package sizes (never its stock)
+    function apply(rows, opts) {
+        opts = opts || {}; var list = inv(), SE = SEng(), res = { created: 0, updated: 0, skipped: 0, noSizes: 0, moves: [], names: [] };
+        if (!list) return res;
+        var used = {};
+        rows.forEach(function (r) {
+            if (!r.include) { res.skipped++; return; }
+            var chk = check(r, SE), old = existingFor(r, list);
+            if (old) {
+                if (opts.updateExisting && chk.packs.length && String(old.unit || 'pcs').toLowerCase() === String(r.unit || 'pcs').toLowerCase() && !old.dualUnit && !old.hasVariants) { old.packs = chk.packs; old.updatedAt = Date.now(); res.updated++; }
+                else res.skipped++;
+                return;
+            }
+            var code = nextCode(list, used), p = productFor(r, chk, code);
+            if (!chk.packs.length && (r.pName || r.bName)) res.noSizes++;
+            list.push(p); res.created++; res.names.push(p.name);
+            if (p.qty > 0) res.moves.push({ code: code, name: p.name, delta: p.qty });
+        });
+        try { res.moves.forEach(function (m) { if (typeof logStockMovement === 'function') logStockMovement(m.code, m.name, m.delta, 'Import (opening stock)', 'qty'); }); } catch (e) { /* the items are in; the history line is cosmetic */ }
+        try { if (typeof safeSetItem === 'function' && typeof appStoreKey === 'function') safeSetItem(appStoreKey('pos_inventory'), JSON.stringify(list)); else if (typeof safeSetItem === 'function') safeSetItem('pos_inventory', JSON.stringify(list)); } catch (e) { /* kept in memory; the next change saves */ }
+        try { if (typeof stockMovementLog !== 'undefined' && typeof safeSetItem === 'function') safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* cosmetic */ }
+        try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+        try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ }
+        return res;
+    }
+
+    /* ============================ 5. THE TEMPLATE FILE ============================ */
+    var TEMPLATE_HEAD = ['Item name', 'Category', 'Piece unit', 'Pieces per packet', 'Packet name', 'Packets per box', 'Pieces per box (only if no packets)', 'Box name',
+        'Piece price', 'Packet price', 'Box price', 'Cost per piece', 'Cost per box', 'Opening boxes', 'Opening loose packets', 'Opening loose pieces', 'Barcode'];
+    var TEMPLATE_EXAMPLES = [
+        ['Example: Sweets mix', 'Confectionery', 'pcs', 20, 'Packet', 10, '', 'Box', 5, 90, 850, '', 700, 2, 3, 7, ''],
+        ['Example: Soda 500ml', 'Drinks', 'bottle', '', '', '', 24, 'Case', 60, '', 1300, '', 1100, 5, '', 6, ''],
+        ['Example: Sugar 1kg', 'Groceries', 'kg', '', '', '', 50, 'Bag', 190, '', 9000, '', 8500, 1, '', 12, '']
+    ];
+    var TEMPLATE_HELP = [
+        ['How to fill this sheet'],
+        [''],
+        ['One row per item. Delete the three "Example" rows before importing.'],
+        ['Piece unit = the smallest thing you sell on its own: pcs, bottle, sweet, kg ...'],
+        ['If the item has PACKETS inside a box: fill "Pieces per packet" and "Packets per box". Leave "Pieces per box" empty.'],
+        ['If the box holds pieces directly (a case of 24 bottles): leave the packet columns empty and fill "Pieces per box".'],
+        ['If the item has no box and no packet, leave all of those empty - it is an ordinary item.'],
+        ['Prices are for ONE of that level (one piece, one packet, one box). Leave a price empty and it is worked out from the others, or left at 0 to set later.'],
+        ['Opening columns = what you have on the shelf today: full boxes, loose packets, loose pieces. They are added together.'],
+        ['An item already in your inventory is not touched (stock is never changed by the import) - use Stock Take to correct counts.']
+    ];
+
+    /* ============================ 6. THE SCREEN ============================ */
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { try { console.log(m); } catch (x) { /* none */ } } }
+    var S = null;   // { rows, format, file, updateExisting, step }
+    function ensureOv() {
+        var ov = $('pki-ov'); if (ov) return ov;
+        ov = document.createElement('div'); ov.id = 'pki-ov';
+        ov.innerHTML = '<div id="pki-card" role="dialog" aria-modal="true" aria-labelledby="pki-title"><div class="pki-head"><h3 id="pki-title">📥 Import boxes, packets and pieces</h3><button type="button" class="pki-x" data-pki="close" aria-label="Close">✕</button></div><div class="pki-body" id="pki-body"></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('[data-pki]') : null; if (e.target === ov) { close(); return; } if (!b) return;
+            var a = b.getAttribute('data-pki');
+            if (a === 'close') close(); else if (a === 'pick') { var f = $('pki-file'); if (f) f.click(); } else if (a === 'tmpl') downloadTemplate();
+            else if (a === 'go') doImport(); else if (a === 'again') open(); else if (a === 'back') open();
+            else if (a === 'more') { S.showAll = true; drawPreview(); }
+            else if (a === 'bulk') bulkFill();
+        });
+        ov.addEventListener('input', function (e) {
+            var t = e.target; if (!t || !t.getAttribute) return; var n = t.getAttribute('data-f'); if (!n || !S) return;
+            var r = S.rows[Number(t.getAttribute('data-i'))]; if (!r) return; setField(r, n, t.value); refreshRow(Number(t.getAttribute('data-i')));
+        });
+        ov.addEventListener('change', function (e) {
+            var t = e.target; if (!t) return;
+            if (t.id === 'pki-file') { readFile(t.files && t.files[0]); t.value = ''; }
+            else if (t.getAttribute && t.getAttribute('data-inc') !== null && S) { S.rows[Number(t.getAttribute('data-inc'))].include = !!t.checked; refreshSummary(); }
+            else if (t.id === 'pki-upd' && S) { S.updateExisting = !!t.checked; }
+        });
+        return ov;
+    }
+    function close() { var ov = $('pki-ov'); if (ov) ov.classList.remove('on'); }
+    function steps(n) { return '<div class="pki-steps">' + ['1 Choose the file', '2 Check', '3 Done'].map(function (t, i) { return '<span' + (i + 1 === n ? ' class="on"' : '') + '>' + t + '</span>'; }).join('') + '</div>'; }
+    function open() {
+        if (!inv()) { toast('Open this from an app that has an Inventory.', true); return; }
+        S = null; var ov = ensureOv(); ov.classList.add('on');
+        $('pki-body').innerHTML = steps(1)
+            + '<div class="pki-note">Bring your stock list in <b>with its boxes, packets and pieces</b>, so you can sell, receive and count at every level. Use <b>your own list</b> (columns like <i>Whole/Carton/Bag, Pack/OUT/Dozen, Piece/Single</i>) or the <b>ready template</b>.</div>'
+            + '<div class="pki-drop"><p style="margin:0 0 10px;font-weight:700">Choose an Excel (.xlsx) or CSV file</p><button type="button" class="pki-btn" data-pki="pick">📂 Choose file</button><input type="file" id="pki-file" accept=".xlsx,.xls,.csv,text/csv" style="display:none"></div>'
+            + '<div class="pki-btns"><button type="button" class="pki-btn sec" data-pki="tmpl">⬇️ Download the blank template</button><button type="button" class="pki-btn sec" data-pki="close">Cancel</button></div>'
+            + '<p class="pki-small" style="margin-top:10px">Nothing is changed until you press Import on the next screen. Items that already exist are never changed.</p>';
+    }
+    function getXLSX() {
+        if (W.XLSX) return Promise.resolve(W.XLSX);
+        var urls = ['https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
+        var i = 0;
+        function next() {
+            if (W.XLSX) return Promise.resolve(W.XLSX);
+            if (i >= urls.length) return Promise.reject(new Error('Could not load the Excel reader (check the internet), or save the file as CSV and choose that.'));
+            var u = urls[i++];
+            return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = u; s.onload = res; s.onerror = rej; document.head.appendChild(s); }).then(next, next);
+        }
+        return next();
+    }
+    function readFile(file) {
+        if (!file) return;
+        var body = $('pki-body'); body.innerHTML = steps(2) + '<div class="pki-note">Reading ' + esc(file.name) + ' ...</div>';
+        var done = function (rows) {
+            var rs = readSheet(rows);
+            if (!rs.format) { body.innerHTML = steps(1) + '<div class="pki-note bad">' + esc(rs.error) + '</div><div class="pki-btns"><button type="button" class="pki-btn" data-pki="back">Choose another file</button><button type="button" class="pki-btn sec" data-pki="tmpl">⬇️ Download the template</button></div>'; return; }
+            S = { rows: rs.rows, format: rs.format, file: file.name, updateExisting: false, showAll: false };
+            drawPreview();
+        };
+        var fail = function (e) { body.innerHTML = steps(1) + '<div class="pki-note bad">' + esc((e && e.message) || 'Could not read that file.') + '</div><div class="pki-btns"><button type="button" class="pki-btn" data-pki="back">Back</button></div>'; };
+        try {
+            if (/\.csv$/i.test(file.name)) { var fr = new FileReader(); fr.onload = function () { try { done(readCsv(fr.result)); } catch (e) { fail(e); } }; fr.onerror = fail; fr.readAsText(file); return; }
+            getXLSX().then(function (X) {
+                var fr2 = new FileReader();
+                fr2.onload = function () { try { var wb = X.read(new Uint8Array(fr2.result), { type: 'array' }); var ws = wb.Sheets[wb.SheetNames[0]]; done(X.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true })); } catch (e) { fail(e); } };
+                fr2.onerror = fail; fr2.readAsArrayBuffer(file);
+            }).catch(fail);
+        } catch (e) { fail(e); }
+    }
+    function setField(r, n, v) {
+        var x = String(v).trim(), nm = x === '' ? null : parseFloat(x);
+        if (n === 'name') r.name = x; else if (n === 'unit') r.unit = x || 'pcs'; else if (n === 'pName') r.pName = x; else if (n === 'bName') r.bName = x;
+        else if (n === 'pPer') r.pPer = isFinite(nm) ? nm : null;
+        else if (n === 'bPer') { r.bPer = isFinite(nm) ? nm : null; }
+        else if (n === 'bPerOf') r.bPerOf = x;
+        else if (n === 'pc' || n === 'pkt' || n === 'box') r.price[n] = isFinite(nm) ? nm : null;
+        r.issues = []; r.fixed = true;      // the typed values replace what the file said; the check re-runs
+    }
+    function chk(r) { return check(r, SEng()); }
+    function status(r, c, ex) {
+        if (!r.include) return '<span class="pki-chip">Left out</span>';
+        if (ex) return '<span class="pki-chip b">Already in inventory</span>';
+        if (c.issues.length) return '<span class="pki-chip o" title="' + esc(c.issues.join('; ')) + '">' + esc(c.issues[0]) + '</span>';
+        return '<span class="pki-chip g">Ready</span>';
+    }
+    function rowHtml(r, i, list) {
+        var c = chk(r), ex = existingFor(r, list);
+        var perBox = perOfRow(r), tail = c.packs.length ? c.packs.slice().reverse().map(function (l) { return '1 ' + esc(l.name) + ' = ' + esc(l.per) + ' ' + esc(r.unit); }).join(' · ') : '';
+        var boxOf = r.bPerOf === 'pieces' ? 'pieces' : 'packets';
+        return '<tr data-row="' + i + '" class="' + (c.issues.length && !ex ? 'pki-bad' : '') + '"><td><input type="checkbox" data-inc="' + i + '"' + (r.include ? ' checked' : '') + ' style="width:auto"></td>'
+            + '<td><input type="text" class="w" style="width:180px" data-f="name" data-i="' + i + '" value="' + esc(r.name) + '"></td>'
+            + '<td><input type="text" class="nm" data-f="unit" data-i="' + i + '" value="' + esc(r.unit) + '"></td>'
+            + '<td><input type="text" class="nm" data-f="pName" data-i="' + i + '" value="' + esc(r.pName) + '" placeholder="Packet"> <input type="number" min="0" step="any" data-f="pPer" data-i="' + i + '" value="' + esc(r.pPer == null ? '' : r.pPer) + '" placeholder="pcs" title="pieces in one packet"></td>'
+            + '<td><input type="text" class="nm" data-f="bName" data-i="' + i + '" value="' + esc(r.bName) + '" placeholder="Box"> <input type="number" min="0" step="any" data-f="bPer" data-i="' + i + '" value="' + esc(r.bPer == null ? '' : r.bPer) + '" placeholder="' + boxOf + '" title="' + boxOf + ' in one box"> <span class="pki-small">' + boxOf + '</span></td>'
+            + '<td><input type="number" min="0" step="any" data-f="pc" data-i="' + i + '" value="' + esc(r.price.pc == null ? '' : r.price.pc) + '" placeholder="0"></td>'
+            + '<td><input type="number" min="0" step="any" data-f="pkt" data-i="' + i + '" value="' + esc(r.price.pkt == null ? '' : r.price.pkt) + '" placeholder="auto"></td>'
+            + '<td><input type="number" min="0" step="any" data-f="box" data-i="' + i + '" value="' + esc(r.price.box == null ? '' : r.price.box) + '" placeholder="auto"></td>'
+            + '<td class="pki-st">' + status(r, c, ex) + (tail ? '<div class="pki-small">' + tail + '</div>' : '') + (perBox ? '' : '') + '</td></tr>';
+    }
+    function tableHtml(idx, list) {
+        return '<div class="pki-scroll"><table class="pki-tbl"><thead><tr><th></th><th>Item</th><th>Sold singly as</th><th>Packet (name + pieces in it)</th><th>Box (name + how many in it)</th><th>Piece price</th><th>Packet price</th><th>Box price</th><th>Check</th></tr></thead><tbody>'
+            + idx.map(function (i) { return rowHtml(S.rows[i], i, list); }).join('') + '</tbody></table></div>';
+    }
+    function counts() {
+        var list = inv() || [], c = { total: S.rows.length, ready: 0, attention: 0, exists: 0, out: 0 };
+        S.rows.forEach(function (r) { if (!r.include) { c.out++; return; } var ex = existingFor(r, list); if (ex) { c.exists++; return; } if (chk(r).issues.length) c.attention++; else c.ready++; });
+        return c;
+    }
+    function refreshSummary() {
+        var el = $('pki-sum'); if (!el) return; var c = counts();
+        el.innerHTML = '<div><b>' + c.total + '</b><span>items in the file</span></div><div><b>' + c.ready + '</b><span>ready to import</span></div><div><b>' + c.attention + '</b><span>missing something</span></div><div><b>' + c.exists + '</b><span>already in inventory</span></div>';
+        var go = $('pki-go'); if (go) go.disabled = (c.ready + c.attention) === 0;
+    }
+    function refreshRow(i) {
+        var tr = document.querySelector('#pki-body tr[data-row="' + i + '"]'); if (!tr) return;
+        var r = S.rows[i], c = chk(r), ex = existingFor(r, inv() || []), st = tr.querySelector('.pki-st');
+        var tail = c.packs.length ? c.packs.slice().reverse().map(function (l) { return '1 ' + esc(l.name) + ' = ' + esc(l.per) + ' ' + esc(r.unit); }).join(' · ') : '';
+        if (st) st.innerHTML = status(r, c, ex) + (tail ? '<div class="pki-small">' + tail + '</div>' : '');
+        tr.className = c.issues.length && !ex ? 'pki-bad' : ''; refreshSummary();
+    }
+    function drawPreview() {
+        var list = inv() || [], attn = [], ready = [];
+        S.rows.forEach(function (r, i) { var ex = existingFor(r, list); if (!ex && chk(r).issues.length) attn.push(i); else ready.push(i); });
+        var shown = S.showAll ? ready : ready.slice(0, 80);
+        var h = steps(2) + '<div class="pki-kv" id="pki-sum"></div>';
+        h += '<div class="pki-note">' + (S.format === 'list' ? 'I read <b>' + esc(S.file) + '</b> as a stock list (text columns). Where it does not say how many packets are in a box, type it below - nothing is guessed. ' : 'I read <b>' + esc(S.file) + '</b> as the template. ')
+            + 'You can type in any box. <b>Prices</b> are for one piece / one packet / one box (leave a packet or box price empty and it is worked out from the piece price).</div>';
+        var attnShown = S.showAll ? attn : attn.slice(0, 120);
+        if (attn.length) {
+            h += '<h4 style="margin:12px 0 4px">⚠️ Missing something (' + attn.length + ') - fill in, or untick to leave out</h4>'
+                + '<div class="pki-note warn" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">Same size for many? Fill every EMPTY box size with <input type="number" min="1" step="any" id="pki-bulk" style="width:80px;padding:6px 7px" placeholder="e.g. 12"> <button type="button" class="pki-btn sec" data-pki="bulk" style="min-height:34px;padding:6px 12px">Fill empty box sizes</button><span class="pki-small">(only rows that have a box name but no size; you can still change each one)</span></div>'
+                + tableHtml(attnShown, list) + (attn.length > attnShown.length ? '<button type="button" class="pki-btn sec" data-pki="more">Show all ' + attn.length + '</button>' : '');
+        }
+        h += '<details' + (attn.length ? '' : ' open') + ' style="margin-top:10px"><summary style="cursor:pointer;font-weight:800">✅ Ready (' + ready.length + ')' + (ready.length > shown.length ? ' - showing ' + shown.length : '') + '</summary>' + tableHtml(shown, list)
+            + (ready.length > shown.length ? '<button type="button" class="pki-btn sec" data-pki="more">Show all ' + ready.length + '</button>' : '') + '</details>';
+        h += '<label style="display:flex;gap:8px;align-items:center;margin:14px 0 4px;font-weight:700"><input type="checkbox" id="pki-upd" style="width:auto"> For items that are already in inventory, set their package sizes from this file (stock is never changed)</label>';
+        h += '<div class="pki-btns"><button type="button" class="pki-btn" id="pki-go" data-pki="go">📥 Import now</button><button type="button" class="pki-btn sec" data-pki="back">Choose another file</button></div>'
+            + '<p class="pki-small">Items missing a box or packet size are still imported - without that level. You can add it later from Inventory > 📦 Package sizes.</p>';
+        $('pki-body').innerHTML = h; refreshSummary();
+    }
+    function bulkFill() {
+        var v = parseFloat(($('pki-bulk') || {}).value);
+        if (!(v > 0)) { toast('Type the number first (for example 12).', true); return; }
+        var n = 0; S.rows.forEach(function (r) { if (r.include && r.bName && !(r.bPer > 0)) { r.bPer = v; r.issues = []; n++; } });
+        toast(n ? 'Filled ' + n + ' empty box size(s) with ' + v + '. Check them below.' : 'No empty box sizes found.'); drawPreview();
+    }
+    function doImport() {
+        if (!S) return;
+        var btn = $('pki-go'); if (btn) btn.disabled = true;
+        var res;
+        try { res = apply(S.rows, { updateExisting: S.updateExisting }); } catch (e) { toast('Import failed: ' + ((e && e.message) || e), true); if (btn) btn.disabled = false; return; }
+        $('pki-body').innerHTML = steps(3) + '<div class="pki-note ok"><b>Done.</b> ' + res.created + ' item(s) added' + (res.updated ? ', ' + res.updated + ' updated' : '') + (res.skipped ? ', ' + res.skipped + ' left alone' : '') + '.</div>'
+            + (res.noSizes ? '<div class="pki-note warn">' + res.noSizes + ' item(s) were added without a box or packet level because the size was missing. Open Inventory > 📦 Package sizes to add it.</div>' : '')
+            + '<div class="pki-note">Now: sell by box / packet / piece at the Sales Counter, and count each level in <b>Stock Take</b>. Add prices later from Inventory if you left them empty.</div>'
+            + '<div class="pki-btns"><button type="button" class="pki-btn" data-pki="close">Close</button><button type="button" class="pki-btn sec" data-pki="again">Import another file</button></div>';
+        toast('Imported ' + res.created + ' item(s).');
+    }
+    function downloadTemplate() {
+        getXLSX().then(function (X) {
+            var wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet([TEMPLATE_HEAD].concat(TEMPLATE_EXAMPLES)), hs = X.utils.aoa_to_sheet(TEMPLATE_HELP);
+            ws['!cols'] = TEMPLATE_HEAD.map(function (h, i) { return { wch: i === 0 ? 32 : Math.max(12, Math.min(26, h.length + 2)) }; }); hs['!cols'] = [{ wch: 120 }];
+            X.utils.book_append_sheet(wb, ws, 'Stock list'); X.utils.book_append_sheet(wb, hs, 'How to fill');
+            X.writeFile(wb, 'Stock_import_template.xlsx');
+        }).catch(function () {
+            var csv = [TEMPLATE_HEAD].concat(TEMPLATE_EXAMPLES).map(function (r) { return r.map(function (c) { c = String(c == null ? '' : c); return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(','); }).join('\n');
+            try { var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'Stock_import_template.csv'; document.body.appendChild(a); a.click(); a.remove(); } catch (e) { toast('Could not make the template.', true); }
+        });
+    }
+
+    /* ---- the button on Inventory ---- */
+    function bar() {
+        try {
+            var tab = $('inventory-list-tab'); if (!tab || $('pki-bar')) return;
+            var anchor = tab.querySelector('#inventory-search-input') || tab.querySelector('input[type="text"]');
+            var host = anchor && anchor.closest ? (anchor.closest('.form-group') || anchor.parentNode) : null;
+            if (!host || !host.parentNode) return;
+            var d = document.createElement('div'); d.id = 'pki-bar';
+            d.innerHTML = '<button type="button" class="settings-small-btn" data-pki-open="1" title="Bring in a stock list from Excel with its boxes, packets and pieces">📥 Import boxes &amp; packets (Excel)</button>';
+            d.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('[data-pki-open]')) open(); });
+            host.parentNode.insertBefore(d, host);
+        } catch (e) { /* the button is a convenience */ }
+    }
+    function install() {
+        bar();
+        try {
+            var sw = W.switchTab;
+            if (typeof sw === 'function' && !sw.__pki) { var w = function () { var r = sw.apply(this, arguments); setTimeout(bar, 60); return r; }; w.__pki = true; W.switchTab = w; }
+        } catch (e) { /* the button then appears on the first bar() call */ }
+        setTimeout(bar, 800); setTimeout(bar, 2500);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
+
+    W.pkiOpen = open;
+    W.__pki = { parseLegacy: parseLegacy, parsePacket: parsePacket, parseBox: parseBox, pieceUnit: pieceUnit, readSheet: readSheet, readCsv: readCsv, check: check, levelRows: levelRows, productFor: productFor, apply: apply, perOfRow: perOfRow, TEMPLATE_HEAD: TEMPLATE_HEAD, TEMPLATE_EXAMPLES: TEMPLATE_EXAMPLES, TEMPLATE_HELP: TEMPLATE_HELP };
+})();
+</script>

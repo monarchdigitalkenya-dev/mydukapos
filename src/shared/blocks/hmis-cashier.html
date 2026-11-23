@@ -1,0 +1,315 @@
+<!-- HMIS CASHIER REQUESTS (zip 328) ---------------------------------------------------------------------------------------------------------
+     Hospital only. "Send to Cashier / Add Charge" in the consultation, the cashier's request queue, and the doctor's view of what has been paid.
+     It adds NO separate billing system: a request is a set of the hospital's existing patientCharges under the visit reference; the cashier takes
+     payment at the Sales Counter exactly as before (cash / M-PESA / card / split / SHA / insurance), and a charge becomes PAID only when that sale
+     completes (settleLoadedCharges). Prices come from the Services list. A retry or a double tap is the same request (deterministic charge ids).
+     Nothing here blocks clinical work: no payment-related restriction is introduced. -->
+<style>
+    #rq-modal { position: fixed; inset: 0; z-index: 9700; background: rgba(15, 30, 45, .6); display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 14px 10px; }
+    #rq-modal.on { display: flex; }
+    #rq-modal .rq-in { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 16px; width: 100%; max-width: 640px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+    .rq-head { background: linear-gradient(135deg, #0e7490, #1f8a70); color: #fff; padding: 14px 18px; }
+    .rq-head h3 { margin: 0; font-size: 18px; } .rq-head small { opacity: .9; }
+    .rq-body { padding: 14px 18px 18px; }
+    .rq-box { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+    .rq-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 12px; }
+    .rq-grid label { display: block; font-size: 12px; font-weight: 700; color: #566; margin-bottom: 3px; }
+    .rq-grid input, .rq-grid select, .rq-grid textarea, .rq-body textarea { width: 100%; box-sizing: border-box; margin: 0; }
+    .rq-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--border-color, #e1e5e8); font-size: 14px; }
+    .rq-line:last-child { border-bottom: 0; }
+    .rq-total { display: flex; justify-content: space-between; font-weight: 800; font-size: 17px; border-top: 2px solid #1f8a70; padding-top: 8px; margin-top: 6px; }
+    .rq-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .rq-actions button, .rq-btn { width: auto; margin: 0; padding: 9px 15px; border-radius: 10px; border: 1px solid transparent; font-weight: 700; cursor: pointer; background: #1f8a70; color: #fff; }
+    .rq-actions button.sec, .rq-btn.sec { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-color: var(--border-color, #cfd6dc); }
+    .rq-actions button.dng, .rq-btn.dng { background: #e74c3c; }
+    .rq-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; background: #ecf0f1; color: #566; white-space: nowrap; }
+    .rq-chip.awaiting { background: #fff0d6; color: #9a5b00; } .rq-chip.paid { background: #d9f2e7; color: #146c4e; } .rq-chip.billed { background: #dbeafe; color: #1e4f9c; }
+    .rq-chip.cancelled { background: #fbe0dc; color: #a12a1d; } .rq-chip.partial { background: #fdebd0; color: #935116; } .rq-chip.mpesa { background: #e3f6e7; color: #17692a; }
+    .rq-note { background: #eaf6f2; border-left: 4px solid #1f8a70; padding: 8px 12px; border-radius: 8px; font-size: 13px; color: #1b5e4d; margin: 8px 0; }
+    .rq-warn { background: #fff6e5; border-left: 4px solid #e67e22; padding: 8px 12px; border-radius: 8px; font-size: 13px; color: #8a4b08; margin: 8px 0; }
+    #rq-queue { margin-bottom: 12px; border: 1px solid #cfe3f3; border-radius: 12px; background: linear-gradient(180deg, #f4f9fd, #fff); padding: 8px 12px; }
+    #rq-queue summary { cursor: pointer; font-weight: 800; padding: 4px 0; }
+    .rq-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+    .rq-filters button { width: auto; margin: 0; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border-color, #cfd6dc); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-size: 12px; font-weight: 700; cursor: pointer; }
+    .rq-filters button.on { background: #0e7490; color: #fff; border-color: #0e7490; }
+    .rq-row { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-left: 5px solid #e67e22; border-radius: 10px; padding: 9px 12px; margin: 7px 0; }
+    .rq-row.paid { border-left-color: #27ae60; } .rq-row.cancelled { border-left-color: #e74c3c; opacity: .85; } .rq-row.billed { border-left-color: #2980b9; }
+    .rq-row .top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+    .rq-row .sub { font-size: 12px; color: #7f8c8d; margin-top: 2px; }
+    #rq-consult { margin: 8px 0 10px; }
+</style>
+<div id="rq-modal" role="dialog" aria-modal="true"><div class="rq-in" id="rq-in"></div></div>
+<script>
+(function () {
+  'use strict';
+  var W = window;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { return 'KES ' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function r2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+  function tabOn(id) { var b = document.querySelector('.tab-link[data-tab="' + id + '"]'); return !!b && b.style.display !== 'none' && !b.hidden && !b.disabled; }
+  function isMgr() { try { return typeof isManagerSession === 'function' ? !!isManagerSession() : true; } catch (e) { return false; } }
+  // who may do what (the till's own tab access decides; the server also holds a modified client to the paid rules in enforce mode)
+  window.rqCanRequest = function () { return isMgr() || tabOn('diagnosis-tab') || tabOn('emergency-tab') || tabOn('reception-tab'); };
+  window.rqCanCashier = function () { return isMgr() || tabOn('sales-tab'); };
+  var KIND = { consultation: 'Consultation fee', review: 'Review / follow-up fee', procedure: 'Procedure', service: 'Other hospital service' };
+
+  /* ---------------- the data ---------------- */
+  function services() { return (typeof inventory !== 'undefined' ? inventory : []).filter(function (p) { return p && p.type === 'service' && Number(p.price) > 0 && !p.archived && !p.deleted && !p._deleted && !p.removed; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }); }
+  function chargesOf(ref) { return patientCharges.filter(function (c) { return c && c.ref === ref; }); }
+  function statusOfGroup(cs) {
+    var live = cs.filter(function (c) { return c.status !== 'declined' && c.status !== 'void'; });
+    if (!live.length) return 'cancelled';
+    var open = live.filter(function (c) { return c.status !== 'cancelled'; });
+    if (!open.length) return 'cancelled';
+    var paid = open.filter(function (c) { return c.status === 'paid'; }).length, billed = open.filter(function (c) { return c.status === 'billed'; }).length, unpaid = open.filter(function (c) { return c.status === 'unpaid'; }).length;
+    if (unpaid && (paid || billed)) return 'partial';
+    if (unpaid) return 'awaiting';
+    if (billed) return 'billed';
+    return 'paid';
+  }
+  var STAT = { awaiting: ['Awaiting payment', 'awaiting'], partial: ['Partly paid', 'partial'], paid: ['Paid', 'paid'], billed: ['On a bill — not paid yet', 'billed'], cancelled: ['Cancelled', 'cancelled'] };
+  function groups() {
+    var m = new Map();
+    patientCharges.forEach(function (c) { if (!c || !c.ref) return; if (!m.has(c.ref)) m.set(c.ref, []); m.get(c.ref).push(c); });
+    var out = [];
+    m.forEach(function (cs, ref) {
+      var live = cs.filter(function (c) { return c.status !== 'declined' && c.status !== 'void'; }); if (!live.length) return;
+      var open = live.filter(function (c) { return c.status !== 'cancelled'; }), shown = open.length ? open : live;
+      var first = cs[0], t0 = Math.min.apply(null, cs.map(function (c) { return c.createdAt || Infinity; }));
+      var st = statusOfGroup(cs), paidIds = {}; shown.forEach(function (c) { if (c.paidSaleId) paidIds[c.paidSaleId] = 1; });
+      out.push({ ref: ref, patientId: first.patientId, patientName: first.patientName, charges: shown, all: cs, status: st, total: r2(shown.reduce(function (s, c) { return s + c.price * c.qty; }, 0)),
+        paid: r2(shown.filter(function (c) { return c.status === 'paid'; }).reduce(function (s, c) { return s + c.price * c.qty; }, 0)),
+        by: (cs.filter(function (c) { return c.requestedBy; })[0] || first).requestedBy || first.createdBy || '', dept: (cs.filter(function (c) { return c.department; })[0] || {}).department || '', sentAt: t0, fromRequest: cs.some(function (c) { return c.requestId; }), sales: Object.keys(paidIds),
+        cancelReason: (cs.filter(function (c) { return c.cancelReason; })[0] || {}).cancelReason || '', cancelledBy: (cs.filter(function (c) { return c.cancelledBy; })[0] || {}).cancelledBy || '' });
+    });
+    return out.sort(function (a, b) { return b.sentAt - a.sentAt; });
+  }
+  window.rqGroups = groups; W.rqStatusOfGroup = statusOfGroup;
+
+  /* ---------------- 1. the doctor: Send to Cashier / Add Charge ---------------- */
+  var RQ = null;      // the draft in the open window: { opId, patientId, ref, lines: [{ code, qty, kind }], notes }
+  function newOpId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function patientOf(id) { return patients.find(function (p) { return p.id === id; }); }
+  window.rqOpen = function (patientId, opts) {
+    patientId = patientId || (typeof currentVisitPatientId !== 'undefined' ? currentVisitPatientId : null);
+    var p = patientOf(patientId);
+    if (!p) { toast('Open a patient first.', true); return; }
+    if (!W.rqCanRequest()) { toast('You do not have access to send charges to the cashier.', true); return; }
+    if (typeof visitBillTo !== 'undefined' && visitBillTo === 'institution' && opts !== 'force') { modal(head('💳 Send to Cashier', p) + '<div class="rq-body"><div class="rq-warn">This visit is billed to an institution / insurer, so there is nothing for the cashier to collect from the patient. The charges go on that bill when you save the visit. To collect a patient co-payment or an extra fee, change “Bill to” to Patient.</div><div class="rq-actions"><button class="sec" onclick="rqClose()">Close</button></div></div>'); return; }
+    var ref = (typeof currentVisitRef !== 'undefined' && currentVisitRef) ? currentVisitRef : null;
+    if (!ref) { ref = newVisitRef(); try { currentVisitRef = ref; } catch (e) { /* none */ } }
+    // the draft survives a closed window until it is SENT: reopening continues the same request, so a retry can never double up
+    if (!RQ || RQ.patientId !== patientId || RQ.ref !== ref || RQ.sent) RQ = { opId: newOpId(), patientId: patientId, ref: ref, lines: [], notes: '', sent: false };
+    paint();
+  };
+  function head(title, p, sub) { return '<div class="rq-head"><h3>' + title + '</h3><small>' + esc(p ? p.name + ' · ' + p.id : '') + (sub ? ' · ' + sub : '') + '</small></div>'; }
+  function modal(html) { $('rq-in').innerHTML = html; $('rq-modal').classList.add('on'); }
+  window.rqClose = function () { $('rq-modal').classList.remove('on'); $('rq-in').innerHTML = ''; try { rqRenderConsult(); rqRenderQueue(); } catch (e) { /* none */ } };
+  function deptName() { var e = null; try { e = window.__hmisConsultEntry && hmisEntry(window.__hmisConsultEntry); } catch (x) { e = null; } try { return e ? pipelineStageLabel(hmisStationOf(e)) : 'Clinic / Consultation'; } catch (x) { return 'Clinic / Consultation'; } }
+  function paint() {
+    var p = patientOf(RQ.patientId), svc = services(), sum = r2(RQ.lines.reduce(function (s, l) { var sv = svc.find(function (x) { return x.code === l.code; }); return s + (sv ? sv.price * l.qty : (l.customPrice || 0) * l.qty); }, 0));
+    var existing = chargesOf(RQ.ref).filter(function (c) { return c.status !== 'cancelled' && c.status !== 'declined'; });
+    var h = head('💳 Send to Cashier / Add Charge', p, 'Encounter ' + RQ.ref);
+    h += '<div class="rq-body">';
+    h += '<div class="rq-note">The cashier sees this at once on their till. The patient pays at the cashier; <b>you will see here when it is paid</b>. Nothing in the consultation is blocked while it waits.</div>';
+    if (existing.length) h += '<div class="rq-warn">Already on this encounter: ' + existing.map(function (c) { return esc(c.name) + ' × ' + c.qty; }).join(', ') + '. Adding the same service again will ask you to confirm.</div>';
+    if (!svc.length) h += '<div class="rq-warn">There are no priced services yet. Add the consultation fee and other services in <b>Inventory → Add item → Service</b> so prices come from your own list.</div>';
+    h += '<div class="rq-box"><div class="rq-grid"><div><label>Type of charge</label><select id="rq-kind">' + Object.keys(KIND).map(function (k) { return '<option value="' + k + '">' + KIND[k] + '</option>'; }).join('') + '</select></div>' +
+      '<div><label>Service (from your Services list)</label><select id="rq-svc"><option value="">— pick —</option>' + svc.map(function (s) { return '<option value="' + esc(s.code) + '">' + esc(s.name) + ' — ' + kes(s.price) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label>Quantity</label><input id="rq-qty" type="number" min="1" step="1" value="1"></div></div>' +
+      '<div class="rq-actions"><button type="button" onclick="rqAddLine()">➕ Add to this request</button></div></div>';
+    h += '<div class="rq-box"><b>This request</b>' + (RQ.lines.length ? RQ.lines.map(function (l, i) {
+      var sv = svc.find(function (x) { return x.code === l.code; }), price = sv ? sv.price : l.customPrice || 0;
+      return '<div class="rq-line"><span><b>' + esc(sv ? sv.name : l.name) + '</b> <span class="rq-chip">' + esc(KIND[l.kind] || l.kind) + '</span><br><small>' + l.qty + ' × ' + kes(price) + '</small></span><span><b>' + kes(price * l.qty) + '</b> <button type="button" class="rq-btn dng" style="padding:3px 9px" onclick="rqDropLine(' + i + ')">✕</button></span></div>';
+    }).join('') + '<div class="rq-total"><span>Total to collect</span><span>' + kes(sum) + '</span></div>' : '<div class="rq-note" style="margin:8px 0 0">Pick a service above and press “Add to this request”.</div>') + '</div>';
+    h += '<div class="rq-grid"><div><label>Requested by</label><input value="' + esc(activeServerName()) + '" disabled></div><div><label>Department / station</label><input value="' + esc(deptName()) + '" disabled></div></div>';
+    h += '<div style="margin-top:8px"><label style="font-size:12px;font-weight:700;color:#566">Note for the cashier (optional — keep clinical details out)</label><textarea id="rq-notes" rows="2" maxlength="200" oninput="rqNotes(this.value)">' + esc(RQ.notes) + '</textarea></div>';
+    h += '<div id="rq-msg"></div><div class="rq-actions"><button type="button" id="rq-send" onclick="rqSend()"' + (RQ.lines.length ? '' : ' disabled') + '>📨 Send to Cashier</button><button type="button" class="sec" onclick="rqClose()">Close</button></div></div>';
+    modal(h);
+  }
+  window.rqNotes = function (v) { if (RQ) RQ.notes = String(v || '').slice(0, 200); };
+  window.rqAddLine = function () {
+    var code = $('rq-svc').value, qty = Math.floor(Number($('rq-qty').value)), kind = $('rq-kind').value;
+    if (!code) { toast('Pick a service from the list.', true); return; }
+    if (!(qty >= 1) || qty > 999) { toast('Enter a quantity of 1 or more.', true); return; }
+    var dup = RQ.lines.find(function (l) { return l.code === code; });
+    if (dup) dup.qty = Math.min(999, dup.qty + qty); else RQ.lines.push({ code: code, qty: qty, kind: kind });
+    paint();
+  };
+  window.rqDropLine = function (i) { RQ.lines.splice(i, 1); paint(); };
+
+  // The one place that makes the charges. Idempotent: the same opId always yields the same charge ids, so a retry, a double tap or a re-send after a
+  // sync hiccup finds them already there and adds nothing. Returns { ok, created, existing, ref, requestId, total } or { ok:false, error }.
+  window.rqCreate = function (spec) {
+    var p = patientOf(spec.patientId);
+    if (!p) return { ok: false, error: 'That patient was not found.' };
+    if (!W.rqCanRequest()) return { ok: false, error: 'You do not have access to send charges to the cashier.' };
+    if (!spec.opId) return { ok: false, error: 'Missing request id.' };
+    if (!Array.isArray(spec.lines) || !spec.lines.length) return { ok: false, error: 'Add at least one charge.' };
+    var svc = services(), made = [], total = 0, ref = spec.ref, requestId = 'RQ-' + spec.opId;
+    var plan = [];
+    for (var i = 0; i < spec.lines.length; i++) {
+      var l = spec.lines[i], sv = svc.find(function (x) { return x.code === l.code; }), qty = Math.floor(Number(l.qty));
+      if (!sv) return { ok: false, error: 'A service is no longer in your Services list (or has no price): ' + (l.code || '?') };
+      if (!(qty >= 1) || qty > 999) return { ok: false, error: 'Check the quantity of ' + sv.name + '.' };
+      plan.push({ id: 'rq-' + spec.opId + '-' + (i + 1), sv: sv, qty: qty, kind: KIND[l.kind] ? l.kind : 'service' });
+    }
+    var now = Date.now(), created = 0, existing = 0;
+    plan.forEach(function (x) {
+      total += x.sv.price * x.qty;
+      var have = patientCharges.find(function (c) { return c.id === x.id; });
+      if (have) { existing++; return; }
+      patientCharges.push({ id: x.id, ref: ref, visitId: spec.visitId || null, encounterId: spec.encounterId || ref, patientId: p.id, patientName: p.name, kind: x.kind === 'consultation' || x.kind === 'review' ? 'consultation' : 'service', chargeKind: x.kind,
+        name: x.sv.name, code: x.sv.code, serviceId: x.sv.code, qty: x.qty, price: x.sv.price, unit: x.sv.unit || 'use', isService: true, vatCategory: x.sv.vatCategory || 'A', department: spec.department || x.sv.department || '',
+        requestId: requestId, requestedBy: spec.by || activeServerName(), requestedAt: now, notes: String(spec.notes || '').slice(0, 200), status: 'unpaid', createdAt: now, createdBy: activeServerName(), updatedAt: now });
+      created++;
+    });
+    if (created) { savePatientCharges(); try { logAudit('Charge request sent', p.name, ref + ' — ' + kes(total) + ' (' + created + ' line' + (created === 1 ? '' : 's') + ')'); } catch (e) { /* none */ } }
+    return { ok: true, created: created, existing: existing, ref: ref, requestId: requestId, total: r2(total) };
+  };
+  window.rqSend = function () {
+    if (!RQ || RQ.busy) return;
+    // the same service already asked for on this encounter (and not cancelled): ask once before adding it a second time
+    var dupName = RQ.lines.map(function (l) { return chargesOf(RQ.ref).find(function (c) { return c.code === l.code && c.status !== 'cancelled' && c.status !== 'declined' && c.requestId !== 'RQ-' + RQ.opId; }); }).filter(Boolean).map(function (c) { return c.name; });
+    if (dupName.length && !RQ.dupOk) { if (!confirm('Already charged on this encounter: ' + dupName.join(', ') + '.\n\nAdd it again?')) return; RQ.dupOk = true; }
+    RQ.busy = true;
+    var r = W.rqCreate({ opId: RQ.opId, patientId: RQ.patientId, ref: RQ.ref, lines: RQ.lines, notes: RQ.notes, department: deptName(), encounterId: RQ.ref });
+    RQ.busy = false;
+    if (!r.ok) { var m = $('rq-msg'); if (m) m.innerHTML = '<div class="rq-warn">' + esc(r.error) + '</div>'; return; }
+    RQ.sent = true;
+    toast(r.created ? 'Sent to the cashier — ' + kes(r.total) + '. Reference ' + r.ref : 'Already sent — nothing was added twice.');
+    W.rqClose();
+  };
+
+  /* ---------------- 2. the doctor sees the status (inside the consultation) ---------------- */
+  function chip(st) { var s = STAT[st] || [st, '']; return '<span class="rq-chip ' + s[1] + '">' + esc(s[0]) + '</span>'; }
+  window.rqRenderConsult = function () {
+    var host = $('rq-consult'); if (!host) return;
+    var ref = typeof currentVisitRef !== 'undefined' ? currentVisitRef : '', pid = typeof currentVisitPatientId !== 'undefined' ? currentVisitPatientId : '';
+    var cs = ref ? chargesOf(ref).filter(function (c) { return c.patientId === pid && c.status !== 'declined'; }) : [];
+    if (!cs.length) { host.innerHTML = ''; return; }
+    var st = statusOfGroup(cs), g = groups().find(function (x) { return x.ref === ref; });
+    host.innerHTML = '<div class="rq-box" style="border-left:5px solid ' + (st === 'paid' ? '#27ae60' : st === 'cancelled' ? '#e74c3c' : '#e67e22') + '"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>💳 Charges sent to the cashier · ' + esc(ref) + '</b>' + chip(st) + '</div>' +
+      cs.map(function (c) { return '<div class="rq-line"><span>' + esc(c.name) + ' × ' + c.qty + '</span><span>' + kes(c.price * c.qty) + ' ' + chip(c.status === 'unpaid' ? 'awaiting' : c.status === 'billed' ? 'billed' : c.status === 'paid' ? 'paid' : 'cancelled') + '</span></div>'; }).join('') +
+      (g && g.paid ? '<div class="rq-note" style="margin:6px 0 0">Paid so far: <b>' + kes(g.paid) + '</b> of ' + kes(g.total) + '.</div>' : '') +
+      (st === 'cancelled' && cs.some(function (c) { return c.cancelReason; }) ? '<div class="rq-warn" style="margin:6px 0 0">Cancelled by ' + esc(cs.filter(function (c) { return c.cancelledBy; })[0].cancelledBy) + ': ' + esc(cs.filter(function (c) { return c.cancelReason; })[0].cancelReason) + '</div>' : '') +
+      (st === 'awaiting' ? '<div class="rq-muted" style="font-size:12px;color:#7f8c8d;margin-top:6px">Not paid yet — you can carry on with the consultation.</div>' : '') + '</div>';
+  };
+  function decorateConsult() {
+    var fee = $('visit-consultation-fee-input'); if (!fee) return;
+    if (!$('rq-consult-btn')) {
+      var holder = document.createElement('div'); holder.id = 'rq-consult-wrap';
+      holder.innerHTML = '<div class="rq-actions" style="margin:6px 0"><button type="button" id="rq-consult-btn" onclick="rqOpen()">💳 Send to Cashier / Add Charge</button></div><div id="rq-consult"></div>';
+      var anchor = fee.closest('.form-group') || fee.parentNode; anchor.parentNode.insertBefore(holder, anchor.nextSibling);
+    }
+    var b = $('rq-consult-btn'); if (b) b.style.display = W.rqCanRequest() ? '' : 'none';
+    W.rqRenderConsult();
+  }
+  var origOpen = W.openPatientVisitModal;
+  if (typeof openPatientVisitModal === 'function') {
+    var o = openPatientVisitModal;
+    W.openPatientVisitModal = function () { var r = o.apply(this, arguments); try { decorateConsult(); } catch (e) { /* none */ } return r; };
+    try { openPatientVisitModal = W.openPatientVisitModal; } catch (e) { /* function declarations are writable in sloppy mode only */ }
+  }
+  void origOpen;
+
+  /* ---------------- 3. the cashier's queue ---------------- */
+  var FILTER = 'awaiting';
+  var FILTERS = [['awaiting', 'Awaiting payment'], ['partial', 'Partly paid'], ['billed', 'On a bill'], ['paid', 'Paid'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  window.rqFilter = function (f) { FILTER = f; W.rqRenderQueue(); };
+  function saleOf(id) { return salesLog.find(function (s) { return s && s.id === id; }) || null; }
+  function mpesaWaiting(g) {
+    try { if (typeof mpesaCheckoutRequestId === 'undefined' || !mpesaCheckoutRequestId) return false; return Object.keys(currentCart).some(function (k) { return currentCart[k] && currentCart[k].patientRef === g.ref; }); } catch (e) { return false; }
+  }
+  window.rqRenderQueue = function () {
+    var host = $('rq-queue-body'); if (!host) return;
+    var all = groups(), cnt = {};
+    all.forEach(function (g) { cnt[g.status] = (cnt[g.status] || 0) + 1; });
+    var list = FILTER === 'all' ? all : all.filter(function (g) { return g.status === FILTER; });
+    var sum = $('rq-queue-sum'); if (sum) sum.textContent = '🛎️ Cashier requests' + (cnt.awaiting ? ' · ' + cnt.awaiting + ' waiting' : '');
+    var h = '<div class="rq-filters">' + FILTERS.map(function (f) { var n = f[0] === 'all' ? all.length : (cnt[f[0]] || 0); return '<button type="button" class="' + (FILTER === f[0] ? 'on' : '') + '" onclick="rqFilter(\'' + f[0] + '\')">' + f[1] + ' (' + n + ')</button>'; }).join('') + '</div>';
+    h += list.length ? list.slice(0, 40).map(function (g) {
+      var m = mpesaWaiting(g);
+      return '<div class="rq-row ' + g.status + '"><div class="top"><span><b>' + esc(g.patientName || '?') + '</b> <small>· ' + esc(g.patientId || '') + '</small></span><span>' + chip(g.status) + (m ? ' <span class="rq-chip mpesa">M-PESA prompt sent — not paid until confirmed</span>' : '') + '</span></div>' +
+        '<div class="sub">Encounter ' + esc(g.ref) + ' · ' + esc(g.by || 'Reception') + (g.dept ? ' · ' + esc(g.dept) : '') + ' · sent ' + new Date(g.sentAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</div>' +
+        '<div style="font-size:13px;margin:4px 0">' + g.charges.map(function (c) { return esc(c.name) + (c.qty > 1 ? ' ×' + c.qty : ''); }).join(', ') + '</div>' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><b style="font-size:16px">' + kes(g.total) + '</b>' + (g.paid && g.status !== 'paid' ? '<small>paid ' + kes(g.paid) + ' · balance ' + kes(g.total - g.paid) + '</small>' : '') +
+        '<span class="rq-actions" style="margin:0">' + (g.status === 'awaiting' || g.status === 'partial' ? '<button type="button" onclick="rqCollect(\'' + escapeJsAttr(g.ref) + '\')">💳 Collect payment</button>' : '') +
+        '<button type="button" class="sec" onclick="rqDetail(\'' + escapeJsAttr(g.ref) + '\')">Details</button>' +
+        ((g.status === 'awaiting' || g.status === 'partial') && W.rqCanCashier() ? '<button type="button" class="dng" onclick="rqCancelAsk(\'' + escapeJsAttr(g.ref) + '\')">Cancel / reject</button>' : '') + '</span></div>' +
+        (g.status === 'cancelled' && g.cancelReason ? '<div class="rq-warn" style="margin:6px 0 0">Cancelled by ' + esc(g.cancelledBy) + ': ' + esc(g.cancelReason) + '</div>' : '') + '</div>';
+    }).join('') : '<div class="rq-note">Nothing here. New requests from the doctors appear by themselves.</div>';
+    host.innerHTML = h;
+  };
+  function ensureQueue() {
+    if ($('rq-queue')) return;
+    var anchor = $('patient-bill-panel'); if (!anchor || !anchor.parentNode) return;
+    var d = document.createElement('details'); d.id = 'rq-queue'; d.open = true;
+    d.innerHTML = '<summary id="rq-queue-sum">🛎️ Cashier requests</summary><div id="rq-queue-body"></div>';
+    anchor.parentNode.insertBefore(d, anchor);
+    W.rqRenderQueue();
+  }
+  window.rqCollect = function (ref) {
+    try { switchToTabById('sales-tab'); } catch (e) { /* already there */ }
+    setTimeout(function () { try { loadPatientBill(ref); } catch (e) { toast('Could not open that bill.', true); } }, 30);
+  };
+
+  /* ---------------- 4. details, receipt, cancel / reject ---------------- */
+  window.rqDetail = function (ref) {
+    var g = groups().find(function (x) { return x.ref === ref; }); if (!g) return;
+    var p = patientOf(g.patientId);
+    var sales = g.sales.map(saleOf).filter(Boolean);
+    var h = head('🧾 ' + esc(g.ref), p || { name: g.patientName, id: g.patientId }, STAT[g.status][0]) + '<div class="rq-body">';
+    h += '<div class="rq-box">' + g.charges.map(function (c) { return '<div class="rq-line"><span>' + esc(c.name) + ' × ' + c.qty + (c.requestedBy ? '<br><small>requested by ' + esc(c.requestedBy) + (c.notes ? ' — ' + esc(c.notes) : '') + '</small>' : '') + '</span><span>' + kes(c.price * c.qty) + ' ' + chip(c.status === 'unpaid' ? 'awaiting' : c.status === 'billed' ? 'billed' : c.status === 'paid' ? 'paid' : 'cancelled') + '</span></div>'; }).join('') +
+      '<div class="rq-total"><span>Amount charged</span><span>' + kes(g.total) + '</span></div><div class="rq-line"><span>Amount paid</span><b>' + kes(g.paid) + '</b></div><div class="rq-line"><span>Outstanding balance</span><b>' + kes(Math.max(0, g.total - g.paid)) + '</b></div></div>';
+    if (sales.length) h += '<div class="rq-box"><b>Payment</b>' + sales.map(function (s) {
+      var meth = [s.cashAmount > 0 ? 'Cash ' + kes(s.cashAmount) : '', s.mpesaAmount > 0 ? 'M-PESA ' + kes(s.mpesaAmount) : '', s.cardAmount > 0 ? 'Card/Bank ' + kes(s.cardAmount) : ''].filter(Boolean).join(' + ') || (s.paymentMethod || '');
+      return '<div class="rq-line"><span>' + esc(meth) + (s.mpesaReceiptNumber ? '<br><small>M-PESA code ' + esc(s.mpesaReceiptNumber) + '</small>' : '') + '<br><small>Receipt ' + esc(s.refNumber || s.id) + ' · cashier ' + esc(s.servedBy || '') + ' · ' + new Date(s.timestamp).toLocaleString('en-GB') + (s.paid === false ? ' · NOT PAID (on a bill)' : '') + '</small></span><button type="button" class="rq-btn sec" onclick="reprintSale(\'' + escapeJsAttr(s.id) + '\')">🧾 Receipt</button></div>';
+    }).join('') + '</div>';
+    else h += '<div class="rq-note">No payment recorded yet. M-PESA only counts once the payment is <b>confirmed</b>; a prompt that is sent, pending or failed leaves this unpaid.</div>';
+    if (g.all.some(function (c) { return c.cancelConflict; })) h += '<div class="rq-warn">Someone tried to cancel this after it was paid; the payment stands.</div>';
+    h += '<div class="rq-actions"><button type="button" class="sec" onclick="rqClose()">Close</button></div></div>';
+    modal(h);
+  };
+  window.rqCancelAsk = function (ref) {
+    var g = groups().find(function (x) { return x.ref === ref; }); if (!g) return;
+    var canMine = g.charges.some(function (c) { return c.requestedBy === activeServerName(); });
+    if (!(W.rqCanCashier() || canMine)) { toast('Only the cashier, a manager or the requesting clinician can cancel this.', true); return; }
+    modal(head('Cancel / reject this request', patientOf(g.patientId) || { name: g.patientName, id: g.patientId }, g.ref) + '<div class="rq-body"><div class="rq-warn">Only what is <b>unpaid</b> is cancelled. Anything already paid stays paid, with its receipt. The doctor sees your reason.</div>' +
+      '<label style="font-size:12px;font-weight:700;color:#566">Reason (required)</label><textarea id="rq-reason" rows="3" maxlength="200" placeholder="e.g. Patient left, wrong service, doctor asked to withdraw"></textarea><div id="rq-msg"></div>' +
+      '<div class="rq-actions"><button type="button" class="dng" onclick="rqCancelGo(\'' + escapeJsAttr(ref) + '\')">Cancel this request</button><button type="button" class="sec" onclick="rqClose()">Keep it</button></div></div>');
+  };
+  window.rqCancel = function (ref, reason) {
+    reason = String(reason || '').trim();
+    if (reason.length < 3) return { ok: false, error: 'Give a reason.' };
+    var cs = chargesOf(ref); if (!cs.length) return { ok: false, error: 'That request was not found.' };
+    var canMine = cs.some(function (c) { return c.requestedBy === activeServerName(); });
+    if (!(W.rqCanCashier() || canMine)) return { ok: false, error: 'Only the cashier, a manager or the requesting clinician can cancel this.' };
+    var open = cs.filter(function (c) { return c.status === 'unpaid'; });
+    if (!open.length) return { ok: false, error: 'Nothing unpaid is left to cancel (paid items are never cancelled).' };
+    var now = Date.now();
+    open.forEach(function (c) { c.status = 'cancelled'; c.cancelReason = reason.slice(0, 200); c.cancelledBy = activeServerName(); c.cancelledAt = now; c.updatedAt = now; });
+    // anything already in this till's cart from that bill is taken out, so a cancelled item cannot be paid
+    try { Object.keys(currentCart).forEach(function (k) { if (currentCart[k] && currentCart[k].fromCharge && open.some(function (c) { return c.id === currentCart[k].fromCharge; })) delete currentCart[k]; }); renderCart(); } catch (e) { /* none */ }
+    savePatientCharges();
+    try { logAudit('Charge request cancelled', cs[0].patientName || '', ref + ' — ' + reason); } catch (e) { /* none */ }
+    return { ok: true, cancelled: open.length };
+  };
+  window.rqCancelGo = function (ref) {
+    var r = W.rqCancel(ref, ($('rq-reason') || {}).value);
+    if (!r.ok) { var m = $('rq-msg'); if (m) m.innerHTML = '<div class="rq-warn">' + esc(r.error) + '</div>'; return; }
+    toast('Request cancelled — the doctor can see why.'); W.rqClose();
+  };
+
+  /* ---------------- keep both screens current (also after a sync from another device) ---------------- */
+  function tick() { try { ensureQueue(); if ($('rq-queue-body') && $('rq-queue').offsetParent !== null) W.rqRenderQueue(); if ($('rq-consult')) W.rqRenderConsult(); } catch (e) { /* none */ } }
+  if (typeof renderPatientBillWaiting === 'function') {
+    var orig = renderPatientBillWaiting;
+    try { renderPatientBillWaiting = function () { var r = orig.apply(this, arguments); tick(); return r; }; } catch (e) { /* none */ }
+  }
+  function boot() { tick(); setInterval(tick, 2500); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

@@ -31,8 +31,11 @@ export async function boot(app, opts = {}) {
     url: opts.url || 'https://demo.mydukapos.store/', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
       Object.entries(opts.storage || {}).forEach(([k, v]) => w.localStorage.setItem(k, v));
+      if (typeof opts.beforeParse === 'function') opts.beforeParse(w);   // zip 320: a test can watch / stub browser APIs before the page's scripts run
       // zip 233: whole-shilling rounding is ON in the app; the older money tests are about exact cents, so tests start with it off unless they ask
       if (!(opts.storage && 'pos_round_up' in opts.storage)) w.localStorage.setItem('pos_round_up', '0');
+      // cash float & reconciliation is ON by default in the product; the older tests are about other features, so they start with it off unless they ask
+      if (!(opts.storage && 'pos_cash_config' in opts.storage)) w.localStorage.setItem('pos_cash_config', JSON.stringify([{ id: 'cfg', enabled: false, updatedAt: 1 }]));
       // zip 158: a real browser stops running a page's code when the page goes away; jsdom does not - a request that was still on its way
       // when a test closed a device answered later and the page's code, finding no document any more, threw (an unhandled rejection that
       // failed whichever test happened to be running: the multi-device chaos test). After close() no answer reaches the page.
@@ -75,7 +78,12 @@ export async function boot(app, opts = {}) {
   return { w: dom.window, d: dom.window.document, errors, close: () => {
     if (state.closed) return;
     state.closed = true;
-    const t = setTimeout(() => { try { dom.window.close(); } catch (e) { /* already gone */ } }, opts.closeDelayMs != null ? opts.closeDelayMs : 300);
+    const t = setTimeout(() => {
+      // zip 301: close() clears the timers that exist, but a page's self-rescheduling chains (sync polls, heartbeats) kept creating new ones after it,
+      // so a test file whose results were all printed never exited. Cut the window's timers first, then close it.
+      try { const w = dom.window; w.setTimeout = () => 0; w.setInterval = () => 0; w.requestAnimationFrame = () => 0; } catch (e) { /* already gone */ }
+      try { dom.window.close(); } catch (e) { /* already gone */ }
+    }, opts.closeDelayMs != null ? opts.closeDelayMs : 300);
     if (t && t.unref) t.unref();
   } };
 }

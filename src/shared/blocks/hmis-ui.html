@@ -1,0 +1,198 @@
+<!-- HMIS UI (zip 338) ----------------------------------------------------------------------------------------------------------------
+     The professional design layer for the hospital app (HMIS). It changes how things LOOK and are ARRANGED; it never sells, prices, saves,
+     deducts stock or prints anything. Every id, handler, permission check and route is untouched.
+       - Design tokens (--hmu-*): one navy / teal palette, 40 px controls, 10 px radius, one focus ring, quiet shadows instead of boxes everywhere.
+       - Cashier: a live payment summary (Total due / Paid / Balance / Change) above the payment methods, always in view at the foot of the cart;
+         COMPLETE SALE is the one big button, Hold Sale and the other secondary actions are quiet.
+       - Reception: the registration form is laid out in labelled sections (Identity / Contact / Next of kin / Medical), two columns on a desktop,
+         one on a phone.
+       - Tables, panels, inputs, buttons and the focus ring look the same on every screen.
+     Classes / ids: hmu-*, body.hmu. -->
+<style id="hmu-css">
+html body.hmu { --snav-w: 272px;
+  --hmu-navy: #12306b; --hmu-ink: #1d2b36; --hmu-mute: #5b6b78; --hmu-line: #dde6f2; --hmu-soft: #f3f7fc; --hmu-surface: #ffffff;
+  --hmu-accent: #1e6fd0; --hmu-accent-d: #164f9c; --hmu-accent-t: #e6f0fc; --hmu-red: #c8334f;
+  --hmu-ok: #1a7f4b; --hmu-warn: #b45309; --hmu-bad: #b42318;
+  --hmu-r: 10px; --hmu-h: 40px; --hmu-shadow: 0 1px 2px rgba(15,42,61,.06), 0 4px 14px rgba(15,42,61,.05);
+}
+html[data-theme="dark"] body.hmu, body.hmu.dark, body.hmu.dark-mode {
+  --hmu-ink: #e6edf2; --hmu-mute: #9fb0bd; --hmu-line: #2b3b48; --hmu-soft: #16222c; --hmu-surface: #1b2935;
+  --hmu-accent: #4a95ec; --hmu-accent-d: #2f78cf; --hmu-accent-t: #152a47; --hmu-red: #e0566f; --hmu-shadow: 0 1px 2px rgba(0,0,0,.4);
+}
+/* one focus ring everywhere */
+html body.hmu :is(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--hmu-accent); outline-offset: 2px; border-radius: 8px; }
+/* controls: the same height and radius on every form */
+html body.hmu .tab-content :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=hidden]), select) {
+  min-height: var(--hmu-h); border-radius: 8px; border: 1px solid var(--hmu-line); box-sizing: border-box; font-size: 14.5px; }
+html body.hmu .tab-content input:focus, html body.hmu .tab-content select:focus, html body.hmu .tab-content textarea:focus { border-color: var(--hmu-accent); box-shadow: 0 0 0 3px var(--hmu-accent-t); outline: none; }
+html body.hmu .tab-content textarea { border-radius: 8px; border: 1px solid var(--hmu-line); font-size: 14.5px; }
+html body.hmu .tab-content label.label, html body.hmu .tab-content .form-group > label { font-size: 12.5px; font-weight: 700; color: var(--hmu-mute); letter-spacing: .01em; margin-bottom: 4px; display: block; }
+/* panels: soft surface and a quiet shadow, not a heavy outline */
+html body.hmu .tab-content > .panel, html body.hmu .tab-content .panel { border-radius: 12px; border: 1px solid var(--hmu-line); box-shadow: var(--hmu-shadow); }
+html body.hmu .tab-content .panel > h3:first-child { font-size: 16px; font-weight: 800; color: var(--hmu-ink); margin: 0 0 12px; }
+/* buttons */
+html body.hmu .tab-content .btn-main { min-height: 44px; border-radius: 10px; font-weight: 800; background: var(--hmu-accent); border: 0; }
+html body.hmu .tab-content .btn-main:hover { background: var(--hmu-accent-d); }
+html body.hmu .tab-content .settings-small-btn { min-height: 36px; border-radius: 8px; }
+/* tables: one look, quiet header, hover row, never squeezed */
+html body.hmu .tab-content table { border-collapse: separate; border-spacing: 0; width: 100%; }
+html body.hmu .tab-content table thead th { position: sticky; top: 0; z-index: 1; background: var(--hmu-soft); color: var(--hmu-mute); font-size: 11.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: 10px 12px; border-bottom: 1px solid var(--hmu-line); text-align: left; white-space: nowrap; }
+html body.hmu .tab-content table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--hmu-line); vertical-align: middle; }
+html body.hmu .tab-content table tbody tr:hover td { background: var(--hmu-soft); }
+html body.hmu .tab-content .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 10px; }
+/* top bar: calm navy, with the page title */
+html body.hmu > header { background: var(--hmu-navy) !important; border-bottom: 0 !important; box-shadow: 0 1px 0 rgba(255,255,255,.06), 0 2px 10px rgba(15,42,61,.18); }
+html body.hmu #snav .sn-item.active { background: var(--hmu-accent); box-shadow: none; }
+html body.hmu #snav .sn-parent.has-active:not(.active) { color: var(--hmu-accent); }
+html body.hmu #snav .sn-logo { background: var(--hmu-accent); }
+/* ---- cashier ---- */
+#hmu-pay { display: none; }
+html body.hmu #sales-tab #hmu-pay { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 0 8px; background: var(--hmu-line); border: 1px solid var(--hmu-line); border-radius: 10px; overflow: hidden; }
+html body.hmu #hmu-pay > div { background: var(--hmu-surface); padding: 7px 10px; min-width: 0; }
+html body.hmu #hmu-pay small { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--hmu-mute); }
+html body.hmu #hmu-pay b { display: block; font-size: 15px; font-weight: 800; color: var(--hmu-ink); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html body.hmu #hmu-pay .hmu-due b { color: var(--hmu-accent-d); font-size: 17px; }
+html body.hmu #hmu-pay .hmu-bal.on b { color: var(--hmu-bad); }
+html body.hmu #hmu-pay .hmu-chg.on b { color: var(--hmu-ok); }
+html body.hmu #sales-tab #cart-grand-total { background: var(--hmu-accent-t) !important; color: var(--hmu-accent-d) !important; border: 0 !important; border-radius: 10px; font-size: 20px; font-weight: 800; padding: 10px 14px; font-variant-numeric: tabular-nums; }
+html body.hmu #sales-tab #payment-toggle { background: var(--hmu-soft); border-radius: 10px; padding: 3px; border: 1px solid var(--hmu-line); gap: 3px; }
+html body.hmu #sales-tab #payment-toggle button { min-height: 38px; border-radius: 8px; font-weight: 700; border: 0; background: transparent; color: var(--hmu-ink); }
+html body.hmu #sales-tab #payment-toggle button.active { background: var(--hmu-accent) !important; color: #fff !important; box-shadow: 0 1px 3px rgba(15,42,61,.25); }
+html body.hmu #sales-tab #main-checkout-btn { min-height: 52px; border-radius: 10px; font-size: 16.5px; font-weight: 800; letter-spacing: .02em; background: var(--hmu-accent) !important; color: #fff !important; box-shadow: 0 2px 8px rgba(15,118,110,.35); }
+html body.hmu #sales-tab #main-checkout-btn:hover:not(:disabled) { background: var(--hmu-accent-d) !important; }
+html body.hmu #sales-tab #main-checkout-btn:disabled { opacity: .5; box-shadow: none; }
+/* secondary actions step back */
+html body.hmu #sales-tab #cart-sticky-bar button:not(#main-checkout-btn):not(#payment-toggle button) { background: transparent !important; color: var(--hmu-mute) !important; border: 1px solid var(--hmu-line) !important; box-shadow: none !important; font-weight: 600; min-height: 40px; border-radius: 10px; }
+html body.hmu #sales-tab #cart-sticky-bar button:not(#main-checkout-btn):not(#payment-toggle button):hover { color: var(--hmu-ink) !important; background: var(--hmu-soft) !important; }
+html body.hmu #sales-tab .change-due-line.ok { color: var(--hmu-ok); font-weight: 800; }
+html body.hmu #sales-tab .change-due-line.bad { color: var(--hmu-bad); font-weight: 800; }
+html body.hmu #cart-table td, html body.hmu #cart-table th { font-variant-numeric: tabular-nums; }
+html body.hmu #cart-table th:nth-child(n+2), html body.hmu #cart-table td:nth-child(n+2) { text-align: right; }
+@media (max-width: 520px) { html body.hmu #hmu-pay { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* ---- reception ---- */
+html body.hmu #reception-registration-panel { display: grid; grid-template-columns: 1fr; gap: 0 18px; align-content: start; }
+html body.hmu #reception-registration-panel > * { min-width: 0; }
+html body.hmu #reception-registration-panel > h3, html body.hmu #reception-registration-panel > details, html body.hmu #reception-registration-panel > button,
+html body.hmu #reception-registration-panel > .hmu-sec, html body.hmu #reception-registration-panel > .form-group:has(#patient-name-input), html body.hmu #reception-registration-panel > .form-group:has(textarea) { grid-column: 1 / -1; }
+html body.hmu #reception-registration-panel > .form-group { margin: 0 0 12px; }
+html body.hmu .hmu-sec { margin: 8px 0 10px; padding: 0 0 6px; border-bottom: 1px solid var(--hmu-line); font-size: 11.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--hmu-accent-d); }
+html body.hmu #reception-registration-panel > details > summary { font-weight: 700; color: var(--hmu-accent-d); padding: 8px 0; }
+html body.hmu #reception-registration-panel > details[open] { display: grid; grid-template-columns: 1fr; gap: 0 18px; }
+html body.hmu #reception-registration-panel > details[open] > summary { grid-column: 1 / -1; }
+@media (min-width: 900px) {
+  html body.hmu #reception-registration-panel { grid-template-columns: 1fr 1fr; }
+  html body.hmu #reception-registration-panel > details[open] { grid-template-columns: 1fr 1fr; }
+  html body.hmu #reception-registration-panel > button { max-width: 360px; }
+}
+html body.hmu .tab-content [id$="-search-picker"] input { width: 100%; box-sizing: border-box; max-width: none; }
+html body.hmu #reception-registration-panel #patient-name-input:required:invalid, html body.hmu #reception-registration-panel .hmu-bad { border-color: var(--hmu-bad); }
+@media (prefers-reduced-motion: reduce) { html body.hmu * { transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+
+/* zip 341: segmented age choice (was unstyled radios), full-width customer search, quiet duplicate total, wide report tables on phones */
+html body.hmu .age-seg { display:inline-flex; gap:0; border:1px solid var(--hmu-line, #cfd8dc); border-radius:10px; overflow:hidden; margin:4px 0 10px; background:var(--bg-surface,#fff); }
+html body.hmu .age-seg-opt { position:relative; display:block; margin:0; cursor:pointer; }
+html body.hmu .age-seg-opt input { position:absolute; opacity:0; inset:0; width:100%; height:100%; margin:0; cursor:pointer; }
+html body.hmu .age-seg-opt span { display:block; padding:9px 18px; font-size:14px; font-weight:600; color:var(--dark,#1d2b36); min-height:20px; }
+html body.hmu .age-seg-opt input:checked + span { background:var(--primary,#0f766e); color:#fff; }
+html body.hmu .age-seg-opt input:focus-visible + span { outline:3px solid rgba(15,118,110,.45); outline-offset:-3px; }
+html body.hmu #patient-dob-group .age-pane { max-width:420px; }
+html body.hmu #sales-tab .payment-toggle-wrap > .form-group { grid-column:1 / -1 !important; }
+@media (max-width: 700px) {
+  html body.hmu #hr-top-diagnoses-table, html body.hmu #hospital-report-tab table { display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%; }
+}
+
+</style>
+<script id="hmu-js">
+(function () {
+    'use strict';
+    if (window.__hmuInit) return; window.__hmuInit = true;
+    function $(id) { return document.getElementById(id); }
+    function kes(n) { return 'KES ' + (Math.round((+n || 0) * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function num(id) { var e = $(id); return e ? (parseFloat(e.value) || 0) : 0; }
+    function total() { try { return typeof cartTotal === 'function' ? (+cartTotal() || 0) : 0; } catch (e) { return 0; } }
+    function method() { try { return typeof currentPaymentMethod !== 'undefined' ? currentPaymentMethod : 'cash'; } catch (e) { return 'cash'; } }
+    // The payment summary: only reads what the cashier typed and what the cart holds.
+    function pay() {
+        var bar = $('cart-sticky-bar'); if (!bar) return;
+        var box = $('hmu-pay');
+        if (!box) {
+            box = document.createElement('div'); box.id = 'hmu-pay'; box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Payment summary'); box.setAttribute('aria-live', 'polite');
+            box.innerHTML = '<div class="hmu-due"><small>Total due</small><b data-k="due"></b></div><div class="hmu-paid"><small>Paid</small><b data-k="paid"></b></div><div class="hmu-bal"><small>Balance</small><b data-k="bal"></b></div><div class="hmu-chg"><small>Change</small><b data-k="chg"></b></div>';
+            var t = $('payment-toggle'); bar.insertBefore(box, t || bar.firstChild);
+        }
+        var due = total(), m = method(), paid = 0;
+        if (m === 'cash') paid = num('cash-tendered-input');
+        else if (m === 'split') paid = num('split-cash-input') + num('split-mpesa-input');
+        else if (m === 'bill') paid = num('bill-upfront-amount-input');
+        else paid = due;                       // M-Pesa is settled for the whole amount
+        var bal = Math.max(0, Math.round((due - paid) * 100) / 100), chg = Math.max(0, Math.round((paid - due) * 100) / 100);
+        if (m === 'mpesa' || m === 'split') chg = (m === 'split') ? 0 : 0;
+        var set = function (k, v) { var el = box.querySelector('[data-k="' + k + '"]'); if (el && el.textContent !== v) el.textContent = v; };
+        set('due', kes(due)); set('paid', due || paid ? kes(paid) : '—'); set('bal', due ? kes(bal) : '—'); set('chg', m === 'cash' && due ? kes(chg) : '—');
+        box.querySelector('.hmu-bal').classList.toggle('on', bal > 0 && due > 0 && m !== 'bill');
+        box.querySelector('.hmu-chg').classList.toggle('on', chg > 0);
+    }
+    // Reception: label the sections once (idempotent), purely visual headings.
+    function sections() {
+        var p = $('reception-registration-panel'); if (!p || p.getAttribute('data-hmu') === '1') return;
+        var mk = function (txt, beforeId) {
+            var el = $(beforeId); var g = el && el.closest('#reception-registration-panel > *'); if (!g) return;
+            var h = document.createElement('div'); h.className = 'hmu-sec'; h.setAttribute('role', 'heading'); h.setAttribute('aria-level', '4'); h.textContent = txt; p.insertBefore(h, g);
+        };
+        mk('Patient identity', 'patient-name-input'); mk('Contact', 'patient-phone-input'); mk('Next of kin', 'patient-nok-name-input'); mk('Medical', 'patient-blood-type-input');
+        var n = $('patient-name-input'); if (n) { n.setAttribute('aria-required', 'true'); n.required = false; }
+        p.setAttribute('data-hmu', '1');
+    }
+    function run() { try { document.body.classList.add('hmu'); pay(); sections(); } catch (e) { /* next tick */ } }
+    document.addEventListener('input', function (e) { if (e.target && e.target.closest && e.target.closest('#sales-tab')) pay(); }, true);
+    document.addEventListener('click', function () { setTimeout(run, 60); }, true);
+    run(); document.addEventListener('DOMContentLoaded', run); setInterval(run, 600);
+})();
+</script>
+
+<style id="hmu-stack-css">html body .toast,html body #tp-toast{z-index:2147483200 !important}</style>
+<script id="hmu-stack-js">
+/* zip 370: a pop-up opened from another pop-up always comes in FRONT of it (many windows share one layer number, so the one that happened to come later in the page won - the cashier request, the password prompt, the lab and vitals windows could open behind the consultation window). Each window that becomes visible is lifted above everything already open. */
+(function () {
+    var top = 100200, pending = false, idRx = /modal|(^|-)ov$|overlay|popup|(^|-)pop$|dialog|drawer|(^|-)sheet$/i, clsRx = /(^|\s)(modal|overlay|hrx-ov|hc-ov|popup|dialog|rq-modal|hmis-modal)(\s|$)/i;
+    function isCand(e) { return e && e.nodeType === 1 && e !== document.body && e.id !== 'boot-splash' && e.id !== 'toast' && e.id !== 'tp-toast' && ((e.id && idRx.test(e.id)) || (typeof e.className === 'string' && clsRx.test(e.className))); }
+    function vis(e) { try { var cs = getComputedStyle(e); return cs.position === 'fixed' && cs.display !== 'none' && cs.visibility !== 'hidden' && e.getClientRects().length > 0; } catch (x) { return false; } }
+    function check(e) {
+        if (!isCand(e)) return;
+        if (vis(e)) { if (!e.__hmuZ) { e.__hmuZ = 1; try { top += 2; e.style.setProperty('z-index', String(top), 'important'); } catch (x) { /* none */ } } }
+        else e.__hmuZ = 0;
+    }
+    var q = [];
+    function flush() { pending = false; var a = q; q = []; a.forEach(check); }
+    function push(e) { if (!e || e.nodeType !== 1) return; if (q.indexOf(e) < 0) q.push(e); if (!pending) { pending = true; (window.requestAnimationFrame || setTimeout)(flush); } }
+    function start() {
+        try {
+            new MutationObserver(function (ms) { ms.forEach(function (m) { if (m.type === 'attributes') { if (isCand(m.target)) push(m.target); } else { Array.prototype.forEach.call(m.addedNodes, function (n) { if (n.nodeType === 1 && isCand(n)) push(n); }); } }); })
+                .observe(document.body, { attributes: true, attributeFilter: ['style', 'class'], childList: true, subtree: true });
+        } catch (e) { /* windows keep their own layers */ }
+    }
+    if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>
+
+<script id="hmu-roles-js">
+/* zip 370: every tab that exists in the app can be given to a staff member. The tick-list is topped up from the real tab buttons, so a tab added later (Price List, Services Catalogue ...) never goes missing from it. */
+(function () {
+    function top() { try { return (typeof ROLE_TABS !== 'undefined' && Array.isArray(ROLE_TABS)) ? ROLE_TABS : null; } catch (e) { return null; } }
+    function sync() {
+        var rt = top(); if (!rt) return;
+        try {
+            var changed = false;
+            Array.prototype.forEach.call(document.querySelectorAll('.tab-link[data-tab]'), function (b) {
+                var id = b.getAttribute('data-tab'); if (!id || rt.some(function (t) { return t.id === id; })) return;
+                var lab = String(b.textContent || '').replace(/\s+/g, ' ').trim(); if (lab.length > 42) lab = lab.slice(0, 40).replace(/\s+\S*$/, '') ;
+                rt.push({ id: id, label: lab || id }); changed = true;
+            });
+            if (changed) { try { if (typeof renderNewStaffRoleCheckboxes === 'function') renderNewStaffRoleCheckboxes(); } catch (e) { /* redrawn on open */ } }
+        } catch (e) { /* the list stays as it was */ }
+    }
+    window.hmisSyncRoleTabs = sync;
+    document.addEventListener('click', function (ev) { if (ev.target && ev.target.closest && ev.target.closest('[data-tab="staff-tab"],[data-hs-staff],.staff-roster-actions,#prl-staff-hub')) sync(); }, true);
+    window.addEventListener('load', function () { sync(); setTimeout(sync, 1500); setTimeout(sync, 5000); setInterval(sync, 20000); });
+})();
+</script>

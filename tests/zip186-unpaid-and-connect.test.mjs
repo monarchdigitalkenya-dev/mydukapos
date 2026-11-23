@@ -48,11 +48,10 @@ test('PosNet (zip 194): offline shows only a small calm pill - no Retry bar, no 
   t.w.__posNetSyncProbe = () => Promise.resolve({ kind: 'none' });
   await t.w.eval('PosNet.check("test")');
   assert.equal(t.w.eval('PosNet.state'), 'offline');
-  assert.ok(await until(() => t.d.getElementById('posnet-offline-pill'), 3000), 'the small pill is shown');
-  assert.equal(t.d.getElementById('posnet-offline-pill').textContent, 'Saving on this device - will sync automatically');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(t.d.getElementById('posnet-offline-pill'), null, 'zip 379: no pill on screen at all');
   assert.equal(t.d.getElementById('posnet-retry-bar'), null, 'no Retry bar');
   assert.equal(t.d.getElementById('posnet-retry-btn'), null, 'no Retry button');
-  assert.equal(t.d.getElementById('posnet-offline-pill').querySelector('button'), null);
   up = true;
   await t.w.eval('PosNet.retryNow()');
   assert.ok(await until(() => t.w.eval('PosNet.state') === 'online', 8000), 'online after retryNow');

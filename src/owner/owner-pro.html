@@ -1,0 +1,624 @@
+<!-- OWNER PRO (zip 304) ---------------------------------------------------------------------------------------------------------------
+     Source of the block between the zip304-owner-pro markers in owner/index.html (tools/inject-owner-pro.mjs writes it; `npm run check` verifies it).
+     1. The ONE money record in the console: a "Money (one record)" tab (Money & Billing folder) - overview with every figure defined, transactions
+        (search, filters, pages, CSV export, details with "why this counts"), Record a payment, Permanent links and their payment status, Reconcile old
+        records, and the audit trail. Everything comes from /api/owner-money (one calculation on the server); opening, refreshing or exporting writes nothing.
+     2. The Dashboard is rebuilt on the same figures (no second calculation in the browser) plus links, demos, attention items and website shortcuts.
+     3. The two old hand-entry forms (💰 per-link switch, Quote & Payments) are replaced by "Record a payment" (they pushed a second copy of the same money).
+        "Make permanent" asks whether the link was paid or given free; "Confirm payment" asks for the M-Pesa code.
+     4. A refined look: deep navy sidebar, clean bright workspace, blue and warm-orange accents.
+     Owner-only actions are enforced on the server (owner session); staff sessions never receive these figures. Ids / names: op-*, opx*. -->
+<style id="op-css">
+:root { --op-navy: #0f1b2d; --op-navy2: #16263d; --op-blue: #2f80ed; --op-orange: #f2994a; --op-ink: #101828; --op-mute: #667085; --op-line: #e4e7ec; --op-card: #ffffff; --op-soft: #f6f8fb; --op-ok: #12b76a; --op-warn: #f79009; --op-bad: #f04438; }
+html[data-theme="dark"] { --op-ink: #ecf0f1; --op-mute: #a3acb6; --op-line: #343b44; --op-card: #1f2329; --op-soft: #262b32; }
+/* the sidebar: deep navy, white text, blue active page with an orange marker */
+body.snav-on #snav { background: linear-gradient(180deg, var(--op-navy) 0%, var(--op-navy2) 100%); color: #dbe4f0; border-right: 0; box-shadow: 2px 0 18px rgba(15, 27, 45, .25); }
+body.snav-on #snav .sn-brand { border-bottom-color: rgba(255, 255, 255, .08); }
+body.snav-on #snav .sn-name small { opacity: .55; }
+body.snav-on #snav .sn-logo { background: linear-gradient(135deg, var(--op-blue), #56ccf2); }
+body.snav-on #snav .sn-item:hover { background: rgba(255, 255, 255, .07); }
+body.snav-on #snav .sn-item.active { background: var(--op-blue); color: #fff; box-shadow: 0 4px 14px rgba(47, 128, 237, .35); }
+body.snav-on #snav .sn-item.active::before { background: var(--op-orange); }
+body.snav-on #snav .sn-parent.has-active:not(.active) { color: #8ec5ff; }
+body.snav-on #snav .sn-sub { border-left-color: rgba(255, 255, 255, .12); }
+body.snav-on #snav .sn-find input { background: rgba(255, 255, 255, .08); border-color: rgba(255, 255, 255, .14); color: #fff; }
+body.snav-on #snav .sn-find input::placeholder { color: rgba(255, 255, 255, .55); }
+body.snav-on #snav .sn-foot { background: rgba(0, 0, 0, .18); border-top-color: rgba(255, 255, 255, .08); }
+body.snav-on #snav .sn-btn { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .14); color: #fff; }
+body.snav-on #snav .sn-av { background: var(--op-orange); }
+body.snav-on #snav-crumb b { color: var(--op-ink); }
+/* shared pieces */
+.op-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.op-wrap > * { min-width: 0; }
+.op-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; justify-content: space-between; }
+.op-head h2 { margin: 0; font-size: 22px; letter-spacing: -.01em; color: var(--op-ink); }
+.op-head p { margin: 4px 0 0; color: var(--op-mute); font-size: 13.5px; }
+.op-card { background: var(--op-card); border: 1px solid var(--op-line); border-radius: 14px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.op-card h3 { margin: 0 0 4px; font-size: 16px; color: var(--op-ink); }
+.op-card .op-sub { margin: 0 0 12px; font-size: 13px; color: var(--op-mute); line-height: 1.5; }
+.op-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.op-kpi { position: relative; text-align: left; background: var(--op-card); border: 1px solid var(--op-line); border-radius: 14px; padding: 14px 16px 12px; cursor: pointer; font: inherit; color: inherit; transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.op-kpi:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(16, 24, 40, .08); border-color: #c7d7f5; }
+.op-kpi:focus-visible { outline: 2px solid var(--op-blue); outline-offset: 2px; }
+.op-kpi small { display: block; font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--op-mute); }
+.op-kpi b { display: block; margin-top: 6px; font-size: 23px; font-weight: 800; color: var(--op-ink); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.op-kpi span { display: block; margin-top: 4px; font-size: 12px; color: var(--op-mute); line-height: 1.4; }
+.op-kpi i { position: absolute; top: 14px; right: 14px; width: 8px; height: 8px; border-radius: 50%; background: var(--op-blue); }
+.op-kpi.ok i { background: var(--op-ok); } .op-kpi.warn i { background: var(--op-warn); } .op-kpi.bad i { background: var(--op-bad); } .op-kpi.or i { background: var(--op-orange); }
+.op-kpi.na b { color: var(--op-mute); font-size: 16px; }
+.op-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.op-chip { border: 1px solid var(--op-line); background: var(--op-card); color: var(--op-ink); border-radius: 999px; padding: 7px 14px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; min-height: 36px; }
+.op-chip[aria-pressed="true"], .op-chip.on { background: var(--op-navy); border-color: var(--op-navy); color: #fff; }
+.op-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--op-line); }
+.op-tabs button { border: 0; background: transparent; color: var(--op-mute); padding: 10px 14px; font: inherit; font-weight: 700; font-size: 14px; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; min-height: 42px; }
+.op-tabs button[aria-selected="true"] { color: var(--op-ink); border-bottom-color: var(--op-orange); }
+.op-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--op-line); border-radius: 12px; }
+table.op-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.op-t th { position: sticky; top: 0; background: var(--op-soft); text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--op-mute); padding: 9px 12px; white-space: nowrap; cursor: default; }
+table.op-t th[data-sort] { cursor: pointer; }
+table.op-t td { padding: 9px 12px; border-top: 1px solid var(--op-line); vertical-align: top; color: var(--op-ink); }
+table.op-t tr.op-click { cursor: pointer; } table.op-t tr.op-click:hover td { background: var(--op-soft); }
+table.op-t .n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.op-t tfoot td { font-weight: 800; background: var(--op-soft); }
+.op-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 800; white-space: nowrap; }
+.op-pill.success, .op-pill.paid { background: #e7f8ef; color: #067647; } .op-pill.pending { background: #fff4e0; color: #93370d; } .op-pill.review { background: #fef0c7; color: #93370d; }
+.op-pill.failed, .op-pill.cancelled { background: #fee4e2; color: #b42318; } .op-pill.excluded, .op-pill.complimentary, .op-pill.demo, .op-pill.none { background: #eef2f6; color: #475467; } .op-pill.open { background: #eaf2ff; color: #1849a9; }
+.op-pill.refund { background: #f4ebff; color: #6941c6; }
+.op-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.op-bar label { display: block; font-size: 12px; font-weight: 700; color: var(--op-mute); margin: 0 0 3px; }
+.op-bar input, .op-bar select { min-height: 40px; }
+.op-btn { min-height: 40px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--op-line); background: var(--op-card); color: var(--op-ink); font: inherit; font-weight: 700; cursor: pointer; }
+.op-btn.pri { background: var(--op-blue); border-color: var(--op-blue); color: #fff; } .op-btn.or { background: var(--op-orange); border-color: var(--op-orange); color: #fff; }
+.op-btn.bad { background: #fff; border-color: #fda29b; color: #b42318; } .op-btn:disabled { opacity: .55; cursor: not-allowed; }
+.op-note { font-size: 12.5px; color: var(--op-mute); line-height: 1.55; margin: 8px 0 0; }
+.op-msg { min-height: 1.2em; font-size: 13px; margin: 8px 0 0; } .op-msg.err { color: #b42318; } .op-msg.ok { color: #067647; }
+.op-banner { display: flex; gap: 12px; padding: 12px 14px; border-radius: 12px; border: 1px solid #b2ccff; background: #eff4ff; color: #1d2939; font-size: 13px; line-height: 1.5; }
+.op-banner.warn { border-color: #fec84b; background: #fffaeb; } .op-banner.bad { border-color: #fda29b; background: #fef3f2; }
+html[data-theme="dark"] .op-banner { background: #16293a; color: #ecf0f1; } html[data-theme="dark"] .op-banner.warn { background: #3a300f; } html[data-theme="dark"] .op-banner.bad { background: #3a2222; }
+.op-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 16px; }
+.op-field label { display: block; font-size: 13px; font-weight: 700; margin: 0 0 4px; color: var(--op-ink); }
+.op-field input, .op-field select, .op-field textarea { width: 100%; min-height: 42px; box-sizing: border-box; }
+.op-field textarea { min-height: 70px; resize: vertical; }
+.op-field .op-hint { font-size: 12px; color: var(--op-mute); margin: 4px 0 0; line-height: 1.45; }
+.op-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1000px) { .op-split { grid-template-columns: minmax(0, 1fr); } }
+.op-bars { display: flex; align-items: flex-end; gap: 6px; height: 170px; padding: 8px 4px 0; }
+.op-bars div { flex: 1 1 0; min-width: 8px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; }
+.op-bars div i { display: block; width: 100%; max-width: 38px; border-radius: 6px 6px 2px 2px; background: linear-gradient(180deg, var(--op-blue), #56ccf2); min-height: 2px; }
+.op-bars div small { margin-top: 6px; font-size: 10.5px; color: var(--op-mute); white-space: nowrap; }
+.op-list { list-style: none; margin: 0; padding: 0; }
+.op-list li { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--op-line); font-size: 13px; }
+.op-list li:first-child { border-top: 0; }
+.op-list li b { color: var(--op-ink); } .op-list li small { display: block; color: var(--op-mute); font-size: 12px; margin-top: 2px; }
+.op-list li .op-amt { margin-left: auto; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.op-short { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.op-short button { text-align: left; border: 1px solid var(--op-line); background: var(--op-soft); color: var(--op-ink); border-radius: 12px; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; min-height: 56px; }
+.op-short button small { display: block; font-weight: 500; color: var(--op-mute); font-size: 12px; margin-top: 2px; }
+.op-drawer { position: fixed; inset: 0; z-index: 99990; display: none; }
+.op-drawer.on { display: block; }
+.op-drawer .op-scrim { position: absolute; inset: 0; background: rgba(15, 27, 45, .45); }
+.op-drawer .op-panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(520px, 100%); background: var(--op-card); color: var(--op-ink); box-shadow: -10px 0 40px rgba(0, 0, 0, .25); padding: 18px 20px; overflow-y: auto; }
+@media (prefers-reduced-motion: no-preference) { .op-drawer.on .op-panel { animation: opIn .2s ease-out; } @keyframes opIn { from { transform: translateX(30px); opacity: .6; } to { transform: none; opacity: 1; } } .op-card, .op-kpi { animation: opFade .2s ease-out; } @keyframes opFade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } } }
+.op-dl { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px 12px; font-size: 13px; margin: 12px 0; }
+.op-dl dt { color: var(--op-mute); font-weight: 700; } .op-dl dd { margin: 0; word-break: break-word; }
+.op-skel { height: 96px; border-radius: 14px; background: linear-gradient(90deg, var(--op-soft), var(--op-line), var(--op-soft)); background-size: 200% 100%; animation: opSk 1.2s infinite; }
+@keyframes opSk { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .op-skel { animation: none; } .op-kpi { transition: none; } }
+.op-legacy-note { margin: 0 0 12px; }
+@media (max-width: 600px) { .op-card { padding: 14px 12px; } .op-kpi b { font-size: 20px; } .op-dl { grid-template-columns: minmax(0, 1fr); } .op-bar > div { flex: 1 1 100%; } .op-bar input, .op-bar select { width: 100%; } }
+</style>
+<script id="op-js">
+(function () {
+  'use strict';
+  if (window.__opInit) return; window.__opInit = true;
+  var ID = 'money-tab', BTN = 'money-tab-btn';
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(c) { if (c == null || !isFinite(c)) return '—'; return 'KES ' + (c / 100).toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+  function day(t) { return t ? new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'; }
+  function dt(t) { return t ? new Date(t).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; }
+  function headers() { try { return typeof ownerAuthHeaders === 'function' ? ownerAuthHeaders() : {}; } catch (e) { return {}; } }
+  function staffMode() { try { return typeof consoleStaffMode !== 'undefined' && !!consoleStaffMode; } catch (e) { return false; } }
+  function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* none */ } }
+  function key() { var a = new Uint8Array(12); (window.crypto || window.msCrypto).getRandomValues(a); return 'k' + Array.prototype.map.call(a, function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); }
+  async function api(action, body) {
+    var res; try { res = await fetch('/api/owner-money', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()), body: JSON.stringify(Object.assign({ action: action }, body || {})) }); }
+    catch (e) { return { ok: false, status: 0, j: { error: (window.posNetOffline && window.posNetOffline()) ? 'You are offline. Money figures come from the server, so they cannot be shown right now.' : 'Could not reach the server.' } }; }
+    var j = {}; try { j = await res.json(); } catch (e) { j = {}; }
+    return { ok: res.ok, status: res.status, j: j };
+  }
+  var KIND = { link_sale: 'Permanent link sale', branch_sale: 'Branch link sale', subscription: 'Subscription renewal', addon: 'Add-on', other_income: 'Other income', refund: 'Refund', charge: 'Agreed (not money)' };
+  var STATUS = { success: 'Counted', pending: 'Pending', failed: 'Failed', cancelled: 'Cancelled', complimentary: 'Free (not a sale)', review: 'Needs review', excluded: 'Excluded', reversed: 'Reversed', open: 'Open' };
+  var SOURCE = { gateway: 'Payment gateway (verified)', 'owner-confirmed': 'Confirmed by you', manual: 'Entered by you', 'legacy-import': 'Old records (imported)', request: 'Request (not money yet)' };
+  function pill(st, kind) { return '<span class="op-pill ' + esc(kind === 'refund' ? 'refund' : st) + '">' + esc(kind === 'refund' ? 'Refund' : (STATUS[st] || st)) + '</span>'; }
+  function periodRange(p) {
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    if (p === 'month') return { from: new Date(y, m, 1).getTime(), to: Date.now() + 60000, label: 'This month' };
+    if (p === 'last') return { from: new Date(y, m - 1, 1).getTime(), to: new Date(y, m, 1).getTime() - 1, label: 'Last month' };
+    if (p === '30') return { from: Date.now() - 30 * 86400000, to: Date.now() + 60000, label: 'Last 30 days' };
+    if (p === 'year') return { from: new Date(y, 0, 1).getTime(), to: Date.now() + 60000, label: 'This year' };
+    return { from: 0, to: 0, label: 'All time' };
+  }
+
+  /* ================================================================ the Money tab */
+  var M = { view: 'overview', period: 'month', kind: '', status: '', q: '', offset: 0, links: null, recon: null, sort: '' };
+  function ensureTab() {
+    var anchor = $('daily-sales-tab'); if (!anchor) return false;
+    if (!$(ID)) { var d = document.createElement('div'); d.id = ID; d.className = 'tab-content'; anchor.parentNode.insertBefore(d, anchor); }
+    var ref = document.querySelector('.tab-link[data-tab="daily-sales-tab"]');
+    if (ref && !$(BTN)) {
+      var b = document.createElement('button'); b.id = BTN; b.type = 'button'; b.className = 'tab-link'; b.setAttribute('data-tab', ID); b.textContent = '💰 Money';
+      b.setAttribute('onclick', "guardedSwitchTab(event, '" + ID + "')");
+      ref.parentNode.insertBefore(b, ref);
+      b.addEventListener('click', function () { setTimeout(function () { if ($(ID).classList.contains('active')) renderMoney(); }, 0); });
+    }
+    var mb = $(BTN); if (mb) { var hide = staffMode(); if ((mb.style.display === 'none') !== hide) mb.style.display = hide ? 'none' : ''; }
+    return true;
+  }
+  function openMoney(opts) {
+    Object.assign(M, { offset: 0 }, opts || {});
+    var b = $(BTN); if (b) b.click(); else renderMoney();
+  }
+  window.openOwnerMoney = openMoney;
+  function moneyShell() {
+    var t = $(ID); if (!t) return null;
+    if (!t.querySelector('.op-wrap')) {
+      t.innerHTML = '<div class="op-wrap"><div class="op-head"><div><h2>💰 Money</h2><p>One record of every payment: each one counted once, with where it came from. Opening, refreshing or exporting never changes it.</p></div>'
+        + '<div class="op-chips" id="op-period">' + [['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year'], ['all', 'All time']].map(function (p) { return '<button type="button" class="op-chip" data-period="' + p[0] + '">' + p[1] + '</button>'; }).join('') + '</div></div>'
+        + '<div class="op-tabs" role="tablist">' + [['overview', 'Overview'], ['tx', 'Transactions'], ['record', 'Record a payment'], ['links', 'Permanent links'], ['recon', 'Reconcile old records'], ['log', 'Audit trail']].map(function (v) { return '<button type="button" role="tab" data-mview="' + v[0] + '">' + v[1] + '</button>'; }).join('') + '</div>'
+        + '<div id="op-mbody"></div></div>';
+      t.addEventListener('click', onMoneyClick);
+      t.addEventListener('change', onMoneyChange);
+      t.addEventListener('input', function (e) { if (e.target.id === 'op-q') { clearTimeout(moneyShell.t); var v = e.target.value; moneyShell.t = setTimeout(function () { M.q = v; M.offset = 0; renderMoney(true); }, 300); } });
+    }
+    Array.prototype.forEach.call(t.querySelectorAll('[data-period]'), function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-period') === M.period)); });
+    Array.prototype.forEach.call(t.querySelectorAll('[data-mview]'), function (b) { b.setAttribute('aria-selected', String(b.getAttribute('data-mview') === M.view)); });
+    $('op-period').style.display = M.view === 'overview' || M.view === 'tx' ? '' : 'none';
+    return $('op-mbody');
+  }
+  async function renderMoney(keepFocus) {
+    if (staffMode()) return;
+    var body = moneyShell(); if (!body) return;
+    var seq = (renderMoney.seq = (renderMoney.seq || 0) + 1);
+    if (!keepFocus) body.innerHTML = '<div class="op-kpis"><div class="op-skel"></div><div class="op-skel"></div><div class="op-skel"></div><div class="op-skel"></div></div>';
+    var html = '';
+    try {
+      if (M.view === 'overview') html = await moneyOverview();
+      else if (M.view === 'tx') html = await moneyTx();
+      else if (M.view === 'record') html = await moneyRecord();
+      else if (M.view === 'links') html = await moneyLinks();
+      else if (M.view === 'recon') html = await moneyRecon();
+      else html = await moneyLog();
+    } catch (e) { html = '<div class="op-banner bad">Could not show this: ' + esc(e && e.message) + '</div>'; }
+    if (seq !== renderMoney.seq) return;
+    var focus = keepFocus && document.activeElement && document.activeElement.id === 'op-q' ? document.activeElement.selectionStart : null;
+    body.innerHTML = html;
+    if (focus !== null && $('op-q')) { $('op-q').focus(); try { $('op-q').setSelectionRange(focus, focus); } catch (e) { /* ok */ } }
+  }
+  function errBox(r) { return '<div class="op-banner bad"><span>⚠️</span><div><b>Not available.</b> ' + esc((r.j && r.j.error) || 'The server did not answer.') + ' No figure is shown rather than a wrong one.</div></div>'; }
+  function defs(d) { return '<details class="op-card"><summary style="cursor:pointer;font-weight:800">What each figure means</summary><ul style="margin:10px 0 0 18px;padding:0;font-size:13px;line-height:1.7">' + Object.keys(d || {}).map(function (k) { return '<li>' + esc(d[k]) + '</li>'; }).join('') + '</ul></details>'; }
+  async function moneyOverview() {
+    var p = periodRange(M.period), r = await api('summary', { from: p.from, to: p.to });
+    if (!r.ok) return errBox(r);
+    var s = r.j.summary, all = r.j.allTime || s, rec = r.j.reconciled;
+    var kp = function (cls, label, val, sub, go) { return '<button type="button" class="op-kpi ' + cls + '" data-go="' + esc(go || '') + '"><i></i><small>' + esc(label) + '</small><b>' + val + '</b><span>' + sub + '</span></button>'; };
+    var months = Object.keys(all.byMonth || {}).sort().slice(-12), max = Math.max.apply(null, months.map(function (m) { return all.byMonth[m]; }).concat([1]));
+    return (rec ? '' : '<div class="op-banner warn"><span>🧭</span><div><b>Old records are not reconciled yet.</b> Before this update the console counted money in two places, so old totals could be doubled. Open <a href="#" data-mview="recon">Reconcile old records</a> to see what your old screens showed, what was counted twice, and the corrected total. Nothing is changed until you press Apply.</div></div>')
+      + (r.j.store === 'kv' ? '<div class="op-banner warn"><span>ℹ️</span><div>The owner database (OWNER_DB) is not connected, so the money record is kept in KV. It works, but two payment confirmations arriving in the same instant are only fully protected with the owner database. Run <code>node tools/setup-owner-db.mjs</code>.</div></div>' : '')
+      + '<div class="op-kpis">'
+      + kp('ok', 'Collected revenue', kes(s.collectedC), s.collectedN + ' payment' + (s.collectedN === 1 ? '' : 's') + ' · ' + esc(p.label), 'tx:success')
+      + kp('', 'Permanent-link sales', kes(s.linkSalesC), s.linkSalesN + ' link' + (s.linkSalesN === 1 ? '' : 's') + ' paid for', 'tx:link_sale')
+      + kp('', 'Net collected', kes(s.netC), 'Collected − refunds (' + kes(s.refundsC) + ')', 'tx:success')
+      + kp(s.pendingN ? 'warn' : '', 'Pending payments', kes(s.pendingC), s.pendingN + ' waiting for confirmation (not money yet)', 'tx:pending')
+      + kp(s.failedN ? 'bad' : '', 'Failed / cancelled', String(s.failedN), 'Never counted', 'tx:failed')
+      + kp(s.outstandingC ? 'or' : '', 'Outstanding', kes(s.outstandingC), s.outstandingClients + ' client' + (s.outstandingClients === 1 ? '' : 's') + ' still owe on what was agreed', 'tx:open')
+      + kp(s.reviewN ? 'warn' : '', 'Needs your review', String(s.reviewN), s.reviewN ? kes(s.reviewC) + ' not counted until you decide' : 'Nothing to decide', 'tx:review')
+      + kp('', 'Verified by the gateway', kes(s.verifiedC), 'Entered or confirmed by you: ' + kes(s.manualC), 'tx:success')
+      + '</div>'
+      + '<div class="op-split"><div class="op-card"><h3>Collected per month</h3><p class="op-sub">KES, counted payments, last 12 months with money (Nairobi time).</p>'
+      + (months.length ? '<div class="op-bars" role="img" aria-label="Collected revenue per month">' + months.map(function (m) { var v = all.byMonth[m]; return '<div title="' + esc(m + ': ' + kes(v)) + '"><i style="height:' + Math.max(2, Math.round(v / max * 150)) + 'px"></i><small>' + esc(new Date(m + '-01T12:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })) + '</small></div>'; }).join('') + '</div>' : '<p class="op-note">No payments yet.</p>')
+      + '</div><div class="op-card"><h3>Needs attention</h3>' + attentionList(r.j.attention) + '</div></div>'
+      + '<div class="op-card"><h3>Latest payments</h3>' + recentList(r.j.recent) + '</div>'
+      + (rec ? '<p class="op-note">Old records reconciled on ' + esc(dt(rec.at)) + ': the old dashboard showed ' + esc(kes(rec.before && rec.before.dashboardC)) + ' and the billing ledger ' + esc(kes(rec.before && rec.before.billingC)) + '; the one record counts ' + esc(kes(rec.after && rec.after.collectedC)) + '.</p>' : '')
+      + defs(r.j.definitions);
+  }
+  function attentionList(a) {
+    if (!a || !a.length) return '<p class="op-note">Nothing needs attention.</p>';
+    return '<ul class="op-list">' + a.map(function (x) { return '<li><span>' + (x.status === 'pending' ? '⏳' : x.status === 'review' ? '🔎' : '⚠️') + '</span><div><b>' + esc(x.label || KIND[x.kind] || x.kind) + '</b> ' + pill(x.status, x.kind) + '<small>' + esc(x.note || '') + ' · ' + esc(day(x.created_at)) + '</small></div><span class="op-amt">' + kes(x.amount_c) + '</span></li>'; }).join('') + '</ul>';
+  }
+  function recentList(a) {
+    if (!a || !a.length) return '<p class="op-note">No payments recorded yet.</p>';
+    return '<div class="op-scroll"><table class="op-t"><thead><tr><th>Date</th><th>Client</th><th>For</th><th>From</th><th class="n">Amount</th></tr></thead><tbody>' + a.map(function (x) { return '<tr class="op-click" data-ref="' + esc(x.ref) + '"><td>' + esc(day(x.created_at)) + '</td><td>' + esc(x.label || '—') + '</td><td>' + esc(KIND[x.kind] || x.kind) + '</td><td>' + esc(SOURCE[x.source] || x.source) + '</td><td class="n">' + kes(x.amount_c) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  }
+  var LAST_TX = [];
+  async function moneyTx() {
+    var p = periodRange(M.period), r = await api('list', { from: p.from, to: p.to, kind: M.kind, status: M.status, q: M.q, offset: M.offset, limit: 50 });
+    if (!r.ok) return errBox(r);
+    LAST_TX = r.j.rows || [];
+    var s = r.j.summary, total = r.j.total;
+    var opt = function (v, l, cur) { return '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + l + '</option>'; };
+    return '<div class="op-card"><div class="op-bar">'
+      + '<div style="flex:1;min-width:200px"><label for="op-q">Search</label><input type="search" id="op-q" placeholder="Client, M-Pesa code, note…" value="' + esc(M.q) + '" style="width:100%"></div>'
+      + '<div><label for="op-kind">Type</label><select id="op-kind">' + opt('', 'All types', M.kind) + Object.keys(KIND).map(function (k) { return opt(k, KIND[k], M.kind); }).join('') + '</select></div>'
+      + '<div><label for="op-status">Status</label><select id="op-status">' + opt('', 'All statuses', M.status) + Object.keys(STATUS).map(function (k) { return opt(k, STATUS[k], M.status); }).join('') + '</select></div>'
+      + '<div><button type="button" class="op-btn" data-act="csv">⬇️ Export CSV</button></div></div>'
+      + '<p class="op-note">' + total + ' entr' + (total === 1 ? 'y' : 'ies') + ' · counted in these filters: <b>' + kes(s.collectedC) + '</b> collected, ' + kes(s.refundsC) + ' refunded, net <b>' + kes(s.netC) + '</b>. Tap a row to see why it counts (or not).</p></div>'
+      + '<div class="op-scroll"><table class="op-t"><thead><tr><th>Date</th><th>Client</th><th>Type</th><th>Status</th><th>From</th><th>Reference</th><th class="n">Amount</th></tr></thead><tbody>'
+      + (LAST_TX.length ? LAST_TX.map(function (x) { return '<tr class="op-click" data-ref="' + esc(x.ref) + '"><td style="white-space:nowrap">' + esc(day(x.created_at)) + '</td><td>' + esc(x.label || x.group_key || '—') + '</td><td>' + esc(KIND[x.kind] || x.kind) + '</td><td>' + pill(x.status, x.kind) + (x.refunded_c ? ' <span class="op-pill refund">refunded ' + kes(x.refunded_c) + '</span>' : '') + '</td><td>' + esc(SOURCE[x.source] || x.source) + '</td><td>' + esc(x.provider_ref || '—') + '</td><td class="n">' + (x.kind === 'refund' ? '−' : '') + kes(x.amount_c) + '</td></tr>'; }).join('') : '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--op-mute)">Nothing matches. Change the filters, or record a payment.</td></tr>')
+      + '</tbody></table></div>'
+      + (total > 50 ? '<div class="op-bar" style="justify-content:flex-end"><button type="button" class="op-btn" data-act="prev"' + (M.offset ? '' : ' disabled') + '>‹ Previous</button><span style="align-self:center;font-size:13px">' + (M.offset + 1) + '–' + Math.min(total, M.offset + 50) + ' of ' + total + '</span><button type="button" class="op-btn" data-act="next"' + (M.offset + 50 >= total ? ' disabled' : '') + '>Next ›</button></div>' : '');
+  }
+  async function exportCsv() {
+    var p = periodRange(M.period), r = await api('list', { from: p.from, to: p.to, kind: M.kind, status: M.status, q: M.q, all: true });
+    if (!r.ok) { toast((r.j && r.j.error) || 'Could not export.', true); return; }
+    var cell = function (v) { var s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) || s !== String(v == null ? '' : v) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    var rows = [['MyDuka Owner Console - money record export', p.label, 'generated ' + new Date().toLocaleString('en-GB')], [], ['Date', 'Reference (stable id)', 'Client', 'Client id', 'Type', 'Status', 'Counted?', 'Amount (KES)', 'Method', 'M-Pesa / receipt', 'Source', 'Verified by gateway', 'Related entry', 'Note']];
+    r.j.rows.forEach(function (x) { rows.push([new Date(x.created_at).toLocaleString('en-GB'), x.ref, x.label, x.client_id, KIND[x.kind] || x.kind, STATUS[x.status] || x.status, x.status === 'success' && x.kind !== 'charge' ? (x.kind === 'refund' ? 'subtracted' : 'yes') : 'no', ((x.kind === 'refund' ? -1 : 1) * x.amount_c / 100).toFixed(2), x.method, x.provider_ref, SOURCE[x.source] || x.source, x.verified ? 'yes' : 'no', x.related_ref, x.note]); });
+    var s = r.j.summary; rows.push([]); rows.push(['Collected', (s.collectedC / 100).toFixed(2)]); rows.push(['Refunds', (s.refundsC / 100).toFixed(2)]); rows.push(['Net collected', (s.netC / 100).toFixed(2)]); rows.push(['Pending (not money)', (s.pendingC / 100).toFixed(2)]);
+    var csv = '﻿' + rows.map(function (rr) { return rr.map(cell).join(','); }).join('\r\n');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); a.download = 'mydukapos-money_' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+  /* ---------- detail drawer ---------- */
+  function drawer(html) {
+    var d = $('op-drawer'); if (!d) { d = document.createElement('div'); d.id = 'op-drawer'; d.className = 'op-drawer'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.innerHTML = '<div class="op-scrim" data-act="close"></div><div class="op-panel"></div>'; document.body.appendChild(d); d.addEventListener('click', onDrawerClick); document.addEventListener('keydown', function (e) { if (e.key === 'Escape') d.classList.remove('on'); }); }
+    if (html === null) { d.classList.remove('on'); return; }
+    d.querySelector('.op-panel').innerHTML = html; d.classList.add('on');
+    var f = d.querySelector('button, input, select, textarea'); if (f) f.focus();
+  }
+  function whyText(x) {
+    if (x.kind === 'charge') return 'An amount agreed with the client. It is not money; it is used only to show what is still owed.';
+    if (x.kind === 'refund') return 'Money returned. It is subtracted from net collected revenue; the original payment stays in the record.';
+    if (x.status === 'success') return x.source === 'gateway' ? 'Counted: the payment gateway confirmed it (the M-Pesa receipt is stored, so it can never be counted twice).' : x.source === 'owner-confirmed' ? 'Counted: you confirmed this payment (Confirm payment).' : x.source === 'manual' ? 'Counted: you entered it by hand with Record a payment.' : 'Counted: brought over from the old records during reconciliation.';
+    if (x.status === 'review') return 'NOT counted yet: MyDuka found it may be the same money as another entry. Decide below.';
+    if (x.status === 'pending') return 'NOT counted: the payment is requested or claimed, but not confirmed.';
+    if (x.status === 'complimentary') return 'NOT a sale: this link was given free (test, internal or complimentary).';
+    return 'NOT counted (' + (STATUS[x.status] || x.status) + ').';
+  }
+  function openDetail(ref) {
+    var x = LAST_TX.concat(window.__opRecent || []).find(function (r) { return r.ref === ref; });
+    if (!x) { api('list', { q: ref, all: true }).then(function (r) { var y = r.ok && r.j.rows.find(function (z) { return z.ref === ref; }); if (y) { LAST_TX.push(y); openDetail(ref); } }); return; }
+    var acts = '';
+    if (!x.virtual && x.status === 'review') acts = '<button type="button" class="op-btn pri" data-act="count" data-ref="' + esc(x.ref) + '">✅ Count it (it is separate money)</button> <button type="button" class="op-btn" data-act="exclude" data-ref="' + esc(x.ref) + '">🚫 Exclude (it is a duplicate)</button>';
+    else if (!x.virtual && x.status === 'success' && x.kind !== 'refund' && x.kind !== 'charge') acts = (x.verified ? '' : '<button type="button" class="op-btn" data-act="exclude" data-ref="' + esc(x.ref) + '">🚫 Exclude</button> ') + '<button type="button" class="op-btn bad" data-act="refund" data-ref="' + esc(x.ref) + '">↩️ Record a refund</button>';
+    else if (!x.virtual && x.status === 'excluded') acts = '<button type="button" class="op-btn" data-act="count" data-ref="' + esc(x.ref) + '">✅ Count it again</button>';
+    else if (!x.virtual && x.kind === 'charge' && x.status === 'open') acts = '<button type="button" class="op-btn pri" data-act="pay-charge" data-ref="' + esc(x.ref) + '">💵 Record a payment towards this</button>';
+    drawer('<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h3 style="margin:0">' + esc(KIND[x.kind] || x.kind) + '</h3><button type="button" class="op-btn" data-act="close" aria-label="Close">✕</button></div>'
+      + '<p style="margin:8px 0 0;font-size:26px;font-weight:800">' + (x.kind === 'refund' ? '−' : '') + kes(x.amount_c) + ' ' + pill(x.status, x.kind) + '</p>'
+      + '<div class="op-banner" style="margin-top:12px"><span>💡</span><div>' + esc(whyText(x)) + '</div></div>'
+      + '<dl class="op-dl"><dt>Client</dt><dd>' + esc(x.label || x.group_key || '—') + (x.client_id ? '<br><small>' + esc(x.client_id) + '</small>' : '') + '</dd><dt>Date</dt><dd>' + esc(dt(x.created_at)) + '</dd><dt>Confirmed</dt><dd>' + esc(dt(x.confirmed_at)) + '</dd>'
+      + '<dt>Method</dt><dd>' + esc(x.method || '—') + '</dd><dt>M-Pesa / receipt</dt><dd>' + esc(x.provider_ref || '—') + '</dd><dt>Source</dt><dd>' + esc(SOURCE[x.source] || x.source || '—') + '</dd>'
+      + '<dt>Reference</dt><dd><code>' + esc(x.ref) + '</code></dd>' + (x.related_ref ? '<dt>Related entry</dt><dd><code>' + esc(x.related_ref) + '</code></dd>' : '') + '<dt>Note</dt><dd>' + esc(x.note || '—') + '</dd><dt>Recorded by</dt><dd>' + esc(x.actor || '—') + '</dd></dl>'
+      + (acts ? '<div class="op-field" id="op-reason-wrap"><label for="op-reason">Reason (kept in the audit trail)</label><input id="op-reason" placeholder="e.g. same payment entered twice"></div><div class="op-bar" style="margin-top:10px">' + acts + '</div><p class="op-msg" id="op-dmsg" role="status"></p>' : ''));
+  }
+  async function onDrawerClick(e) {
+    var b = e.target.closest && e.target.closest('[data-act]'); if (!b) return;
+    var a = b.getAttribute('data-act'), ref = b.getAttribute('data-ref'), msg = $('op-dmsg'), reason = ($('op-reason') || {}).value || '';
+    if (a === 'close') { drawer(null); return; }
+    if (a === 'pay-charge') { drawer(null); var ch = LAST_TX.find(function (r) { return r.ref === ref; }); M.prefill = { kind: 'link_sale', clientId: ch && ch.client_id, chargeRef: ref, note: 'Payment towards: ' + ((ch && ch.note) || '') }; openMoney({ view: 'record' }); return; }
+    if ((a === 'count' || a === 'exclude') && !reason.trim()) { msg.className = 'op-msg err'; msg.textContent = 'Write the reason first.'; $('op-reason').focus(); return; }
+    b.disabled = true;
+    var r;
+    if (a === 'count') r = await api('status', { ref: ref, status: 'success', reason: reason });
+    else if (a === 'exclude') r = await api('status', { ref: ref, status: 'excluded', reason: reason });
+    else if (a === 'refund') {
+      if (!reason.trim()) { msg.className = 'op-msg err'; msg.textContent = 'Write the reason for the refund first.'; b.disabled = false; return; }
+      var amt = prompt('Amount refunded in KES (leave empty for the whole payment):', '');
+      if (amt === null) { b.disabled = false; return; }
+      var k = key(); r = await api('refund', { ref: ref, reason: reason, amount: amt || undefined, key: k });
+      if (r.status === 409 && r.j.needConfirm) { if (!confirm(r.j.summary.join('\n'))) { b.disabled = false; return; } r = await api('refund', { ref: ref, reason: reason, amount: amt || undefined, key: k, confirm: true }); }
+    }
+    if (!r || !r.ok) { msg.className = 'op-msg err'; msg.textContent = (r && r.j && r.j.error) || 'Could not save that.'; b.disabled = false; return; }
+    drawer(null); toast('Saved. The change is in the audit trail.'); renderMoney(); refreshDash();
+  }
+  /* ---------- record a payment ---------- */
+  async function linksData(force) { if (!M.links || force) { var r = await api('links', {}); if (!r.ok) throw new Error((r.j && r.j.error) || 'Could not load the links.'); M.links = r.j.links || []; } return M.links; }
+  async function moneyRecord() {
+    var links; try { links = await linksData(); } catch (e) { return '<div class="op-banner bad">' + esc(e.message) + '</div>'; }
+    var pf = M.prefill || {}; M.formKey = M.formKey || key();
+    var perm = links.filter(function (l) { return l.type === 'permanent'; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return '<div class="op-card"><h3>Record a payment you received</h3><p class="op-sub">For money that did not come through the automatic M-Pesa prompt (cash, a direct M-Pesa send, a bank transfer). A payment confirmed by the gateway or by <b>Confirm payment</b> is already recorded: do not enter it again. MyDuka refuses a second sale for the same link unless you say it is a different payment, and an M-Pesa code can only ever be counted once.</p>'
+      + '<form id="op-rec-form" novalidate><div class="op-grid2">'
+      + '<div class="op-field"><label for="op-r-kind">What is it for?</label><select id="op-r-kind">' + [['link_sale', 'Permanent link sale'], ['branch_sale', 'Branch link sale'], ['subscription', 'Subscription renewal'], ['addon', 'Add-on'], ['other_income', 'Other income (setup, training, website…)'], ['charge', 'Only an amount agreed (no money yet)']].map(function (o) { return '<option value="' + o[0] + '"' + (pf.kind === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>'
+      + '<div class="op-field"><label for="op-r-client">Client link</label><select id="op-r-client"><option value="">— Not linked to one link —</option>' + perm.map(function (l) { return '<option value="' + esc(l.id) + '"' + (pf.clientId === l.id ? ' selected' : '') + '>' + esc(l.name + (l.clientName && l.clientName !== l.name ? ' (' + l.clientName + ')' : '') + (l.payment === 'paid' ? ' · already paid ' + kes(l.paidC) : '')) + '</option>'; }).join('') + '</select><p class="op-hint">Required for a link sale.</p></div>'
+      + '<div class="op-field"><label for="op-r-amount" id="op-r-amount-l">Amount received (KES)</label><input id="op-r-amount" type="number" min="1" step="1" inputmode="decimal" placeholder="3000"></div>'
+      + '<div class="op-field"><label for="op-r-agreed">Amount agreed (KES, optional)</label><input id="op-r-agreed" type="number" min="0" step="1" inputmode="decimal" placeholder="Leave empty if paid in full"><p class="op-hint">If more was agreed than paid, the rest shows as Outstanding.</p></div>'
+      + '<div class="op-field"><label for="op-r-method">How was it paid?</label><select id="op-r-method"><option value="mpesa">M-Pesa</option><option value="cash">Cash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="other">Other</option></select></div>'
+      + '<div class="op-field"><label for="op-r-receipt">M-Pesa code / receipt no.</label><input id="op-r-receipt" maxlength="40" autocapitalize="characters" placeholder="e.g. SJK7H2LQ9P"><p class="op-hint">Required for M-Pesa. It stops the same payment being counted twice.</p></div>'
+      + '<div class="op-field"><label for="op-r-date">Date received</label><input id="op-r-date" type="date" value="' + new Date().toISOString().slice(0, 10) + '"></div>'
+      + '<div class="op-field" style="grid-column:1/-1"><label for="op-r-note">Description</label><textarea id="op-r-note" maxlength="300" placeholder="e.g. Permanent link for Juma Hardware, paid at the office">' + esc(pf.note || '') + '</textarea></div>'
+      + '</div><input type="hidden" id="op-r-charge" value="' + esc(pf.chargeRef || '') + '">'
+      + '<div id="op-r-sep" style="display:none;margin-top:10px" class="op-banner warn"><span>⚠️</span><div><b id="op-r-sep-t"></b><div class="op-field" style="margin-top:8px"><label for="op-r-sepr">Why is this a different payment?</label><input id="op-r-sepr" placeholder="e.g. second branch paid separately"></div><label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-weight:700"><input type="checkbox" id="op-r-sepc"> Yes, it is a different payment</label></div></div>'
+      + '<div class="op-bar" style="margin-top:14px"><button type="submit" class="op-btn pri" id="op-r-save">Save payment</button>' + (pf.chargeRef ? '<span class="op-note">Towards the agreed amount <code>' + esc(pf.chargeRef) + '</code></span>' : '') + '</div><p class="op-msg" id="op-r-msg" role="status"></p></form></div>';
+  }
+  async function saveRecord(e) {
+    e.preventDefault();
+    var msg = $('op-r-msg'), btn = $('op-r-save');
+    var v = function (id) { return ($(id) || {}).value || ''; };
+    var body = { key: M.formKey, kind: v('op-r-kind'), clientId: v('op-r-client'), amount: v('op-r-amount'), agreed: v('op-r-agreed'), method: v('op-r-method'), receipt: v('op-r-receipt').trim(), date: v('op-r-date'), note: v('op-r-note').trim(), chargeRef: v('op-r-charge') };
+    if (body.kind === 'charge') body.method = 'other';
+    if ($('op-r-sepc') && $('op-r-sepc').checked) { body.separate = true; body.separateReason = v('op-r-sepr').trim(); }
+    if (!(Number(body.amount) > 0)) { msg.className = 'op-msg err'; msg.textContent = 'Enter the amount (more than 0).'; $('op-r-amount').focus(); return; }
+    if (!body.note) { msg.className = 'op-msg err'; msg.textContent = 'Write a short description.'; $('op-r-note').focus(); return; }
+    btn.disabled = true; msg.className = 'op-msg'; msg.textContent = 'Saving…';
+    var r = await api('record', body);
+    btn.disabled = false;
+    if (r.status === 409 && r.j.needSeparate) { $('op-r-sep').style.display = 'flex'; $('op-r-sep-t').textContent = r.j.error; msg.className = 'op-msg err'; msg.textContent = 'Not saved. Read the warning above.'; return; }
+    if (!r.ok) { msg.className = 'op-msg err'; msg.textContent = (r.j && r.j.error) || 'Could not save.'; return; }
+    M.formKey = key(); M.prefill = null; M.links = null;
+    toast(r.j.dup ? 'This payment was already saved (nothing added twice).' : r.j.review ? 'Saved, but NOT counted: that M-Pesa code is already in the record. Check it under Needs review.' : 'Payment saved and counted once.', !!r.j.review);
+    M.view = r.j.review ? 'tx' : 'overview'; M.status = r.j.review ? 'review' : ''; renderMoney(); refreshDash();
+  }
+  /* ---------- permanent links ---------- */
+  async function moneyLinks() {
+    var links; try { links = await linksData(true); } catch (e) { return '<div class="op-banner bad">' + esc(e.message) + '</div>'; }
+    var q = (M.lq || '').toLowerCase(), f = M.lf || 'permanent';
+    var list = links.filter(function (l) { return (f === 'all' || l.type === f || (f === 'unpaid' && l.type === 'permanent' && l.payment !== 'paid' && l.payment !== 'complimentary')) && (!q || (l.name + ' ' + l.clientName + ' ' + l.slug + ' ' + l.phone).toLowerCase().indexOf(q) >= 0); })
+      .sort(function (a, b) { return (b.confirmedAt || b.createdAt) - (a.confirmedAt || a.createdAt); });
+    var payLbl = { paid: 'Paid', complimentary: 'Free', pending: 'Payment pending', review: 'Needs review', none: 'No payment recorded', demo: 'Demo' };
+    return '<div class="op-card"><h3>Links and their payment</h3><p class="op-sub">Creating a link is not a payment. A link counts as a KES sale only when a payment for it is confirmed, and then exactly once.</p><div class="op-bar">'
+      + '<div style="flex:1;min-width:200px"><label for="op-lq">Search</label><input type="search" id="op-lq" value="' + esc(M.lq || '') + '" placeholder="Business, client, phone, address…" style="width:100%"></div>'
+      + '<div><label for="op-lf">Show</label><select id="op-lf">' + [['permanent', 'Permanent links'], ['unpaid', 'Permanent, not paid'], ['demo', 'Demo accounts'], ['all', 'Everything']].map(function (o) { return '<option value="' + o[0] + '"' + (f === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div></div></div>'
+      + '<div class="op-scroll"><table class="op-t"><thead><tr><th>Business</th><th>Client</th><th>Link</th><th>Created</th><th>Type</th><th>Link status</th><th>Payment</th><th class="n">Paid</th><th></th></tr></thead><tbody>'
+      + (list.length ? list.map(function (l) { return '<tr><td><b>' + esc(l.name) + '</b>' + (l.source ? '<br><small>' + esc(l.source) + '</small>' : '') + '</td><td>' + esc(l.clientName || '—') + (l.phone ? '<br><small>' + esc(l.phone) + '</small>' : '') + '</td><td>' + esc(l.slug ? l.slug + '.mydukapos.store' : l.id) + '</td><td style="white-space:nowrap">' + esc(day(l.createdAt)) + '</td><td>' + esc(l.type === 'permanent' ? 'Permanent' : 'Demo') + '</td><td>' + (l.locked ? '<span class="op-pill failed">Locked</span>' : l.valid ? '<span class="op-pill success">Active</span>' : '<span class="op-pill excluded">Expired</span>') + '</td><td><span class="op-pill ' + esc(l.payment) + '">' + esc(payLbl[l.payment] || l.payment) + '</span></td><td class="n">' + (l.paidC ? kes(l.paidC) : '—') + '</td><td>' + (l.type === 'permanent' && l.payment !== 'paid' && l.payment !== 'complimentary' ? '<button type="button" class="op-btn" data-act="pay-link" data-id="' + esc(l.id) + '">Record payment</button>' : (l.refs.length ? '<button type="button" class="op-btn" data-act="show-link" data-id="' + esc(l.id) + '">Entries</button>' : '')) + '</td></tr>'; }).join('') : '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--op-mute)">No links match.</td></tr>')
+      + '</tbody></table></div>';
+  }
+  /* ---------- reconciliation ---------- */
+  function localSales() { try { return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } }
+  async function moneyRecon() {
+    var r = await api('reconcile-preview', { sales: localSales() });
+    if (!r.ok) return errBox(r);
+    M.recon = r.j;
+    var j = r.j, rows = j.rows || [];
+    var groups = { review: rows.filter(function (x) { return x.status === 'review'; }), counted: rows.filter(function (x) { return x.status === 'success' && x.kind !== 'charge' && x.kind !== 'refund'; }), other: rows.filter(function (x) { return x.status !== 'review' && !(x.status === 'success' && x.kind !== 'charge' && x.kind !== 'refund'); }) };
+    var tbl = function (list) { return list.length ? '<div class="op-scroll" style="max-height:360px"><table class="op-t"><thead><tr><th>Date</th><th>Client</th><th>Type</th><th>Status</th><th>Why</th><th class="n">Amount</th></tr></thead><tbody>' + list.map(function (x) { return '<tr><td style="white-space:nowrap">' + esc(day(x.created_at)) + '</td><td>' + esc(x.label || x.group_key || '—') + '</td><td>' + esc(KIND[x.kind] || x.kind) + '</td><td>' + pill(x.status, x.kind) + (x.already ? ' <small>(already in the record)</small>' : '') + '</td><td>' + esc(x.reason || '') + '</td><td class="n">' + kes(x.amount_c) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="op-note">None.</p>'; };
+    return '<div class="op-card"><h3>Reconcile the old records</h3><p class="op-sub">Before this update money was counted in two places: the console’s sales book (fed by the 💰 switch and by Quote &amp; Payments) and the billing ledger (payments confirmed by the gateway or by you). This report reads them all and shows how one payment could appear two or three times. <b>Nothing is deleted.</b> Probable duplicates are kept as <b>Needs review</b> and are not counted until you decide.</p>'
+      + '<div class="op-kpis">'
+      + '<div class="op-kpi" style="cursor:default"><i></i><small>Old dashboard "Revenue"</small><b>' + kes(j.before.dashboardC) + '</b><span>The console’s sales book (' + j.salesRead + ' sales read' + (j.serverRead ? ', server copy + this device' : ', this device') + ')</span></div>'
+      + '<div class="op-kpi" style="cursor:default"><i></i><small>Old Billing ledger</small><b>' + kes(j.before.billingC) + '</b><span>' + j.eventsRead + ' payment events</span></div>'
+      + '<div class="op-kpi bad" style="cursor:default"><i></i><small>Both added together</small><b>' + kes(j.before.bothC) + '</b><span>What adding the two screens gave</span></div>'
+      + '<div class="op-kpi ok" style="cursor:default"><i></i><small>Corrected: counted once</small><b>' + kes(j.after.collectedC) + '</b><span>Net ' + kes(j.after.netC) + ' after refunds</span></div>'
+      + '<div class="op-kpi warn" style="cursor:default"><i></i><small>Set aside for review</small><b>' + kes(j.after.reviewC) + '</b><span>' + j.after.reviewN + ' entr' + (j.after.reviewN === 1 ? 'y' : 'ies') + ' (probable duplicates)</span></div>'
+      + '<div class="op-kpi or" style="cursor:default"><i></i><small>Outstanding</small><b>' + kes(j.after.outstandingC) + '</b><span>Agreed but not yet paid</span></div>'
+      + '</div><div class="op-bar" style="margin-top:14px"><button type="button" class="op-btn or" data-act="recon-apply">Apply this reconciliation</button><button type="button" class="op-btn" data-act="recon-csv">⬇️ Download the report (CSV)</button></div>'
+      + '<p class="op-note">Apply writes the entries above into the one money record with fixed references, so running it again never adds anything twice. Before and after totals are saved with the date. You can still count or exclude any entry afterwards (with a reason, in the audit trail). If your sales book is on another device, open the console there and run it again: entries already in the record are skipped.</p><p class="op-msg" id="op-recon-msg" role="status"></p></div>'
+      + '<div class="op-card"><h3>Probable duplicates - not counted (' + groups.review.length + ')</h3>' + tbl(groups.review) + '</div>'
+      + '<div class="op-card"><h3>Counted (' + groups.counted.length + ')</h3>' + tbl(groups.counted) + '</div>'
+      + '<div class="op-card"><h3>Not money: free links, agreed amounts, refunds (' + groups.other.length + ')</h3>' + tbl(groups.other) + '</div>';
+  }
+  async function reconApply() {
+    if (!confirm('Apply the reconciliation?\n\n• Nothing is deleted.\n• Probable duplicates are kept as "Needs review" and not counted.\n• Running it again adds nothing twice.')) return;
+    var msg = $('op-recon-msg'); msg.className = 'op-msg'; msg.textContent = 'Applying…';
+    var r = await api('reconcile-apply', { sales: localSales(), confirm: true });
+    if (!r.ok) { msg.className = 'op-msg err'; msg.textContent = (r.j && r.j.error) || 'Could not apply.'; return; }
+    toast('Reconciled: ' + r.j.added + ' entries added, ' + r.j.kept + ' were already there. Counted once: ' + kes(r.j.after.collectedC) + '.');
+    M.view = 'overview'; renderMoney(); refreshDash();
+  }
+  function reconCsv() {
+    var j = M.recon; if (!j) return;
+    var cell = function (v) { var s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) || s.charAt(0) === "'" ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    var rows = [['MyDuka reconciliation report', new Date().toLocaleString('en-GB')], ['Old dashboard revenue', (j.before.dashboardC / 100).toFixed(2)], ['Old billing ledger', (j.before.billingC / 100).toFixed(2)], ['Both together', (j.before.bothC / 100).toFixed(2)], ['Counted once (corrected)', (j.after.collectedC / 100).toFixed(2)], ['Set aside for review', (j.after.reviewC / 100).toFixed(2)], [], ['Date', 'Reference', 'Client', 'Type', 'Proposed status', 'Amount (KES)', 'Why', 'Related entry', 'Already in record']];
+    (j.rows || []).forEach(function (x) { rows.push([new Date(x.created_at).toLocaleString('en-GB'), x.ref, x.label || x.group_key, KIND[x.kind] || x.kind, STATUS[x.status] || x.status, (x.amount_c / 100).toFixed(2), x.reason, x.related_ref, x.already ? 'yes' : 'no']); });
+    var csv = '﻿' + rows.map(function (rr) { return rr.map(cell).join(','); }).join('\r\n');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); a.download = 'mydukapos-reconciliation_' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+  async function moneyLog() {
+    var r = await api('log', {}); if (!r.ok) return errBox(r);
+    var rows = r.j.rows || [];
+    return '<div class="op-card"><h3>Audit trail</h3><p class="op-sub">Every entry added, counted, excluded, refunded or rolled back, newest first. Amounts are never edited.</p><div class="op-scroll"><table class="op-t"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Entry</th><th>Detail</th></tr></thead><tbody>'
+      + (rows.length ? rows.map(function (x) { return '<tr><td style="white-space:nowrap">' + esc(dt(x.at)) + '</td><td>' + esc(x.actor || '—') + '</td><td>' + esc(x.action) + '</td><td><code>' + esc(x.ref) + '</code></td><td>' + esc(x.note || '') + '</td></tr>'; }).join('') : '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--op-mute)">Nothing yet.</td></tr>') + '</tbody></table></div></div>';
+  }
+  function onMoneyClick(e) {
+    var t = e.target.closest ? e.target : null; if (!t) return;
+    var pv = t.closest('[data-period]'); if (pv) { M.period = pv.getAttribute('data-period'); M.offset = 0; renderMoney(); return; }
+    var mv = t.closest('[data-mview]'); if (mv) { e.preventDefault(); M.view = mv.getAttribute('data-mview'); M.offset = 0; if (M.view !== 'record') M.prefill = null; renderMoney(); return; }
+    var go = t.closest('[data-go]'); if (go && go.getAttribute('data-go')) { var g = go.getAttribute('data-go').split(':'); M.view = 'tx'; if (['success', 'pending', 'failed', 'review', 'open'].indexOf(g[1]) >= 0) { M.status = g[1]; M.kind = g[1] === 'open' ? 'charge' : ''; } else { M.kind = g[1]; M.status = 'success'; } renderMoney(); return; }
+    var row = t.closest('tr[data-ref]'); if (row) { openDetail(row.getAttribute('data-ref')); return; }
+    var act = t.closest('[data-act]'); if (!act) return;
+    var a = act.getAttribute('data-act');
+    if (a === 'csv') exportCsv();
+    else if (a === 'prev') { M.offset = Math.max(0, M.offset - 50); renderMoney(); }
+    else if (a === 'next') { M.offset += 50; renderMoney(); }
+    else if (a === 'recon-apply') reconApply();
+    else if (a === 'recon-csv') reconCsv();
+    else if (a === 'pay-link') { M.prefill = { kind: 'link_sale', clientId: act.getAttribute('data-id') }; M.view = 'record'; renderMoney(); }
+    else if (a === 'show-link') { M.view = 'tx'; M.status = ''; M.kind = ''; M.q = act.getAttribute('data-id'); M.period = 'all'; renderMoney(); }
+  }
+  function onMoneyChange(e) {
+    var id = e.target.id;
+    if (id === 'op-kind') { M.kind = e.target.value; M.offset = 0; renderMoney(); }
+    else if (id === 'op-status') { M.status = e.target.value; M.offset = 0; renderMoney(); }
+    else if (id === 'op-lf') { M.lf = e.target.value; renderMoney(); }
+    else if (id === 'op-r-kind') { var c = e.target.value === 'charge'; $('op-r-amount-l').textContent = c ? 'Amount agreed (KES)' : 'Amount received (KES)'; $('op-r-agreed').parentNode.style.display = c ? 'none' : ''; $('op-r-receipt').parentNode.style.display = c ? 'none' : ''; $('op-r-method').parentNode.style.display = c ? 'none' : ''; }
+  }
+  document.addEventListener('submit', function (e) { if (e.target && e.target.id === 'op-rec-form') saveRecord(e); });
+  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'op-lq') { clearTimeout(document.__opLq); var v = e.target.value; document.__opLq = setTimeout(function () { M.lq = v; renderMoney(); setTimeout(function () { var x = $('op-lq'); if (x) { x.focus(); x.setSelectionRange(v.length, v.length); } }, 0); }, 300); } });
+
+  /* ================================================================ the Dashboard */
+  var D = { period: 'month' };
+  async function renderDash() {
+    var tab = $('dashboard-tab'); if (!tab) return;
+    if (staffMode()) { try { if (typeof window.__opOldDash === 'function') window.__opOldDash(); } catch (e) { /* staff note */ } return; }
+    var panel = tab.querySelector('.panel'); if (!panel) return;
+    var root = $('op-dash');
+    if (!root) {
+      Array.prototype.forEach.call(panel.children, function (c) { c.style.display = 'none'; c.setAttribute('data-op-old', '1'); });
+      root = document.createElement('div'); root.id = 'op-dash'; root.className = 'op-wrap'; panel.appendChild(root);
+      root.addEventListener('click', onDashClick);
+    }
+    var p = periodRange(D.period);
+    root.innerHTML = '<div class="op-head"><div><h2>Good ' + (new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening') + '</h2><p>Your clients, links and money · ' + esc(new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) + '</p></div><div class="op-chips">' + [['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year'], ['all', 'All time']].map(function (x) { return '<button type="button" class="op-chip" data-dperiod="' + x[0] + '" aria-pressed="' + (D.period === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div></div><div class="op-kpis"><div class="op-skel"></div><div class="op-skel"></div><div class="op-skel"></div><div class="op-skel"></div></div>';
+    var seq = (renderDash.seq = (renderDash.seq || 0) + 1);
+    var results = await Promise.all([
+      (async function () { try { return { ok: true, list: await fetchOwnerClients('', true) }; } catch (e) { return { ok: false, error: e && e.message }; } })(),
+      api('summary', { from: p.from, to: p.to }),
+    ]);
+    if (seq !== renderDash.seq) return;
+    var cl = results[0], m = results[1];
+    var clients = cl.ok ? cl.list : [];
+    var perm = clients.filter(function (c) { return c.type === 'permanent' && c.source !== 'shared-demo'; }), demos = clients.filter(function (c) { return c.type === 'demo' && c.source !== 'shared-demo'; });
+    var inP = function (t) { return t && (!p.from || t >= p.from) && (!p.to || t <= p.to); };
+    var newPerm = perm.filter(function (c) { return inP(c.confirmedAt || c.createdAt); }).length;
+    var activeDemos = demos.filter(function (c) { return c.valid && !c.locked; }).length;
+    var claims = demos.filter(function (c) { return c.paymentClaimed && !c.locked; }).length;
+    var s = m.ok ? m.j.summary : null;
+    var na = function (why) { return { v: 'Unavailable', sub: why, cls: 'na' }; };
+    var kp = function (cls, label, val, sub, go) { return '<button type="button" class="op-kpi ' + cls + '" data-dgo="' + esc(go) + '"><i></i><small>' + esc(label) + '</small><b>' + val + '</b><span>' + sub + '</span></button>'; };
+    var moneyErr = m.ok ? '' : ((m.j && m.j.error) || 'not loaded');
+    var h = root.querySelector('.op-head').outerHTML
+      + (!cl.ok || !m.ok ? '<div class="op-banner bad"><span>📴</span><div><b>Some figures are unavailable.</b> ' + esc(!cl.ok ? 'Links: ' + (cl.error || 'not loaded') + '. ' : '') + esc(!m.ok ? 'Money: ' + moneyErr : '') + ' They are shown as "Unavailable", never as 0.</div></div>' : '')
+      + (m.ok && !m.j.reconciled ? '<div class="op-banner warn"><span>🧭</span><div><b>Check your old money records once.</b> Old totals could be doubled (two ways of recording the same payment). <a href="#" data-dgo="recon">Reconcile old records</a> shows the corrected figure; nothing changes until you press Apply.</div></div>' : '')
+      + '<div class="op-kpis">'
+      + (cl.ok ? kp('ok', 'Permanent links', String(perm.length), newPerm + ' new · ' + esc(p.label), 'perm') : kp('na', 'Permanent links', 'Unavailable', esc(cl.error || ''), 'perm'))
+      + (cl.ok ? kp('', 'Active demos', String(activeDemos), demos.length + ' demo accounts in total', 'demo') : kp('na', 'Active demos', 'Unavailable', '', 'demo'))
+      + (s ? kp('ok', 'Collected revenue', kes(s.collectedC), s.collectedN + ' payment' + (s.collectedN === 1 ? '' : 's') + ' · ' + esc(p.label), 'm:success') : kp('na', 'Collected revenue', 'Unavailable', esc(moneyErr), 'm:success'))
+      + (s ? kp('', 'Permanent-link sales', kes(s.linkSalesC), s.linkSalesN + ' link' + (s.linkSalesN === 1 ? '' : 's') + ' paid for (counted once each)', 'm:link_sale') : kp('na', 'Permanent-link sales', 'Unavailable', '', 'm:link_sale'))
+      + (s ? kp(s.pendingN || claims ? 'warn' : '', 'Pending payments', kes(s.pendingC), s.pendingN + ' to confirm · not money yet', 'm:pending') : kp('na', 'Pending payments', 'Unavailable', '', 'm:pending'))
+      + (s ? kp(s.outstandingC ? 'or' : '', 'Outstanding', kes(s.outstandingC), s.outstandingClients + ' client' + (s.outstandingClients === 1 ? '' : 's') + ' owe on agreed amounts', 'm:open') : kp('na', 'Outstanding', 'Unavailable', '', 'm:open'))
+      + (s ? kp(s.failedN ? 'bad' : '', 'Failed / cancelled', String(s.failedN), 'Payments that did not go through', 'm:failed') : '')
+      + (s && s.reviewN ? kp('warn', 'Needs your review', String(s.reviewN), kes(s.reviewC) + ' set aside, not counted', 'm:review') : '')
+      + '</div>'
+      + '<div class="op-split"><div class="op-card"><h3>Latest payments</h3>' + (s ? recentList(m.j.recent) : '<p class="op-note">Unavailable.</p>') + '</div>'
+      + '<div class="op-card"><h3>Needs attention</h3>' + (s ? attentionList(m.j.attention) : '<p class="op-note">Unavailable.</p>') + (cl.ok ? expiring(demos) : '') + '</div></div>'
+      + '<div class="op-card"><h3>Shortcuts</h3><div class="op-short">'
+      + [['sales-tab', '🔗 Create a link', 'Demo or permanent'], ['permanent-links-tab', '✅ Permanent links', perm.length + ' clients'], ['money-tab', '💵 Record a payment', 'Cash, M-Pesa, bank'], ['website-tab', '🌐 Website content', 'Home page text & images'], ['seo-tab', '🔎 SEO', 'Titles & descriptions'], ['owner-catalog-tab', '🛍️ Catalogue', 'Product pages'], ['storage-tab', '💾 Storage', 'Database & usage'], ['health-tab', '🩺 System health', 'Gateways & errors']]
+          .filter(function (x) { var b = document.querySelector('.tab-link[data-tab="' + x[0] + '"]'); return x[0] === 'money-tab' || (b && b.style.display !== 'none'); })
+          .map(function (x) { return '<button type="button" data-dtab="' + x[0] + '">' + x[1] + '<small>' + esc(x[2]) + '</small></button>'; }).join('')
+      + '</div></div>'
+      + (m.ok ? defs(m.j.definitions) : '');
+    root.innerHTML = h;
+    window.__opRecent = m.ok ? (m.j.recent || []).concat(m.j.attention || []) : [];
+    try { if (typeof renderPendingUpgrades === 'function') { /* the old dashboard's numbers stay available to scripts that read them */ } } catch (e) { /* none */ }
+  }
+  function expiring(demos) {
+    var DAY = 86400000, list = demos.filter(function (c) { return c.valid && typeof c.remainingMs === 'number' && c.remainingMs <= DAY; }).sort(function (a, b) { return a.remainingMs - b.remainingMs; });
+    if (!list.length) return '<p class="op-note" style="margin-top:12px">No demo expires in the next 24 hours.</p>';
+    return '<h3 style="margin-top:14px">Demos expiring within 24 h</h3><ul class="op-list">' + list.slice(0, 8).map(function (c) { return '<li><span>⏱️</span><div><b>' + esc(c.label || c.slug || c.id) + '</b><small>' + esc(typeof formatRemaining === 'function' ? formatRemaining(c.remainingMs) : Math.round(c.remainingMs / 3600000) + ' h') + ' left</small></div></li>'; }).join('') + '</ul>';
+  }
+  function goTab(id) { var b = document.querySelector('.tab-link[data-tab="' + id + '"]'); if (b) b.click(); }
+  function onDashClick(e) {
+    var t = e.target.closest ? e.target : null; if (!t) return;
+    var pp = t.closest('[data-dperiod]'); if (pp) { D.period = pp.getAttribute('data-dperiod'); renderDash(); return; }
+    var row = t.closest('tr[data-ref]'); if (row) { openDetail(row.getAttribute('data-ref')); return; }
+    var tb = t.closest('[data-dtab]'); if (tb) { var id = tb.getAttribute('data-dtab'); if (id === 'money-tab') { M.view = 'record'; openMoney({ view: 'record' }); } else goTab(id); return; }
+    var g = t.closest('[data-dgo]'); if (!g) return; e.preventDefault();
+    var v = g.getAttribute('data-dgo');
+    if (v === 'perm') goTab('permanent-links-tab'); else if (v === 'demo') goTab('demo-links-tab');
+    else if (v === 'recon') openMoney({ view: 'recon' });
+    else { var k = v.split(':')[1]; var o = { view: 'tx', period: D.period, offset: 0 }; if (['success', 'pending', 'failed', 'review', 'open'].indexOf(k) >= 0) { o.status = k; o.kind = k === 'open' ? 'charge' : ''; } else { o.kind = k; o.status = 'success'; } openMoney(o); }
+  }
+  function refreshDash() { var t = $('dashboard-tab'); if (t && t.classList.contains('active')) renderDash(); }
+
+  /* ================================================================ the old hand-entry forms -> Record a payment */
+  function install() {
+    // the Dashboard
+    if (typeof window.renderDashboard === 'function' && !window.renderDashboard.__op) { window.__opOldDash = window.renderDashboard; var nd = function () { return renderDash(); }; nd.__op = true; window.renderDashboard = nd; }
+    // per-person "Quote & Payments" and per-link "💰 Income recorded": shown read-only + one button to the single form
+    if (typeof window.groupIncomeHtml === 'function' && !window.groupIncomeHtml.__op) {
+      var gi = function (groupKey, groupLabel) {
+        var recs = []; try { recs = (typeof clientDetailCurrentGroup !== 'undefined' && clientDetailCurrentGroup && clientDetailCurrentGroup.records) || []; } catch (e) { recs = []; }
+        var first = recs[0] ? recs[0].id : '';
+        setTimeout(function () { fillClientMoney(recs.map(function (r) { return r.id; })); }, 0);
+        return '<div class="op-card" style="margin:4px 0 10px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3 style="margin:0">💰 Payments for ' + esc(groupLabel) + '</h3><button type="button" class="op-btn pri" onclick="openOwnerMoney({ view: \'record\', prefill: { kind: \'link_sale\', clientId: \'' + esc(String(first).replace(/'/g, '')) + '\' } }); if (typeof closeClientDetailModal === \'function\') closeClientDetailModal();">Record a payment</button></div>'
+          + '<p class="op-note">From the one money record. A payment confirmed by M-Pesa or with Confirm payment is already here; enter only money received another way.</p><div id="op-client-money"><div class="op-skel" style="height:40px"></div></div></div>';
+      };
+      gi.__op = true; window.groupIncomeHtml = gi;
+    }
+    if (typeof window.revenueToggleHtml === 'function' && !window.revenueToggleHtml.__op) { var rt = function () { return ''; }; rt.__op = true; window.revenueToggleHtml = rt; }
+    // "Make permanent": paid or given free?
+    if (typeof window.requestMakePermanent === 'function' && !window.requestMakePermanent.__op) {
+      var mp = async function (clientId, label) {
+        var paid = confirm('Make "' + label + '" a permanent link.\n\nPress OK if the client PAID for it (it is recorded once as a permanent-link sale).\nPress Cancel to choose "given free".');
+        var body = { c: clientId };
+        if (paid) { var code = prompt('M-Pesa code or receipt number of the payment (helps stop it being counted twice). Leave empty for cash:', ''); if (code === null) return; body.receipt = code.trim(); }
+        else { if (!confirm('Make "' + label + '" permanent as a FREE link (test, internal or complimentary)? No sale is recorded.')) return; body.complimentary = true; }
+        try {
+          var res = await fetch('/api/owner-confirm', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()), body: JSON.stringify(body) });
+          var data = await res.json();
+          if (!res.ok || data.error) { toast(data.error || 'Could not make that link permanent.', true); return; }
+          toast(paid ? '"' + label + '" is permanent and its sale is recorded once in Money.' : '"' + label + '" is permanent (free: no sale recorded).');
+          try { ownerClientsCacheAt = 0; } catch (e) { /* cache */ }
+          M.links = null;
+          try { if (typeof closeClientDetailModal === 'function') closeClientDetailModal(); renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true); if (typeof renderPendingUpgrades === 'function') renderPendingUpgrades(true); } catch (e) { /* lists refresh on open */ }
+        } catch (e) { toast('Could not reach the server.', true); }
+      };
+      mp.__op = true; window.requestMakePermanent = mp;
+    }
+    if (typeof window.confirmDemoUpgrade === 'function' && !window.confirmDemoUpgrade.__op) {
+      var cu = async function (clientId, label) {
+        var code = prompt('Confirm the payment for "' + label + '".\nCheck it arrived on M-Pesa first.\n\nM-Pesa code (leave empty if paid in cash):', '');
+        if (code === null) return;
+        try {
+          var res = await fetch('/api/owner-confirm', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()), body: JSON.stringify({ c: clientId, receipt: code.trim() }) });
+          var data = await res.json();
+          if (!res.ok || data.error) { toast(data.error || 'Could not confirm that upgrade.', true); return; }
+          toast('"' + label + '" is now permanent. Its payment is recorded once in Money - nothing else to enter.');
+          M.links = null;
+          try { renderPendingUpgrades(true); ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true); } catch (e) { /* lists refresh on open */ }
+          refreshDash();
+        } catch (e) { toast('Could not reach the server.', true); }
+      };
+      cu.__op = true; window.confirmDemoUpgrade = cu;
+    }
+    // the old money tabs say what they are now
+    [['daily-sales-tab', 'This is the console’s <b>old sales book</b>. Since this update every payment is kept in <b>Money (one record)</b>, counted once. The figures here may include the same payment twice; use Money for your totals.'],
+      ['profits-tab', 'Use this tab for your <b>expenses</b>. Its income figure comes from the old sales book; your income, counted once, is in <b>Money (one record)</b>.'],
+      ['bills-tab', 'Old balances recorded with the 💰 switch or Quote &amp; Payments. To record money received on one of them, use <b>Money → Record a payment</b> (or settle it here and run Reconcile again: it is picked up once).']].forEach(function (x) {
+      var t = $(x[0]); if (!t || t.querySelector('.op-legacy-note')) return;
+      var n = document.createElement('div'); n.className = 'op-banner warn op-legacy-note'; n.innerHTML = '<span>ℹ️</span><div>' + x[1] + ' <a href="#" onclick="openOwnerMoney({ view: \'overview\' }); return false;">Open Money</a></div>';
+      t.insertBefore(n, t.firstChild);
+    });
+    websitePro();
+    var pl = $('permanent-links-tab');
+    if (pl && !pl.querySelector('.op-links-note')) { var n2 = document.createElement('div'); n2.className = 'op-banner op-links-note op-legacy-note'; n2.innerHTML = '<span>📋</span><div>Want a table of every link with its payment status, amount paid and reference? <a href="#" onclick="openOwnerMoney({ view: \'links\' }); return false;">Open Money → Permanent links</a>. Creating or making a link permanent is not a payment; a link counts as a sale once, when its payment is confirmed.</div>'; pl.insertBefore(n2, pl.firstChild); }
+  }
+  /* ---------- Website content: section index, unsaved-changes guard, live-site link (the editing itself is unchanged) ---------- */
+  var webDirty = false;
+  function websitePro() {
+    var tab = $('website-tab'); if (!tab || tab.querySelector('#op-web-nav')) return;
+    var panel = tab.querySelector('.panel') || tab, heads = Array.prototype.slice.call(panel.querySelectorAll('h4')).filter(function (h) { return h.textContent.trim(); });
+    if (!heads.length) return;
+    heads.forEach(function (h, i) { if (!h.id) h.id = 'op-web-s' + i; });
+    var nav = document.createElement('div'); nav.id = 'op-web-nav'; nav.className = 'op-card'; nav.style.margin = '0 0 14px';
+    nav.innerHTML = '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><b>Jump to a section</b><a class="op-btn" href="https://mydukapos.store/" target="_blank" rel="noopener">🌐 Open the public site</a></div>'
+      + '<div class="op-chips" style="margin-top:10px">' + heads.map(function (h) { return '<button type="button" class="op-chip" data-web="' + h.id + '">' + esc(h.textContent.replace(/\s+/g, ' ').trim().slice(0, 40)) + '</button>'; }).join('') + '</div>'
+      + '<p class="op-note">Changes show on the public site after <b>Save &amp; Publish</b>. Only add testimonials that real customers gave you, with their permission.</p>';
+    var h3 = panel.querySelector('h3'), after = h3 && h3.nextElementSibling && h3.nextElementSibling.tagName === 'P' ? h3.nextElementSibling : h3;
+    if (after && after.parentNode === panel) panel.insertBefore(nav, after.nextSibling); else panel.insertBefore(nav, panel.firstChild);
+    nav.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('[data-web]'); if (b) { var t = $(b.getAttribute('data-web')); if (t) t.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); } });
+    var bar = document.createElement('div'); bar.id = 'op-web-dirty'; bar.className = 'op-banner warn'; bar.style.cssText = 'position:sticky;bottom:10px;z-index:5;display:none;align-items:center;margin-top:12px;box-shadow:0 8px 24px rgba(0,0,0,.12)';
+    bar.innerHTML = '<span>✏️</span><div style="flex:1">You have changes that are not published yet.</div><button type="button" class="op-btn pri" id="op-web-save">Save &amp; Publish</button>';
+    panel.appendChild(bar);
+    bar.querySelector('#op-web-save').addEventListener('click', function () { var b = $('website-save-btn'); if (b) b.click(); });
+    var mark = function (e) { if (e.target && e.target.closest && e.target.closest('#op-web-nav')) return; webDirty = true; bar.style.display = 'flex'; };
+    panel.addEventListener('input', mark); panel.addEventListener('change', mark);
+    if (typeof window.saveWebsiteContent === 'function' && !window.saveWebsiteContent.__op) {
+      var orig = window.saveWebsiteContent;
+      var w2 = async function () { var r = await orig.apply(this, arguments); setTimeout(function () { var err = document.querySelector('#website-tab .settings-msg.error, #website-error'); if (!err || !err.textContent.trim()) { webDirty = false; bar.style.display = 'none'; } }, 300); return r; };
+      w2.__op = true; window.saveWebsiteContent = w2;
+    }
+    window.addEventListener('beforeunload', function (e) { if (webDirty) { e.preventDefault(); e.returnValue = ''; } });
+  }
+
+  async function fillClientMoney(ids) {
+    var el = $('op-client-money'); if (!el) return;
+    var r = await api('list', { all: true, requests: true });
+    if (!$('op-client-money')) return;
+    if (!r.ok) { el.innerHTML = '<p class="op-note">Unavailable: ' + esc((r.j && r.j.error) || '') + '</p>'; return; }
+    var rows = r.j.rows.filter(function (x) { return ids.indexOf(x.client_id) >= 0; });
+    LAST_TX = LAST_TX.concat(rows);
+    var s = rows.filter(function (x) { return x.status === 'success' && x.kind !== 'charge' && x.kind !== 'refund'; }).reduce(function (a, x) { return a + x.amount_c; }, 0);
+    el.innerHTML = rows.length ? '<div class="op-scroll"><table class="op-t"><thead><tr><th>Date</th><th>Type</th><th>Status</th><th class="n">Amount</th></tr></thead><tbody>' + rows.map(function (x) { return '<tr class="op-click" data-ref="' + esc(x.ref) + '"><td>' + esc(day(x.created_at)) + '</td><td>' + esc(KIND[x.kind] || x.kind) + '</td><td>' + pill(x.status, x.kind) + '</td><td class="n">' + kes(x.amount_c) + '</td></tr>'; }).join('') + '</tbody><tfoot><tr><td colspan="3">Counted for this client</td><td class="n">' + kes(s) + '</td></tr></tfoot></table></div>' : '<p class="op-note">No payment recorded for this client yet.</p>';
+    el.addEventListener('click', function (e) { var tr = e.target.closest && e.target.closest('tr[data-ref]'); if (tr) openDetail(tr.getAttribute('data-ref')); });
+  }
+
+  function boot() {
+    var n = 0;
+    (function tick() { try { ensureTab(); install(); } catch (e) { /* retried */ } if (++n < 40) setTimeout(tick, n < 10 ? 250 : 1000); })();
+    setInterval(function () { try { ensureTab(); } catch (e) { /* cosmetic */ } }, 3000);
+    // the dashboard is the first page: draw it as soon as the owner is signed in
+    setTimeout(function () { try { var t = $('dashboard-tab'); if (t && t.classList.contains('active') && !staffMode() && headers().Authorization) renderDash(); } catch (e) { /* first open draws it */ } }, 900);
+  }
+  window.ownerPro = { renderMoney: renderMoney, renderDash: renderDash, api: api, state: M };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

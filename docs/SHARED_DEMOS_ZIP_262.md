@@ -25,7 +25,7 @@ Sign in as **Admin**, password **0000** (shown on the website with a Copy button
 * **Visitors cannot corrupt each other**: the server stores nothing for a shared demo (`pos-sync.js` acknowledges and drops every push; `requireValidLicense` answers `demo_readonly` for any other write endpoint). A visitor's edits stay in their own browser.
 * **Client** (`src/shared/blocks/shared-demo.html`, all 7 apps): only on `demo-*` addresses *and* after `/api/license-status` confirms `sharedDemo`. After the first load of the sample the app stops pushing, polling and opening its live socket; a DEMO banner shows the password and **Reset demo** (clears that device's copy, reloads the original data).
 * **Simulated, never live**: STK prompts return a simulated `DEMO-...` request that "succeeds" after a few seconds (`mpesa-stkpush.js`, `mpesa-status.js`); no SMS/WhatsApp/email can be sent because every non-sync write is refused for a demo.
-* **No access beyond the demo**: a demo id resolves only to its own record; the Owner Console and every other tenant need their own sign-in. `0000` is never accepted as the password of a real shop created from 12 Oct 2026 on (`pos-sync.js` answers `demo_password_reserved`); older shops that already use it keep working.
+* **No access beyond the demo**: a demo id resolves only to its own record; the Owner Console and every other tenant need their own sign-in. `0000` is the demos' password but is not reserved: from zip 326 a real shop may use it too and the server stores it like any other password.
 * **Rate limit**: opening a demo is limited to 120 per IP per hour (`DEMO_OPEN_HOURLY_LIMIT`).
 * **Pictures**: `demo-img/*.svg` (about 1 KB each) and `public-site/img/demo-*.svg`, cached for a week by `_headers`; `image` in the data is a short path, so nothing is stored per demo or per visitor. Regenerate with `node tools/make-demo-images.mjs`.
 
@@ -53,7 +53,7 @@ No new database, table, index or migration. Keys: `license:demo_<name>`, `slug:d
 ## Sample data notes
 * Hospital: 24 patients (allergies, next of kin), 40 visits with SOAP + vitals + diagnoses (ICD-10), prescriptions that show **NA on the same prescription** (not stocked / out of stock), labs with reference ranges and a pending one, 4 admissions, appointments, patient notes, a live queue, beds/wards, medicine stock with batches and expiry, the 3 newest visits unpaid at the cashier.
 * Hardware: items sold by pcs, kg, g, m, ft, L with decimal quantities. Liquor: every category from the brief, with a `subcategory` field (the apps have no sub-category screen, so the sub-category is stored on the item and the main category is what the counter filters on).
-* Demos for chama and any product without a self-service demo are not included.
+* Demos for any product without a self-service demo are not included.
 
 ## First time after deploy
 Open Owner Console -> Public Website -> **Create / refresh all demos** (or just press Try Live Demo on each; the first click creates it). A web address `demo-<name>` must not already belong to another shop - if it does, the creation reports it and the other shop is left alone.

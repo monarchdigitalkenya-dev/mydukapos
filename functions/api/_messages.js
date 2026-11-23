@@ -10,7 +10,7 @@
 export const MESSAGES_KEY = 'owner-messages:v1';
 export const KINDS = ['announcement', 'install', 'update', 'maintenance', 'security', 'sync', 'printing'];
 export const PLATFORMS = ['web', 'android', 'windows'];
-export const PRODUCTS = ['shop', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water', 'chama'];
+export const PRODUCTS = ['shop', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water', 'carwash'];
 
 export async function listMessages(env) {
   try { const raw = await env.mydukapos_kv.get(MESSAGES_KEY); const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }

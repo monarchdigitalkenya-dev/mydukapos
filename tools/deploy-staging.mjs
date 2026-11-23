@@ -23,7 +23,16 @@ if (live && stagingId && live[1] === stagingId[1]) {
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mydukapos-staging-'));
 const skip = new Set(['node_modules', '.git', '.wrangler']);
-fs.cpSync(ROOT, tmp, { recursive: true, filter: (src) => !skip.has(path.basename(src)) });
+// zip 356: same rule as the live deploy - files a release removed (left behind by robocopy) are not uploaded
+let release = null;
+try { release = new Set(JSON.parse(fs.readFileSync(path.join(ROOT, 'tools', 'release-files.json'), 'utf8')).files); } catch (e) { release = null; }
+fs.cpSync(ROOT, tmp, { recursive: true, filter: (src) => {
+  if (skip.has(path.basename(src))) return false;
+  const rel = path.relative(ROOT, src).replace(/\\/g, '/');
+  if (!rel || !release) return true;
+  let st; try { st = fs.statSync(src); } catch (e) { return false; }
+  return st.isDirectory() || release.has(rel) || /^(wrangler[^/]*\.toml|\.deploy-target\.json)$/i.test(rel);
+} });
 fs.writeFileSync(path.join(tmp, 'wrangler.toml'), staging);
 console.log('Deploying a copy of the project to the STAGING project (mydukapos-staging) from', tmp);
 const r = spawnSync('npx', ['wrangler', 'pages', 'deploy', '.', '--project-name=mydukapos-staging', '--branch=main'], { cwd: tmp, stdio: 'inherit', shell: process.platform === 'win32' });

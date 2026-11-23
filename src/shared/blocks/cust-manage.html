@@ -1,0 +1,114 @@
+<!-- CUSTOMER MANAGE ------------------------------------------------------------------------------------
+     zip 362: every app can ADD, EDIT and DELETE a customer from the customer's profile.
+     - The tabbed profile (first-run-customers) gets "Edit details" and "Delete customer" buttons in its header.
+     - The classic profile modal (#customer-profile-modal, Aqua POS / water) gets "Edit details", and "Remove Customer" where it had none.
+     - Deleting removes the profile from this device and, through the normal sync (a record that disappears is sent as a tombstone),
+       from every device. Sales, bills and receipts keep the customer's name and phone as they were recorded.
+     Shared by every app via `npm run sync`; never hand-edit it inside an app. -->
+<style>
+    #fr-profile .fr-hact .cm-del { color: #c0392b; border-color: #f5b7b1; }
+    #fr-profile .fr-hact .cm-del:hover { background: #fdecea; }
+    .cm-ov { position: fixed; inset: 0; z-index: 10050; background: rgba(15, 23, 42, .55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .cm-dlg { background: #fff; color: #1f2d3d; border-radius: 14px; width: 100%; max-width: 440px; padding: 20px; box-shadow: 0 18px 50px rgba(0, 0, 0, .3); }
+    .cm-dlg h3 { margin: 0 0 10px; }
+    .cm-dlg label { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
+    .cm-dlg input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #ccd1d6; border-radius: 8px; font-size: 14px; }
+    .cm-dlg .cm-act { display: flex; gap: 10px; margin-top: 16px; }
+    .cm-dlg .cm-act button { flex: 1; padding: 10px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; color: #fff; }
+</style>
+<script>
+(function () {
+    'use strict';
+    function $(id) { return document.getElementById(id); }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+    function list() { try { return typeof customers !== 'undefined' && Array.isArray(customers) ? customers : []; } catch (e) { return []; } }
+    function find(id) { var l = list(); for (var i = 0; i < l.length; i++) { if (l[i] && String(l[i].id) === String(id) && !l[i]._deleted) return l[i]; } return null; }
+    function canManage() { try { return typeof custIsManager === 'function' ? custIsManager() : true; } catch (e) { return true; } }
+    function persist() {
+        /* the app's own key: pos_customers, or aqua_customers in Aqua POS (appStoreKey maps it) */
+        var key = 'pos_customers'; try { if (typeof appStoreKey === 'function') key = appStoreKey('pos_customers'); } catch (e0) { /* default key */ }
+        try { if (typeof safeSetItem === 'function') safeSetItem(key, JSON.stringify(customers)); else localStorage.setItem(key, JSON.stringify(customers)); } catch (e) { /* kept in memory until the next save */ }
+        try { if (typeof queuePush === 'function') queuePush(); } catch (e2) { /* sent with the next change */ }
+    }
+    function refresh() {
+        try { if (typeof window.renderCustomersList === 'function') window.renderCustomersList(); } catch (e) { /* list redraws on next open */ }
+        try { if (typeof window.custRenderCustomers === 'function') window.custRenderCustomers(); } catch (e2) { /* optional */ }
+    }
+    var CUR = { id: null };
+
+    /* ---- DELETE ---- */
+    window.custDeleteById = function (id) {
+        var c = find(id); if (!c) { toast('Customer not found.', true); return false; }
+        if (!canManage()) { toast('Only the Admin or a manager can delete a customer.', true); return false; }
+        var label = (c.name || 'this customer') + (c.phone ? ' (' + c.phone + ')' : '');
+        var owed = 0; try { owed = typeof window.frOwedOf === 'function' ? (window.frOwedOf(c) || 0) : 0; } catch (e0) { owed = 0; }
+        if (!confirm('Delete ' + label + '?' + (owed > 0 ? '\n\n⚠️ They still owe KES ' + owed.toFixed(2) + '. Their bills and debts stay in your records, but you will no longer see them on a customer profile.' : '') + '\n\nTheir sales, bills and receipts stay in your records with the name and phone they were made with. This cannot be undone.')) return false;
+        /* zip 369: a soft delete (tombstone) so the customer stays gone on every phone after a sync */
+        if (typeof deleteCustomer === 'function') {
+            var r = deleteCustomer(id);
+            if (!r || !r.ok) { toast((r && r.error) || 'Could not delete that customer.', true); return false; }
+        } else {
+            customers = list().filter(function (x) { return !(x && String(x.id) === String(id)); });
+            persist();
+        }
+        try { var fp = $('fr-profile'); if (fp) fp.classList.remove('fr-open'); } catch (e) { /* not open */ }
+        try { if (typeof closeCustomerProfileModal === 'function') closeCustomerProfileModal(); } catch (e2) { /* not open */ }
+        refresh();
+        toast((c.name || 'Customer') + ' deleted.');
+        return true;
+    };
+    /* the classic modal's button (Aqua POS had none) */
+    if (typeof window.deleteCustomerFromProfile !== 'function') {
+        window.deleteCustomerFromProfile = function () { try { if (typeof currentCustomerProfileId !== 'undefined' && currentCustomerProfileId) window.custDeleteById(currentCustomerProfileId); } catch (e) { /* no profile open */ } };
+    }
+
+    /* ---- EDIT (uses the full editor from customer-pro when present; a simple one otherwise) ---- */
+    window.custEditById = function (id, after) {
+        var c = find(id); if (!c) { toast('Customer not found.', true); return; }
+        if (typeof window.custEditProfile === 'function') { window.custEditProfile(id, after); return; }
+        var ov = document.createElement('div'); ov.className = 'cm-ov';
+        var esc = function (v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+        ov.innerHTML = '<div class="cm-dlg" role="dialog" aria-modal="true"><h3>✏️ Edit customer</h3><label>Name</label><input id="cm-e-name" value="' + esc(c.name) + '"><label>Phone</label><input id="cm-e-phone" inputmode="tel" value="' + esc(c.phone) + '"><label>Notes</label><input id="cm-e-notes" value="' + esc(c.notes) + '"><p id="cm-e-err" style="color:#c0392b;min-height:16px;margin:6px 0 0"></p><div class="cm-act"><button type="button" id="cm-e-cancel" style="background:#95a5a6">Cancel</button><button type="button" id="cm-e-save" style="background:#1f8a70">Save</button></div></div>';
+        document.body.appendChild(ov);
+        $('cm-e-cancel').onclick = function () { ov.remove(); };
+        $('cm-e-save').onclick = function () {
+            var name = $('cm-e-name').value.trim(), phone = $('cm-e-phone').value.trim(), notes = $('cm-e-notes').value.trim();
+            if (!name && !phone) { $('cm-e-err').textContent = 'Enter a name or a phone number.'; return; }
+            var norm = function (p) { try { return typeof normalizeKenyanPhone === 'function' ? normalizeKenyanPhone(p) : String(p).replace(/\D/g, ''); } catch (e) { return String(p); } };
+            var clash = phone && list().find(function (x) { return x && !x._deleted && String(x.id) !== String(c.id) && x.phone && norm(x.phone) === norm(phone); });
+            if (clash) { $('cm-e-err').textContent = 'That phone number belongs to ' + (clash.name || 'another customer') + '.'; return; }
+            c.name = name; c.phone = phone; c.notes = notes; c.updatedAt = Date.now();
+            persist(); ov.remove(); refresh(); if (typeof after === 'function') after(); toast('Customer saved.');
+        };
+    };
+
+    /* ---- buttons on the profiles ---- */
+    function addFrButtons() {
+        var bar = document.querySelector('#fr-profile .fr-hact'); if (!bar || bar.querySelector('.cm-edit')) return;
+        var e = document.createElement('button'); e.type = 'button'; e.className = 'fr-btn cm-edit'; e.textContent = '✏️ Edit details';
+        e.onclick = function () { var id = CUR.id; if (!id) return; window.custEditById(id, function () { var c = find(id); var n = $('fr-p-name'); if (c && n) n.textContent = c.name || 'Unnamed customer'; try { window.openCustomerProfileModal(id); } catch (x) { /* closed */ } }); };
+        var d = document.createElement('button'); d.type = 'button'; d.className = 'fr-btn cm-del'; d.textContent = '🗑 Delete customer';
+        d.onclick = function () { if (CUR.id) window.custDeleteById(CUR.id); };
+        bar.appendChild(e); bar.appendChild(d);
+    }
+    function addClassicButtons() {
+        var m = $('customer-profile-modal'); if (!m || m.querySelector('.cm-edit')) return;
+        var row = null; m.querySelectorAll('button').forEach(function (b) { if (!row && /closeCustomerProfileModal/.test(b.getAttribute('onclick') || '')) row = b.parentNode; });
+        if (!row) return;
+        var e = document.createElement('button'); e.type = 'button'; e.className = 'btn-main cm-edit'; e.style.background = '#2980b9'; e.textContent = '✏️ Edit details';
+        e.onclick = function () { var id = null; try { id = currentCustomerProfileId; } catch (x) { id = null; } if (!id) return; window.custEditById(id, function () { var c = find(id); if (c) { var n = $('customer-profile-name'); if (n) n.textContent = c.name || 'Unnamed Customer'; var mt = $('customer-profile-meta'); if (mt) mt.textContent = c.phone || ''; } }); };
+        row.insertBefore(e, row.firstChild);
+        var hasDel = false; row.querySelectorAll('button').forEach(function (b) { if (/deleteCustomerFromProfile/.test(b.getAttribute('onclick') || '')) hasDel = true; });
+        if (!hasDel) { var d = document.createElement('button'); d.type = 'button'; d.className = 'btn-main'; d.style.background = 'var(--danger, #c0392b)'; d.textContent = '🗑️ Remove Customer'; d.onclick = function () { window.deleteCustomerFromProfile(); }; row.appendChild(d); }
+    }
+    /* remember which customer the open profile shows (wrapped after every block has installed its own profile) */
+    function wrapOpen() {
+        var cur = window.openCustomerProfileModal; if (typeof cur !== 'function' || cur.__cm) return;
+        var w = function (id) { CUR.id = id; var r = cur.apply(this, arguments); try { addFrButtons(); addClassicButtons(); } catch (e) { /* cosmetic */ } return r; };
+        w.__cm = true; window.openCustomerProfileModal = w;
+    }
+    function start() { try { wrapOpen(); addClassicButtons(); } catch (e) { /* next try */ } }
+    if (document.readyState === 'complete') setTimeout(start, 0); else window.addEventListener('load', function () { setTimeout(start, 0); });
+    setInterval(function () { try { wrapOpen(); } catch (e) { /* next tick */ } }, 3000);   /* a block that re-installs its profile later is wrapped again */
+})();
+</script>

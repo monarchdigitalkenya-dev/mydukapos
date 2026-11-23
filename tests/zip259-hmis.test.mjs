@@ -16,7 +16,7 @@ const INV = [
 const opened = [];
 after(() => { for (const b of opened) { try { b.close(); } catch (e) { /* already closed */ } } });
 async function app(extra = {}) {
-  const b = await boot(APP, { storage: { pos_patients: JSON.stringify(PATIENTS), pos_inventory: JSON.stringify(INV), ...(extra.storage || {}) }, wait: 400 });
+  const b = await boot(APP, { storage: { pos_hrx_hm: '1', pos_patients: JSON.stringify(PATIENTS), pos_inventory: JSON.stringify(INV), ...(extra.storage || {}) }, wait: 400 });
   opened.push(b);
   b.w.eval("showToast = function (m, e) { (window.__toasts = window.__toasts || []).push(m); }; window.confirm = () => true; window.prompt = () => 'test reason';");
   return b;
@@ -170,13 +170,11 @@ test('inpatient: one account — lab + medicines + meals + services + deposit, n
   d.querySelector('[data-ip-charge]').click();
   d.getElementById('ip-ct').value = 'ct_nursing'; d.getElementById('ip-cd').value = '2026-01-05'; d.querySelector('[data-ip-charge]').click();
   assert.equal(J(w, "patientCharges.filter(c => c.name === 'Nursing care')").length, 1);
-  // payments & refunds & reversal
+  // zip 367: no payment is taken in the ward any more (send to cashier). A payment already on file can still be reversed.
   w.eval("hmisOpenInpatient('AD1', 'account')");
-  const before = J(w, 'salesLog.length');
-  d.getElementById('ip-amt').value = '500'; d.querySelector('[data-ip-pay]').click();
-  assert.equal(J(w, 'salesLog.length'), before + 1); assert.equal(J(w, 'admissions[0].depositAmount'), 1500);
-  d.getElementById('ip-amt').value = '99999'; d.getElementById('ip-reason').value = 'x'; d.querySelector('[data-ip-refund]').click();
-  assert.equal(J(w, 'admissions[0].depositAmount'), 1500, 'cannot refund more than the credit');
+  assert.equal(d.querySelector('[data-ip-pay]'), null, 'no take-payment button in the ward');
+  assert.ok(d.querySelector('[data-ipx="send-cashier"]'), 'Send to cashier is there');
+  w.eval("admissions[0].depositAmount += 500; admissions[0].ledger = [{ id: 'LG1', type: 'payment', amount: 500, at: Date.now(), by: 'x' }]; hmisOpenInpatient('AD1', 'account')");
   d.querySelector('[data-ip-rev]').click();
   assert.equal(J(w, 'admissions[0].depositAmount'), 1000); assert.equal(J(w, 'admissions[0].ledger').length, 2);
   assert.ok(J(w, 'admissions[0].ledger[0].reversedBy'));
@@ -198,7 +196,9 @@ test('inpatient: MAR needs a reason unless given; discharge warns on unpaid, pri
   w.eval("openDischargeModal('AD1'); document.getElementById('discharge-summary-input').value = 'Recovered'; confirmDischarge()");
   assert.equal(w.eval('window.__asked'), 1); assert.match(w.eval('window.__askMsg'), /still unpaid/);
   assert.equal(J(w, 'admissions[0].status'), 'discharged'); assert.equal(J(w, "roomStates['Bed 1'].status"), 'cleaning');
-  assert.equal(J(w, 'admissions[0].finalAccount.unpaidItems'), 1);
+  // Zip 367: discharge sends the bed bill still owed (1 day 1,500 - 1,000 deposit) to the cashier as an unpaid charge, so 2 items are unpaid: the medicine + the bed balance
+  assert.equal(J(w, 'admissions[0].finalAccount.unpaidItems'), 2);
+  assert.deepEqual(J(w, "patientCharges.filter(c => c.status === 'unpaid' && c.kind !== 'medication').map(c => c.price * c.qty)"), [500], 'bed balance sent to the cashier, once');
   const t = report(w); assert.match(t, /Discharge Summary/); assert.match(t, /Admission account/); assert.match(t, /Pharmacy/);
   // the unpaid medicine is still unpaid for the cashier — discharge never marked it paid
   assert.equal(J(w, "patientCharges.find(c => c.id === 'p2').status"), 'unpaid');

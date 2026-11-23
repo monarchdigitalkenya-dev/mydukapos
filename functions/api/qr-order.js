@@ -23,8 +23,8 @@
 // PUBLIC (customer phone, no app):
 //   GET  ?t=<token>                          -> { business, location:{label,kind}, session, open, menu, payment }
 //   GET  ?t=<token>&o=<orderId>              -> { order:{ id,status,items,total,owner,billNo,paid,outstanding,payments,requests,canCancel,canExchange,... } }
-//   POST { action:'order', t, key, items:[{code,qty,modifiers,note}], name?, phone?, note? }
-//   POST { action:'cancel', t, orderId, key }                    (SUBMITTED: cancelled now; CLAIMED/PREPARING: a request staff must approve)
+//   POST { action:'order', t, key, items:[{code,qty,modifiers,note}], name?, phone?, note? }   (the public 'online' code also needs name, phone and - for delivery - address; mode:'delivery'|'pickup')
+//   POST { action:'cancel', t, orderId, key, line?, reason? }    (SUBMITTED: cancelled now; CLAIMED/PREPARING: a request staff must approve; `line` = just that item)
 //   POST { action:'exchange', t, orderId, line, toCode, key }    (SUBMITTED: done now; CLAIMED: a request staff approve; later: refused)
 //   POST { action:'pay', t, orderId, method:'mpesa'|'cash', mpesaCode?, key }   (submits payment INFORMATION; never marks anything paid)
 // STAFF (a till):
@@ -37,8 +37,9 @@ import { staffGuard } from './_staff-auth.js';
 import { deviceGuard } from './_device-auth.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { ledgerDb, ensureLedgerSchema, round2 } from './_ledger.js';
+import { callerIp } from './_sec-events.js';
 
-export const QR_KINDS = ['table', 'room', 'pool', 'cabana', 'facility', 'location'];
+export const QR_KINDS = ['table', 'room', 'pool', 'cabana', 'facility', 'location', 'online'];   // zip 338: 'online' = ONE public code (on receipts, flyers) - customers order from home and leave their details
 export const ORDER_STATUSES = ['SUBMITTED', 'CLAIMED', 'PREPARING', 'READY', 'SERVED', 'BILLED', 'PAID', 'CANCELLED', 'REJECTED'];
 const TERMINAL = ['PAID', 'CANCELLED', 'REJECTED'];
 const TOKEN_RE = /^[A-Za-z0-9_-]{32}$/;
@@ -90,7 +91,7 @@ async function shapeOrder(db, clientId, o, opt = {}) {
   const editable = o.status === 'SUBMITTED';
   const live = !TERMINAL.includes(o.status) && o.status !== 'SERVED' && o.status !== 'BILLED';
   return {
-    id: o.order_id, status: o.status, items, total: o.total, name: o.guest_name || '', note: o.note || '', createdAt: o.created_at, updatedAt: o.updated_at,
+    id: o.order_id, status: o.status, items, total: o.total, name: o.guest_name || '', phone: o.guest_phone || '', note: o.note || '', createdAt: o.created_at, updatedAt: o.updated_at,
     label: loc ? loc.label : '', kind: loc ? loc.kind : '', locId: o.loc_id, owner: o.owner || null, ownerAt: o.owner_at || null, billNo: o.bill_id || null, tabLabel: o.tab_label || '',
     cancelRequested: !!o.cancel_requested, printedAt: o.printed_at || null,
     paid, outstanding: round2(Math.max(0, o.total - paid)),
@@ -99,6 +100,8 @@ async function shapeOrder(db, clientId, o, opt = {}) {
     requests: reqs.map((r) => ({ id: r.req_id, type: r.type, payload: r.payload ? JSON.parse(r.payload) : null, status: r.status, at: r.created_at })),
     canCancel: (editable || o.status === 'CLAIMED' || o.status === 'PREPARING') && !o.cancel_requested,
     cancelMode: editable ? 'now' : (o.status === 'CLAIMED' || o.status === 'PREPARING') ? 'request' : null,
+    // zip 297: one item can be cancelled too (now while nobody has picked the order up, otherwise a request the staff decide)
+    canCancelItem: (editable || o.status === 'CLAIMED' || o.status === 'PREPARING') && !o.cancel_requested,
     canExchange: editable || o.status === 'CLAIMED',
     exchangeMode: editable ? 'now' : o.status === 'CLAIMED' ? 'request' : null,
     canPay: !['CANCELLED', 'REJECTED', 'SUBMITTED'].includes(o.status) && o.total - paid > 0.004,
@@ -148,6 +151,7 @@ export async function onRequestGet(context) {
     return reply({
       business: (menu && menu.business) || '', location: { label: loc.label, kind: loc.kind }, session: loc.session_id,
       open: !!(menu && menu.open !== false && (menu.items || []).length),
+      paused: !!(menu && menu.open === false),
       payment: (menu && menu.payment) || null,
       menu: menu ? { categories: menu.categories || [], items: (menu.items || []).filter((i) => i.available !== false), modifierGroups: menu.modifierGroups || [], note: menu.note || '' } : null,
     });
@@ -186,9 +190,15 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
     if (!loc) return reply({ error: 'This code is not valid any more. Please ask a member of staff.' }, 404);
     const key = clean(body.key, 64);
     if (!KEY_RE.test(key)) return reply({ error: 'Invalid request.' }, 400);
-    const rlTok = await checkRateLimit(env, 'qrtok', loc.token);
-    if (!rlTok.ok) return rateLimitResponse('requests from this code', rlTok, cors);
-    const rlShop = await checkRateLimit(env, 'qr', clientId);
+    // zip 338: the public "order from home" code is shared by every customer, so its hourly brake is per caller (an IPv6 caller is counted by its /64 network),
+    // only PLACING orders counts against it, and the whole code has its own shop bucket - a flood on it can never stop table / room guests.
+    const online = loc.kind === 'online';
+    const ip = String(callerIp(request) || 'unknown'), who = ip.includes(':') ? ip.split(':').slice(0, 4).join(':') : ip;
+    if (!online || body.action === 'order') {
+      const rlTok = await checkRateLimit(env, 'qrtok', online ? loc.token + ':' + who : loc.token);
+      if (!rlTok.ok) return rateLimitResponse('requests from this code', rlTok, cors);
+    }
+    const rlShop = await checkRateLimit(env, 'qr', online ? clientId + ':online' : clientId);
     if (!rlShop.ok) return rateLimitResponse('QR orders', rlShop, cors);
 
     if (body.action === 'order') {
@@ -219,16 +229,26 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
         lines.push({ code: String(it.code), name: it.name + (mods.length ? ` (${mods.map((m) => m.name).join(', ')})` : ''), baseName: it.name, qty, price: unit, station: it.station || null, modifiers: mods, note: clean(r.note, 140) });
       }
       const total = round2(lines.reduce((s, i) => s + i.price * i.qty, 0));
+      // zip 338: an order from the public code must say who it is for and how to reach / serve them
+      let guestName = clean(body.name, 60), guestPhone = clean(body.phone, 20), guestNote = clean(body.note, 200);
+      if (loc.kind === 'online') {
+        const digits = guestPhone.replace(/\D/g, '');
+        const mode = body.mode === 'pickup' ? 'pickup' : 'delivery', address = clean(body.address, 140);
+        if (guestName.length < 2) return reply({ error: 'Please enter your name.', code: 'details', field: 'name' }, 400);
+        if (digits.length < 9 || digits.length > 15 || !/^[0-9+()\-\s]+$/.test(guestPhone)) return reply({ error: 'Please enter a phone number we can reach you on.', code: 'details', field: 'phone' }, 400);
+        if (mode === 'delivery' && address.length < 3) return reply({ error: 'Please tell us where to deliver (area, building, landmark).', code: 'details', field: 'address' }, 400);
+        guestNote = (mode === 'delivery' ? 'DELIVERY to: ' + address : 'PICKUP (customer collects)') + (guestNote ? ' | ' + guestNote : '');
+      }
       const id = newId('qo-'), now = Date.now();
       const st = [db.prepare(`INSERT INTO qr_orders (client_id, order_id, loc_id, session_id, status, total, guest_name, guest_phone, note, idem_key, created_at, updated_at)
         VALUES (?, ?, ?, ?, 'SUBMITTED', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (client_id, idem_key) DO NOTHING`)
-        .bind(clientId, id, loc.loc_id, loc.session_id, total, clean(body.name, 60), clean(body.phone, 20), clean(body.note, 200), key, now, now)];
+        .bind(clientId, id, loc.loc_id, loc.session_id, total, guestName, guestPhone, guestNote.slice(0, 340), key, now, now)];
       lines.forEach((l, i) => st.push(db.prepare(`INSERT INTO qr_order_items (client_id, order_id, line_no, code, name, base_name, qty, price, station, modifiers, note)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM qr_orders WHERE client_id = ? AND order_id = ? AND idem_key = ?)`)
         .bind(clientId, id, i, l.code, l.name, l.baseName, l.qty, l.price, l.station, JSON.stringify(l.modifiers), l.note, clientId, id, key)));
       st.push(db.prepare(`INSERT INTO qr_order_events (client_id, order_id, at, actor, actor_kind, event, from_status, to_status, detail)
         SELECT ?, ?, ?, ?, 'guest', 'SUBMITTED', NULL, 'SUBMITTED', ? WHERE EXISTS (SELECT 1 FROM qr_orders WHERE client_id = ? AND order_id = ? AND idem_key = ?)`)
-        .bind(clientId, id, now, clean(body.name, 60) || 'guest', JSON.stringify({ items: lines.length, total }), clientId, id, key));
+        .bind(clientId, id, now, guestName || 'guest', JSON.stringify({ items: lines.length, total }), clientId, id, key));
       // the place becomes ACTIVE when a guest orders at an AVAILABLE table / room
       st.push(db.prepare(`UPDATE qr_locations SET state = 'ACTIVE' WHERE client_id = ? AND loc_id = ? AND state = 'AVAILABLE'`).bind(clientId, loc.loc_id));
       await db.batch(st);
@@ -246,6 +266,41 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
     if (body.action === 'cancel') {
       const seen = await first(db, `SELECT * FROM qr_order_requests WHERE client_id = ? AND idem_key = ?`, clientId, key);
       if (seen) return reply({ ok: true, requested: true, repeated: true, order: await shapeOrder(db, clientId, ord) });
+      const reason = clean(body.reason, 120);
+      // ---- zip 297: cancel ONE item (body.line). The server decides from the order's real status; the phone only asks. ----
+      if (body.line !== undefined && body.line !== null && body.line !== '') {
+        const line = Number(body.line);
+        if (!Number.isInteger(line) || line < 0) return reply({ error: 'That item is not on the order.' }, 404);
+        const cur = await first(db, `SELECT * FROM qr_order_items WHERE client_id = ? AND order_id = ? AND line_no = ? AND removed = 0`, clientId, orderId, line);
+        if (!cur) return reply({ ok: true, cancelled: true, repeated: true, order: await shapeOrder(db, clientId, ord) });   // already off the order: a retry
+        if (ord.status === 'SUBMITTED') {
+          const r = await db.batch([
+            db.prepare(`UPDATE qr_order_items SET removed = 1 WHERE client_id = ? AND order_id = ? AND line_no = ? AND removed = 0 AND EXISTS (SELECT 1 FROM qr_orders WHERE client_id = ? AND order_id = ? AND status = 'SUBMITTED')`).bind(clientId, orderId, line, clientId, orderId),
+            db.prepare(`INSERT INTO qr_order_events (client_id, order_id, at, actor, actor_kind, event, from_status, to_status, detail)
+              SELECT ?, ?, ?, ?, 'guest', 'ITEM_CANCELLED_BY_GUEST', 'SUBMITTED', 'SUBMITTED', ? WHERE changes() = 1`).bind(clientId, orderId, now, ord.guest_name || 'guest', JSON.stringify({ line, name: cur.name, qty: cur.qty, reason, key })),
+            recalcTotal(db, clientId, orderId),
+          ]);
+          const cur2 = await first(db, `SELECT * FROM qr_orders WHERE client_id = ? AND order_id = ?`, clientId, orderId);
+          if (!(r[0].meta && r[0].meta.changes === 1)) return reply({ ok: false, error: 'The order has just been picked up by the staff - ask your waiter to cancel that item.', order: await shapeOrder(db, clientId, cur2) }, 409);
+          const left = await first(db, `SELECT COUNT(*) AS n FROM qr_order_items WHERE client_id = ? AND order_id = ? AND removed = 0`, clientId, orderId);
+          if (left && left.n === 0) await db.prepare(`UPDATE qr_orders SET status = 'CANCELLED', updated_at = ? WHERE client_id = ? AND order_id = ? AND status = 'SUBMITTED'`).bind(Date.now(), clientId, orderId).run();
+          await db.prepare(`INSERT INTO qr_order_requests (client_id, req_id, order_id, type, payload, status, idem_key, created_at, decided_by, decided_at) VALUES (?, ?, ?, 'CANCEL', ?, 'APPLIED', ?, ?, 'guest', ?)`).bind(clientId, newId('rq-'), orderId, JSON.stringify({ line, name: cur.name, qty: cur.qty, reason }), key, now, now).run();
+          poke(context, clientId, 'cancel');
+          return reply({ ok: true, cancelled: true, order: await shapeOrder(db, clientId, await first(db, `SELECT * FROM qr_orders WHERE client_id = ? AND order_id = ?`, clientId, orderId)) });
+        }
+        if (ord.status === 'CLAIMED' || ord.status === 'PREPARING') {
+          if (ord.cancel_requested) return reply({ ok: true, requested: true, repeated: true, order: await shapeOrder(db, clientId, ord) });
+          const dup = (await all(db, `SELECT payload FROM qr_order_requests WHERE client_id = ? AND order_id = ? AND type = 'CANCEL' AND status = 'PENDING'`, clientId, orderId)).some((x) => { try { return JSON.parse(x.payload || '{}').line === line; } catch (e) { return false; } });
+          if (dup) return reply({ ok: true, requested: true, repeated: true, order: await shapeOrder(db, clientId, ord) });
+          await db.batch([
+            db.prepare(`INSERT INTO qr_order_requests (client_id, req_id, order_id, type, payload, status, idem_key, created_at) VALUES (?, ?, ?, 'CANCEL', ?, 'PENDING', ?, ?)`).bind(clientId, newId('rq-'), orderId, JSON.stringify({ line, name: cur.name, qty: cur.qty, reason }), key, now),
+            eventStmt(db, clientId, orderId, ord.guest_name || 'guest', 'guest', 'ITEM_CANCEL_REQUESTED', ord.status, ord.status, { line, name: cur.name, reason }),
+          ]);
+          poke(context, clientId, 'request');
+          return reply({ ok: true, requested: true, message: ord.status === 'PREPARING' ? 'This is already being prepared. We have asked the staff - they will confirm.' : 'We have asked the staff to cancel that item - they will confirm.', order: await shapeOrder(db, clientId, ord) });
+        }
+        return reply({ ok: false, error: `This order is already ${ord.status === 'PAID' ? 'paid' : ord.status.toLowerCase()} and its items can no longer be cancelled here. Please speak to your waiter.` }, 409);
+      }
       if (ord.status === 'SUBMITTED') {
         const r = await db.batch([
           db.prepare(`UPDATE qr_orders SET status = 'CANCELLED', updated_at = ? WHERE client_id = ? AND order_id = ? AND status = 'SUBMITTED'`).bind(now, clientId, orderId),
@@ -261,7 +316,7 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
       if (ord.status === 'CLAIMED' || ord.status === 'PREPARING') {
         if (ord.cancel_requested) return reply({ ok: true, requested: true, repeated: true, order: await shapeOrder(db, clientId, ord) });
         await db.batch([
-          db.prepare(`INSERT INTO qr_order_requests (client_id, req_id, order_id, type, payload, status, idem_key, created_at) VALUES (?, ?, ?, 'CANCEL', NULL, 'PENDING', ?, ?)`).bind(clientId, newId('rq-'), orderId, key, now),
+          db.prepare(`INSERT INTO qr_order_requests (client_id, req_id, order_id, type, payload, status, idem_key, created_at) VALUES (?, ?, ?, 'CANCEL', ?, 'PENDING', ?, ?)`).bind(clientId, newId('rq-'), orderId, reason ? JSON.stringify({ reason }) : null, key, now),
           db.prepare(`UPDATE qr_orders SET cancel_requested = 1, updated_at = ? WHERE client_id = ? AND order_id = ?`).bind(now, clientId, orderId),
           eventStmt(db, clientId, orderId, ord.guest_name || 'guest', 'guest', 'CANCEL_REQUESTED', ord.status, ord.status, null),
         ]);
@@ -424,7 +479,7 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
     const p = m.payment && typeof m.payment === 'object' ? m.payment : null;
     // Payment instructions shown to the guest come from the shop's own settings (published with the menu) — never typed into the guest page.
     const payment = p ? { mpesa: !!p.mpesa, cash: p.cash !== false, tillNumber: clean(p.tillNumber, 20), paybill: clean(p.paybill, 20), accountNumber: clean(p.accountNumber, 30), accountName: clean(p.accountName, 60), instructions: clean(p.instructions, 300) } : null;
-    const menu = { business: clean(m.business, 80), open: m.open !== false, note: clean(m.note, 300), categories: Array.from(new Set(items.map((i) => i.category).filter(Boolean))), items, modifierGroups, payment, publishedAt: now };
+    const menu = { business: clean(m.business, 80), style: m.style === 'shop' ? 'shop' : '', open: m.open !== false, note: clean(m.note, 300), categories: Array.from(new Set(items.map((i) => i.category).filter(Boolean))), items, modifierGroups, payment, publishedAt: now };
     await kv(env).put(menuKey(clientId), JSON.stringify(menu));
     return reply({ ok: true, items: items.length });
   }
@@ -526,7 +581,13 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
     const no = requireOwner(o); if (no) return no;
     const approve = !!body.approve;
     const st = [db.prepare(`UPDATE qr_order_requests SET status = ?, decided_by = ?, decided_at = ? WHERE client_id = ? AND req_id = ? AND status = 'PENDING'`).bind(approve ? 'APPROVED' : 'DECLINED', actor, now, clientId, rq.req_id)];
-    if (approve && rq.type === 'CANCEL') {
+    const cp = (() => { try { return JSON.parse(rq.payload || '{}'); } catch (e) { return {}; } })();
+    if (approve && rq.type === 'CANCEL' && Number.isInteger(cp.line)) {
+      // one item: it comes off the order and the total is recalculated; the order itself is cancelled only when nothing is left on it
+      st.push(db.prepare(`UPDATE qr_order_items SET removed = 1 WHERE client_id = ? AND order_id = ? AND line_no = ? AND changes() = 1`).bind(clientId, o.order_id, cp.line));
+      st.push(recalcTotal(db, clientId, o.order_id));
+      st.push(db.prepare(`UPDATE qr_orders SET status = 'CANCELLED', updated_at = ? WHERE client_id = ? AND order_id = ? AND status IN ('CLAIMED', 'PREPARING') AND NOT EXISTS (SELECT 1 FROM qr_order_items WHERE client_id = ? AND order_id = ? AND removed = 0)`).bind(now, clientId, o.order_id, clientId, o.order_id));
+    } else if (approve && rq.type === 'CANCEL') {
       st.push(db.prepare(`UPDATE qr_orders SET status = 'CANCELLED', cancel_requested = 0, updated_at = ? WHERE client_id = ? AND order_id = ? AND changes() = 1 AND status IN ('CLAIMED', 'PREPARING')`).bind(now, clientId, o.order_id));
     } else if (approve && rq.type === 'EXCHANGE') {
       const p = JSON.parse(rq.payload || '{}');
@@ -540,6 +601,7 @@ async function handle(context, { env, cors, reply, clientId, body, db, request }
     st.push(eventStmt(db, clientId, o.order_id, actor, 'staff', (approve ? 'APPROVED_' : 'DECLINED_') + rq.type, o.status, o.status, rq.payload));
     const r = await db.batch(st);
     if (!(r[0].meta && r[0].meta.changes === 1)) return reply({ ok: false, already: true, message: 'This request was already handled.' }, 409);
+    poke(context, clientId, 'decide');          // the other tills and the guest's page learn the decision at once
     return reply({ ok: true, order: await shapeOrder(db, clientId, await first(db, `SELECT * FROM qr_orders WHERE client_id = ? AND order_id = ?`, clientId, rq.order_id), { staff: true }), request: { ...rq, status: approve ? 'APPROVED' : 'DECLINED' } });
   }
 

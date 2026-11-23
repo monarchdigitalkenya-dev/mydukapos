@@ -115,7 +115,7 @@
                 qty += q; a.costLines++; if (!(uc > 0)) a.missingCost++;
                 var key = (it.variantId ? it.code + '::' + it.variantId : String(it.code != null ? it.code : it.name)), p = it.code != null ? byCode[String(it.code)] : null;
                 var o = a.item[key] || (a.item[key] = { name: it.name || (p && p.name) || '?', code: it.code, cat: (p && p.category) || it.category || 'Uncategorised', qty: 0, rev: 0, cost: 0, img: (p && p.image) || null, unit: it.unit });
-                o.qty += q; o.rev += line; o.cost += uc * q;
+                o.qty += q; o.rev += line; o.cost += (typeof moneyLineCost === "function" ? moneyLineCost(it, s) : uc * q);   // zip 390: the line's own cost, the same rule as the totals
                 var c = a.cat[o.cat] || (a.cat[o.cat] = { rev: 0, qty: 0 }); c.rev += line; c.qty += q;
             });
             a.items += qty;
@@ -352,8 +352,10 @@
     }
 
     /* ---------- widgets ---------- */
+    // zip 298: on a phone only the first four sections start open; the rest fold (tap the title) - this page was ~5,000-6,000 px of scrolling
+    function foldable(id) { for (var k = 0; k < WIDGETS.length; k++) if (WIDGETS[k][0] === id) return k >= 4 && id !== 'alerts' && id !== 'actions'; return false; }
     function card(id, title, body, extra) {
-        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
+        return '<section class="dp-card dp-w-' + (extra && extra.span || 6) + (foldable(id) ? ' dp-fold' : '') + '" data-w="' + id + '" style="order:' + orderOf(id) + '"><header class="dp-card-h"><h4>' + title + '</h4>' + ((extra && extra.head) || '') + '</header><div class="dp-card-b">' + body + '</div></section>';
     }
     function empty(msg) { return '<p class="dp-empty">' + esc(msg) + '</p>'; }
     function viewBtn(tab, label) { return '<button type="button" class="dp-link" data-goto="' + tab + '">' + esc(label || 'View report') + ' →</button>'; }
@@ -628,6 +630,8 @@
 
     /* ---------- events (one delegated listener) ---------- */
     function onClick(ev) {
+        var fh = ev.target && ev.target.closest ? ev.target.closest('.dp-fold > .dp-card-h') : null;
+        if (fh && root && root.contains(fh) && !(ev.target.closest('button,a,[data-goto]'))) { fh.parentNode.classList.toggle('dp-open'); return; }
         var t = ev.target && ev.target.closest ? ev.target.closest('[data-preset],[data-metric],[data-topby],[data-topall],[data-staffby],[data-goto],[data-act],[data-retry],[data-applycustom],[data-wmove]') : null;
         if (!t || !root || !root.contains(t)) return;
         if (t.dataset.preset) { S.preset = t.dataset.preset; persist(); return D.render(); }

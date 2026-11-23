@@ -1,0 +1,47 @@
+<!-- SVC CARWASH MOVED ------------------------------------------------------------------------------
+     Services app, block "svc-carwash-moved" (zip 361). Written ONLY into services/index.html; never hand-edit it there.
+     Car Wash is no longer part of Services: it is its own application (carwash/index.html, product "carwash" in the Owner Console).
+     This block (1) takes "Car Wash" out of every business-type chooser in Services (sign-up and Settings), and (2) for a Services shop whose
+     business type is still car_wash, replaces the car wash screens (the 🔧 tab, the dashboard queue cards, New Task) with a notice that
+     opens the Car Wash app on the same shop address. Nothing is deleted: the shop's svcJobs / svcAssets stay on the server and the Car Wash
+     app imports them (cwMigrateFromServices). Plain global functions, ES2018 max. After editing run `npm run sync`. -->
+<style>
+.svcm-card{max-width:760px;margin:24px auto;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:22px 24px;box-shadow:0 10px 30px rgba(15,23,42,.08);font-size:14.5px;line-height:1.55;color:#0f172a}
+.svcm-card h2{margin:0 0 8px;font-size:21px}
+.svcm-card ol{margin:10px 0 0 18px;padding:0}
+.svcm-btn{display:inline-block;margin-top:14px;background:linear-gradient(135deg,#0e7490,#22d3ee);color:#fff!important;text-decoration:none;font-weight:800;border-radius:12px;padding:12px 18px}
+html[data-theme="dark"] .svcm-card{background:#1d2a30;color:#e2e8f0;border-color:#334155}
+</style>
+<script>
+var SVC_MOVED_TYPES = ['car_wash'];
+function svcMovedIsCarWash() { try { return typeof svcBusinessType === 'function' && SVC_MOVED_TYPES.indexOf(svcBusinessType()) !== -1; } catch (e) { return false; } }
+function svcMovedAppUrl() {
+  var q = ''; try { var c = new URLSearchParams(location.search).get('c'); if (c) q = '?c=' + encodeURIComponent(c); } catch (e) { q = ''; }
+  return location.origin + '/carwash/' + q;
+}
+function svcMovedHtml() {
+  return '<div class="svcm-card"><h2>🚗 Car Wash has its own app now</h2><p>Car wash and cleaning work moved out of Services into the <b>Car Wash &amp; Cleaning</b> app: its own dashboard, customers and vehicles, jobs board, carpets &amp; cleaning, 9 + 1 loyalty, automatic SMS, staff and reports.</p>'
+    + '<p><b>Nothing was lost.</b> Every car wash job, customer, vehicle and payment recorded here is kept and is imported into the Car Wash app automatically the first time it opens.</p>'
+    + '<a class="svcm-btn" href="' + svcMovedAppUrl().replace(/"/g, '&quot;') + '">Open the Car Wash app →</a>'
+    + '<ol><li>Sign in there with the same password and staff PINs.</li><li>Ask your provider (Owner Console ▸ edit this link ▸ app "Car Wash &amp; Cleaning") to point this link at the Car Wash app, so it opens directly next time.</li></ol></div>';
+}
+(function () {
+  function wrap(name, fn) { try { var orig = window[name]; if (typeof orig !== 'function' || orig.__svcMoved) return; var w = fn(orig); w.__svcMoved = true; window[name] = w; } catch (e) { /* the original keeps working */ } }
+  /* 1. no "Car Wash" in the business-type choosers */
+  wrap('svcUiTypeList', function (orig) { return function () { return (orig.apply(this, arguments) || []).filter(function (k) { return SVC_MOVED_TYPES.indexOf(k) === -1; }); }; });
+  wrap('svcFillTypeSelect', function (orig) { return function (id) { var r = orig.apply(this, arguments); try { var s = document.getElementById(id); if (s) Array.prototype.slice.call(s.options).forEach(function (o) { if (SVC_MOVED_TYPES.indexOf(o.value) !== -1) o.remove(); }); } catch (e) { /* the list stays as filled */ } return r; }; });
+  /* 2. a car wash shop sees where its screens went */
+  wrap('svcRenderHome', function (orig) {
+    return function () {
+      if (!svcMovedIsCarWash()) return orig.apply(this, arguments);
+      var root = document.getElementById('svc-root'); if (!root) return false;
+      root.innerHTML = svcMovedHtml(); root.setAttribute('data-svc-moved', '1');
+      try { var cw = document.getElementById('svc-classic-wrap'); if (cw) cw.style.display = 'none'; } catch (e) { /* layout only */ }
+      try { var b = document.getElementById('services-counter-tab-btn'); if (b) b.textContent = '🚗 Car Wash (moved)'; } catch (e2) { /* label only */ }
+      return true;
+    };
+  });
+  wrap('svcDashboardHtml', function (orig) { return function () { return svcMovedIsCarWash() ? '' : orig.apply(this, arguments); }; });
+  wrap('svcOpenNewJob', function (orig) { return function () { if (svcMovedIsCarWash()) { try { if (typeof showToast === 'function') showToast('Car wash jobs are made in the Car Wash app now.', true); } catch (e) { /* none */ } return false; } return orig.apply(this, arguments); }; });
+})();
+</script>

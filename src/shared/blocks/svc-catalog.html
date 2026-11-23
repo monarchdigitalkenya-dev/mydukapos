@@ -338,11 +338,27 @@ function svcSeedCatalog(typeKey, opts) {
   return { ok: true, added: added, skipped: skipped };
 }
 /* first engine use: seed once per type when the owner has chosen a type and nothing is offered for it yet */
+/* zip 345: shops already seeded get the new starter services ONCE (only names they do not have; never re-adds something they archived) */
+function svcCatTopUp(typeKey) {
+  try {
+    var tpl = svcCatTpl(typeKey), tu = tpl && tpl.catalog && tpl.catalog.topUp; if (!tu || !tu.seeds || !tu.seeds.length) return 0;
+    var flag = typeKey + ':' + tu.flag; if (svcCatSeedFlags()[flag]) return 0;
+    var added = 0;
+    tu.seeds.forEach(function (sd) {
+      var rows = svcCatRows(), n = svcCatalogNormalize(sd); if (!n.ok) return;
+      if (rows.some(function (r) { return r && String(r.id) === String(sd.id); })) return;
+      var nm = n.rec.name.toLowerCase();
+      if (rows.some(function (r) { return r && !r._deleted && String(r.name || '').trim().toLowerCase() === nm && svcCatOverlap(r.serviceTypes || [], n.rec.serviceTypes || []); })) return;
+      var res = svcCatWrite(String(sd.id), n.rec, { seed: true, createdBy: 'Starter services' }, null); if (res.ok) added++;
+    });
+    svcCatMarkSeeded(flag); return added;
+  } catch (e) { return 0; }
+}
 function svcCatalogEnsureSeeded(typeKey) {
   typeKey = typeKey || svcCatBizType();
   var c = null; try { c = typeof svcConfigGet === 'function' ? svcConfigGet('cfg-business') : null; } catch (e) { c = null; }
   if (!c || c.chosen !== true) return { ok: false, code: 'notchosen', added: 0 };
-  if (svcCatSeedFlags()[typeKey]) return { ok: true, already: true, added: 0 };
+  if (svcCatSeedFlags()[typeKey]) { var tup = svcCatTopUp(typeKey); return { ok: true, already: true, added: tup }; }
   if (svcCatalogList({ type: typeKey, includeInactive: true }).length) { svcCatMarkSeeded(typeKey); return { ok: true, added: 0, skipped: 'has-entries' }; }
   return svcSeedCatalog(typeKey);
 }
@@ -524,7 +540,7 @@ function svcCatAssetOptions(type) {
   for (i = 0; i < SVC_CAT_ASSET_FIELDS.length; i++) {
     f = null; try { f = typeof svcFindField === 'function' ? svcFindField(tpl, SVC_CAT_ASSET_FIELDS[i]) : null; } catch (e) { f = null; }
     if (f) {
-      if (f.id === 'veh_type') { try { if (typeof svcVehicleTypes === 'function') return svcVehicleTypes().map(function (x) { return { v: x.v, l: x.l }; }); } catch (e2) { /* fall through */ } }
+      if (f.id === 'veh_type' && !f.washItems) { try { if (typeof svcVehicleTypes === 'function') return svcVehicleTypes().map(function (x) { return { v: x.v, l: x.l }; }); } catch (e2) { /* fall through */ } }
       if (Array.isArray(f.options) && f.options.length) return f.options.map(function (o) { return { v: svcCatSlug(o.v), l: o.l || o.v }; });
     }
   }

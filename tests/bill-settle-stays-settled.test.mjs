@@ -57,7 +57,7 @@ const settled = (dev) => until(() => !dev.w.eval('window.__pushQueued') && !(dev
 async function makeBill(dev) {
   dev.w.eval("showToast = function () {}; window.confirm = () => true");
   dev.w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-  const nameEl = dev.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+  const nameEl = dev.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; const ph = dev.w.document.getElementById('sms-checkout-phone-input'); if (ph) ph.value = '0712345678';   // zip 328: a bill needs a name AND a phone
   await dev.w.eval('checkoutCart()');
 }
 const settleAll = async (dev, id) => { dev.w.eval(`openBillSettleModal('sale', '${id}')`); await dev.w.eval('confirmBillSettle(true)'); };

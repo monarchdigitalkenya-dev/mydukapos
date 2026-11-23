@@ -43,7 +43,21 @@
     function rxSet(k, v) { try { if (typeof safeSetItem === 'function') safeSetItem(k, v); else localStorage.setItem(k, v); } catch (e) { /* kept in memory for this session */ } }
     function rxDel(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
     function rxToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(msg, !!isErr); } catch (e) { /* cosmetic */ } }
-    function rxPush() { try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next change sends it */ } }
+    /* zip 356: a switch somebody turns OFF must stay off. (1) The change is force-stamped (`_fieldTimes`) so the server takes it even when
+       this device has no baseline yet - an unstamped change was ignored by the server and the next pull put the old value (barcode ON)
+       back. (2) In a branch group with SHARED receipt settings the main branch also re-publishes the shared copy: these switches never did,
+       so opening Settings re-applied the stale shared copy and the branches kept printing the barcode. */
+    var RX_PAYLOAD_KEY = { stampSrc: 'receiptStampSrc', stampAngle: 'receiptStampAngle', stampSize: 'receiptStampSize', showStamp: 'receiptShowStamp', paidMark: 'receiptStampPaid', showRef: 'receiptShowRefNumber', showBarcode: 'receiptShowBarcode', printVat: 'receiptPrintVat', itemCode: 'receiptItemCode', custNo: 'receiptCustNo', custPhone: 'receiptCustPhone', custId: 'receiptCustId', sigSale: 'receiptSigSale', sigBill: 'receiptSigBill', sigContract: 'receiptSigContract', sigStaff: 'receiptSigStaff', contractReq: 'contractRequire', billsLocked: 'billsLocked', layout: 'receiptLayout', detailed: 'receiptDetailed' };
+    function rxPush(keys) {
+        try {
+            if (keys && keys.length) {
+                if (!(window.__fieldAck instanceof Map)) window.__fieldAck = new Map();
+                keys.forEach(function (k) { var f = RX_PAYLOAD_KEY[k] || k; window.__fieldAck.set(f, '__force_stamp__'); });
+            }
+        } catch (e) { /* the normal diff still stamps it */ }
+        try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next change sends it */ }
+        try { if (typeof pushSharedReceiptSettingsIfNeeded === 'function') pushSharedReceiptSettingsIfNeeded(); } catch (e) { /* a branch group only */ }
+    }
     function rxEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
     /* ---------- settings this block owns (kept as one object so they sync with the shop's other settings) ---------- */
@@ -56,7 +70,18 @@
         showRef: rxGet('pos_receipt_show_ref') !== 'false',                   // zip 253 (was Hotel-only): the "Ref: ..." line. On unless switched off
         showBarcode: rxGet('pos_receipt_show_barcode') === 'true',            // zip 253: the scannable barcode under the reference. OFF by default
         printVat: rxGet('pos_receipt_print_vat') === 'true',                  // zip 253: VAT class letters + the VAT table. OFF by default
+        itemCode: rxGet('pos_receipt_item_code') === 'true',                  // zip 395: the item code on each line. OFF by default
+        custNo: rxGet('pos_receipt_cust_no') === 'true',                      // zip 395: the "Customer 12" line. OFF by default
+        custPhone: rxGet('pos_receipt_cust_phone') !== 'false',               // zip 328: print the customer's phone number when the sale has one. On unless switched off
+        custId: rxGet('pos_receipt_cust_id') !== 'false',                     // zip 328: print the customer's ID number when the sale has one. On unless switched off
+        sigSale: rxGet('pos_receipt_sig_sale') === 'true',                    // zip 328: a signature area on ordinary sales receipts. OFF by default
+        sigBill: rxGet('pos_receipt_sig_bill') === 'true',                    // zip 328: ... on bill / invoice receipts. OFF by default
+        sigContract: rxGet('pos_receipt_sig_contract') !== 'false',           // zip 328: ... on contract (stock issuance) receipts. ON by default: it is an agreement
+        contractReq: (function () { var v = rxGet('pos_contract_req'); return ['name', 'phone', 'id', 'either', 'both'].indexOf(v) >= 0 ? v : 'either'; })(),   // zip 328: what a contract recipient must give: name only / +phone / +ID / phone OR ID / phone AND ID
+        sigStaff: rxGet('pos_receipt_sig_staff') === 'true',                  // zip 328: also a line for the staff member / authorised representative
         billsLocked: rxGet('pos_bills_locked') === 'true',
+        layout: rxGet('pos_receipt_layout') === 'detailed' ? 'detailed' : 'standard',   // zip 360: Receipt layout - Standard (the usual) or Detailed (boxed document)
+        detailed: (function () { try { var o = JSON.parse(rxGet('pos_receipt_detailed') || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } })(),
         fontPt: (function () { var n = parseFloat(rxGet('pos_receipt_font_pt')); return isFinite(n) && n >= 5 && n <= 20 ? Math.round(n * 2) / 2 : 7; })(),   // zip 158: the receipt letter size, in points (7 = standard)
     };
     /* zip 158: the old receipt zoom setting no longer exists: whatever an old version stored under these two keys is dropped without a word. */
@@ -70,9 +95,12 @@
         return n;
     }
     function extraSettingsCollect() {
-        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, receiptShowRefNumber: rxSettings.showRef, receiptShowBarcode: rxSettings.showBarcode, receiptPrintVat: rxSettings.printVat, billsLocked: rxSettings.billsLocked };
+        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, receiptShowRefNumber: rxSettings.showRef, receiptShowBarcode: rxSettings.showBarcode, receiptPrintVat: rxSettings.printVat, receiptItemCode: rxSettings.itemCode, receiptCustNo: rxSettings.custNo, receiptCustPhone: rxSettings.custPhone, receiptCustId: rxSettings.custId, receiptSigSale: rxSettings.sigSale, receiptSigBill: rxSettings.sigBill, receiptSigContract: rxSettings.sigContract, receiptSigStaff: rxSettings.sigStaff, contractRequire: rxSettings.contractReq, billsLocked: rxSettings.billsLocked };
         // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
         if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
+        // zip 360: the receipt layout and its texts travel once THIS device has chosen them (a fresh device never resets the shop's choice)
+        if (rxGet('pos_receipt_layout') !== null) o.receiptLayout = rxSettings.layout;
+        if (rxGet('pos_receipt_detailed') !== null) o.receiptDetailed = rxDetailedOpts();
         o.payMethods = posPayAccepted();                      // zip 163: which payment methods this shop accepts (every till shows only those)
         /* zip 217: every "hide this button" switch (Settings > General) is shop-wide: blocks register themselves in window.__shopSwitches = { name: { get, set } }.
            get() answers undefined until THIS device has its own choice, so a fresh device never overwrites the shop's real choice with its default. */
@@ -101,16 +129,19 @@
         if (typeof data.receiptShowStamp === 'boolean' && data.receiptShowStamp !== rxSettings.showStamp) { rxSettings.showStamp = data.receiptShowStamp; rxSet('pos_receipt_show_stamp', String(data.receiptShowStamp)); changed = true; }
         if (typeof data.receiptStampPaid === 'boolean' && data.receiptStampPaid !== rxSettings.paidMark) { rxSettings.paidMark = data.receiptStampPaid; rxSet('pos_receipt_stamp_paid', String(data.receiptStampPaid)); changed = true; }
         /* zip 253: the three receipt switches. Same payload names Hotel always used for the first two, so older saved settings still arrive. */
-        [['receiptShowRefNumber', 'showRef', 'pos_receipt_show_ref'], ['receiptShowBarcode', 'showBarcode', 'pos_receipt_show_barcode'], ['receiptPrintVat', 'printVat', 'pos_receipt_print_vat']].forEach(function (t) {
+        [['receiptShowRefNumber', 'showRef', 'pos_receipt_show_ref'], ['receiptShowBarcode', 'showBarcode', 'pos_receipt_show_barcode'], ['receiptPrintVat', 'printVat', 'pos_receipt_print_vat'], ['receiptItemCode', 'itemCode', 'pos_receipt_item_code'], ['receiptCustNo', 'custNo', 'pos_receipt_cust_no'], ['receiptCustPhone', 'custPhone', 'pos_receipt_cust_phone'], ['receiptCustId', 'custId', 'pos_receipt_cust_id'], ['receiptSigSale', 'sigSale', 'pos_receipt_sig_sale'], ['receiptSigBill', 'sigBill', 'pos_receipt_sig_bill'], ['receiptSigContract', 'sigContract', 'pos_receipt_sig_contract'], ['receiptSigStaff', 'sigStaff', 'pos_receipt_sig_staff']].forEach(function (t) {
             if (typeof data[t[0]] === 'boolean' && data[t[0]] !== rxSettings[t[1]]) { rxSettings[t[1]] = data[t[0]]; rxSet(t[2], String(data[t[0]])); changed = true; }
         });
+        if (typeof data.contractRequire === 'string' && ['name', 'phone', 'id', 'either', 'both'].indexOf(data.contractRequire) >= 0 && data.contractRequire !== rxSettings.contractReq) { rxSettings.contractReq = data.contractRequire; rxSet('pos_contract_req', data.contractRequire); changed = true; }
+        if ((data.receiptLayout === 'standard' || data.receiptLayout === 'detailed') && data.receiptLayout !== rxSettings.layout) { rxSettings.layout = data.receiptLayout; rxSet('pos_receipt_layout', data.receiptLayout); changed = true; }
+        if (data.receiptDetailed && typeof data.receiptDetailed === 'object' && JSON.stringify(rxDetailedClean(data.receiptDetailed)) !== JSON.stringify(rxDetailedOpts())) { rxSettings.detailed = rxDetailedClean(data.receiptDetailed); rxSet('pos_receipt_detailed', JSON.stringify(rxSettings.detailed)); changed = true; try { rxLayoutFill(); } catch (e) { /* settings not open */ } }
         var lockChanged = false;
         if (typeof data.billsLocked === 'boolean' && data.billsLocked !== rxSettings.billsLocked) { rxSettings.billsLocked = data.billsLocked; rxSet('pos_bills_locked', String(data.billsLocked)); lockChanged = true; }
         var fontChanged = false;
         if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && Math.round(data.receiptFontPt * 2) / 2 !== rxSettings.fontPt) { receiptFontPtStore(data.receiptFontPt); fontChanged = true; }
         else if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && rxGet('pos_receipt_font_pt') === null) receiptFontPtStore(data.receiptFontPt);
         if (fontChanged) { try { receiptApplyPaperVars(); syncDevicePaperWidthUI(); receiptRelayoutOpen(); } catch (e) { /* the settings page / a receipt may not be open */ } }
-        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } try { rxPrintOptionsApplied(); } catch (e) { /* nothing open */ } }
+        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } try { rxPrintOptionsApplied(); } catch (e) { /* nothing open */ } try { rxLayoutFill(); } catch (e) { /* settings not open */ } }
         if (lockChanged) { try { billsLockDecorate(); } catch (e) { /* the Bills tab may not be open */ } }
     }
 
@@ -211,7 +242,7 @@
         if (dataUrl) rxSet('pos_receipt_stamp_src', dataUrl); else rxDel('pos_receipt_stamp_src');
         if (dataUrl && !rxSettings.showStamp) { rxSettings.showStamp = true; rxSet('pos_receipt_show_stamp', 'true'); }
         window.__stampRaster = null;
-        rxStampRefreshUI(); rxPush();
+        rxStampRefreshUI(); rxPush(['stampSrc', 'showStamp']);
     }
 
     /* what the receipt (screen, browser print, PDF-less) shows: the stamp between the header and the item lines, tilted by the chosen angle */
@@ -224,10 +255,337 @@
         return 'paid';
     }
     /* zip 253: the wording itself. The receipt builder puts it ON the total line ("TOTAL - PAID   KES 500.00"): no picture, no space of its own. '' = switched off. */
-    function receiptPaidWording(sale) { var st = rxPaidStateOf(sale); return st === 'paid' ? 'PAID' : st === 'unpaid' ? 'UNPAID' : ''; }
+    function receiptPaidWording(sale) { if (sale && sale.receiptKind === 'contract') return ''; var st = rxPaidStateOf(sale); return st === 'paid' ? 'PAID' : st === 'unpaid' ? 'UNPAID' : ''; }
     function receiptRefOn() { return !!rxSettings.showRef; }
     function receiptBarcodeOn() { return !!rxSettings.showBarcode && !!rxSettings.showRef; }      // no reference = nothing to encode
     function receiptVatOn() { return !!rxSettings.printVat; }
+    function receiptItemCodeOn() { return !!rxSettings.itemCode; }                               // zip 395
+    function receiptCustNoOn() { return !!rxSettings.custNo; }                                    // zip 395
+    function receiptCustPhoneOn() { return !!rxSettings.custPhone; }                              // zip 328
+    function receiptCustIdOn() { return !!rxSettings.custId; }
+    function receiptSignatureOn(kind) { return kind === 'contract' ? !!rxSettings.sigContract : kind === 'bill' ? !!rxSettings.sigBill : !!rxSettings.sigSale; }
+    function receiptSignatureStaffOn() { return !!rxSettings.sigStaff; }
+
+    /* =====================================================================================================================
+       zip 360 - RECEIPT LAYOUT: "Standard" (the usual receipt) or "Detailed" (a boxed document: company block, a details table - branch,
+       document no, date & time, order, served by, customer, remarks - numbered items with code / VAT % / price x qty / total, a total
+       breakdown, prepared by, terms, payment details, thank-you lines, notes and an END mark). Both are built from the SAME facts by
+       buildReceiptDoc, so screen, system print, PDF, USB and Bluetooth agree; switching layout changes nothing else.
+       ===================================================================================================================== */
+    function rxDetailedClean(o) {
+        o = o && typeof o === 'object' ? o : {};
+        var t = function (v, n) { return String(v == null ? '' : v).replace(/\r/g, '').slice(0, n); };
+        return { branch: t(o.branch, 60), title: t(o.title, 40), notice: t(o.notice, 600), thanks: (function (x) { x = t(x, 300); return x.trim() === 'Thank you for your business!' ? '' : x; })(o.thanks), contactLine: t(o.contactLine != null ? o.contactLine : 'Please contact us for any service complaints / suggestions', 200),
+            showCode: o.showCode !== false, showVatPct: o.showVatPct !== false, endMark: o.endMark !== false };
+    }
+    function rxDetailedOpts() { return rxDetailedClean(rxSettings.detailed); }
+    function receiptLayoutNow() { return rxSettings.layout === 'detailed' ? 'detailed' : 'standard'; }
+    function rxCommas(n) { var v = Number(n) || 0; var neg = v < 0; v = Math.abs(v); var p = v.toFixed(2).split('.'); return (neg ? '-' : '') + p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + p[1]; }
+    function rxWrap(text, width) {
+        var out = []; String(text == null ? '' : text).split('\n').forEach(function (para) {
+            var words = para.split(/\s+/).filter(Boolean), line = '';
+            if (!words.length) { return; }
+            words.forEach(function (w) {
+                while (w.length > width) { if (line) { out.push(line); line = ''; } out.push(w.slice(0, width)); w = w.slice(width); }
+                if (!line) line = w; else if (line.length + 1 + w.length <= width) line += ' ' + w; else { out.push(line); line = w; }
+            });
+            if (line) out.push(line);
+        });
+        return out;
+    }
+    function rxVatPct(l) {
+        try { if (typeof vatRateForCategory === 'function') { var r = vatRateForCategory(l.vatCategory || 'A'); return (Math.round(Number(r) * 100) / 100) + '%'; } } catch (e) { /* below */ }
+        return '';
+    }
+    function rxBranchLabel(o) {
+        // zip 378: no emoji / symbols - the printer drew the branch pill's building icon as an empty box
+        var clean = function (t) { return String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{FE00}-\u{FE0F}\u200D]/gu, '').replace(/[\uD800-\uDFFF]/g, '').replace(/\s+/g, ' ').trim(); };
+        if (o.branch) return clean(o.branch);
+        try { var p = document.getElementById('branch-pill'); var t = p && p.style.display !== 'none' ? clean(p.textContent) : ''; if (t) return t; } catch (e) { /* none */ }
+        return '';
+    }
+    function rxEnsureDetailedCss() {
+        if (document.getElementById('rcd-css')) return;
+        var st = document.createElement('style'); st.id = 'rcd-css';
+        st.textContent = [
+            '.rcd{font-family:Arial,Helvetica,sans-serif;color:#000;font-size:var(--rcd-font,11px);line-height:1.3;width:100%;box-sizing:border-box;word-wrap:break-word}',
+            '.rcd *{box-sizing:border-box}',
+            '.rcd-doc{text-align:center;font-size:1.25em;letter-spacing:.06em;margin:0 0 .15em}',
+            '.rcd-co{text-align:center;font-weight:900;font-size:1.55em;line-height:1.15;margin:.1em 0 .25em}',
+            '.rcd-c{text-align:center;font-size:1.02em}',
+            '.rcd-det{width:100%;border-collapse:collapse;margin:.6em 0 .3em;font-size:1.05em}',
+            '.rcd-det th,.rcd-det td{background:none!important;color:#000!important;text-transform:none!important;letter-spacing:normal!important;font-size:1em!important;font-family:inherit!important;border-top:0!important;border-right:0!important;box-shadow:none!important;position:static!important}',
+            '.rcd-det th{text-align:left;font-weight:700!important;white-space:nowrap;width:1%;padding:.25em .5em .25em 0!important;border-bottom:1px solid #000!important;border-left:0!important;vertical-align:top}',
+            '.rcd-det td{padding:.25em 0 .25em .5em!important;border-left:1px solid #000!important;border-bottom:1px solid #000!important;vertical-align:top;font-weight:400}',
+            '.rcd-det tr{background:none!important}',
+            '.rcd-det td.rcd-strong{font-weight:900!important;font-size:1.08em!important}',
+            '.rcd-ih{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #000;padding:.35em 0 .2em;margin-top:.4em;font-weight:700}',
+            '.rcd-sec{font-weight:900;text-transform:uppercase;margin:.5em 0 0;border-bottom:1px solid #000}',
+            '.rcd-it{border-bottom:1px solid #000;padding:.35em 0}',
+            '.rcd-it1{display:flex;justify-content:space-between;gap:.5em;align-items:baseline}',
+            '.rcd-no{font-size:1.15em;font-weight:700;margin-right:.3em}',
+            '.rcd-code{text-decoration:underline}',
+            '.rcd-nm{text-transform:uppercase;margin:.1em 0 .15em}',
+            '.rcd-it3{display:flex;justify-content:space-between;align-items:baseline;gap:.4em}',
+            '.rcd-it3 .rcd-vat{font-size:.9em;min-width:2.8em}',
+            '.rcd-it3 .rcd-pq{flex:1;text-align:center;white-space:nowrap}',
+            '.rcd-it3 .rcd-amt{font-weight:900;white-space:nowrap;font-size:1.12em}',
+            '.rcd-sub{font-size:.9em;padding-left:1.2em}',
+            '.rcd-pl{white-space:pre-wrap}',
+            '.rcd-dots{border-top:2px dotted #000;margin:.5em 0 .2em}',
+            '.rcd-tb{display:flex;justify-content:space-between;align-items:baseline}',
+            /* zip 378: label / amount rows are a TABLE, not flex: on the terminal's printer the amount dropped onto its own line
+               ("Total:" then "KES 22,000.00" under it). Two table cells always stay side by side, on every printer and phone. */
+            '.rcd-row,.rcd-total{display:table;width:100%;table-layout:auto;border-collapse:collapse;white-space:normal}',
+            '.rcd-row>span,.rcd-total>span{display:table-cell;vertical-align:bottom;padding:0}',
+            '.rcd-row>span:first-child,.rcd-total>span:first-child{text-align:left;width:99%;padding-right:.5em}',
+            '.rcd-row>span:last-child,.rcd-total>span:last-child{text-align:right;white-space:nowrap}',
+            '.rcd-row>span:only-child{width:auto;text-align:left;white-space:normal;padding-right:0}',
+            '.rcd-total{font-weight:900;font-size:1.25em;margin-top:.15em}',
+            '.rcd-total>span:last-child{border-bottom:4px double #000}',
+            '.rcd-co{overflow-wrap:anywhere;word-break:normal}',
+            '@media print{.device-paper-picker,.device-paper-now,.universal-modal-x,.receipt-actions{display:none!important}}',
+            '.rcd-tb b{text-decoration:underline}',
+            '.rcd-word{font-weight:900;letter-spacing:.05em}',
+            '.rcd-pay{margin-top:.4em}',
+            '.rcd-pre{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:.92em;white-space:pre-wrap;margin:.3em 0}',
+            '.rcd-prep{margin:.5em 0 .2em}',
+            '.rcd-hr{border-top:2px dashed #000;margin:.45em 0}',
+            '.rcd-thin{border-top:1px dashed #000;margin:.4em 0}',
+            '.rcd-note{white-space:pre-wrap}',
+            '.rcd-bold{text-align:center;font-weight:800;font-size:1.08em;white-space:pre-wrap}',
+            '.rcd-notes{display:flex;gap:.5em}.rcd-notes b{text-decoration:underline;white-space:nowrap}.rcd-notes i{font-weight:800;font-size:1.1em;white-space:pre-wrap}',
+            '.rcd-ref{text-align:center;margin-top:.3em}',
+            '.rcd-end{display:flex;align-items:center;gap:.6em;margin-top:.5em;font-size:1.05em;white-space:nowrap}.rcd-end:before,.rcd-end:after{content:"";flex:1;border-top:2px dashed #000}',
+            '.rcd{container-type:inline-size}',
+            '.rcd-it3 .rcd-amt{white-space:nowrap}',
+                        '.rcd-ih span{white-space:nowrap}',
+            /* narrow paper (58 mm): smaller letters for the money columns, the details table and titles stay on one line where they can */
+            '@container (max-width: 250px){.rcd-co{font-size:1.3em}.rcd-c{font-size:.92em}.rcd-det{font-size:.95em}.rcd-det th{padding-right:.35em}.rcd-ih{font-size:.86em}.rcd-it3{font-size:.9em;gap:.25em}.rcd-it3 .rcd-amt{font-size:1.05em}.rcd-total{font-size:1.1em}.rcd-bold{font-size:1em}.rcd-notes i{font-size:1em}}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(st);
+    }
+    function receiptDetailedDoc(P) {
+        var o = rxDetailedOpts(), sale = P.sale, cols = P.cols, rule = P.rule, eq = '='.repeat(cols), E = rxEsc;
+        var center = function (t) { t = String(t); return t.length >= cols ? t : ' '.repeat(Math.floor((cols - t.length) / 2)) + t; };
+        var kv = function (label, value) {           // "Doc No:      R-1042" with the value wrapped under itself
+            var w = 13, lab = (label + ':').padEnd(w), room = Math.max(8, cols - w), parts = rxWrap(value, room);
+            if (!parts.length) parts = [''];
+            return parts.map(function (p, i) { return (i ? ' '.repeat(w) : lab) + p; });
+        };
+        var money = function (label, n) { return receiptMoneyRow(label, rxCommas(n), cols); };
+        var title = (o.title || P.docLabel || '').toUpperCase();
+        var company = (typeof businessName === 'string' && businessName) || P.hooks.defaultName || 'Business POS';
+        var contact = [];
+        if (typeof receiptExtraInfo === 'string' && receiptExtraInfo) receiptExtraInfo.split('\n').forEach(function (l) { if (l.trim()) contact.push(l.trim()); });
+        if (typeof receiptContact === 'string' && receiptContact) contact.push('TEL: ' + receiptContact);
+        if (typeof receiptEmail === 'string' && receiptEmail) contact.push('Email: ' + receiptEmail);
+        if (typeof etimsPin === 'string' && etimsPin) contact.push('PIN No: ' + etimsPin);
+        var branch = rxBranchLabel(o);
+        var docNo = sale.refNumber || String(sale.id || '').slice(-10);
+        var remarks = String(sale.remarks || sale.note || sale.notes || '').trim();
+        var order = (P.locationLines || []).map(function (l) { return String(l).replace(/^[^:]{1,20}:\s*/, ''); }).join(', ') || (sale.orderNo ? String(sale.orderNo) : '');
+        var details = [];
+        if (branch) details.push(['Branch', branch]);
+        details.push(['Doc No', docNo]);
+        details.push(['Date & Time', P.stamp.date + '  ' + P.stamp.time]);
+        if (order) details.push(['Order', order]);
+        details.push(['Served By', P.servedByName]);
+        if (P.customerClean) details.push(['Customer', P.customerClean, true]);
+        (P.customerExtraLines || []).forEach(function (l) { var m = /^([^:]{1,18}):\s*(.*)$/.exec(String(l)); if (m) details.push([m[1], m[2]]); else details.push(['', l]); });
+        (P.headerExtraLines || []).forEach(function (l) { var m = /^([^:]{1,18}):\s*(.*)$/.exec(String(l)); if (m) details.push([m[1], m[2]]); else details.push(['', l]); });
+        if (remarks) details.push(['Remarks', remarks]);
+
+        /* ---------- TEXT (thermal printers, PDF) ---------- */
+        var header = [];
+        if (title) header.push(title);
+        header.push(String(company).toUpperCase());
+        contact.forEach(function (l) { rxWrap(l, cols).forEach(function (x) { header.push(x); }); });
+        if (P.deliverySale) header.push('CLIENT COPY');
+        var lines = [rule];
+        details.forEach(function (d) { (d[0] ? kv(d[0], d[1]) : rxWrap(d[1], cols)).forEach(function (x) { lines.push(x); }); });
+        lines.push(eq);
+        var vatOn = P.showVat && o.showVatPct;
+        lines.push(receiptMoneyRow('ITEM DETAILS', 'TOTAL', cols)[0]);
+        lines.push(rule);
+        var lastSec = null;
+        P.rows.forEach(function (r, i) {
+            if (P.showSections && r.sec !== lastSec) { lastSec = r.sec; lines.push(String(r.sec || '').toUpperCase()); }
+            var src = { vatCategory: r.vat || 'A' };
+            var head = (i + 1) + '.' + (receiptItemCodeOn() && r.code ? ' ' + r.code : '');
+            lines.push(head);
+            rxWrap(String(r.text.name || '').toUpperCase(), cols).forEach(function (x) { lines.push(x); });
+            var left = '   ' + (vatOn && r.vat ? rxVatPct(src) + '  ' : '') + rxCommas(r.text.price) + ' x ' + r.html.qty;
+            lines.push.apply(lines, receiptMoneyRow(left, rxCommas(r.text.amount), cols));
+            r.subs.forEach(function (x) { rxWrap(x, cols - 3).forEach(function (y) { lines.push('   ' + y); }); });
+            if (i < P.rows.length - 1) lines.push(rule);                     // between items; the double line closes the list
+        });
+        (P.afterItemLines || []).concat(P.deliveryLines || [], P.installmentLines || []).forEach(function (l) { lines.push(l); });
+        lines.push(eq);
+        lines.push('Total Breakdown:');
+        var vb = null;
+        try { if (vatOn && typeof computeVatBreakdown === 'function') vb = computeVatBreakdown(P.entries.filter(function (e) { return e.type !== 'payment'; })); } catch (e) { vb = null; }
+        if (vb && vb.totalVat > 0.004) { lines.push.apply(lines, money('Amount (excl. VAT):', vb.totalNet)); lines.push.apply(lines, money('VAT:', vb.totalVat)); }
+        (P.offerLines || []).forEach(function (l) { lines.push(l); });
+        if (P.totalSavings) lines.push.apply(lines, money('Total Savings:', P.totalSavings));
+        var big = receiptBigTotalRows(P.totalLabel, P.kes(P.total), cols, P.paidWord);
+        if (big) lines.push.apply(lines, big); else lines.push.apply(lines, receiptMoneyRow(P.paidWord ? P.totalLabel + ' - ' + P.paidWord : P.totalLabel, P.kes(P.total), cols));
+        if (!P.paymentRecord) lines.push('Items: ' + P.entries.length);
+        if ((P.payLines || []).length) { lines.push(rule); P.payLines.forEach(function (l) { lines.push(l); }); }
+        if ((P.loyaltyLines || []).length) { lines.push(rule); P.loyaltyLines.forEach(function (l) { lines.push(l); }); }
+        (P.deliverySignLines || []).forEach(function (l) { lines.push(l); });
+        if ((P.etimsLines || []).length) { lines.push(rule); P.etimsLines.forEach(function (l) { lines.push(l); }); }
+        if ((P.sigLines || []).length) { lines.push(rule); P.sigLines.forEach(function (l) { lines.push(l); }); }
+        lines.push(rule);
+        lines.push('Prepared By: ' + P.servedByName);
+        var footer = [];
+        var dash = '-'.repeat(cols);
+        if (o.notice) { footer.push(dash); rxWrap(o.notice, cols).forEach(function (x) { footer.push(x); }); }
+        if ((P.paymentDetails || []).length && sale.receiptKind !== 'contract') { footer.push(dash); if (P.isBill) footer.push('Please settle via:'); P.paymentDetails.forEach(function (d) { rxWrap(d, cols).forEach(function (x) { footer.push(x); }); }); }
+        var thanks = (o.thanks || P.thanksLine || '').trim();
+        if (P.isBill && !o.thanks) thanks = P.thanksLine;
+        if (thanks) { footer.push(dash); rxWrap(thanks, cols).forEach(function (x) { footer.push(x); }); }
+        if (o.contactLine) { footer.push('-'.repeat(Math.max(4, cols - 4))); rxWrap(o.contactLine, cols).forEach(function (x) { footer.push(x); }); }
+        if (P.footerNotes) { footer.push(dash); rxWrap('NOTES: ' + P.footerNotes.replace(/\n+/g, ' / '), cols).forEach(function (x) { footer.push(x); }); }
+        if (P.customerNo || P.showRef) footer.push(dash);
+        if (P.customerNo) footer.push('Customer ' + P.customerNo);
+        if (P.showRef) footer.push('Ref: ' + sale.refNumber);
+        if (o.endMark) { var em = ' XX - END - XX '; var side = Math.max(2, Math.floor((cols - em.length) / 2)); footer.push('-'.repeat(side) + em + '-'.repeat(Math.max(2, cols - side - em.length))); }
+
+        /* ---------- HTML (screen, system print) ---------- */
+        rxEnsureDetailedCss();
+        var fontPx = 11;
+        try { fontPx = (typeof receiptFontPtNow === 'function' ? receiptFontPtNow() : 7) * 96 / 72 * 1.15; } catch (e) { /* default */ }
+        var h = '<div class="rcd" style="--rcd-font:' + fontPx.toFixed(2) + 'px">';
+        if (title) h += '<div class="rcd-doc">' + E(title) + '</div>';
+        h += '<div class="rcd-co">' + E(String(company).toUpperCase().replace(/([^\s(])\(/g, '$1 (').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')')) + '</div>';   // zip 378
+        contact.forEach(function (l) { h += '<div class="rcd-c">' + E(l) + '</div>'; });
+        if (P.deliverySale) h += '<div class="rcd-c"><b>CLIENT COPY</b></div>';
+        h += '<table class="rcd-det">' + details.map(function (d) { return '<tr><th>' + E(d[0] ? d[0] + ':' : '') + '</th><td' + (d[2] ? ' class="rcd-strong"' : '') + '>' + E(d[1]) + '</td></tr>'; }).join('') + '</table>';
+        if (P.stampHtml) h += P.stampHtml;
+        h += '<div class="rcd-ih"><span>Item details</span><span>' + (vatOn ? 'VAT · ' : '') + 'Price × Qty</span><span>Total</span></div>';
+        lastSec = null;
+        P.rows.forEach(function (r, i) {
+            if (P.showSections && r.sec !== lastSec) { lastSec = r.sec; h += '<div class="rcd-sec">' + E(r.sec || '') + '</div>'; }
+            var src = { vatCategory: r.vat || 'A' };
+            h += '<div class="rcd-it"><div class="rcd-it1"><span><span class="rcd-no">' + (i + 1) + '.</span>' + (receiptItemCodeOn() && r.code ? '<span class="rcd-code">' + E(r.code) + '</span>' : '') + '</span></div>'
+                + '<div class="rcd-nm">' + E(r.text.name) + '</div>'
+                + '<div class="rcd-it3"><span class="rcd-vat">' + (vatOn && r.vat ? E(rxVatPct(src)) : '') + '</span><span class="rcd-pq">' + E(rxCommas(r.text.price)) + ' &nbsp;×&nbsp; ' + E(r.html.qty) + '</span><span class="rcd-amt">' + E(rxCommas(r.text.amount)) + '</span></div>'
+                + r.subs.map(function (x) { return '<div class="rcd-sub">' + E(x) + '</div>'; }).join('') + '</div>';
+        });
+        var extra = (P.afterItemLines || []).concat(P.deliveryLines || [], P.installmentLines || []);
+        if (extra.length) h += '<div class="rcd-pre">' + E(extra.join('\n')) + '</div>';
+        h += '<div class="rcd-dots"></div><div class="rcd-tb"><b>Total Breakdown:</b></div>';
+        if (vb && vb.totalVat > 0.004) h += '<div class="rcd-row"><span>Amount (excl. VAT):</span><span>' + rxCommas(vb.totalNet) + '</span></div><div class="rcd-row"><span>VAT:</span><span>' + rxCommas(vb.totalVat) + '</span></div>';
+        (P.offerLines || []).forEach(function (l) { h += '<div class="rcd-row"><span>' + E(l) + '</span></div>'; });
+        if (P.totalSavings) h += '<div class="rcd-row"><span>Total Savings:</span><span>' + rxCommas(P.totalSavings) + '</span></div>';
+        h += '<div class="rcd-total"><span>' + E(P.totalLabel.charAt(0) + P.totalLabel.slice(1).toLowerCase()) + ':' + (P.paidWord ? ' <span class="rcd-word">' + E(P.paidWord) + '</span>' : '') + '</span><span>KES ' + rxCommas(P.total) + '</span></div>';
+        if (!P.paymentRecord) h += '<div class="rcd-row" style="margin-top:.2em"><span>Items:</span><span>' + P.entries.length + '</span></div>';
+        // label ........ amount lines (payment, loyalty) become label / amount rows in the receipt's own letters
+        var asRows = function (arr) { return arr.map(function (l) { var t = String(l), m = /^(.*?\S)\s{2,}(\S.*)$/.exec(t); return m ? '<div class="rcd-row"><span>' + E(m[1]) + '</span><span>' + E(m[2]) + '</span></div>' : '<div class="rcd-row"><span' + (/^Payment Method:|^STATUS:/.test(t) ? ' style="font-weight:800"' : '') + '>' + E(t) + '</span></div>'; }).join(''); };
+        if ((P.payLines || []).length) h += '<div class="rcd-thin"></div><div class="rcd-pay">' + asRows(P.payLines) + '</div>';
+        if ((P.loyaltyLines || []).length) h += '<div class="rcd-thin"></div>' + asRows(P.loyaltyLines);
+        if ((P.deliverySignLines || []).length) h += '<div class="rcd-pre">' + E(P.deliverySignLines.join('\n')) + '</div>';
+        if ((P.etimsLines || []).length) h += '<div class="rcd-thin"></div><div class="rcd-pre">' + E(P.etimsLines.join('\n')) + '</div>';
+        if ((P.sigLines || []).length) h += '<div class="rcd-thin"></div><div class="rcd-pre">' + E(P.sigLines.join('\n')) + '</div>';
+        h += '<div class="rcd-prep">Prepared By: &nbsp;' + E(P.servedByName) + '</div>';
+        if (o.notice) h += '<div class="rcd-hr"></div><div class="rcd-note">' + E(o.notice) + '</div>';
+        if ((P.paymentDetails || []).length && sale.receiptKind !== 'contract') h += '<div class="rcd-hr"></div><div class="rcd-bold">' + (P.isBill ? 'Please settle via:\n' : '') + E(P.paymentDetails.join('\n')) + '</div>';
+        if (thanks) h += '<div class="rcd-hr"></div><div class="rcd-bold">' + E(thanks) + '</div>';
+        if (o.contactLine) h += '<div class="rcd-thin"></div><div class="rcd-bold">' + E(o.contactLine) + '</div>';
+        if (P.footerNotes) h += '<div class="rcd-hr"></div><div class="rcd-notes"><b>NOTES:</b><i>' + E(P.footerNotes) + '</i></div>';
+        if (P.customerNo || P.showRef) h += '<div class="rcd-ref">' + (P.customerNo ? 'Customer ' + E(P.customerNo) : '') + (P.customerNo && P.showRef ? ' &nbsp;·&nbsp; ' : '') + (P.showRef ? 'Ref: ' + E(sale.refNumber) : '') + '</div>';
+        h += P.barcodeHtml || '';
+        if (o.endMark) h += '<div class="rcd-end">XX - END - XX</div>';
+        h += '</div>';
+        return { html: h, headerLines: header, lines: lines, footerLines: footer, total: P.total, layout: 'detailed',
+            text: header.concat(lines, footer).join('\n'), header: header.join('\n'), items: lines.join('\n'), footer: footer.join('\n') };
+    }
+
+    /* ---- Settings > Receipts: the layout picker and the Detailed layout's own texts ---- */
+    function rxLayoutInstallUI(beforeEl) {
+        if (document.getElementById('rx-layout-card') || !beforeEl || !beforeEl.parentNode) return;
+        var card = document.createElement('div'); card.id = 'rx-layout-card';
+        var opt = function (v, t, sub, pic) {
+            return '<label class="rxl-opt" data-v="' + v + '"><input type="radio" name="rx-layout" value="' + v + '"><span class="rxl-pic">' + pic + '</span><span class="rxl-t"><b>' + t + '</b><small>' + sub + '</small></span></label>';
+        };
+        var picStd = '<i style="width:60%"></i><i style="width:40%"></i><em></em><i></i><i></i><i></i><em></em><i style="width:70%;margin-left:auto"></i>';
+        var picDet = '<i style="width:30%;height:3px"></i><i style="width:75%;height:5px;background:#333"></i><i style="width:55%"></i><s></s><s></s><s></s><em></em><i style="width:40%"></i><i></i><i style="width:35%;margin-left:auto;background:#333"></i><em></em><i style="width:50%;margin-left:auto;height:4px;background:#333"></i>';
+        card.innerHTML = '<hr class="settings-divider">'
+            + '<style>#rx-layout-card .rxl-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:8px 0}'
+            + '#rx-layout-card .rxl-opt{display:flex;gap:12px;align-items:center;padding:12px;border:2px solid #dfe6e9;border-radius:12px;background:#fff;cursor:pointer;font-weight:normal;margin:0}'
+            + '#rx-layout-card .rxl-opt.on{border-color:#0f766e;background:#f0fbf8;box-shadow:0 0 0 3px rgba(15,118,110,.12)}'
+            + '#rx-layout-card .rxl-opt{position:relative}#rx-layout-card .rxl-opt input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}'
+            + '#rx-layout-card .rxl-opt:focus-within{outline:2px solid #0f766e;outline-offset:2px}'
+            + '#rx-layout-card .rxl-opt.on:after{content:"✓ In use";position:absolute;top:8px;right:10px;font-size:11px;font-weight:800;color:#fff;background:#0f766e;border-radius:10px;padding:2px 8px}'
+            + '#rx-layout-card .rxl-pic{flex:none;width:54px;height:78px;border:1px solid #cfd8dc;border-radius:4px;background:#fff;padding:5px;display:flex;flex-direction:column;gap:3px;box-shadow:0 2px 4px rgba(0,0,0,.08)}'
+            + '#rx-layout-card .rxl-pic i{display:block;height:2px;background:#9aa5ab;width:100%;margin:0 auto}#rx-layout-card .rxl-pic em{display:block;border-top:1px dashed #9aa5ab}'
+            + '#rx-layout-card .rxl-pic s{display:block;height:5px;border:1px solid #9aa5ab;border-top:0}'
+            + '#rx-layout-card .rxl-t b{display:block;font-size:14px}#rx-layout-card .rxl-t small{display:block;color:#6b7a86;font-size:12px;line-height:1.35;margin-top:2px}'
+            + '#rx-layout-card .rxl-dt{display:none;border:1px solid #e3e8ee;border-radius:12px;padding:12px;background:#fafbfc;margin-top:6px}#rx-layout-card .rxl-dt.on{display:block}'
+            + '#rx-layout-card .rxl-dt label{font-size:13px;font-weight:700;display:block;margin:8px 0 4px}#rx-layout-card .rxl-dt textarea{width:100%;min-height:58px;box-sizing:border-box}'
+            + '#rx-layout-card .rxl-dt input[type=text]{width:100%;box-sizing:border-box}'
+            + '#rx-layout-card .rxl-chk{display:flex;gap:8px;align-items:center;font-weight:normal!important;font-size:13px!important}#rx-layout-card .rxl-chk input{width:auto}'
+            + '#rx-layout-card .rxl-uses{font-size:12.5px;color:#4b5a63;background:#fff;border:1px dashed #cfd8dc;border-radius:8px;padding:8px 10px;margin:4px 0 2px;line-height:1.5}'
+            + '#rx-layout-card .rxl-prev{margin-top:10px;background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:14px;max-width:340px;max-height:520px;overflow:auto;box-shadow:inset 0 0 0 1px #f2f4f5}</style>'
+            + '<h4>🧾 Receipt layout</h4>'
+            + '<p style="font-size:13px; color:#555; margin:0 0 6px;">Choose how every receipt, bill and invoice looks. The switches below (reference, barcode, VAT, stamp, signature) work with both.</p>'
+            + '<div class="rxl-row">'
+            + opt('standard', 'Standard', 'The usual compact till receipt.', picStd)
+            + opt('detailed', 'Detailed', 'A boxed document: company block, details table, numbered items, total breakdown, terms and notes.', picDet)
+            + '</div>'
+            + '<div class="rxl-dt" id="rxl-dt">'
+            + '<div class="rxl-uses"><b>Uses what you already filled in above:</b> business name, address lines (extra info), phone, email, KRA PIN, payment details (Paybill / Till / account) and footer notes (printed as <b>NOTES</b>). Fill those in first.</div>'
+            + '<label for="rxl-title">Document title <small style="font-weight:normal;color:#7f8c8d">(empty = "Sales Receipt" / "Bill / Invoice" automatically)</small></label><input type="text" id="rxl-title" maxlength="40" placeholder="e.g. CASH SALE">'
+            + '<label for="rxl-branch">Branch name <small style="font-weight:normal;color:#7f8c8d">(empty = this branch\'s name, or left out)</small></label><input type="text" id="rxl-branch" maxlength="60" placeholder="e.g. SHOP (MAIN)">'
+            + '<label for="rxl-notice">Please note / terms</label><textarea id="rxl-notice" maxlength="600" placeholder="e.g. PLEASE NOTE: Goods once sold cannot be returned. Electrical parts are not replaced."></textarea>'
+            + '<label for="rxl-thanks">Thank-you message</label><textarea id="rxl-thanks" maxlength="300" placeholder="Optional - left out when empty"></textarea>'
+            + '<label for="rxl-contact">Contact line</label><input type="text" id="rxl-contact" maxlength="200" placeholder="Please contact us for any service complaints / suggestions">'
+            + '<label class="rxl-chk"><input type="checkbox" id="rxl-vatpct"> Show VAT % per item (when "VAT / tax" is switched on below)</label>'
+            + '<label class="rxl-chk"><input type="checkbox" id="rxl-end"> Print "XX - END - XX" at the bottom</label>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button type="button" class="settings-small-btn" id="rxl-save">💾 Save layout texts</button><button type="button" class="settings-small-btn" id="rxl-preview-btn">👁️ Preview</button></div>'
+            + '<div class="rxl-prev" id="rxl-prev" style="display:none"></div>'
+            + '</div>';
+        beforeEl.parentNode.insertBefore(card, beforeEl);
+        var $ = function (id) { return document.getElementById(id); };
+        card.querySelectorAll('input[name="rx-layout"]').forEach(function (r) {
+            r.addEventListener('change', function () {
+                rxSettings.layout = this.value === 'detailed' ? 'detailed' : 'standard'; rxSet('pos_receipt_layout', rxSettings.layout); rxPush(['layout']);
+                rxLayoutFill(); try { if (typeof receiptRelayoutOpen === 'function') receiptRelayoutOpen(); } catch (e) { /* no receipt open */ }
+                rxToast(rxSettings.layout === 'detailed' ? 'Receipts now use the Detailed layout.' : 'Receipts now use the Standard layout.');
+                if (rxSettings.layout === 'detailed') rxLayoutPreview();
+            });
+        });
+        var save = function (quiet) {
+            rxSettings.detailed = rxDetailedClean({ title: $('rxl-title').value.trim(), branch: $('rxl-branch').value.trim(), notice: $('rxl-notice').value.trim(), thanks: $('rxl-thanks').value.trim(), contactLine: $('rxl-contact').value.trim(),
+                showVatPct: $('rxl-vatpct').checked, endMark: $('rxl-end').checked });
+            rxSet('pos_receipt_detailed', JSON.stringify(rxSettings.detailed)); rxPush(['detailed']);
+            try { if (typeof receiptRelayoutOpen === 'function') receiptRelayoutOpen(); } catch (e) { /* no receipt open */ }
+            if (!quiet) rxToast('Detailed layout saved.');
+            if ($('rxl-prev').style.display !== 'none') rxLayoutPreview();
+        };
+        $('rxl-save').addEventListener('click', function () { save(false); });
+        ['rxl-vatpct', 'rxl-end'].forEach(function (id) { $(id).addEventListener('change', function () { save(true); }); });
+        $('rxl-preview-btn').addEventListener('click', function () { save(true); rxLayoutPreview(); });
+        rxLayoutFill();
+    }
+    function rxLayoutFill() {
+        var $ = function (id) { return document.getElementById(id); };
+        if (!$('rx-layout-card')) return;
+        var o = rxDetailedOpts();
+        document.querySelectorAll('#rx-layout-card .rxl-opt').forEach(function (l) { var on = l.getAttribute('data-v') === rxSettings.layout; l.classList.toggle('on', on); l.querySelector('input').checked = on; });
+        $('rxl-dt').classList.toggle('on', rxSettings.layout === 'detailed');
+        $('rxl-title').value = o.title; $('rxl-branch').value = o.branch; $('rxl-notice').value = o.notice; $('rxl-thanks').value = o.thanks; $('rxl-contact').value = o.contactLine;
+        $('rxl-vatpct').checked = o.showVatPct; $('rxl-end').checked = o.endMark;
+    }
+    /* a sample receipt in the chosen layout, drawn by the real receipt builder (nothing is saved or printed) */
+    function rxLayoutPreview() {
+        var box = document.getElementById('rxl-prev'); if (!box || typeof buildReceiptDoc !== 'function') return;
+        var sale = { id: 'preview', refNumber: 'R-000123', timestamp: new Date().toISOString(), paid: true, paymentMethod: 'mpesa', mpesaReceiptNumber: 'TKA7Q2M1XB', customerName: 'Sample Customer', remarks: 'Sample remarks',
+            items: [{ code: 'TSMTG0127', name: 'Support mount front', price: 1040, qty: 2, unit: 'pcs', vatCategory: 'A' }, { code: 'TCOSR0031', name: 'Dust cover front shock', price: 800, qty: 2, unit: 'pcs', vatCategory: 'A' }] };
+        try { var doc = buildReceiptDoc(sale, {}); box.innerHTML = doc.html; box.style.display = 'block'; }
+        catch (e) { box.textContent = 'Preview not available on this screen: ' + ((e && e.message) || ''); box.style.display = 'block'; }
+    }
     function rxCurrentSale() { try { return typeof currentReceiptSale !== 'undefined' ? currentReceiptSale : null; } catch (e) { return null; } }
 
     /* what the receipt (screen, browser print, PDF-less) shows: the stamp between the header and the item lines, tilted by the chosen angle */
@@ -313,6 +671,15 @@
             + sw('rx-print-barcode', 'Barcode', 'A scannable barcode of the reference number under it. Off by default.')
             + sw('rx-print-vat', 'VAT / tax', 'The tax class letter after each amount and the VAT summary table. Off by default.')
             + sw('rx-stamp-paid', 'PAID / UNPAID wording', 'Written on the TOTAL line itself (UNPAID for Pay Later, Pay on Delivery and bills still owing). Off by default.')
+            + sw('rx-item-code', 'Item code', 'The item code on each line of the receipt. Off by default.')
+            + sw('rx-cust-no', 'Customer number', 'The "Customer 12" line (how many customers were served today). Off by default.')
+            + sw('rx-cust-phone', 'Customer phone number', 'Printed under the customer name when the customer gave one. Left out when there is none. On by default.')
+            + sw('rx-cust-id', 'Customer ID number', 'Printed under the phone number when the customer gave one. Left out when there is none. On by default.')
+            + sw('rx-sig-sale', 'Signature area on sales receipts', 'Customer name / ID / phone / signature / date lines at the bottom of an ordinary receipt. Off by default.')
+            + sw('rx-sig-bill', 'Signature area on bills and invoices', 'The same lines on a bill (Pay Later) receipt. Off by default.')
+            + sw('rx-sig-contract', 'Signature area on contract receipts', 'Recipient and staff signature lines on a contract (stock issued under agreement). On by default.')
+            + '<div class="form-group" style="margin-top:8px"><label class="label" for="rx-contract-req">Contract recipient must give</label><select id="rx-contract-req" class="input"><option value="name">Name only</option><option value="phone">Name + phone number</option><option value="id">Name + ID number</option><option value="either">Name + phone OR ID number</option><option value="both">Name + phone AND ID number</option></select><p class="settings-hint">Checked when stock is issued under a contract.</p></div>'
+            + sw('rx-sig-staff', 'Staff signature line', 'Adds a line for the staff member or authorised representative to the signature area.')
             + '</div>';
         card.id = 'receipt-stamp-card';
         card.innerHTML =
@@ -356,11 +723,11 @@
         }
         var $ = function (id) { return document.getElementById(id); };
         $('rx-stamp-show').addEventListener('change', function () {
-            rxSettings.showStamp = this.checked; rxSet('pos_receipt_show_stamp', String(this.checked)); window.__stampRaster = null; rxStampRefreshUI(); rxPush();
+            rxSettings.showStamp = this.checked; rxSet('pos_receipt_show_stamp', String(this.checked)); window.__stampRaster = null; rxStampRefreshUI(); rxPush(['showStamp']);
         });
         var flip = function (id, key, store, onMsg, offMsg) {
             $(id).addEventListener('change', function () {
-                rxSettings[key] = this.checked; rxSet(store, String(this.checked)); window.__stampRaster = null; rxPrintOptionsApplied(); rxPush();
+                rxSettings[key] = this.checked; rxSet(store, String(this.checked)); window.__stampRaster = null; rxPrintOptionsApplied(); rxPush([key]);
                 rxToast(this.checked ? onMsg : offMsg);
             });
         };
@@ -368,11 +735,20 @@
         flip('rx-print-barcode', 'showBarcode', 'pos_receipt_show_barcode', 'Receipts print a barcode under the reference.', 'Barcode turned off.');
         flip('rx-print-vat', 'printVat', 'pos_receipt_print_vat', 'Receipts print VAT / tax.', 'VAT / tax turned off on receipts.');
         flip('rx-stamp-paid', 'paidMark', 'pos_receipt_stamp_paid', 'Receipts say PAID or UNPAID on the total line.', 'PAID / UNPAID wording turned off.');
+        flip('rx-item-code', 'itemCode', 'pos_receipt_item_code', 'Receipts print item codes.', 'Item codes turned off on receipts.');
+        flip('rx-cust-no', 'custNo', 'pos_receipt_cust_no', 'Receipts print the customer number.', 'Customer number turned off on receipts.');
+        flip('rx-cust-phone', 'custPhone', 'pos_receipt_cust_phone', 'Receipts print the customer phone number.', 'Customer phone number turned off on receipts.');
+        flip('rx-cust-id', 'custId', 'pos_receipt_cust_id', 'Receipts print the customer ID number.', 'Customer ID number turned off on receipts.');
+        flip('rx-sig-sale', 'sigSale', 'pos_receipt_sig_sale', 'Sales receipts have a signature area.', 'Signature area removed from sales receipts.');
+        flip('rx-sig-bill', 'sigBill', 'pos_receipt_sig_bill', 'Bills have a signature area.', 'Signature area removed from bills.');
+        flip('rx-sig-contract', 'sigContract', 'pos_receipt_sig_contract', 'Contract receipts have a signature area.', 'Signature area removed from contract receipts.');
+        if ($('rx-contract-req')) { $('rx-contract-req').value = rxSettings.contractReq; $('rx-contract-req').addEventListener('change', function () { rxSettings.contractReq = this.value; rxSet('pos_contract_req', this.value); rxPush(['contractReq']); showToast('Saved.'); }); }
+        flip('rx-sig-staff', 'sigStaff', 'pos_receipt_sig_staff', 'The signature area has a staff line.', 'Staff signature line removed.');
         $('rx-stamp-angle').addEventListener('input', function () {
-            rxSettings.stampAngle = parseFloat(this.value) || 0; rxSet('pos_receipt_stamp_angle', String(rxSettings.stampAngle)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush();
+            rxSettings.stampAngle = parseFloat(this.value) || 0; rxSet('pos_receipt_stamp_angle', String(rxSettings.stampAngle)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush(['stampAngle']);
         });
         $('rx-stamp-size').addEventListener('input', function () {
-            rxSettings.stampSize = parseFloat(this.value) || 70; rxSet('pos_receipt_stamp_size', String(rxSettings.stampSize)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush();
+            rxSettings.stampSize = parseFloat(this.value) || 70; rxSet('pos_receipt_stamp_size', String(rxSettings.stampSize)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush(['stampSize']);
         });
         $('rx-stamp-make').addEventListener('click', function () {
             var lines = [$('rx-stamp-l1').value, $('rx-stamp-l2').value, $('rx-stamp-l3').value];
@@ -394,6 +770,7 @@
             this.value = '';
         });
         $('rx-stamp-remove').addEventListener('click', function () { rxStampSave(''); rxToast('Stamp removed.'); });
+        try { rxLayoutInstallUI(what); } catch (e) { /* the layout card is an extra */ }
         rxStampRefreshUI();
     }
     function rxPrintOptionsFill() {
@@ -402,6 +779,7 @@
         if ($('rx-print-barcode')) { $('rx-print-barcode').checked = !!rxSettings.showBarcode; $('rx-print-barcode').disabled = !rxSettings.showRef; }
         if ($('rx-print-vat')) $('rx-print-vat').checked = !!rxSettings.printVat;
         if ($('rx-stamp-paid')) $('rx-stamp-paid').checked = !!rxSettings.paidMark;
+        [['rx-item-code', 'itemCode'], ['rx-cust-no', 'custNo'], ['rx-cust-phone', 'custPhone'], ['rx-cust-id', 'custId'], ['rx-sig-sale', 'sigSale'], ['rx-sig-bill', 'sigBill'], ['rx-sig-contract', 'sigContract'], ['rx-sig-staff', 'sigStaff']].forEach(function (t) { if ($(t[0])) $(t[0]).checked = !!rxSettings[t[1]]; });
     }
     /* a switch changed (here, or arrived from another till): refresh the boxes and redraw a receipt that is open on screen so the preview matches the print */
     function rxPrintOptionsApplied() {
@@ -452,7 +830,7 @@
         if (!rxIsAdmin()) { rxToast('Only the admin can change this.', true); billsLockDecorate(); return; }
         var apply = function () {
             rxSettings.billsLocked = !!on; rxSet('pos_bills_locked', String(!!on)); window.__billsLockPassUntil = 0;
-            billsLockDecorate(); rxPush();
+            billsLockDecorate(); rxPush(['billsLocked']);
             rxToast(on ? '🔒 Bills locked — staff can only view them.' : '🔓 Bills unlocked.');
         };
         if (!on && billsLockActive() && typeof requireManagementApproval === 'function') { requireManagementApproval('Enter the admin password to unlock bills.', apply); return; }
@@ -1198,3 +1576,78 @@
         .pos-checkout > .form-group:has(#sales-location-select) > div { flex: 1 1 auto; min-width: 0; }
         .pos-checkout > .form-group:has(#sales-location-select) select { height: 36px; padding-top: 4px; padding-bottom: 4px; }
     </style>
+<!-- GRID SORT (zip 356) ------------------------------------------------------
+     The Sales Counter's green 💰 Sales button is replaced by ⇅ Sort: one tap switches the product picture grid between
+     "Most sold" (best sellers first - the order it always had) and "A-Z" (alphabetical); Aqua: "By size" (its old order) / A-Z / Most sold.
+     Remembered on THIS device (localStorage pos_grid_sort). The apps' own grid code asks window.posGridCmp(a, b) / window.posGridMode().
+     The Daily Sales panel is still there: Settings > View > "Keep open" pins it on the counter. -->
+<style>
+    /* zip 360: the Sort button is a single down arrow, right AFTER 💰 Sales. Its order (Most sold / A–Z / By size) is in the tooltip and a toast on every tap. */
+    #grid-sort-btn { display: inline-flex !important; align-items: center; justify-content: center; min-width: 40px; padding-left: 10px !important; padding-right: 10px !important; background: linear-gradient(135deg, #0f766e, #115e59) !important; color: #fff !important; border: 1px solid rgba(255,255,255,.18) !important; box-shadow: 0 1px 3px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.15); cursor: pointer; font-weight: 800; font-size: 0 !important; }
+    #grid-sort-btn .gs-arrow { display: inline-block !important; font-size: 19px !important; line-height: 1; }
+    #grid-sort-btn > span:not(.gs-arrow) { display: none !important; }
+    #sales-tab .ptl-prod > h3 #grid-sort-btn .gs-arrow { display: none !important; }      /* phone till header: the arrow comes from data-ptl-ic (one arrow, not two) */
+    #grid-sort-btn:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
+    #grid-sort-btn:active { transform: scale(.94); }
+    html.gs-on .pos-sq-bar.pos-head-actions:has(#grid-sort-btn) { display: inline-flex !important; }
+</style>
+<script>
+(function () {
+    var KEY = 'pos_grid_sort';
+    function lsGet() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }
+    function isAqua() { return !document.getElementById('item-image-grid') && !!document.getElementById('all-items-grid'); }
+    function hasGrid() { return !!(document.getElementById('item-image-grid') || document.getElementById('all-items-grid')); }
+    function modes() { return isAqua() ? ['size', 'az', 'sold'] : ['sold', 'az']; }      /* Aqua's grid is in bottle-size order until a cashier picks another */
+    window.posGridMode = function () { var m = lsGet(), ms = modes(); return ms.indexOf(m) >= 0 ? m : ms[0]; };
+    window.posGridModeSet = function () { return !!lsGet(); };   // the Hotel keeps the owner's own item order until a cashier picks one here
+    var recOf = function (x) { return (x && (x.p || x.rec)) || x || {}; };            /* shop-style {p, sold} or Hotel-style {rec, name} */
+    var nameOf = function (x) { return String(recOf(x).name || (x && x.name) || ''); };
+    var soldOf = function (x) { if (x && typeof x.sold === 'number') return x.sold; try { return Number(soldTotalsMap()[recOf(x).code]) || 0; } catch (e) { return 0; } };
+    window.posGridCmp = function (a, b) {
+        var byName = nameOf(a).localeCompare(nameOf(b), undefined, { sensitivity: 'base', numeric: true });
+        if (window.posGridMode() === 'az') return byName;
+        return (soldOf(b) - soldOf(a)) || byName;
+    };
+    var LABEL = { az: 'A–Z', sold: 'Most sold', size: 'By size' }, ICON = { az: '🔤', sold: '🔥', size: '💧' };
+    function label(m) { return LABEL[m || window.posGridMode()]; }
+    function nextMode() { var ms = modes(), i = ms.indexOf(window.posGridMode()); return ms[(i + 1) % ms.length]; }
+    function paint() {
+        var b = document.getElementById('grid-sort-btn'); if (!b) return;
+        var m = window.posGridMode();
+        b.innerHTML = '<span class="gs-arrow" aria-hidden="true">↓</span>';
+        b.title = 'Product order: ' + label(m) + ' — tap to switch to ' + label(nextMode());
+        b.setAttribute('data-ptl-ic', '↓');
+        b.setAttribute('aria-label', b.title);
+    }
+    function redraw() {
+        try {
+            if (isAqua()) { if (typeof renderAllItemsGrid === 'function') renderAllItemsGrid(); return; }
+            var si = document.getElementById('sales-search'); if (typeof renderItemImageGrid === 'function') renderItemImageGrid(si ? si.value : '');
+        } catch (e) { /* next render picks it up */ }
+    }
+    window.posGridToggle = function () {
+        var next = nextMode();
+        try { if (typeof safeSetItem === 'function') safeSetItem(KEY, next); else localStorage.setItem(KEY, next); } catch (e) { /* this visit only */ }
+        paint(); redraw();
+        try { showToast('Products now sorted: ' + label()); } catch (e) { /* cosmetic */ }
+    };
+    function place() {
+        if (!hasGrid()) return false;
+        var sales = document.getElementById('my-sales-toggle-btn'); if (!sales || !sales.parentNode) return false;
+        var b = document.getElementById('grid-sort-btn');
+        if (!b) {
+            b = document.createElement('button'); b.type = 'button'; b.id = 'grid-sort-btn'; b.className = 'settings-small-btn';
+            b.addEventListener('click', window.posGridToggle);
+        }
+        if (b.parentNode !== sales.parentNode || sales.nextSibling !== b) sales.parentNode.insertBefore(b, sales.nextSibling);   // zip 360: right after 💰 Sales
+        document.documentElement.classList.add('gs-on');
+        paint();
+        return true;
+    }
+    var tries = 0;
+    function boot() { if (place() || ++tries > 40) return; setTimeout(boot, 250); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 500); }); else setTimeout(boot, 500);
+    /* the counter layout moves the action bar between the header and the search row on resize: keep the button next to it */
+    setInterval(function () { try { if (hasGrid() && !document.hidden && !document.getElementById('grid-sort-btn')) place(); } catch (e) { /* cosmetic */ } }, 3000);
+})();
+</script>

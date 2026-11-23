@@ -1,0 +1,838 @@
+<!-- SUPPLIERS (zip 321; grew out of zip 319's credit restock) ----------------------------------------------------------------------------
+     Supplier management on the records the app already keeps and syncs - no new store, no new sync:
+       * PROFILES: the existing `suppliers` list (merged per record), extended with contact, email, address, tax PIN, payment terms, notes,
+         active / inactive. A supplier with history is deactivated, never deleted.
+       * DOCUMENTS (what is owed): the existing `tradeCredits` list ("I owe them"), one record per event, never edited away:
+           supplier_restock  a restock from this supplier (id rc-<restock expense id>): total, invoice no., purchase id, lines, due date
+           supplier_opening  a balance brought forward (no stock, no purchase)
+           supplier_return   goods returned (a credit; linked to the restock; the stock comes off)
+           supplier_adjust   a correction up (sign +1, owed more) or down (sign -1, owed less), with a reason
+       * PAYMENTS: a payment is ONE expense record (category Restock, supplierPay, allocations [{ id, amount }] to the documents it pays), and
+         a copy on each document it pays (t.payments). The balance counts each payment once by id from either place, so a payment never
+         counts twice and is never lost when two tills pay at once. A restock paid now (in full or part) is the restock's own expense, tagged
+         as its payment: nothing is recorded twice.
+       * BALANCES are always worked out from the records (documents - payments - returns - corrections). Nothing stores a balance to edit.
+         Each document's outstanding = its amount - what was allocated to it - returns against it; a supplier's balance can go below 0 only
+         through returns on paid stock (a credit with that supplier). A payment can never be more than what is outstanding.
+       * MONEY: a credit restock moves stock and the payable only; cash moves when (and only when) a payment is recorded. The books (accounts
+         block) post restock = Stock / Accounts payable, payment = Accounts payable / Cash-M-Pesa-Bank, return = Accounts payable / Stock,
+         opening = Opening balance equity / Accounts payable. Profit sees stock only through cost of goods sold.
+       * IDs are fixed per action (the restock's own id; a key made when a form opens), so a double tap, a retry or a second sync never adds
+         a second document, payment or stock movement. -->
+<style>
+.sup-choice { display:flex; gap:8px; flex-wrap:wrap; margin:4px 0 10px; }
+.sup-choice label { display:flex; align-items:center; gap:8px; margin:0; padding:10px 12px; border:1px solid var(--border-color,#dfe4e8); border-radius:10px; cursor:pointer; font-weight:600; flex:1 1 160px; }
+.sup-choice label.on { border-color:var(--primary,#2980b9); background:var(--bg-muted,rgba(41,128,185,.06)); }
+.sup-choice input { width:auto !important; min-height:0 !important; margin:0; }
+.sup-note { font-size:13px; color:var(--text-muted,#7f8c8d); margin:0 0 12px; }
+.sup-row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+.sup-row > * { flex:1 1 160px; min-width:0; }
+#sup-modal { position:fixed; inset:0; background:rgba(44,62,80,.85); display:none; justify-content:center; align-items:center; z-index:10000; padding:12px; box-sizing:border-box; }
+#sup-modal.on { display:flex; }
+#sup-modal .sup-box { background:var(--bg-surface,#fff); color:var(--dark,#2c3e50); border-radius:14px; padding:18px 20px; width:100%; max-width:560px; max-height:calc(92vh / var(--pos-z,1)); overflow-y:auto; box-sizing:border-box; }
+#sup-modal.wide .sup-box { max-width:980px; }
+#sup-modal h3 { margin:0 0 10px; padding-right:36px; }
+#sup-modal .sup-x { float:right; border:0; background:transparent; font-size:22px; cursor:pointer; color:inherit; margin:-6px -8px 0 0; }
+#sup-modal label.l { display:block; font-size:13px; font-weight:700; margin:10px 0 4px; }
+#sup-modal input, #sup-modal select, #sup-modal textarea { width:100%; box-sizing:border-box; }
+#sup-modal .sup-err { color:var(--danger,#c0392b); font-size:13px; min-height:18px; margin:8px 0 0; }
+#sup-modal .sup-warn { color:#b9770e; font-size:13px; margin:6px 0 0; }
+#sup-modal .sup-acts { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; position:sticky; bottom:-18px; background:var(--bg-surface,#fff); padding:8px 0 4px; }
+#sup-modal .sup-acts button { flex:1 1 140px; }
+.sup-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 14px; }
+.sup-card { border:1px solid var(--border-color,#e1e6ea); border-radius:12px; padding:10px 12px; background:var(--bg-surface,#fff); }
+.sup-card .k { font-size:12px; color:var(--text-muted,#7f8c8d); font-weight:600; }
+.sup-card .v { font-size:20px; font-weight:800; margin-top:2px; font-variant-numeric:tabular-nums; }
+.sup-card .h { font-size:11.5px; color:var(--text-muted,#7f8c8d); margin-top:2px; }
+.sup-card.owe .v { color:var(--danger,#c0392b); }
+.sup-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px; }
+.sup-tools input[type=search] { flex:1 1 220px; min-width:0; margin:0; }
+.sup-tools select { flex:0 1 180px; margin:0; }
+.sup-tabs { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; }
+.sup-tabs button { border:1px solid var(--border-color,#dfe4e8); background:transparent; border-radius:999px; padding:6px 12px; cursor:pointer; font-weight:700; color:inherit; }
+.sup-tabs button.on { background:var(--primary,#2980b9); color:#fff; border-color:transparent; }
+.sup-num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.sup-badge { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11.5px; font-weight:700; background:var(--bg-muted,#eef2f4); }
+.sup-badge.red { background:#fdecea; color:#a93226; } .sup-badge.amber { background:#fef5e7; color:#9a6400; } .sup-badge.green { background:#eafaf1; color:#1e8449; } .sup-badge.grey { background:#eef2f4; color:#5d6d7e; }
+.sup-sync { font-size:12.5px; color:#9a6400; margin:6px 0; }
+.sup-alloc td input { width:110px; }
+#sup-root .btn-main, #sup-root .settings-small-btn, #sup-debts .btn-main, #sup-debts .settings-small-btn, #sup-modal .sup-tools .settings-small-btn { width:auto; margin:0; }
+.sup-rowacts { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.sup-rowacts button { padding:6px 10px !important; font-size:13px !important; min-height:0; }
+@media (max-width:640px) { .sup-hide-sm { display:none; } .sup-rowacts { justify-content:flex-start; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    var $ = function (id) { return document.getElementById(id); };
+    var r2 = function (n) { return Math.round((Number(n) || 0) * 100) / 100; };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var kes = function (n) { var v = r2(n); return (v < 0 ? '-' : '') + 'KES ' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var toast = function (m, bad) { try { showToast(m, bad); } catch (e) { /* no toast */ } };
+    var who = function () { try { return activeServerName(); } catch (e) { return ''; } };
+    var newId = function () { try { return genSaleId(); } catch (e) { return 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); } };
+    var newKey = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); };
+    var SUP = function () { return typeof suppliers !== 'undefined' && Array.isArray(suppliers) ? suppliers : []; };
+    var TC = function () { return typeof tradeCredits !== 'undefined' && Array.isArray(tradeCredits) ? tradeCredits : null; };
+    var EX = function () { return typeof expenses !== 'undefined' && Array.isArray(expenses) ? expenses : []; };
+    var dayKey = function (ts) { var d = new Date(ts); if (isNaN(d)) return ''; return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    var fmtDate = function (ts) { var d = new Date(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB'); };
+    var today = function () { return dayKey(Date.now()); };
+    var METHODS = [['cash', 'Cash'], ['mpesa', 'M-Pesa'], ['bank', 'Bank'], ['other', 'Other']];
+    var methodName = function (m) { var f = METHODS.filter(function (x) { return x[0] === m; })[0]; return f ? f[1] : (m || 'Cash'); };
+    var TERMS = [['', 'No terms'], ['cod', 'Cash on delivery'], ['7', '7 days'], ['14', '14 days'], ['30', '30 days'], ['60', '60 days']];
+    var termsName = function (t) { var f = TERMS.filter(function (x) { return x[0] === String(t || ''); })[0]; return f ? f[1] : (/^\d+$/.test(String(t)) ? t + ' days' : ''); };
+
+    /* ======================= the ledger (pure reads of the records) ======================= */
+    var KINDS = { supplier_restock: 1, supplier_opening: 1, supplier_return: 1, supplier_adjust: 1 };
+    function isDoc(t) { return !!t && t.direction === 'i_owe' && KINDS[t.kind] === 1 && !t.voided; }
+    function isPayable(t) { return t.kind === 'supplier_restock' || t.kind === 'supplier_opening' || (t.kind === 'supplier_adjust' && Number(t.sign) > 0); }
+    function isCredit(t) { return t.kind === 'supplier_return' || (t.kind === 'supplier_adjust' && Number(t.sign) < 0); }
+    function docs(supId) { return (TC() || []).filter(function (t) { return isDoc(t) && (supId == null || t.supplierId === supId); }); }
+    function docById(id) { return (TC() || []).find(function (t) { return t && t.id === id; }) || null; }
+    function supById(id) { return SUP().find(function (s) { return s && s.id === id; }) || null; }
+    // every payment once by id: the expense record (authoritative) or, until it arrives, the copies on the documents
+    function allPayments(supId) {
+        var map = {}, voided = {};
+        EX().forEach(function (x) { if (x && x.voided && x.id) voided[x.id] = 1; });
+        EX().forEach(function (x) {
+            if (!x || x.voided || !x.id || !(x.supplierPay || x.supplierDebtId)) return;
+            var al = Array.isArray(x.allocations) && x.allocations.length ? x.allocations.map(function (a) { return { id: a.id, amount: r2(a.amount) }; }) : [{ id: x.supplierDebtId, amount: r2(x.amount) }];
+            var d0 = docById(al[0].id);
+            map[x.id] = { id: x.id, at: x.timestamp, amount: r2(x.amount), method: x.paymentMethod || 'cash', reference: x.reference || '', notes: x.notes || '', by: x.by || '', supplierId: x.supplierId || (d0 && d0.supplierId) || '', allocations: al, fromExpense: true };
+        });
+        (TC() || []).forEach(function (t) {
+            if (!isDoc(t) || !Array.isArray(t.payments)) return;
+            t.payments.forEach(function (p) {
+                if (!p || !p.id || voided[p.id] || p.voided) return;
+                var m = map[p.id];
+                if (m && m.fromExpense) return;
+                if (!m) m = map[p.id] = { id: p.id, at: p.at, amount: 0, method: p.method || 'cash', reference: p.reference || '', notes: '', by: p.by || '', supplierId: t.supplierId, allocations: [] };
+                if (!m.allocations.some(function (a) { return a.id === t.id; })) { m.allocations.push({ id: t.id, amount: r2(p.amount) }); m.amount = r2(m.amount + r2(p.amount)); }
+            });
+        });
+        return Object.keys(map).map(function (k) { return map[k]; }).filter(function (p) { return supId == null || p.supplierId === supId; })
+            .sort(function (a, b) { return String(a.at).localeCompare(String(b.at)); });
+    }
+    function allocatedTo(docId, pays) { var s = 0; (pays || allPayments()).forEach(function (p) { p.allocations.forEach(function (a) { if (a.id === docId) s += r2(a.amount); }); }); return r2(s); }
+    function returnsAgainst(docId) { return r2(docs().filter(function (t) { return t.kind === 'supplier_return' && t.appliesTo === docId; }).reduce(function (s, t) { return s + r2(t.amount); }, 0)); }
+    function outstanding(t, pays) { if (!isPayable(t)) return 0; return Math.max(0, r2(r2(t.amount) - allocatedTo(t.id, pays) - returnsAgainst(t.id))); }
+    // what was paid with the restock itself (its own expense; a zip 319 restock's id is rc-<that expense id>)
+    function paidAtPurchase(t, pays) { var rid = t.restockExpenseId || (String(t.id).indexOf('rc-') === 0 ? String(t.id).slice(3) : null), s = 0; if (!rid) return 0; (pays || allPayments()).forEach(function (p) { if (p.id === rid) p.allocations.forEach(function (a) { if (a.id === t.id) s += a.amount; }); }); return r2(s); }
+    function statusOf(t, pays) {
+        var o = outstanding(t, pays);
+        if (o <= 0.005) return { key: 'paid', label: 'Paid', cls: 'green' };
+        var overdue = t.dueDate && t.dueDate < today();
+        var part = o < r2(t.amount) - 0.005;
+        return { key: overdue ? 'overdue' : (part ? 'part' : 'unpaid'), label: (overdue ? 'Overdue' : (part ? 'Part paid' : 'Unpaid')), cls: overdue ? 'red' : 'amber' };
+    }
+    // the supplier's balance: what is owed (+) minus what was paid / returned / corrected down. Below 0 = a credit with the supplier.
+    function balanceOf(supId, pays) {
+        pays = pays || allPayments(supId);
+        var d = docs(supId), owed = 0;
+        d.forEach(function (t) { if (isPayable(t)) owed += r2(t.amount); else if (isCredit(t)) owed -= r2(t.amount); });
+        pays.forEach(function (p) { if (p.supplierId === supId) owed -= r2(p.amount); });
+        return r2(owed);
+    }
+    // the statement: one line per event, oldest first, with the running balance (opening balance before `from` when a period is given)
+    function ledger(supId, from, to) {
+        var pays = allPayments(supId), rows = [];
+        docs(supId).forEach(function (t) {
+            var label = t.kind === 'supplier_restock' ? 'Purchase (restock)' : t.kind === 'supplier_opening' ? 'Opening balance' : t.kind === 'supplier_return' ? 'Goods returned' : (Number(t.sign) > 0 ? 'Correction (owed more)' : 'Correction (owed less)');
+            var amt = r2(t.amount);
+            rows.push({ at: t.timestamp, type: label, ref: t.reference || t.creditNote || '', note: t.kind === 'supplier_return' ? (t.reason || '') : (t.kind === 'supplier_adjust' ? (t.reason || '') : (t.notes || '')), owed: isPayable(t) ? amt : 0, paid: isCredit(t) ? amt : 0, id: t.id });
+        });
+        pays.forEach(function (p) { rows.push({ at: p.at, type: 'Payment (' + methodName(p.method) + ')', ref: p.reference || '', note: p.allocations.map(function (a) { var d = docById(a.id); return (d && (d.reference || d.kind.replace('supplier_', ''))) + ' ' + kes(a.amount); }).join(', '), owed: 0, paid: r2(p.amount), id: p.id }); });
+        rows.sort(function (a, b) { var c = String(a.at).localeCompare(String(b.at)); return c !== 0 ? c : (b.owed - a.owed); });
+        var bal = 0, opening = 0, out = [];
+        rows.forEach(function (r) {
+            bal = r2(bal + r.owed - r.paid); r.balance = bal;
+            var k = dayKey(r.at);
+            if (from && k < from) { opening = bal; return; }
+            if (to && k > to) return;
+            out.push(r);
+        });
+        var closing = out.length ? out[out.length - 1].balance : opening;
+        return { opening: opening, rows: out, closing: closing, owed: r2(out.reduce(function (s, r) { return s + r.owed; }, 0)), paid: r2(out.reduce(function (s, r) { return s + r.paid; }, 0)) };
+    }
+
+    /* ======================= writing (each action once) ======================= */
+    function saveAll(what) {
+        try { if (what.indexOf('s') >= 0) safeSetItem('pos_suppliers', JSON.stringify(suppliers)); } catch (e) { /* kept in memory */ }
+        try { if (what.indexOf('t') >= 0) safeSetItem('pos_trade_credits', JSON.stringify(tradeCredits)); } catch (e) { /* kept in memory */ }
+        try { if (what.indexOf('x') >= 0) { if (typeof saveExpenses === 'function') saveExpenses(); else safeSetItem('pos_expenses', JSON.stringify(expenses)); } } catch (e) { /* kept in memory */ }
+        try { queuePush(); } catch (e) { /* sent with the next change */ }
+    }
+    function dueFrom(sup, ts) {
+        var t = sup && sup.terms; if (!t) return null;
+        if (t === 'cod') return dayKey(ts);
+        var n = parseInt(t, 10); if (!(n > 0)) return null;
+        return dayKey(new Date(new Date(ts).getTime() + n * 86400000));
+    }
+    var norm = function (s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); };
+    var phoneKey = function (p) { var d = String(p || '').replace(/\D/g, ''); return d.length >= 9 ? d.slice(-9) : ''; };
+    function similar(p, exceptId) {
+        var n = norm(p.name), ph = phoneKey(p.phone);
+        return SUP().filter(function (s) { if (!s || s.id === exceptId) return false; var sn = norm(s.name); return (n && sn && (sn === n || (n.length >= 4 && (sn.indexOf(n) >= 0 || n.indexOf(sn) >= 0)))) || (ph && phoneKey(s.phone) === ph); });
+    }
+    // -> { ok, supplier } | { ok:false, error }
+    function saveSupplierProfile(p, id) {
+        var name = String(p.name || '').trim();
+        if (!name) return { ok: false, error: 'Enter the supplier’s name.' };
+        if (p.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(p.email).trim())) return { ok: false, error: 'That email address does not look right.' };
+        var fields = { name: name, contact: String(p.contact || '').trim(), phone: String(p.phone || '').trim(), email: String(p.email || '').trim(), address: String(p.address || '').trim(), taxId: String(p.taxId || '').trim(), terms: String(p.terms || ''), notes: String(p.notes || '').trim(), active: p.active !== false };
+        var s = id ? supById(id) : null, now = Date.now();
+        if (s) { Object.keys(fields).forEach(function (k) { s[k] = fields[k]; }); s.updatedAt = now; }
+        else { s = Object.assign({ id: 'sup-' + newId(), createdAt: now, updatedAt: now }, fields); suppliers.push(s); }
+        saveAll('s');
+        try { if (typeof renderSupplierDropdowns === 'function') renderSupplierDropdowns(); } catch (e) { /* not built */ }
+        return { ok: true, supplier: s };
+    }
+    // oldest outstanding first (by date, then opening balances before purchases of the same day)
+    function autoAllocate(supId, amount) {
+        var pays = allPayments(), left = r2(amount), out = [];
+        docs(supId).filter(isPayable).sort(function (a, b) { var c = String(a.timestamp).localeCompare(String(b.timestamp)); return c || (a.kind === 'supplier_opening' ? -1 : 1); })
+            .forEach(function (t) { if (left <= 0.005) return; var o = outstanding(t, pays); if (o <= 0.005) return; var a = r2(Math.min(o, left)); out.push({ id: t.id, amount: a }); left = r2(left - a); });
+        return { allocations: out, unallocated: left };
+    }
+    function settleIfPaid(ids) { var pays = allPayments(), now = new Date().toISOString(); ids.forEach(function (id) { var t = docById(id); if (t && isPayable(t) && t.status !== 'settled' && outstanding(t, pays) <= 0.005) { t.status = 'settled'; t.settledAt = now; t.updatedAt = Date.now(); } }); }
+    // p: { supplierId, amount, date, method, reference, notes, allocations?, key } -> { ok, payment } | { ok:false, error }
+    function recordPayment(p) {
+        var sup = supById(p.supplierId); if (!sup || !TC()) return { ok: false, error: 'Choose a supplier.' };
+        var id = 'sp-' + (p.key || newKey());
+        var dup = EX().find(function (x) { return x && x.id === id; }); if (dup) return { ok: true, payment: dup, repeated: true };
+        var amount = r2(p.amount); if (!(amount > 0)) return { ok: false, error: 'Enter the amount paid.' };
+        var pays = allPayments(), alloc;
+        if (Array.isArray(p.allocations) && p.allocations.length) {
+            alloc = p.allocations.map(function (a) { return { id: a.id, amount: r2(a.amount) }; }).filter(function (a) { return a.amount > 0; });
+            for (var i = 0; i < alloc.length; i++) {
+                var d = docById(alloc[i].id);
+                if (!d || !isDoc(d) || !isPayable(d) || d.supplierId !== sup.id) return { ok: false, error: 'One of the chosen invoices is not this supplier’s.' };
+                if (alloc[i].amount > outstanding(d, pays) + 0.005) return { ok: false, error: (d.reference || 'An invoice') + ' has only ' + kes(outstanding(d, pays)) + ' outstanding.' };
+            }
+            if (Math.abs(r2(alloc.reduce(function (s, a) { return s + a.amount; }, 0)) - amount) > 0.005) return { ok: false, error: 'The amounts given to the invoices must add up to the payment (' + kes(amount) + ').' };
+        } else {
+            var aa = autoAllocate(sup.id, amount);
+            if (aa.unallocated > 0.005) return { ok: false, error: 'That is more than what is owed to ' + sup.name + ' (' + kes(r2(amount - aa.unallocated)) + '). Advances to suppliers are not recorded.' };
+            alloc = aa.allocations;
+        }
+        if (!alloc.length) return { ok: false, error: 'Nothing is outstanding with ' + sup.name + '.' };
+        var ts = p.date && /^\d{4}-\d{2}-\d{2}$/.test(p.date) && p.date !== today() ? new Date(p.date + 'T12:00:00').toISOString() : new Date().toISOString();
+        var method = METHODS.some(function (m) { return m[0] === p.method; }) ? p.method : 'cash';
+        var x = { id: id, timestamp: ts, category: 'Restock', description: 'Paid ' + sup.name + ' (' + alloc.map(function (a) { var d = docById(a.id); return d.reference || (d.kind === 'supplier_opening' ? 'opening balance' : 'restock'); }).join(', ') + ')',
+            amount: amount, paymentMethod: method, reference: String(p.reference || '').trim(), notes: String(p.notes || '').trim(), supplierPay: true, supplierId: sup.id, allocations: alloc, supplierDebtId: alloc[0].id, by: who(), auto: true };
+        expenses.push(x);
+        alloc.forEach(function (a) { var d = docById(a.id); d.payments = (Array.isArray(d.payments) ? d.payments : []).concat([{ id: id, at: ts, amount: a.amount, method: method, reference: x.reference, by: x.by }]); d.updatedAt = Date.now(); });
+        settleIfPaid(alloc.map(function (a) { return a.id; }));
+        saveAll('xt');
+        return { ok: true, payment: x };
+    }
+    function pushDoc(d) { if ((TC() || []).some(function (t) { return t && t.id === d.id; })) return false; tradeCredits.push(d); return true; }
+    function recordOpening(p) {
+        var sup = supById(p.supplierId); if (!sup || !TC()) return { ok: false, error: 'Choose a supplier.' };
+        var amount = r2(p.amount); if (!(amount > 0)) return { ok: false, error: 'Enter the amount already owed.' };
+        if (!p.date || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) return { ok: false, error: 'Choose the date it was owed from.' };
+        var id = 'so-' + (p.key || newKey());
+        pushDoc({ id: id, kind: 'supplier_opening', direction: 'i_owe', supplierId: sup.id, partyName: sup.name, amount: amount, timestamp: new Date(p.date + 'T00:00:01').toISOString(), reference: 'OPENING BALANCE', description: 'Opening balance brought forward', notes: String(p.notes || '').trim(), status: 'open', settledAt: null, payments: [], linkedSaleId: null, by: who(), updatedAt: Date.now() });
+        saveAll('t');
+        return { ok: true, id: id };
+    }
+    function recordAdjust(p) {
+        var sup = supById(p.supplierId); if (!sup || !TC()) return { ok: false, error: 'Choose a supplier.' };
+        var amount = r2(p.amount); if (!(amount > 0)) return { ok: false, error: 'Enter the amount of the correction.' };
+        if (!String(p.reason || '').trim()) return { ok: false, error: 'Give a reason for the correction.' };
+        var sign = Number(p.sign) < 0 ? -1 : 1;
+        if (sign < 0 && amount > balanceOf(sup.id) + 0.005) return { ok: false, error: 'Only ' + kes(Math.max(0, balanceOf(sup.id))) + ' is owed to ' + sup.name + '.' };
+        var id = 'sa-' + (p.key || newKey());
+        pushDoc({ id: id, kind: 'supplier_adjust', direction: 'i_owe', sign: sign, supplierId: sup.id, partyName: sup.name, amount: amount, timestamp: new Date().toISOString(), reference: String(p.reference || '').trim(), reason: String(p.reason).trim(), description: (sign > 0 ? 'Correction: owed more' : 'Correction: owed less') + ' — ' + String(p.reason).trim(), status: sign > 0 ? 'open' : 'settled', settledAt: sign > 0 ? null : new Date().toISOString(), payments: [], linkedSaleId: null, by: who(), updatedAt: Date.now() });
+        saveAll('t');
+        return { ok: true, id: id };
+    }
+    // stock of an item or a variant by the code the restock used
+    function stockTarget(code) {
+        var inv = typeof inventory !== 'undefined' ? inventory : [];
+        var p = inv.find(function (x) { return x && String(x.code) === String(code) && !(x.hasVariants && Array.isArray(x.variants) && x.variants.length); });
+        if (p) return { p: p, v: null, have: Number(p.qty) || 0, name: p.name };
+        var hit = typeof restockVariantByCode === 'function' ? restockVariantByCode(code) : null;
+        if (hit) return { p: hit.item, v: hit.variant, have: Number(hit.variant.qty) || 0, name: hit.item.name + ' (' + hit.variant.name + ')' };
+        return null;
+    }
+    function returnedQty(invoiceId, code) { var q = 0; docs().forEach(function (t) { if (t.kind === 'supplier_return' && t.appliesTo === invoiceId) (t.lines || []).forEach(function (l) { if (String(l.code) === String(code)) q += Number(l.qty) || 0; }); }); return q; }
+    // p: { invoiceId, lines:[{ code, qty }], reason, creditNote, key }
+    function recordReturn(p) {
+        var inv = docById(p.invoiceId); if (!inv || !isDoc(inv) || inv.kind !== 'supplier_restock') return { ok: false, error: 'Choose the restock the goods came in on.' };
+        var sup = supById(inv.supplierId); if (!sup) return { ok: false, error: 'The supplier of that restock is not on this device.' };
+        if (!String(p.reason || '').trim()) return { ok: false, error: 'Give the reason for the return.' };
+        var id = 'sr-' + (p.key || newKey());
+        if (docById(id)) return { ok: true, id: id, repeated: true };
+        var lines = [], total = 0;
+        var src = Array.isArray(inv.lines) ? inv.lines : [];
+        for (var i = 0; i < (p.lines || []).length; i++) {
+            var want = p.lines[i], q = Number(want.qty) || 0; if (!(q > 0)) continue;
+            var l = src.find(function (x) { return String(x.code) === String(want.code); }); if (!l) return { ok: false, error: 'That item is not on this restock.' };
+            var left = r2((Number(l.qty) || 0) - returnedQty(inv.id, l.code));
+            if (q > left + 1e-9) return { ok: false, error: 'Only ' + left + ' ' + (l.unit || '') + ' of ' + l.name + ' can still be returned from this restock.' };
+            var tg = stockTarget(l.code); if (!tg) return { ok: false, error: l.name + ' is no longer in the inventory, so its stock cannot be taken off.' };
+            if (q > tg.have + 1e-9) return { ok: false, error: 'Only ' + tg.have + ' ' + (l.unit || '') + ' of ' + l.name + ' in stock (the rest may already be sold).' };
+            var cost = r2(l.cost);
+            lines.push({ code: l.code, name: l.name, unit: l.unit || 'pcs', qty: q, cost: cost, total: r2(q * cost), tg: tg });
+            total = r2(total + q * cost);
+        }
+        if (!lines.length) return { ok: false, error: 'Enter how many of each item went back.' };
+        var why = 'Returned to supplier ' + sup.name + (inv.reference ? ' (' + inv.reference + ')' : '');
+        lines.forEach(function (l) {
+            var tg = l.tg; delete l.tg;
+            if (tg.v) { tg.v.qty = stockRound3((Number(tg.v.qty) || 0) - l.qty); tg.p.qty = stockRound3(tg.p.variants.reduce(function (s, v) { return s + (Number(v && v.qty) || 0); }, 0)); logStockMovement(tg.v.code || tg.p.code, tg.name, -l.qty, why); }
+            else { tg.p.qty = stockRound3((Number(tg.p.qty) || 0) - l.qty); logStockMovement(tg.p.code, tg.p.name, -l.qty, why); }
+            tg.p.updatedAt = Date.now();
+        });
+        pushDoc({ id: id, kind: 'supplier_return', direction: 'i_owe', supplierId: sup.id, partyName: sup.name, appliesTo: inv.id, amount: total, lines: lines, reason: String(p.reason).trim(), creditNote: String(p.creditNote || '').trim(), reference: String(p.creditNote || '').trim() || ('Return on ' + (inv.reference || 'restock')), timestamp: new Date().toISOString(), description: 'Goods returned — ' + String(p.reason).trim(), status: 'settled', settledAt: new Date().toISOString(), payments: [], linkedSaleId: null, by: who(), updatedAt: Date.now() });
+        settleIfPaid([inv.id]);
+        try { safeSetItem('pos_inventory', JSON.stringify(inventory)); safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* kept in memory */ }
+        saveAll('t');
+        try { renderInventoryTable(); } catch (e) { /* not built */ }
+        return { ok: true, id: id, amount: total };
+    }
+    function hasHistory(supId) { return docs(supId).length > 0 || allPayments(supId).length > 0 || (typeof inventory !== 'undefined' && inventory.some(function (p) { return (p.purchases || []).some(function (r) { var s = supById(supId); return s && r.supplier === s.name; }); })); }
+
+    window.SupplierLedger = { docs: docs, allPayments: allPayments, outstanding: outstanding, balanceOf: balanceOf, ledger: ledger, statusOf: statusOf, autoAllocate: autoAllocate,
+        recordPayment: recordPayment, recordOpening: recordOpening, recordAdjust: recordAdjust, recordReturn: recordReturn, saveSupplier: saveSupplierProfile, similar: similar, isDoc: isDoc, isPayable: isPayable };
+    // zip 319 names (Debts tab, older tests)
+    window.supplierDebts = function () { return docs().filter(function (t) { return t.kind === 'supplier_restock'; }); };
+    window.supplierDebtBalance = function (t) { return outstanding(t); };
+    window.supplierDebtPayments = function (t) { return allPayments().filter(function (p) { return p.allocations.some(function (a) { return a.id === t.id; }); }).map(function (p) { var a = p.allocations.filter(function (x) { return x.id === t.id; })[0]; return { id: p.id, at: p.at, amount: a.amount, method: p.method, by: p.by }; }); };
+
+    /* ======================= modal ======================= */
+    function modal(html, wide) {
+        var m = $('sup-modal');
+        if (!m) { m = document.createElement('div'); m.id = 'sup-modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); document.body.appendChild(m); m.addEventListener('mousedown', function (e) { if (e.target === m) closeModal(); }); }
+        m.className = 'on' + (wide ? ' wide' : '');
+        m.innerHTML = '<div class="sup-box"><button type="button" class="sup-x" aria-label="Close" data-sx>&times;</button>' + html + '</div>';
+        m.querySelector('[data-sx]').onclick = closeModal;
+        var f = m.querySelector('input:not([type=hidden]):not([type=radio]):not([type=checkbox]),select,textarea'); if (f && innerWidth > 640) setTimeout(function () { try { f.focus(); } catch (e) { /* ok */ } }, 30);
+        return m;
+    }
+    function closeModal() { var m = $('sup-modal'); if (m) { m.className = ''; m.innerHTML = ''; } }
+    function err(m, t) { var e = m.querySelector('.sup-err'); if (e) e.textContent = t || ''; }
+    window.supCloseModal = closeModal;
+
+    /* ======================= supplier profile form ======================= */
+    function openProfile(id, onSaved) {
+        var s = id ? supById(id) : null, key = newKey();
+        var o = function (v, cur) { return TERMS.map(function (t) { return '<option value="' + t[0] + '"' + (String(cur || '') === t[0] ? ' selected' : '') + '>' + t[1] + '</option>'; }).join(''); };
+        var m = modal('<h3>' + (s ? '✏️ Edit supplier' : '➕ New supplier') + '</h3>' +
+            '<label class="l" for="sp-name">Supplier / business name *</label><input id="sp-name" maxlength="80" value="' + esc(s && s.name) + '">' +
+            '<div class="sup-row"><div><label class="l" for="sp-contact">Contact person</label><input id="sp-contact" maxlength="60" value="' + esc(s && s.contact) + '"></div><div><label class="l" for="sp-phone">Phone</label><input id="sp-phone" type="tel" maxlength="20" value="' + esc(s && s.phone) + '"></div></div>' +
+            '<div class="sup-row"><div><label class="l" for="sp-email">Email</label><input id="sp-email" type="email" maxlength="80" value="' + esc(s && s.email) + '"></div><div><label class="l" for="sp-terms">Payment terms</label><select id="sp-terms">' + o(0, s && s.terms) + '</select></div></div>' +
+            '<label class="l" for="sp-address">Location / address</label><input id="sp-address" maxlength="120" value="' + esc(s && s.address) + '">' +
+            '<label class="l" for="sp-tax">KRA PIN / registration no. (optional)</label><input id="sp-tax" maxlength="30" value="' + esc(s && s.taxId) + '">' +
+            '<label class="l" for="sp-notes">Notes</label><textarea id="sp-notes" rows="2" maxlength="300">' + esc(s && s.notes) + '</textarea>' +
+            (s ? '<label class="l" style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="sp-active" style="width:auto"' + (s.active !== false ? ' checked' : '') + '> Active (inactive suppliers stay in history and reports)</label>' : '') +
+            (!s ? '<label class="l" for="sp-open">Already owed to this supplier (optional opening balance, KES)</label><div class="sup-row"><input id="sp-open" type="number" min="0" step="0.01" placeholder="0"><input id="sp-open-date" type="date" value="' + today() + '"></div><p class="sup-note">A balance brought forward: no stock and no purchase is recorded for it. If you already entered Accounts payable under Accounts &gt; Opening balances, do not enter it again here.</p>' : '') +
+            '<p class="sup-warn" id="sp-dup"></p><p class="sup-err"></p><div class="sup-acts"><button type="button" class="btn-main" id="sp-save">Save supplier</button><button type="button" class="settings-small-btn" data-cancel>Cancel</button></div>');
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        var warned = false;
+        var dupCheck = function () { var d = similar({ name: $('sp-name').value, phone: $('sp-phone').value }, id); $('sp-dup').textContent = d.length ? '⚠️ Similar supplier already saved: ' + d.map(function (x) { return x.name + (x.phone ? ' (' + x.phone + ')' : ''); }).join(', ') + '. Save again to add it anyway.' : ''; return d; };
+        $('sp-name').oninput = function () { warned = false; dupCheck(); }; $('sp-phone').oninput = function () { warned = false; dupCheck(); };
+        $('sp-save').onclick = function () {
+            var p = { name: $('sp-name').value, contact: $('sp-contact').value, phone: $('sp-phone').value, email: $('sp-email').value, address: $('sp-address').value, taxId: $('sp-tax').value, terms: $('sp-terms').value, notes: $('sp-notes').value, active: s ? $('sp-active').checked : true };
+            if (!s && dupCheck().length && !warned) { warned = true; return; }
+            var open = !s ? r2(parseFloat($('sp-open').value)) : 0;
+            if (open < 0) return err(m, 'The opening balance cannot be negative.');
+            var r = saveSupplierProfile(p, id); if (!r.ok) return err(m, r.error);
+            if (open > 0) { var o2 = recordOpening({ supplierId: r.supplier.id, amount: open, date: $('sp-open-date').value || today(), key: key }); if (!o2.ok) return err(m, o2.error); }
+            closeModal(); toast(s ? 'Supplier saved.' : 'Supplier added: ' + r.supplier.name + '.');
+            if (onSaved) onSaved(r.supplier); render();
+        };
+    }
+    window.supOpenProfile = openProfile;
+
+    /* ======================= payment form ======================= */
+    function openPayment(supId, presetDocId) {
+        var sup = supById(supId); if (!sup) return;
+        var pays = allPayments(), open = docs(supId).filter(function (t) { return isPayable(t) && outstanding(t, pays) > 0.005; }).sort(function (a, b) { return String(a.timestamp).localeCompare(String(b.timestamp)); });
+        var bal = balanceOf(supId, allPayments(supId)), key = newKey();
+        if (!open.length) { toast('Nothing is outstanding with ' + sup.name + '.', true); return; }
+        var total = r2(open.reduce(function (s, t) { return s + outstanding(t, pays); }, 0));
+        var m = modal('<h3>💵 Pay ' + esc(sup.name) + '</h3><p class="sup-note">Owed now: <b>' + kes(bal) + '</b> on ' + open.length + ' invoice' + (open.length === 1 ? '' : 's') + '.</p>' +
+            '<div class="sup-row"><div><label class="l" for="py-amt">Amount paid (KES)</label><input id="py-amt" type="number" min="0" step="0.01" inputmode="decimal" value="' + (presetDocId ? outstanding(docById(presetDocId), pays) : total).toFixed(2) + '"></div><div><label class="l" for="py-date">Payment date</label><input id="py-date" type="date" value="' + today() + '" max="' + today() + '"></div></div>' +
+            '<div class="sup-row"><div><label class="l" for="py-method">Paid with</label><select id="py-method">' + METHODS.map(function (x) { return '<option value="' + x[0] + '">' + x[1] + '</option>'; }).join('') + '</select></div><div><label class="l" for="py-ref">Reference (e.g. M-Pesa code)</label><input id="py-ref" maxlength="40"></div></div>' +
+            '<label class="l" for="py-notes">Notes</label><input id="py-notes" maxlength="200">' +
+            '<label class="l">Pay towards</label><div class="sup-choice"><label class="on"><input type="radio" name="py-mode" value="auto" checked> Oldest invoices first</label><label><input type="radio" name="py-mode" value="pick"> Choose invoices</label></div>' +
+            '<div class="table-scroll"><table class="sup-alloc"><thead><tr><th>Date</th><th>Invoice</th><th class="sup-num">Outstanding</th><th class="sup-num">This payment</th></tr></thead><tbody>' +
+            open.map(function (t) { return '<tr><td>' + esc(fmtDate(t.timestamp)) + '</td><td>' + esc(t.reference || (t.kind === 'supplier_opening' ? 'Opening balance' : 'Restock')) + (t.dueDate ? '<br><span class="sup-note">due ' + esc(fmtDate(t.dueDate)) + '</span>' : '') + '</td><td class="sup-num">' + kes(outstanding(t, pays)) + '</td><td class="sup-num"><input type="number" min="0" step="0.01" data-al="' + esc(t.id) + '" disabled></td></tr>'; }).join('') +
+            '</tbody></table></div><p class="sup-note" id="py-after"></p><p class="sup-err"></p><div class="sup-acts"><button type="button" class="btn-main" id="py-go">Record payment</button><button type="button" class="settings-small-btn" data-cancel>Cancel</button></div>');
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        var mode = function () { return (m.querySelector('[name="py-mode"]:checked') || {}).value; };
+        var fill = function () {
+            var amt = r2(parseFloat($('py-amt').value) || 0), pick = mode() === 'pick';
+            Array.prototype.forEach.call(m.querySelectorAll('.sup-choice label'), function (l) { l.classList.toggle('on', l.querySelector('input').checked); });
+            if (!pick) { var aa = autoAllocate(supId, Math.min(amt, total)); Array.prototype.forEach.call(m.querySelectorAll('[data-al]'), function (i) { var a = aa.allocations.filter(function (x) { return x.id === i.getAttribute('data-al'); })[0]; i.value = a ? a.amount.toFixed(2) : ''; i.disabled = true; }); }
+            else Array.prototype.forEach.call(m.querySelectorAll('[data-al]'), function (i) { i.disabled = false; });
+            var sum = pick ? r2(Array.prototype.reduce.call(m.querySelectorAll('[data-al]'), function (s, i) { return s + (parseFloat(i.value) || 0); }, 0)) : amt;
+            $('py-after').textContent = 'Owed before: ' + kes(bal) + ' · after this payment: ' + kes(r2(bal - sum)) + (amt > total + 0.005 ? ' · more than is owed' : '');
+        };
+        if (presetDocId) { m.querySelector('[name="py-mode"][value="pick"]').checked = true; fill(); var pi = m.querySelector('[data-al="' + presetDocId + '"]'); if (pi) pi.value = outstanding(docById(presetDocId), pays).toFixed(2); }
+        Array.prototype.forEach.call(m.querySelectorAll('[name="py-mode"]'), function (r) { r.onchange = fill; });
+        $('py-amt').oninput = fill; Array.prototype.forEach.call(m.querySelectorAll('[data-al]'), function (i) { i.oninput = fill; });
+        fill();
+        $('py-go').onclick = function () {
+            var amt = r2(parseFloat($('py-amt').value) || 0), alloc = null;
+            if (mode() === 'pick') alloc = Array.prototype.map.call(m.querySelectorAll('[data-al]'), function (i) { return { id: i.getAttribute('data-al'), amount: parseFloat(i.value) || 0 }; }).filter(function (a) { return a.amount > 0; });
+            var r = recordPayment({ supplierId: supId, amount: amt, date: $('py-date').value, method: $('py-method').value, reference: $('py-ref').value, notes: $('py-notes').value, allocations: alloc, key: key });
+            if (!r.ok) return err(m, r.error);
+            closeModal(); render(); try { renderDebtsTab(); } catch (e) { /* not built */ }
+            var left = balanceOf(supId);
+            toast('Payment of ' + kes(amt) + ' to ' + sup.name + ' recorded. ' + (left <= 0.005 ? 'Nothing more is owed.' : 'Still owed: ' + kes(left) + '.'));
+        };
+    }
+    window.supOpenPayment = openPayment;
+
+    /* ======================= return, opening, correction forms ======================= */
+    function openReturn(supId, invoiceId) {
+        var sup = supById(supId); if (!sup) return;
+        var invs = docs(supId).filter(function (t) { return t.kind === 'supplier_restock' && Array.isArray(t.lines) && t.lines.length; }).sort(function (a, b) { return String(b.timestamp).localeCompare(String(a.timestamp)); });
+        if (!invs.length) { toast('No restock with item lines from ' + sup.name + ' on this device.', true); return; }
+        var key = newKey(), cur = invoiceId || invs[0].id;
+        var paint = function () {
+            var inv = docById(cur);
+            var m = modal('<h3>↩️ Return goods to ' + esc(sup.name) + '</h3><label class="l" for="rt-inv">From the restock</label><select id="rt-inv">' + invs.map(function (t) { return '<option value="' + esc(t.id) + '"' + (t.id === cur ? ' selected' : '') + '>' + esc(fmtDate(t.timestamp) + ' · ' + (t.reference || 'Restock') + ' · ' + kes(t.amount)) + '</option>'; }).join('') + '</select>' +
+                '<div class="table-scroll"><table><thead><tr><th>Item</th><th class="sup-num">Bought</th><th class="sup-num">Returned</th><th class="sup-num">In stock</th><th class="sup-num">Unit cost</th><th class="sup-num">Return now</th></tr></thead><tbody>' +
+                inv.lines.map(function (l) { var tg = stockTarget(l.code); return '<tr><td>' + esc(l.name) + '</td><td class="sup-num">' + esc(l.qty) + '</td><td class="sup-num">' + esc(returnedQty(inv.id, l.code)) + '</td><td class="sup-num">' + (tg ? esc(tg.have) : '—') + '</td><td class="sup-num">' + kes(l.cost) + '</td><td class="sup-num"><input type="number" min="0" step="any" data-rq="' + esc(l.code) + '" style="width:90px"></td></tr>'; }).join('') +
+                '</tbody></table></div><p class="sup-note" id="rt-total">Credit: KES 0.00</p>' +
+                '<div class="sup-row"><div><label class="l" for="rt-reason">Reason *</label><input id="rt-reason" maxlength="120" placeholder="e.g. damaged, expired, wrong item"></div><div><label class="l" for="rt-cn">Supplier credit note no.</label><input id="rt-cn" maxlength="40"></div></div>' +
+                '<p class="sup-note">The stock comes off now. The value comes off what is owed on that restock (or is kept as a credit with ' + esc(sup.name) + ' if it was already paid).</p>' +
+                '<p class="sup-err"></p><div class="sup-acts"><button type="button" class="btn-main" id="rt-go">Record return</button><button type="button" class="settings-small-btn" data-cancel>Cancel</button></div>');
+            m.querySelector('[data-cancel]').onclick = closeModal;
+            $('rt-inv').onchange = function () { cur = this.value; paint(); };
+            var tot = function () { var t = 0; Array.prototype.forEach.call(m.querySelectorAll('[data-rq]'), function (i) { var l = inv.lines.find(function (x) { return String(x.code) === i.getAttribute('data-rq'); }); t += (parseFloat(i.value) || 0) * (Number(l.cost) || 0); }); $('rt-total').textContent = 'Credit: ' + kes(t); };
+            Array.prototype.forEach.call(m.querySelectorAll('[data-rq]'), function (i) { i.oninput = tot; });
+            $('rt-go').onclick = function () {
+                var lines = Array.prototype.map.call(m.querySelectorAll('[data-rq]'), function (i) { return { code: i.getAttribute('data-rq'), qty: parseFloat(i.value) || 0 }; });
+                var tv = r2(lines.reduce(function (s, l) { var x = inv.lines.find(function (y) { return String(y.code) === String(l.code); }); return s + l.qty * (Number(x.cost) || 0); }, 0));
+                if (!(tv > 0)) return err(m, 'Enter how many of each item went back.');
+                if (!confirm('Return goods worth ' + kes(tv) + ' to ' + sup.name + '? The stock comes off now.')) return;
+                var r = recordReturn({ invoiceId: cur, lines: lines, reason: $('rt-reason').value, creditNote: $('rt-cn').value, key: key });
+                if (!r.ok) return err(m, r.error);
+                closeModal(); render(); toast('Return recorded: ' + kes(r.amount) + ' credit with ' + sup.name + '.');
+            };
+        };
+        paint();
+    }
+    function openOpening(supId) {
+        var sup = supById(supId); if (!sup) return; var key = newKey();
+        var has = docs(supId).some(function (t) { return t.kind === 'supplier_opening'; });
+        var m = modal('<h3>📥 Opening balance — ' + esc(sup.name) + '</h3><p class="sup-note">Money already owed to this supplier before you started using MyDuka. It is a balance brought forward: no stock, no purchase and no expense is recorded.' + (has ? ' <b>This supplier already has an opening balance.</b>' : '') + '</p>' +
+            '<div class="sup-row"><div><label class="l" for="op-amt">Amount owed (KES)</label><input id="op-amt" type="number" min="0" step="0.01"></div><div><label class="l" for="op-date">Owed as at</label><input id="op-date" type="date" value="' + today() + '" max="' + today() + '"></div></div>' +
+            '<label class="l" for="op-notes">Notes</label><input id="op-notes" maxlength="200"><p class="sup-err"></p><div class="sup-acts"><button type="button" class="btn-main" id="op-go">Save opening balance</button><button type="button" class="settings-small-btn" data-cancel>Cancel</button></div>');
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        $('op-go').onclick = function () { var r = recordOpening({ supplierId: supId, amount: $('op-amt').value, date: $('op-date').value, notes: $('op-notes').value, key: key }); if (!r.ok) return err(m, r.error); closeModal(); render(); toast('Opening balance saved.'); };
+    }
+    function openAdjust(supId) {
+        var sup = supById(supId); if (!sup) return; var key = newKey();
+        var m = modal('<h3>🛠️ Correction — ' + esc(sup.name) + '</h3><p class="sup-note">For a supplier invoice that was entered wrong, a price correction or a discount the supplier gave afterwards. The original records stay; this is added next to them.</p>' +
+            '<div class="sup-choice"><label class="on"><input type="radio" name="aj-sign" value="-1" checked> Owed less</label><label><input type="radio" name="aj-sign" value="1"> Owed more</label></div>' +
+            '<div class="sup-row"><div><label class="l" for="aj-amt">Amount (KES)</label><input id="aj-amt" type="number" min="0" step="0.01"></div><div><label class="l" for="aj-ref">Reference</label><input id="aj-ref" maxlength="40"></div></div>' +
+            '<label class="l" for="aj-reason">Reason *</label><input id="aj-reason" maxlength="150"><p class="sup-err"></p><div class="sup-acts"><button type="button" class="btn-main" id="aj-go">Save correction</button><button type="button" class="settings-small-btn" data-cancel>Cancel</button></div>');
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        Array.prototype.forEach.call(m.querySelectorAll('[name="aj-sign"]'), function (r) { r.onchange = function () { Array.prototype.forEach.call(m.querySelectorAll('.sup-choice label'), function (l) { l.classList.toggle('on', l.querySelector('input').checked); }); }; });
+        $('aj-go').onclick = function () { var r = recordAdjust({ supplierId: supId, sign: (m.querySelector('[name="aj-sign"]:checked') || {}).value, amount: $('aj-amt').value, reference: $('aj-ref').value, reason: $('aj-reason').value, key: key }); if (!r.ok) return err(m, r.error); closeModal(); render(); toast('Correction saved.'); };
+    }
+
+    /* ======================= reports (print + CSV, from the saved records) ======================= */
+    function biz() { try { return typeof businessName !== 'undefined' && businessName ? businessName : ''; } catch (e) { return ''; } }
+    function syncNote() { try { return typeof hasUnsyncedWork === 'function' && hasUnsyncedWork() ? '<p class="sup-sync">⚠️ Some records on this device have not reached the server yet; this report shows this device’s records.</p>' : ''; } catch (e) { return ''; } }
+    function table(head, rows, right, foot) {
+        return '<div class="table-scroll"><table><thead><tr>' + head.map(function (h, i) { return '<th' + (right.indexOf(i) >= 0 ? ' class="sup-num"' : '') + '>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+            (rows.length ? rows.map(function (r) { return '<tr>' + r.map(function (c, i) { return '<td' + (right.indexOf(i) >= 0 ? ' class="sup-num"' : '') + '>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') : '<tr><td colspan="' + head.length + '" class="empty-state">Nothing in this period.</td></tr>') +
+            '</tbody>' + (foot ? '<tfoot><tr class="report-grand-total">' + foot.map(function (c, i) { return '<td' + (right.indexOf(i) >= 0 ? ' class="sup-num"' : '') + '><b>' + esc(c) + '</b></td>'; }).join('') + '</tr></tfoot>' : '') + '</table></div>';
+    }
+    function csvOf(head, rows, foot) { var q = function (v) { try { return csvEscape(v); } catch (e) { var s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; } }; return [head].concat(rows).concat(foot ? [foot] : []).map(function (r) { return r.map(q).join(','); }).join('\n'); }
+    var money2 = function (n) { return r2(n).toFixed(2); };
+    function inRange(ts, f, t) { var k = dayKey(ts); return (!f || k >= f) && (!t || k <= t); }
+    // each -> { title, sub, html, csv }
+    var REPORTS = {
+        statement: function (o) {
+            var sup = supById(o.supplierId); if (!sup) return null;
+            var L = ledger(sup.id, o.from, o.to);
+            var rows = L.rows.map(function (r) { return [fmtDate(r.at), r.type, r.ref, r.note, r.owed ? money2(r.owed) : '', r.paid ? money2(r.paid) : '', money2(r.balance)]; });
+            var head = ['Date', 'Transaction', 'Reference', 'Details', 'Owed (+)', 'Paid / credit (-)', 'Balance'];
+            var openRow = ['', 'Opening balance', '', '', '', '', money2(L.opening)];
+            return { title: 'Supplier statement — ' + sup.name, sub: [sup.phone, sup.address, sup.taxId ? 'PIN ' + sup.taxId : ''].filter(Boolean).join(' · '),
+                html: table(head, [openRow].concat(rows), [4, 5, 6], ['', 'Closing balance', '', '', money2(L.owed), money2(L.paid), money2(L.closing)]),
+                csv: csvOf(head, [openRow].concat(rows), ['', 'Closing balance', '', '', money2(L.owed), money2(L.paid), money2(L.closing)]), totals: L };
+        },
+        restocks: function (o) {
+            var pays = allPayments(), head = ['Date', 'Supplier', 'Invoice / ref', 'Items', 'Total', 'Paid at the time', 'Outstanding', 'Status'], rows = [], tot = [0, 0, 0];
+            docs(o.supplierId || null).filter(function (t) { return t.kind === 'supplier_restock' && inRange(t.timestamp, o.from, o.to); }).sort(function (a, b) { return String(a.timestamp).localeCompare(String(b.timestamp)); }).forEach(function (t) {
+                var st = statusOf(t, pays); if (o.status && o.status !== 'all' && !(o.status === 'open' ? st.key !== 'paid' : st.key === o.status)) return;
+                var paidNow = paidAtPurchase(t, pays), out = outstanding(t, pays);
+                rows.push([fmtDate(t.timestamp), t.partyName, t.reference || '', (t.lines || []).map(function (l) { return l.name + ' x' + l.qty + ' @ ' + money2(l.cost); }).join('; '), money2(t.amount), money2(paidNow), money2(out), st.label]);
+                tot[0] += r2(t.amount); tot[1] += paidNow; tot[2] += out;
+            });
+            var foot = ['', 'Total', '', rows.length + ' restock' + (rows.length === 1 ? '' : 's'), money2(tot[0]), money2(tot[1]), money2(tot[2]), ''];
+            return { title: 'Restock report', sub: o.supplierId ? (supById(o.supplierId) || {}).name : 'All suppliers', html: table(head, rows, [4, 5, 6], foot), csv: csvOf(head, rows, foot), totals: { total: r2(tot[0]), paidNow: r2(tot[1]), outstanding: r2(tot[2]), count: rows.length } };
+        },
+        outstanding: function () {
+            var pays = allPayments(), t0 = today(), head = ['Supplier', 'Phone', 'Terms', 'No due date', 'Not yet due', '1-30 days overdue', '31-60 days overdue', 'Over 60 days', 'Credit / unapplied', 'Total owed'], rows = [], tot = [0, 0, 0, 0, 0, 0, 0];
+            SUP().slice().sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }).forEach(function (s) {
+                var b = [0, 0, 0, 0, 0];
+                docs(s.id).filter(isPayable).forEach(function (t) {
+                    var o = outstanding(t, pays); if (o <= 0.005) return;
+                    if (!t.dueDate) { b[0] += o; return; }
+                    if (t.dueDate >= t0) { b[1] += o; return; }
+                    var days = Math.round((new Date(t0) - new Date(t.dueDate)) / 86400000);
+                    b[days <= 30 ? 2 : days <= 60 ? 3 : 4] += o;
+                });
+                var total = balanceOf(s.id, pays), credit = r2(total - (b[0] + b[1] + b[2] + b[3] + b[4]));
+                if (Math.abs(total) < 0.005 && !b.some(function (x) { return x > 0.005; })) return;
+                rows.push([s.name + (s.active === false ? ' (inactive)' : ''), s.phone || '', termsName(s.terms) || '—', money2(b[0]), money2(b[1]), money2(b[2]), money2(b[3]), money2(b[4]), money2(credit), money2(total)]);
+                b.forEach(function (x, i) { tot[i] += x; }); tot[5] += credit; tot[6] += total;
+            });
+            var foot = ['Total payables', '', '', money2(tot[0]), money2(tot[1]), money2(tot[2]), money2(tot[3]), money2(tot[4]), money2(tot[5]), money2(tot[6])];
+            return { title: 'Outstanding supplier debt', sub: 'As at ' + fmtDate(Date.now()) + '. Overdue is counted from each invoice’s due date (the supplier’s payment terms); invoices with no terms are under "No due date".', html: table(head, rows, [3, 4, 5, 6, 7, 8, 9], foot), csv: csvOf(head, rows, foot), totals: { total: r2(tot[6]) } };
+        },
+        payments: function (o) {
+            var head = ['Date', 'Supplier', 'Amount', 'Method', 'Reference', 'Paid towards', 'By'], rows = [], tot = 0;
+            allPayments(o.supplierId || null).filter(function (p) { return inRange(p.at, o.from, o.to); }).forEach(function (p) {
+                var s = supById(p.supplierId);
+                rows.push([fmtDate(p.at), s ? s.name : '', money2(p.amount), methodName(p.method), p.reference || '', p.allocations.map(function (a) { var d = docById(a.id); return (d ? (d.reference || (d.kind === 'supplier_opening' ? 'Opening balance' : 'Restock ' + fmtDate(d.timestamp))) : a.id) + ' ' + money2(a.amount); }).join('; '), p.by || '']);
+                tot += p.amount;
+            });
+            var foot = ['', 'Total', money2(tot), '', '', rows.length + ' payment' + (rows.length === 1 ? '' : 's'), ''];
+            return { title: 'Supplier payments', sub: o.supplierId ? (supById(o.supplierId) || {}).name : 'All suppliers', html: table(head, rows, [2], foot), csv: csvOf(head, rows, foot), totals: { total: r2(tot), count: rows.length } };
+        }
+    };
+    window.SupplierReports = REPORTS;
+    function periodText(o) { return o.from || o.to ? (o.from ? fmtDate(o.from) : 'the start') + ' – ' + (o.to ? fmtDate(o.to) : fmtDate(Date.now())) : 'All dates'; }
+    function openReport(kind, o) {
+        o = Object.assign({ from: S.from, to: S.to }, o || {});
+        var R = REPORTS[kind](o); if (!R) return;
+        var supOpts = '<option value="">All suppliers</option>' + SUP().slice().sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }).map(function (s) { return '<option value="' + esc(s.id) + '"' + (o.supplierId === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('');
+        var m = modal('<h3>' + esc(R.title) + '</h3><div class="sup-tools">' +
+            (kind !== 'outstanding' ? (kind === 'statement' ? '' : '<select id="rp-sup" aria-label="Supplier">' + supOpts + '</select>') + '<input type="date" id="rp-from" value="' + esc(o.from || '') + '" aria-label="From"><input type="date" id="rp-to" value="' + esc(o.to || '') + '" aria-label="To">' : '') +
+            (kind === 'restocks' ? '<select id="rp-status" aria-label="Payment status"><option value="all">Any status</option><option value="open"' + (o.status === 'open' ? ' selected' : '') + '>Not fully paid</option><option value="paid"' + (o.status === 'paid' ? ' selected' : '') + '>Paid</option><option value="overdue"' + (o.status === 'overdue' ? ' selected' : '') + '>Overdue</option></select>' : '') +
+            (kind !== 'outstanding' ? '<button type="button" class="settings-small-btn" id="rp-apply">Show</button>' : '') + '</div>' +
+            '<div id="sup-print"><p style="margin:0 0 4px"><b>' + esc(biz()) + '</b></p><h3 style="margin:0">' + esc(R.title) + '</h3><p class="sup-note" style="margin:2px 0 8px">' + esc(R.sub || '') + (kind !== 'outstanding' ? ' · Period: ' + esc(periodText(o)) : '') + ' · Generated ' + esc(new Date().toLocaleString('en-GB')) + '</p>' + syncNote() + R.html + '</div>' +
+            '<div class="sup-acts"><button type="button" class="btn-main" id="rp-print">🖨️ Print / PDF</button><button type="button" class="settings-small-btn" id="rp-csv">⬇️ CSV (Excel)</button><button type="button" class="settings-small-btn" data-cancel>Close</button></div>', true);
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        var ap = $('rp-apply'); if (ap) ap.onclick = function () { openReport(kind, { supplierId: kind === 'statement' ? o.supplierId : ($('rp-sup') || {}).value || '', from: $('rp-from').value, to: $('rp-to').value, status: ($('rp-status') || {}).value }); };
+        $('rp-print').onclick = function () { if (typeof window.printPanel === 'function') window.printPanel('sup-print'); else window.print(); };
+        $('rp-csv').onclick = function () { var name = (kind + (o.supplierId ? '-' + ((supById(o.supplierId) || {}).name || '') : '') + '-' + today()).replace(/[^a-z0-9-]+/gi, '-') + '.csv'; try { downloadBlob(new Blob(['﻿' + R.csv], { type: 'text/csv;charset=utf-8' }), name); } catch (e) { toast('Could not make the file.', true); } };
+    }
+    window.supOpenReport = openReport;
+
+    /* ======================= the Suppliers tab ======================= */
+    var S = { view: 'list', id: null, q: '', filter: 'active', period: 'month', from: '', to: '', dtab: 'overview' };
+    function setPeriod(p) {
+        S.period = p; var d = new Date(), k = today();
+        if (p === 'month') { S.from = k.slice(0, 8) + '01'; S.to = k; }
+        else if (p === '30') { S.from = dayKey(d.getTime() - 29 * 86400000); S.to = k; }
+        else if (p === 'year') { S.from = k.slice(0, 5) + '01-01'; S.to = k; }
+        else if (p === 'all') { S.from = ''; S.to = ''; }
+    }
+    setPeriod('month');
+    function lastDates(supId, pays) {
+        var lr = '', lp = '';
+        docs(supId).forEach(function (t) { if (t.kind === 'supplier_restock' && String(t.timestamp) > lr) lr = t.timestamp; });
+        (pays || allPayments(supId)).forEach(function (p) { if (p.supplierId === supId && String(p.at) > lp) lp = p.at; });
+        return { restock: lr, payment: lp };
+    }
+    function root() { return $('sup-root'); }
+    function render() { var r = root(); if (!r || !TC()) return; try { if (S.view === 'detail' && supById(S.id)) renderDetail(r); else { S.view = 'list'; renderList(r); } } catch (e) { console.warn('suppliers', e); } }
+    window.renderSuppliersTab = render;
+    function renderList(r) {
+        var pays = allPayments(), list = SUP();
+        var owing = 0, creditBuys = 0, paidIn = 0;
+        list.forEach(function (s) { var b = balanceOf(s.id, pays); if (b > 0) owing += b; });
+        docs().forEach(function (t) { if (t.kind === 'supplier_restock' && inRange(t.timestamp, S.from, S.to)) creditBuys += r2(r2(t.amount) - paidAtPurchase(t, pays)); });
+        pays.forEach(function (p) { if (inRange(p.at, S.from, S.to)) paidIn += p.amount; });
+        var q = S.q.toLowerCase();
+        var rows = list.filter(function (s) {
+            if (!s) return false;
+            if (S.filter === 'active' && s.active === false) return false;
+            if (S.filter === 'inactive' && s.active !== false) return false;
+            if (S.filter === 'owing' && !(balanceOf(s.id, pays) > 0.005)) return false;
+            return !q || [s.name, s.contact, s.phone].join(' ').toLowerCase().indexOf(q) >= 0;
+        }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        r.innerHTML = '<div class="sup-tools" style="justify-content:space-between"><h3 style="margin:0">🚚 Suppliers</h3><div class="sup-tools" style="margin:0"><button type="button" class="btn-main" data-a="add">➕ Add supplier</button></div></div>' +
+            '<div class="sup-tools"><label class="sup-note" style="margin:0">Period</label><select id="sup-period" aria-label="Period">' + [['month', 'This month'], ['30', 'Last 30 days'], ['year', 'This year'], ['all', 'All time'], ['custom', 'Custom']].map(function (x) { return '<option value="' + x[0] + '"' + (S.period === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
+            (S.period === 'custom' ? '<input type="date" id="sup-from" value="' + esc(S.from) + '" aria-label="From"><input type="date" id="sup-to" value="' + esc(S.to) + '" aria-label="To">' : '') + '</div>' +
+            '<div class="sup-cards">' +
+            '<div class="sup-card"><div class="k">Suppliers</div><div class="v" id="sup-c-count">' + list.length + '</div><div class="h">' + list.filter(function (s) { return s && s.active !== false; }).length + ' active</div></div>' +
+            '<div class="sup-card owe"><div class="k">Owed to suppliers now</div><div class="v" id="sup-c-owed">' + kes(owing) + '</div><div class="h">all unpaid balances today</div></div>' +
+            '<div class="sup-card"><div class="k">Bought on credit</div><div class="v" id="sup-c-credit">' + kes(creditBuys) + '</div><div class="h">' + esc(periodText(S)) + ': restock value not paid at the time</div></div>' +
+            '<div class="sup-card"><div class="k">Paid to suppliers</div><div class="v" id="sup-c-paid">' + kes(paidIn) + '</div><div class="h">' + esc(periodText(S)) + ': all payments</div></div></div>' +
+            '<div class="sup-tools"><input type="search" id="sup-q" placeholder="Search by name, contact or phone…" value="' + esc(S.q) + '"><select id="sup-filter" aria-label="Show">' + [['active', 'Active'], ['owing', 'With a balance'], ['inactive', 'Inactive'], ['all', 'All suppliers']].map(function (x) { return '<option value="' + x[0] + '"' + (S.filter === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div>' +
+            '<div class="sup-tools"><span class="sup-note" style="margin:0">Reports:</span><button type="button" class="settings-small-btn" data-r="outstanding">Outstanding debt</button><button type="button" class="settings-small-btn" data-r="restocks">Restocks</button><button type="button" class="settings-small-btn" data-r="payments">Payments</button></div>' +
+            '<div class="table-scroll"><table id="sup-table"><thead><tr><th>Supplier</th><th class="sup-hide-sm">Phone</th><th class="sup-num">Owed</th><th class="sup-hide-sm">Last restock</th><th class="sup-hide-sm">Last payment</th><th class="sup-hide-sm">Terms</th><th>Status</th><th></th></tr></thead><tbody>' +
+            (rows.length ? rows.map(function (s) {
+                var b = balanceOf(s.id, pays), ld = lastDates(s.id, pays);
+                return '<tr><td><a href="javascript:void(0)" data-v="' + esc(s.id) + '"><b>' + esc(s.name) + '</b></a>' + (s.contact ? '<br><span class="sup-note">' + esc(s.contact) + '</span>' : '') + '</td><td class="sup-hide-sm">' + esc(s.phone || '—') + '</td>' +
+                    '<td class="sup-num">' + (b < -0.005 ? '<span class="sup-badge green">credit ' + kes(-b) + '</span>' : kes(b)) + '</td><td class="sup-hide-sm">' + esc(ld.restock ? fmtDate(ld.restock) : '—') + '</td><td class="sup-hide-sm">' + esc(ld.payment ? fmtDate(ld.payment) : '—') + '</td><td class="sup-hide-sm">' + esc(termsName(s.terms) || '—') + '</td>' +
+                    '<td>' + (s.active === false ? '<span class="sup-badge grey">Inactive</span>' : '<span class="sup-badge green">Active</span>') + '</td>' +
+                    '<td><div class="sup-rowacts"><button type="button" class="settings-small-btn" data-v="' + esc(s.id) + '">Open</button> ' + (b > 0.005 ? '<button type="button" class="btn-main" data-p="' + esc(s.id) + '">💵 Pay</button> ' : '') + '<button type="button" class="settings-small-btn" data-rs="' + esc(s.id) + '">📥 Restock</button> <button type="button" class="settings-small-btn" data-st="' + esc(s.id) + '">Statement</button> <button type="button" class="settings-small-btn" data-e="' + esc(s.id) + '">Edit</button></div></td></tr>';
+            }).join('') : '<tr><td colspan="8" class="empty-state">' + (list.length ? 'No suppliers match.' : 'No suppliers yet. Add your first supplier, or pick one when you restock.') + '</td></tr>') +
+            '</tbody></table></div>' + syncNote();
+        r.querySelector('[data-a="add"]').onclick = function () { openProfile(null); };
+        $('sup-period').onchange = function () { if (this.value === 'custom') { S.period = 'custom'; } else setPeriod(this.value); render(); };
+        var f = $('sup-from'), t = $('sup-to'); if (f) f.onchange = function () { S.from = f.value; render(); }; if (t) t.onchange = function () { S.to = t.value; render(); };
+        var qi = $('sup-q'); qi.oninput = function () { S.q = qi.value; var p = qi.selectionStart; render(); var n = $('sup-q'); n.focus(); try { n.setSelectionRange(p, p); } catch (e) { /* ok */ } };
+        $('sup-filter').onchange = function () { S.filter = this.value; render(); };
+        wire(r);
+    }
+    function wire(r) {
+        Array.prototype.forEach.call(r.querySelectorAll('[data-v]'), function (b) { b.onclick = function () { S.view = 'detail'; S.id = b.getAttribute('data-v'); S.dtab = 'overview'; render(); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-p]'), function (b) { b.onclick = function () { openPayment(b.getAttribute('data-p'), b.getAttribute('data-doc') || null); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-e]'), function (b) { b.onclick = function () { openProfile(b.getAttribute('data-e')); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-st]'), function (b) { b.onclick = function () { openReport('statement', { supplierId: b.getAttribute('data-st') }); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-r]'), function (b) { b.onclick = function () { openReport(b.getAttribute('data-r'), { supplierId: b.getAttribute('data-sup') || '' }); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-rs]'), function (b) { b.onclick = function () { goRestock(b.getAttribute('data-rs')); }; });
+    }
+    function goRestock(supId) {
+        var btn = document.querySelector('.tab-link[data-tab="restock-tab"]');
+        try { if (btn) btn.click(); } catch (e) { /* the tab may be locked for this person */ }
+        setTimeout(function () { var sel = $('restock-supplier-select'); if (sel && document.getElementById('restock-tab') && document.getElementById('restock-tab').classList.contains('active')) { try { renderSupplierDropdowns(); } catch (e) { /* ok */ } sel.value = supId; sel.dispatchEvent(new Event('change')); } }, 60);
+    }
+    function renderDetail(r) {
+        var s = supById(S.id), pays = allPayments(s.id), d = docs(s.id), bal = balanceOf(s.id, pays);
+        var buys = d.filter(function (t) { return t.kind === 'supplier_restock'; }), payables = d.filter(isPayable);
+        var totalBuys = r2(buys.reduce(function (a, t) { return a + r2(t.amount); }, 0));
+        var creditBuys = r2(buys.reduce(function (a, t) { return a + r2(t.amount) - paidAtPurchase(t, pays); }, 0));
+        var totalPaid = r2(pays.reduce(function (a, p) { return a + p.amount; }, 0));
+        var openInv = payables.filter(function (t) { return outstanding(t, pays) > 0.005; });
+        var overdue = r2(openInv.filter(function (t) { return t.dueDate && t.dueDate < today(); }).reduce(function (a, t) { return a + outstanding(t, pays); }, 0));
+        var lastTx = [lastDates(s.id, pays).restock, lastDates(s.id, pays).payment].concat(d.map(function (t) { return t.timestamp; })).sort().pop();
+        var tabs = [['overview', 'Overview'], ['buys', 'Purchases'], ['pays', 'Payments'], ['returns', 'Returns & corrections'], ['ledger', 'Statement']];
+        var h = '<div class="sup-tools"><button type="button" class="settings-small-btn" data-back>‹ All suppliers</button></div>' +
+            '<div class="sup-tools" style="justify-content:space-between"><div><h3 style="margin:0">' + esc(s.name) + ' ' + (s.active === false ? '<span class="sup-badge grey">Inactive</span>' : '') + '</h3><p class="sup-note" style="margin:2px 0 0">' + esc([s.contact, s.phone, s.email, s.address, s.taxId ? 'PIN ' + s.taxId : '', termsName(s.terms) ? 'Terms: ' + termsName(s.terms) : ''].filter(Boolean).join(' · ') || 'No contact details') + '</p></div>' +
+            '<div class="sup-tools" style="margin:0">' + (bal > 0.005 ? '<button type="button" class="btn-main" data-p="' + esc(s.id) + '">💵 Record payment</button>' : '') + '<button type="button" class="settings-small-btn" data-rs="' + esc(s.id) + '">📥 Restock</button><button type="button" class="settings-small-btn" data-x="return">↩️ Return goods</button><button type="button" class="settings-small-btn" data-x="opening">Opening balance</button><button type="button" class="settings-small-btn" data-x="adjust">Correction</button><button type="button" class="settings-small-btn" data-e="' + esc(s.id) + '">✏️ Edit</button></div></div>' +
+            '<div class="sup-tabs">' + tabs.map(function (t) { return '<button type="button" data-t="' + t[0] + '" class="' + (S.dtab === t[0] ? 'on' : '') + '">' + t[1] + '</button>'; }).join('') + '</div>';
+        if (S.dtab === 'overview') {
+            h += '<div class="sup-cards">' +
+                '<div class="sup-card owe"><div class="k">Owed now</div><div class="v" id="sup-d-owed">' + (bal < -0.005 ? 'Credit ' + kes(-bal) : kes(bal)) + '</div><div class="h">' + openInv.length + ' unpaid invoice' + (openInv.length === 1 ? '' : 's') + '</div></div>' +
+                '<div class="sup-card"><div class="k">Overdue</div><div class="v">' + kes(overdue) + '</div><div class="h">' + (s.terms ? 'past the due date' : 'no payment terms set') + '</div></div>' +
+                '<div class="sup-card"><div class="k">Total purchases</div><div class="v">' + kes(totalBuys) + '</div><div class="h">' + buys.length + ' restock' + (buys.length === 1 ? '' : 's') + ' (paid and unpaid)</div></div>' +
+                '<div class="sup-card"><div class="k">Bought on credit</div><div class="v">' + kes(creditBuys) + '</div><div class="h">not paid at the time of the restock</div></div>' +
+                '<div class="sup-card"><div class="k">Total paid</div><div class="v">' + kes(totalPaid) + '</div><div class="h">' + pays.length + ' payment' + (pays.length === 1 ? '' : 's') + '</div></div>' +
+                '<div class="sup-card"><div class="k">Last transaction</div><div class="v" style="font-size:16px">' + esc(lastTx ? fmtDate(lastTx) : '—') + '</div></div></div>' + (s.notes ? '<p class="sup-note">📝 ' + esc(s.notes) + '</p>' : '');
+        } else if (S.dtab === 'buys') {
+            h += '<div class="table-scroll"><table><thead><tr><th>Date</th><th>Invoice</th><th>Items</th><th class="sup-num">Total</th><th class="sup-num">Paid at the time</th><th class="sup-num">Outstanding</th><th>Status</th><th class="sup-hide-sm">By</th><th></th></tr></thead><tbody>' +
+                (buys.length ? buys.slice().sort(function (a, b) { return String(b.timestamp).localeCompare(String(a.timestamp)); }).map(function (t) { var st = statusOf(t, pays), o = outstanding(t, pays); return '<tr><td>' + esc(fmtDate(t.timestamp)) + '</td><td>' + esc(t.reference || '—') + (t.dueDate ? '<br><span class="sup-note">due ' + esc(fmtDate(t.dueDate)) + '</span>' : '') + '</td><td><details><summary>' + (t.lines || []).length + ' item(s)</summary>' + (t.lines || []).map(function (l) { return esc(l.name) + ' × ' + esc(l.qty) + ' @ ' + kes(l.cost); }).join('<br>') + '</details></td><td class="sup-num">' + kes(t.amount) + '</td><td class="sup-num">' + kes(paidAtPurchase(t, pays)) + '</td><td class="sup-num">' + kes(o) + '</td><td><span class="sup-badge ' + st.cls + '">' + st.label + '</span></td><td class="sup-hide-sm">' + esc(t.by || '') + '</td><td>' + (o > 0.005 ? '<button type="button" class="settings-small-btn" data-p="' + esc(s.id) + '" data-doc="' + esc(t.id) + '">Pay</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="9" class="empty-state">No restocks from this supplier yet.</td></tr>') + '</tbody></table></div>' +
+                '<button type="button" class="settings-small-btn" data-r="restocks" data-sup="' + esc(s.id) + '">🖨️ Restock report</button>';
+        } else if (S.dtab === 'pays') {
+            h += '<div class="table-scroll"><table><thead><tr><th>Date</th><th class="sup-num">Amount</th><th>Method</th><th>Reference</th><th>Paid towards</th><th class="sup-hide-sm">By</th></tr></thead><tbody>' +
+                (pays.length ? pays.slice().reverse().map(function (p) { return '<tr><td>' + esc(fmtDate(p.at)) + '</td><td class="sup-num">' + kes(p.amount) + '</td><td>' + esc(methodName(p.method)) + '</td><td>' + esc(p.reference || '—') + '</td><td>' + p.allocations.map(function (a) { var x = docById(a.id); return esc((x ? (x.reference || (x.kind === 'supplier_opening' ? 'Opening balance' : 'Restock ' + fmtDate(x.timestamp))) : a.id) + ': ' + kes(a.amount)); }).join('<br>') + '</td><td class="sup-hide-sm">' + esc(p.by || '') + '</td></tr>'; }).join('') : '<tr><td colspan="6" class="empty-state">No payments yet.</td></tr>') + '</tbody></table></div>' +
+                '<button type="button" class="settings-small-btn" data-r="payments" data-sup="' + esc(s.id) + '">🖨️ Payment report</button>';
+        } else if (S.dtab === 'returns') {
+            var rs = d.filter(function (t) { return t.kind === 'supplier_return' || t.kind === 'supplier_adjust' || t.kind === 'supplier_opening'; }).sort(function (a, b) { return String(b.timestamp).localeCompare(String(a.timestamp)); });
+            h += '<div class="table-scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Details</th><th class="sup-num">Owed more</th><th class="sup-num">Owed less</th><th class="sup-hide-sm">By</th></tr></thead><tbody>' +
+                (rs.length ? rs.map(function (t) { var up = isPayable(t); return '<tr><td>' + esc(fmtDate(t.timestamp)) + '</td><td>' + esc(t.kind === 'supplier_return' ? 'Goods returned' : t.kind === 'supplier_opening' ? 'Opening balance' : 'Correction') + '</td><td>' + esc(t.reference || t.creditNote || '—') + '</td><td>' + esc(t.kind === 'supplier_return' ? (t.lines || []).map(function (l) { return l.name + ' × ' + l.qty; }).join(', ') + ' — ' + (t.reason || '') : (t.reason || t.notes || '')) + '</td><td class="sup-num">' + (up ? kes(t.amount) : '') + '</td><td class="sup-num">' + (up ? '' : kes(t.amount)) + '</td><td class="sup-hide-sm">' + esc(t.by || '') + '</td></tr>'; }).join('') : '<tr><td colspan="7" class="empty-state">No returns, corrections or opening balance.</td></tr>') + '</tbody></table></div>';
+        } else {
+            var L = ledger(s.id, '', '');
+            h += '<div class="table-scroll"><table id="sup-ledger"><thead><tr><th>Date</th><th>Transaction</th><th>Reference</th><th class="sup-num">Owed (+)</th><th class="sup-num">Paid / credit (-)</th><th class="sup-num">Balance</th></tr></thead><tbody>' +
+                (L.rows.length ? L.rows.map(function (x) { return '<tr><td>' + esc(fmtDate(x.at)) + '</td><td>' + esc(x.type) + (x.note ? '<br><span class="sup-note">' + esc(x.note) + '</span>' : '') + '</td><td>' + esc(x.ref || '') + '</td><td class="sup-num">' + (x.owed ? kes(x.owed) : '') + '</td><td class="sup-num">' + (x.paid ? kes(x.paid) : '') + '</td><td class="sup-num">' + kes(x.balance) + '</td></tr>'; }).join('') : '<tr><td colspan="6" class="empty-state">No transactions yet.</td></tr>') +
+                '</tbody><tfoot><tr class="report-grand-total"><td colspan="5"><b>Balance now</b></td><td class="sup-num"><b>' + kes(L.closing) + '</b></td></tr></tfoot></table></div>' +
+                '<button type="button" class="settings-small-btn" data-st="' + esc(s.id) + '">🖨️ Statement for a period</button>';
+        }
+        r.innerHTML = h + syncNote();
+        r.querySelector('[data-back]').onclick = function () { S.view = 'list'; render(); };
+        Array.prototype.forEach.call(r.querySelectorAll('[data-t]'), function (b) { b.onclick = function () { S.dtab = b.getAttribute('data-t'); render(); }; });
+        Array.prototype.forEach.call(r.querySelectorAll('[data-x]'), function (b) { b.onclick = function () { var x = b.getAttribute('data-x'); if (x === 'return') openReturn(s.id); else if (x === 'opening') openOpening(s.id); else openAdjust(s.id); }; });
+        wire(r);
+    }
+    window.supOpenSupplier = function (id) { S.view = 'detail'; S.id = id; S.dtab = 'overview'; render(); };
+
+    /* ======================= Restock: supplier, payment, confirmation ======================= */
+    function payMode() { var r = document.querySelector('[name="sup-pay"]:checked'); return r ? r.value : 'full'; }
+    function selSup() { var sel = $('restock-supplier-select'); return sel && sel.value ? supById(sel.value) : null; }
+    function restockBtn() { var tab = $('restock-tab') || document; return tab.querySelector('button[onclick="completeRestock()"], button[onclick="supConfirmRestock()"]'); }
+    // the rows the restock will stock (same rules as the restock itself): [{ code, name, unit, qty, cost, total }]
+    function draftLines() {
+        var out = [];
+        (typeof restockDraft !== 'undefined' ? restockDraft : []).forEach(function (r) {
+            var code = String(r.code || '').trim(), name = String(r.name || '').trim();
+            if (!(code || name)) return;
+            if (r.pu && typeof msRowRecalc === 'function') { try { msRowRecalc(r); } catch (e) { /* as typed */ } }
+            var qty = typeof parseQtyInput === 'function' ? parseQtyInput(r.qty) : parseFloat(r.qty), cost = parseFloat(r.cost);
+            if (!(qty > 0) || !(cost >= 0)) return;
+            var inv = typeof inventory !== 'undefined' ? inventory : [];
+            var p = code ? inv.find(function (x) { return x.type !== 'service' && String(x.code || '').toLowerCase() === code.toLowerCase(); }) : inv.find(function (x) { return x.type !== 'service' && String(x.name || '').trim().toLowerCase() === name.toLowerCase(); });
+            if (p && p.hasVariants && Array.isArray(p.variants) && p.variants.length) return;          // the restock refuses a parent with variants
+            var vh = !p && code && typeof restockVariantByCode === 'function' ? restockVariantByCode(code) : null;
+            out.push({ code: vh ? (vh.variant.code || code) : (p ? p.code : (code || name)), name: vh ? vh.item.name + ' (' + vh.variant.name + ')' : (name || (p && p.name) || code), unit: (p && p.unit) || r.unit || 'pcs', qty: qty, cost: r2(r.puTotal !== undefined ? r.puTotal / qty : cost), total: r2(r.puTotal !== undefined ? r.puTotal : qty * cost) });
+        });
+        return out;
+    }
+    function paintChoice() {
+        var box = $('sup-choice'); if (!box) return;
+        Array.prototype.forEach.call(box.querySelectorAll('label'), function (l) { l.classList.toggle('on', !!(l.querySelector('input') || {}).checked); });
+        var mode = payMode(), sup = selSup(), part = $('sup-part');
+        if (part) part.style.display = mode === 'credit' ? 'none' : '';
+        var amt = $('sup-paid-amount'); if (amt) { amt.parentElement.style.display = mode === 'part' ? '' : 'none'; }
+        var est = r2(draftLines().reduce(function (s, l) { return s + l.total; }, 0)), paid = mode === 'full' ? est : mode === 'credit' ? 0 : Math.min(est, r2(parseFloat(amt && amt.value) || 0));
+        var note = $('sup-pay-note');
+        if (note) note.innerHTML = (mode !== 'full' && !sup ? '<b>Choose the supplier above</b>: what is not paid now is recorded as owed to them.' : 'Total ' + kes(est) + ' · paid now ' + kes(paid) + ' · <b>owed ' + kes(r2(est - paid)) + '</b>' + (sup ? ' to ' + esc(sup.name) + (balanceOf(sup.id) > 0.005 ? ' (already owed: ' + kes(balanceOf(sup.id)) + ')' : '') : ''));
+        var b = restockBtn(); if (b) b.innerHTML = mode === 'full' ? '✅ Complete Restock' + (sup ? '' : ' &amp; Record Expense') : mode === 'credit' ? '✅ Complete Restock on Credit' : '✅ Complete Restock (part paid)';
+    }
+    window.supPaintRestockChoice = paintChoice;
+    function installChoice() {
+        if ($('sup-choice')) return true;
+        var ref = $('restock-reference-input'); if (!ref) return false;
+        var row = ref.closest('.form-group'); row = row && row.parentElement; if (!row || !row.parentElement) return false;
+        var wrap = document.createElement('div'); wrap.id = 'sup-restock-pay';
+        wrap.innerHTML = '<label style="font-weight:600;">Payment</label><div class="sup-choice" id="sup-choice" role="radiogroup" aria-label="Payment">' +
+            '<label><input type="radio" name="sup-pay" value="full" checked> 💵 Paid in full</label><label><input type="radio" name="sup-pay" value="part"> ➗ Part paid</label><label><input type="radio" name="sup-pay" value="credit"> 📒 On credit (pay later)</label></div>' +
+            '<div class="sup-row" id="sup-part"><div style="display:none"><label class="label" for="sup-paid-amount">Paid now (KES)</label><input type="number" id="sup-paid-amount" min="0" step="0.01" inputmode="decimal"></div><div><label class="label" for="sup-paid-method">Paid with</label><select id="sup-paid-method">' + METHODS.map(function (x) { return '<option value="' + x[0] + '">' + x[1] + '</option>'; }).join('') + '</select></div><div><label class="label" for="sup-paid-ref">Payment reference</label><input type="text" id="sup-paid-ref" maxlength="40" placeholder="e.g. M-Pesa code"></div></div>' +
+            '<p class="sup-note" id="sup-pay-note"></p>';
+        row.parentElement.insertBefore(wrap, row.nextSibling);
+        Array.prototype.forEach.call(wrap.querySelectorAll('[name="sup-pay"]'), function (r) { r.onchange = paintChoice; });
+        $('sup-paid-amount').oninput = paintChoice;
+        var sel = $('restock-supplier-select');
+        if (sel) {
+            sel.addEventListener('change', paintChoice);
+            if (!$('sup-new-btn')) { var nb = document.createElement('button'); nb.type = 'button'; nb.id = 'sup-new-btn'; nb.className = 'settings-small-btn'; nb.style.marginTop = '6px'; nb.textContent = '➕ New supplier'; nb.onclick = function () { openProfile(null, function (s) { try { renderSupplierDropdowns(); } catch (e) { /* ok */ } sel.value = s.id; paintChoice(); }); }; sel.parentElement.appendChild(nb); }
+        }
+        var b = restockBtn(); if (b) b.setAttribute('onclick', 'supConfirmRestock()');
+        paintChoice();
+        return true;
+    }
+    // the button: a summary first, then the restock
+    window.supConfirmRestock = function () {
+        var lines = draftLines(); if (!lines.length) return completeRestock();      // the restock gives its own message
+        var mode = payMode(), sup = selSup();
+        if (mode !== 'full' && !sup) { toast('Choose the supplier you owe for this restock (or pick "Paid in full").', true); try { $('restock-supplier-select').focus(); } catch (e) { /* ok */ } return; }
+        var total = r2(lines.reduce(function (s, l) { return s + l.total; }, 0)), paid = mode === 'full' ? total : mode === 'credit' ? 0 : r2(parseFloat(($('sup-paid-amount') || {}).value) || 0);
+        if (mode === 'part' && !(paid > 0 && paid < total)) { toast('For "Part paid" enter an amount more than 0 and less than the total (' + kes(total) + ').', true); return; }
+        var m = modal('<h3>Confirm the restock</h3><p class="sup-note">' + (sup ? 'Supplier: <b>' + esc(sup.name) + '</b>' : 'No supplier') + (($('restock-reference-input') || {}).value ? ' · Invoice ' + esc($('restock-reference-input').value) : '') + '</p>' +
+            '<div class="table-scroll"><table><thead><tr><th>Item</th><th class="sup-num">Qty</th><th class="sup-num">Unit cost</th><th class="sup-num">Line total</th></tr></thead><tbody>' + lines.map(function (l) { return '<tr><td>' + esc(l.name) + '</td><td class="sup-num">' + esc(l.qty) + ' ' + esc(l.unit) + '</td><td class="sup-num">' + kes(l.cost) + '</td><td class="sup-num">' + kes(l.total) + '</td></tr>'; }).join('') + '</tbody></table></div>' +
+            '<table style="margin-top:8px"><tbody><tr><td>Total purchase</td><td class="sup-num"><b>' + kes(total) + '</b></td></tr><tr><td>Paid now' + (paid > 0 ? ' (' + esc(methodName(($('sup-paid-method') || {}).value)) + ')' : '') + '</td><td class="sup-num">' + kes(paid) + '</td></tr><tr><td>Owed to the supplier</td><td class="sup-num"><b>' + kes(r2(total - paid)) + '</b></td></tr></tbody></table>' +
+            '<p class="sup-note">No discounts or taxes are added on a restock: the cost per unit is what you typed.</p><div class="sup-acts"><button type="button" class="btn-main" id="cr-go">✅ Confirm restock</button><button type="button" class="settings-small-btn" data-cancel>Back</button></div>');
+        m.querySelector('[data-cancel]').onclick = closeModal;
+        $('cr-go').onclick = function () { this.disabled = true; closeModal(); completeRestock(); };
+    };
+    function installRestock() {
+        if (typeof completeRestock !== 'function' || completeRestock.__sup) return;
+        var orig = completeRestock;
+        var wrapped = function () {
+            var sup = selSup(), mode = payMode();
+            var method = (($('sup-paid-method') || {}).value) || 'cash', payRef = String((($('sup-paid-ref') || {}).value) || '').trim();
+            if (!TC()) return orig.apply(this, arguments);
+            if (!sup) {
+                if (mode !== 'full') { toast('Choose the supplier you owe for this restock (or pick "Paid in full").', true); try { $('restock-supplier-select').focus(); } catch (e) { /* ok */ } return; }
+                var l0 = EX().length, res0 = orig.apply(this, arguments);
+                var e0 = EX().slice(l0).filter(function (x) { return x && x.category === 'Restock' && x.auto; }).pop();
+                if (e0 && document.getElementById('sup-choice')) { e0.paymentMethod = method; if (payRef) e0.reference = payRef; saveAll('x'); }
+                return res0;
+            }
+            var refEl = $('restock-reference-input'), ref = refEl ? refEl.value.trim() : '';
+            var lines = draftLines(), partAmt = r2(parseFloat((($('sup-paid-amount') || {}).value)) || 0);
+            var expLen = EX().length, t0 = Date.now() - 1000;
+            // the delivery note printed inside the restock says what is owed
+            var hadPrint = typeof triggerAutoPrintReport === 'function', origPrint = hadPrint ? triggerAutoPrintReport : null;
+            if (hadPrint) window.triggerAutoPrintReport = triggerAutoPrintReport = function () {
+                try {
+                    var e = EX().slice(expLen).filter(function (x) { return x && x.category === 'Restock'; }).pop(), amt = e ? r2(e.amount) : 0;
+                    var paid = mode === 'full' ? amt : mode === 'credit' ? 0 : Math.min(partAmt, amt);
+                    var line = 'Supplier: ' + sup.name + '. Paid now: ' + kes(paid) + (paid > 0 ? ' (' + methodName(method) + ')' : '') + '. Owed: ' + kes(r2(amt - paid)) + '.';
+                    var body = $('sales-report-body');
+                    if (body) Array.prototype.forEach.call(body.querySelectorAll('p'), function (p) { if (/Recorded as a/.test(p.textContent)) p.innerHTML = '<strong>' + esc(line) + '</strong>'; });
+                    if (typeof lastReportText === 'string') lastReportText = lastReportText.replace(/Recorded as a Restock expense of KES [0-9.,]+\./, line);
+                } catch (x) { /* the note prints as it is */ }
+                return origPrint.apply(this, arguments);
+            };
+            var res;
+            try { res = orig.apply(this, arguments); } finally { if (hadPrint) window.triggerAutoPrintReport = triggerAutoPrintReport = origPrint; }
+            var added = EX().slice(expLen).filter(function (x) { return x && x.category === 'Restock' && x.auto; });
+            if (!added.length) return res;                      // nothing was stocked (no valid row, a double tap): nothing recorded
+            var e = added[added.length - 1], total = r2(e.amount), id = 'rc-' + e.id;
+            var paid = mode === 'full' ? total : mode === 'credit' ? 0 : Math.min(partAmt, total);
+            if (docById(id)) return res;                         // already recorded (never twice)
+            var batch = null;
+            try { (typeof inventory !== 'undefined' ? inventory : []).forEach(function (p) { (Array.isArray(p.purchases) ? p.purchases : []).forEach(function (rec) { if (rec && Date.parse(rec.at) >= t0 && (rec.supplier || '') === sup.name && !rec.creditId) { rec.creditId = id; batch = rec.batch || batch; p.updatedAt = Date.now(); } }); }); if (batch) safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (x) { /* the invoice still stands */ }
+            var doc = { id: id, kind: 'supplier_restock', direction: 'i_owe', supplierId: sup.id, partyName: sup.name, amount: total, timestamp: e.timestamp || new Date().toISOString(), reference: ref, purchaseId: batch, restockExpenseId: e.id,
+                lines: lines, dueDate: dueFrom(sup, e.timestamp || Date.now()), description: 'Restock' + (ref ? ' (' + ref + ')' : '') + ' — ' + lines.length + ' item' + (lines.length === 1 ? '' : 's'), status: paid >= total - 0.005 ? 'settled' : 'open', settledAt: paid >= total - 0.005 ? new Date().toISOString() : null,
+                linkedSaleId: null, payments: paid > 0 ? [{ id: e.id, at: e.timestamp, amount: paid, method: method, reference: payRef, by: who() }] : [], by: who(), updatedAt: Date.now() };
+            if (paid > 0) { e.amount = paid; e.supplierPay = true; e.supplierId = sup.id; e.allocations = [{ id: id, amount: paid }]; e.supplierDebtId = id; e.paymentMethod = method; e.reference = payRef; e.description = 'Paid ' + sup.name + ' for restock' + (ref ? ' ' + ref : '') + (paid < total ? ' (part: ' + kes(paid) + ' of ' + kes(total) + ')' : ''); }
+            else expenses.splice(expenses.indexOf(e), 1);    // nothing paid: no money left the business
+            pushDoc(doc);
+            saveAll('xt');
+            var full = document.querySelector('[name="sup-pay"][value="full"]'); if (full) full.checked = true;
+            var pa = $('sup-paid-amount'); if (pa) pa.value = ''; var pr = $('sup-paid-ref'); if (pr) pr.value = '';
+            paintChoice(); render(); try { renderDebtsTab(); } catch (x) { /* not built */ }
+            toast(paid >= total - 0.005 ? 'Restock recorded: ' + kes(total) + ' paid to ' + sup.name + '.' : 'Restock recorded: ' + kes(total) + ' from ' + sup.name + ', paid ' + kes(paid) + ', owed ' + kes(r2(total - paid)) + '.');
+            return res;
+        };
+        wrapped.__sup = true;
+        Object.keys(orig).forEach(function (k) { if (!(k in wrapped)) wrapped[k] = orig[k]; });
+        window.completeRestock = completeRestock = wrapped;
+    }
+    // the picker hides inactive suppliers (they stay in history); "Remove" deactivates a supplier that has history
+    function installSupplierList() {
+        if (typeof supplierOptionsHtml === 'function' && !supplierOptionsHtml.__sup) {
+            var oo = supplierOptionsHtml, wo = function (selectedId) {
+                var all = SUP(), hidden = all.filter(function (s) { return s && s.active === false && s.id !== selectedId; });
+                if (!hidden.length) return oo.apply(this, arguments);
+                suppliers = all.filter(function (s) { return hidden.indexOf(s) < 0; });
+                try { return oo.apply(this, arguments); } finally { suppliers = all; }
+            };
+            wo.__sup = true; window.supplierOptionsHtml = supplierOptionsHtml = wo;
+        }
+        if (typeof removeSupplier === 'function' && !removeSupplier.__sup) {
+            var orr = removeSupplier, wr = function (id) {
+                var s = supById(id);
+                if (s && hasHistory(id)) { if (!confirm('"' + s.name + '" has restocks or payments, so it is kept for the records and marked inactive instead. Continue?')) return; s.active = false; s.updatedAt = Date.now(); saveAll('s'); try { renderSupplierDropdowns(); } catch (e) { /* ok */ } render(); toast(s.name + ' is now inactive.'); return; }
+                return orr.apply(this, arguments);
+            };
+            wr.__sup = true; window.removeSupplier = removeSupplier = wr;
+        }
+    }
+
+    /* ======================= Debts tab + Trade Credits ======================= */
+    function paintDebtsSection() {
+        var tab = $('debts-tab'); if (!tab || !TC()) return;
+        var sec = $('sup-debts');
+        if (!sec) {
+            var old = $('crs-debts'); if (old) old.remove();
+            var panel = tab.querySelector('.panel') || tab;
+            sec = document.createElement('div'); sec.id = 'sup-debts'; sec.style.marginTop = '22px';
+            panel.appendChild(sec);
+        }
+        var pays = allPayments(), q = String(($('debts-search-input') || {}).value || '').trim().toLowerCase(), showSettled = !!($('debts-show-settled-toggle') || {}).checked;
+        var rows = SUP().map(function (s) { return { s: s, b: balanceOf(s.id, pays), open: docs(s.id).filter(function (t) { return isPayable(t) && outstanding(t, pays) > 0.005; }).length }; })
+            .filter(function (x) { return (showSettled ? docs(x.s.id).length > 0 : x.b > 0.005) && (!q || [x.s.name, x.s.phone].join(' ').toLowerCase().indexOf(q) >= 0); })
+            .sort(function (a, b) { return b.b - a.b; });
+        var total = r2(SUP().reduce(function (a, s) { var b = balanceOf(s.id, pays); return a + (b > 0 ? b : 0); }, 0));
+        sec.innerHTML = '<h3>🚚 Owed to suppliers <span style="font-weight:normal;font-size:14px;color:var(--text-muted,#7f8c8d)">(money this shop owes - kept apart from what customers owe above)</span></h3>' +
+            '<div class="sales-summary-bar"><div class="summary-card"><div class="label">Suppliers owed</div><div class="value" id="sup-debts-count">' + rows.filter(function (x) { return x.b > 0.005; }).length + '</div></div><div class="summary-card"><div class="label">Total owed to suppliers</div><div class="value" id="sup-debts-total">' + kes(total) + '</div></div></div>' +
+            '<div class="table-scroll"><table id="sup-debts-table"><thead><tr><th>Supplier</th><th>Phone</th><th class="sup-num">Unpaid invoices</th><th class="sup-num">Owed</th><th></th></tr></thead><tbody>' +
+            (rows.length ? rows.map(function (x) { return '<tr><td>' + esc(x.s.name) + '</td><td>' + esc(x.s.phone || '—') + '</td><td class="sup-num">' + x.open + '</td><td class="sup-num">' + kes(x.b) + '</td><td><div class="sup-rowacts">' + (x.b > 0.005 ? '<button type="button" class="btn-main" data-sdp="' + esc(x.s.id) + '">💵 Pay</button> ' : '') + '<button type="button" class="settings-small-btn" data-sdo="' + esc(x.s.id) + '">Open</button></div></td></tr>'; }).join('') : '<tr><td colspan="5" class="empty-state">Nothing owed to suppliers. A restock "On credit" or "Part paid" shows here.</td></tr>') + '</tbody></table></div>';
+        Array.prototype.forEach.call(sec.querySelectorAll('[data-sdp]'), function (b) { b.onclick = function () { openPayment(b.getAttribute('data-sdp')); }; });
+        Array.prototype.forEach.call(sec.querySelectorAll('[data-sdo]'), function (b) { b.onclick = function () { var t = document.querySelector('.tab-link[data-tab="suppliers-tab"]'); if (t) t.click(); window.supOpenSupplier(b.getAttribute('data-sdo')); }; });
+    }
+    window.renderSupplierDebts = paintDebtsSection;
+    function installOthers() {
+        if (typeof renderDebtsTab === 'function' && !renderDebtsTab.__sup) {
+            var od = renderDebtsTab, wd = function () { var r = od.apply(this, arguments); try { paintDebtsSection(); } catch (e) { console.warn('supplier debts', e); } return r; };
+            wd.__sup = true; window.renderDebtsTab = renderDebtsTab = wd;
+        }
+        if (typeof renderTradeCreditsTab === 'function' && !renderTradeCreditsTab.__sup) {
+            var ot = renderTradeCreditsTab, wt = function () {
+                var all = TC(); if (!all) return ot.apply(this, arguments);
+                // supplier documents live in the Suppliers tab (with their balances); this list keeps the other trade credits
+                tradeCredits = all.filter(function (t) { return !isDoc(t); });
+                try { return ot.apply(this, arguments); } finally { tradeCredits = all; try { var tab = $('trade-credits-tab'); if (tab && !$('sup-tc-note')) { var p = document.createElement('p'); p.id = 'sup-tc-note'; p.className = 'sup-note'; p.innerHTML = 'Money owed to suppliers for restocks is in <a href="javascript:void(0)" onclick="(document.querySelector(\'.tab-link[data-tab=&quot;suppliers-tab&quot;]\')||{click:function(){}}).click()">🚚 Suppliers</a>.'; (tab.querySelector('.panel') || tab).insertBefore(p, (tab.querySelector('.panel') || tab).children[1] || null); } } catch (e) { /* cosmetic */ } }
+            };
+            wt.__sup = true; window.renderTradeCreditsTab = renderTradeCreditsTab = wt;
+        }
+        if (typeof settleTradeCredit === 'function' && !settleTradeCredit.__sup) {
+            var os = settleTradeCredit, ws = function (id) { var t = docById(id); if (isDoc(t)) { if (isPayable(t)) openPayment(t.supplierId, t.id); return; } return os.apply(this, arguments); };
+            ws.__sup = true; window.settleTradeCredit = settleTradeCredit = ws;
+        }
+    }
+
+    installRestock(); installSupplierList(); installOthers();
+    if (!installChoice()) document.addEventListener('DOMContentLoaded', function () { installChoice(); });
+    setTimeout(function () { installSupplierList(); installOthers(); installChoice(); }, 0);
+})();
+</script>

@@ -1,0 +1,129 @@
+<!-- SVC DEMO ------------------------------------------------------------------------------------------------------
+     Services engine block "svc-demo". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     KIND: the sample business for the public Services demos (demo-services, demo-carwash, demo-phonerepair, demo-garage, demo-barber,
+     demo-laundry, demo-cleaning, demo-electronics, demo-tailoring). It does nothing on a normal shop: it only runs on a demo address.
+     WHAT IT DOES: once the shared demo has been pulled and someone is signed in, it picks the demo's business type, loads that type's
+     starter price list and creates a handful of sample jobs at different stages through the app's own svcJobCreate (so they are
+     exactly like real jobs). It runs again only when the demo has no jobs on this device (first visit, or after Reset). -->
+<script>
+(function () {
+    'use strict';
+    var host = String(location.hostname || '').toLowerCase(), cid = '';
+    try { cid = new URLSearchParams(location.search).get('c') || ''; } catch (e) { cid = ''; }
+    var slug = host.split('.')[0].indexOf('demo-') === 0 ? host.split('.')[0].slice(5) : (cid.indexOf('demo_') === 0 ? cid.slice(5) : '');
+    var TYPE = { services: 'salon', salon: 'salon', carwash: 'car_wash', phonerepair: 'phone_repair', garage: 'garage', barber: 'barber', laundry: 'laundry', cleaning: 'cleaning', electronics: 'electronics_repair', tailoring: 'tailoring' }[slug];
+    if (!TYPE) return;                                                                   // a normal shop or another demo: do nothing
+
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function ymd(off) { var d = new Date(Date.now() + off * 86400000); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    var HR = 3600000;
+    // c = [customer, phone]; v = field values of the intake form; s = [[service, category, price]]; st = status; due = hours from now; ago = hours since it was booked in
+    var J = {
+        car_wash: [
+            { c: ['Brian Otieno', '0712 340 118'], v: { veh_type: 'sedan', veh_plate: 'KDG 482M', veh_make: 'Toyota', veh_model: 'Axio', veh_color: 'Silver' }, s: [['Premium Wash', 'Wash', 1500], ['Wax & Polish', 'Detailing', 2500]], st: 'in_progress', due: 2, ago: 1 },
+            { c: ['Faith Wambui', '0722 906 551'], v: { veh_type: 'hatchback', veh_plate: 'KDA 117T', veh_make: 'Mazda', veh_model: 'Demio', veh_color: 'Red' }, s: [['Basic Wash', 'Wash', 500]], st: 'waiting', due: 1, ago: 0 },
+            { c: ['Ibrahim Hassan', '0733 114 802'], v: { veh_type: 'suv', veh_plate: 'KDF 905B', veh_make: 'Subaru', veh_model: 'Forester', veh_color: 'Black' }, s: [['Premium Wash', 'Wash', 1500], ['Interior Cleaning', 'Interior', 800]], st: 'ready', due: 3, ago: 3 },
+            { c: ['Caro Njeri', '0701 662 390'], v: { veh_type: 'motorcycle', veh_plate: 'KMFB 330Q', veh_make: 'Honda', veh_model: 'CB125', veh_color: 'Blue' }, s: [['Motorbike Wash', 'Wash', 300]], st: 'ready', due: 3, ago: 2 },
+            { c: ['Peter Mutua', '0745 289 077'], v: { veh_type: 'hatchback', veh_plate: 'KCY 664L', veh_make: 'Nissan', veh_model: 'Note', veh_color: 'White' }, s: [['Basic Wash', 'Wash', 500], ['Carpet Cleaning', 'Carpets & Fabrics', 1000]], st: 'waiting', due: 3, ago: 0 }
+        ],
+        phone_repair: [
+            { c: ['Grace Achieng', '0712 408 226'], v: { dev_type: 'phone', dev_brand: 'Samsung', dev_model: 'Galaxy A14', dev_imei: '356938035643809', dev_color: 'Black', rep_problem: 'Cracked screen, touch still works.' }, s: [['Screen Replacement', 'Screen', 3500]], st: 'in_progress', due: 20, ago: 5 },
+            { c: ['Kevin Kiprop', '0723 515 743'], v: { dev_type: 'phone', dev_imei: '352099001761481', dev_brand: 'Tecno', dev_model: 'Spark 10', dev_color: 'Blue', rep_problem: 'Battery drains within two hours.' }, s: [['Battery Replacement', 'Battery', 2000]], st: 'received', due: 24, ago: 1 },
+            { c: ['Mary Atieno', '0734 770 109'], v: { dev_type: 'phone', dev_imei: '867530902317744', dev_brand: 'iPhone', dev_model: 'iPhone 11', dev_color: 'White', rep_problem: 'Fell in water, will not switch on.' }, s: [['Water Damage Treatment', 'Water damage', 2500]], st: 'diagnosing', due: 48, ago: 6 },
+            { c: ['Samuel Karanja', '0701 338 914'], v: { dev_type: 'phone', dev_imei: '359826108845219', dev_brand: 'Infinix', dev_model: 'Hot 30', dev_color: 'Green', rep_problem: 'Phone does not charge unless held at an angle.' }, s: [['Charging Port Repair', 'Charging', 1500]], st: 'ready', due: 3, ago: 26 },
+            { c: ['Lucy Waithera', '0745 622 058'], v: { dev_type: 'tablet', dev_imei: '861234050987651', dev_brand: 'Samsung', dev_model: 'Tab A8', dev_color: 'Grey', rep_problem: 'Stuck on the logo screen.' }, s: [['Software / Flashing', 'Software', 1000]], st: 'awaiting_parts', due: 30, ago: 30 }
+        ],
+        garage: [
+            { c: ['Joseph Maina', '0722 417 655'], v: { veh_plate: 'KDB 220K', veh_make: 'Toyota', veh_model: 'Probox', veh_type: 'hatchback', veh_year: '2014', veh_odometer: '168000', cmp_problem: 'Engine oil service and strange noise when braking.' }, s: [['Oil & Filter Service', 'Service', 3500], ['Brake Pad Replacement', 'Brakes', 4500]], st: 'in_progress', due: 6, ago: 4 },
+            { c: ['Esther Muthoni', '0733 906 214'], v: { veh_plate: 'KDD 071P', veh_make: 'Mazda', veh_model: 'CX-5', veh_type: 'suv', veh_year: '2017', veh_odometer: '92000', cmp_problem: 'Check engine light is on.' }, s: [['Diagnostic Scan', 'Diagnostics', 1500]], st: 'diagnosing', due: 5, ago: 2 },
+            { c: ['Daniel Ochieng', '0712 880 336'], v: { veh_plate: 'KCT 509S', veh_make: 'Nissan', veh_model: 'Sunny', veh_type: 'hatchback', veh_year: '2011', veh_odometer: '210000', cmp_problem: 'Car pulls to the left on the highway.' }, s: [['Wheel Alignment', 'Tyres', 2000]], st: 'received', due: 4, ago: 0 },
+            { c: ['Rose Chebet', '0701 512 487'], v: { veh_plate: 'KDE 338W', veh_make: 'Subaru', veh_model: 'Impreza', veh_type: 'hatchback', veh_year: '2015', veh_odometer: '120000', cmp_problem: 'Car will not start in the morning.' }, s: [['Battery Replacement', 'Electrical', 9000]], st: 'awaiting_parts', due: 24, ago: 20 },
+            { c: ['Hassan Abdi', '0745 118 902'], v: { veh_plate: 'KDG 740A', veh_make: 'Toyota', veh_model: 'Hilux', veh_type: 'pickup', veh_year: '2019', veh_odometer: '75000', cmp_problem: 'Full service before a long trip.' }, s: [['Full Service', 'Service', 8000]], st: 'ready', due: 3, ago: 28 }
+        ],
+        salon: [
+            { c: ['Naomi Wanjiku', '0712 556 203'], v: { appt_date: ymd(0), appt_time: '10:00' }, s: [['Braids (Medium)', 'Hair', 2500]], st: 'in_progress', due: 3, ago: 2 },
+            { c: ['Ann Moraa', '0722 190 774'], v: { appt_date: ymd(0), appt_time: '11:30' }, s: [['Manicure', 'Nails', 700], ['Pedicure', 'Nails', 900]], st: 'checked_in', due: 2, ago: 0 },
+            { c: ['Zawadi Mwende', '0733 421 880'], v: { appt_date: ymd(0), appt_time: '14:00' }, s: [['Makeup', 'Beauty', 2000]], st: 'confirmed', due: 5, ago: 20 },
+            { c: ['Cynthia Akinyi', '0701 977 365'], v: { appt_date: ymd(1), appt_time: '09:30' }, s: [['Hair Treatment', 'Hair', 1200], ['Facial', 'Beauty', 1500]], st: 'booked', due: 24, ago: 30 },
+            { c: ['Tabitha Nyokabi', '0745 208 611'], v: { appt_date: ymd(1), appt_time: '13:00' }, s: [['Full Body Massage (60m)', 'Massage', 3000]], st: 'booked', due: 28, ago: 36 }
+        ],
+        barber: [
+            { c: ['Victor Omondi', '0712 004 531'], v: { appt_date: ymd(0), appt_time: '09:30' }, s: [['Haircut', 'Cuts', 300], ['Beard Trim', 'Beard', 250]], st: 'in_progress', due: 1, ago: 1 },
+            { c: ['Alex Kimani', '0722 631 947'], v: { appt_date: ymd(0), appt_time: '10:00' }, s: [['Haircut', 'Cuts', 300]], st: 'waiting', due: 1, ago: 0 },
+            { c: ['Moses Njoroge', '0733 552 018'], v: { appt_date: ymd(0), appt_time: '10:30' }, s: [['Kids Cut', 'Cuts', 200]], st: 'waiting', due: 2, ago: 0 },
+            { c: ['Edwin Barasa', '0701 245 389'], v: { appt_date: ymd(0), appt_time: '15:00' }, s: [['Haircut', 'Cuts', 300], ['Hair Dye', 'Colour', 600]], st: 'confirmed', due: 6, ago: 22 },
+            { c: ['Collins Mutiso', '0745 774 120'], v: { appt_date: ymd(1), appt_time: '11:00' }, s: [['Shave', 'Beard', 200]], st: 'booked', due: 26, ago: 30 }
+        ],
+        laundry: [
+            { c: ['Wanjiru Kamau', '0712 288 404'], v: { ld_tag: 'T-101' }, s: [['Wash & Fold (per kg)', 'Wash & Fold', 150, 8], ['Ironing (per item)', 'Ironing', 50, 6]], st: 'washing', due: 8, ago: 3 },
+            { c: ['Hotel Safari Inn', '0722 345 901'], v: { ld_tag: 'T-102' }, s: [['Bedsheet Set', 'Household', 200, 12], ['Towel', 'Household', 80, 20]], st: 'drying', due: 6, ago: 5 },
+            { c: ['Dennis Wafula', '0733 119 760'], v: { ld_tag: 'T-103' }, s: [['Suit (2 piece)', 'Dry Cleaning', 800, 1], ['Shirt', 'Dry Cleaning', 250, 3]], st: 'ironing', due: 3, ago: 24 },
+            { c: ['Joy Chepkoech', '0701 903 276'], v: { ld_tag: 'T-104' }, s: [['Duvet', 'Household', 600, 1], ['Curtains (per panel)', 'Household', 400, 4]], st: 'ready', due: 3, ago: 40 },
+            { c: ['Martin Gitau', '0745 160 835'], v: { ld_tag: 'T-105' }, s: [['Wash & Fold (per kg)', 'Wash & Fold', 150, 5]], st: 'received', due: 24, ago: 0 }
+        ],
+        cleaning: [
+            { c: ['Mrs. Karimi (Kilimani)', '0712 770 224'], v: { site_type: 'home', site_address: 'Argwings Kodhek Road, Kilimani, Nairobi. 3-bedroom apartment, 4th floor.', sched_date: ymd(0), sched_time: '09:00', sched_duration: 3 }, s: [['Home Cleaning', 'Home', 3000]], st: 'in_progress', due: 2, ago: 24 },
+            { c: ['Brightpath Insurance', '0722 004 918'], v: { site_type: 'office', site_address: 'Kenyatta Avenue, Nakuru. Open office, ground floor.', sched_date: ymd(0), sched_time: '14:00', sched_duration: 4 }, s: [['Office Cleaning', 'Commercial', 5000]], st: 'on_the_way', due: 4, ago: 48 },
+            { c: ['Eric Mwangi', '0733 861 407'], v: { site_type: 'home', site_address: 'Ngong Road, Karen. House, living room sofas and rugs.', sched_date: ymd(1), sched_time: '10:00', sched_duration: 2 }, s: [['Sofa Cleaning', 'Upholstery', 2000], ['Carpet Shampoo', 'Carpets', 1500]], st: 'scheduled', due: 24, ago: 30 },
+            { c: ['Ruth Nyambura', '0701 335 092'], v: { site_type: 'home', site_address: 'Thika Road, Roysambu. New 2-bedroom house after construction.', sched_date: ymd(2), sched_time: '08:00', sched_duration: 6 }, s: [['Post-construction Cleaning', 'Deep clean', 8000]], st: 'booked', due: 48, ago: 10 },
+            { c: ['Tom Kiplagat', '0745 218 556'], v: { site_type: 'shop', site_address: 'Milimani, Kisumu. Shop front windows, three floors.', sched_date: ymd(1), sched_time: '15:00', sched_duration: 2 }, s: [['Window Cleaning', 'Windows', 1200]], st: 'booked', due: 30, ago: 5 }
+        ],
+        electronics_repair: [
+            { c: ['Mercy Auma', '0712 591 038'], v: { eq_type: 'tv', eq_brand: 'Hisense', eq_model: '43A6', eq_serial: 'HS43-220918', rep_problem: 'Screen shows vertical lines and no sound.' }, s: [['TV Repair', 'TV', 2500]], st: 'in_progress', due: 24, ago: 20 },
+            { c: ['Paul Kariuki', '0722 874 360'], v: { eq_type: 'fridge', eq_brand: 'Ramtons', eq_model: 'RF/192', eq_serial: 'RM-10443', rep_problem: 'Not cooling, compressor clicks.' }, s: [['Fridge Repair', 'Appliances', 3000]], st: 'diagnosing', due: 30, ago: 6 },
+            { c: ['Jackline Moraa', '0733 410 197'], v: { eq_type: 'other', eq_brand: 'Samsung', eq_model: 'MS23', eq_serial: 'SM-77310', rep_problem: 'Spins but does not heat.' }, s: [['Microwave Repair', 'Appliances', 1500]], st: 'received', due: 36, ago: 1 },
+            { c: ['Stephen Ndegwa', '0701 755 842'], v: { eq_type: 'laptop', eq_brand: 'HP', eq_model: '15-dw', eq_serial: '5CD1234XY', rep_problem: 'Keyboard keys stopped working after spill.' }, s: [['Laptop Repair', 'Computers', 2500]], st: 'awaiting_parts', due: 48, ago: 28 },
+            { c: ['Beatrice Njoki', '0745 693 220'], v: { eq_type: 'other', eq_brand: 'Sony', eq_model: 'MHC-V11', eq_serial: 'SN-50916', rep_problem: 'One speaker is dead.' }, s: [['Sound System Repair', 'Audio', 2000]], st: 'ready', due: 3, ago: 50 }
+        ],
+        tailoring: [
+            { c: ['Linet Wangari', '0712 330 665'], v: { tl_item: 'dress', tl_due_date: ymd(5), tl_fitting_date: ymd(3) }, s: [['Kitenge Dress', 'Made to measure', 3500]], st: 'stitching', due: 120, ago: 48 },
+            { c: ['Mr. Odhiambo', '0722 561 904'], v: { tl_item: 'suit', tl_due_date: ymd(9), tl_fitting_date: ymd(6) }, s: [['Suit Tailoring', 'Made to measure', 8000]], st: 'cutting', due: 216, ago: 20 },
+            { c: ['Cherop Academy', '0733 218 407'], v: { tl_item: 'uniform', tl_due_date: ymd(4) }, s: [['School Uniform', 'Uniforms', 1500, 6]], st: 'measured', due: 96, ago: 8 },
+            { c: ['Winnie Muriuki', '0701 449 128'], v: { tl_item: 'trousers', tl_due_date: ymd(1) }, s: [['Trouser Hem', 'Alterations', 300], ['Zip Replacement', 'Alterations', 250]], st: 'alteration', due: 20, ago: 30 },
+            { c: ['Agnes Nduta', '0745 027 553'], v: { tl_item: 'dress', tl_due_date: ymd(0) }, s: [['Dress Alteration', 'Alterations', 800]], st: 'ready', due: 3, ago: 60 }
+        ]
+    };
+
+    var tries = 0, done = false;
+    function ready() {
+        try {
+            return !!(window.SharedDemo && window.SharedDemo.pulled) && typeof svcJobCreate === 'function' && typeof svcSetBusinessType === 'function' &&
+                Array.isArray(svcJobs) && typeof svcStCan === 'function' && svcStCan('svc:create');
+        } catch (e) { return false; }
+    }
+    function live() { try { return svcJobs.filter(function (j) { return j && !j._deleted; }).length; } catch (e) { return 0; } }
+    function seed() {
+        if (done) return; done = true;
+        try {
+            var cfg = null; try { cfg = svcConfigGet('cfg-business'); } catch (e) { cfg = null; }
+            if (!cfg || cfg.chosen !== true || cfg.businessType !== TYPE) svcSetBusinessType(TYPE, { force: true, source: 'demo' });
+            try { if (typeof svcSeedCatalog === 'function') svcSeedCatalog(TYPE); } catch (e) { /* the price list is optional for the sample */ }
+            if (live() === 0) {
+                (J[TYPE] || []).forEach(function (j) {
+                    if ((TYPE === 'salon' || TYPE === 'barber') && (j.st === 'booked' || j.st === 'confirmed') && typeof svcApptCreate === 'function') {
+                        svcApptCreate({ serviceType: TYPE, customer: { name: j.c[0], phone: j.c[1] }, date: j.v.appt_date, start: j.v.appt_time, durationMin: 60, status: j.st,
+                            services: j.s.map(function (x) { return { name: x[0], category: x[1], price: x[2], qty: x[3] || 1 }; }) }, { overrideReason: 'sample booking' });
+                        return;
+                    }
+                    var values = Object.assign({ cust_name: j.c[0], cust_phone: j.c[1] }, j.v);
+                    var services = j.s.map(function (x) { return { name: x[0], category: x[1], price: x[2], qty: x[3] || 1 }; });
+                    var r = svcJobCreate(TYPE, { values: values, services: services, status: j.st, dueAt: Date.now() + j.due * HR, source: 'walkin' }, { validate: false });
+                    if (r && r.ok && r.job && j.ago > 0) { try { r.job.createdAt = Date.now() - j.ago * HR; } catch (e) { /* cosmetic */ } }
+                });
+            }
+            try { sessionStorage.setItem('svc_demo_done', TYPE); } catch (e) { /* once more next load is harmless */ }
+            try { if (typeof svcApplyTerms === 'function') svcApplyTerms(); if (typeof svcApplyTabLabels === 'function') svcApplyTabLabels(); } catch (e) { /* cosmetic */ }
+            try { window.dispatchEvent(new CustomEvent('svc:demo-seeded', { detail: { type: TYPE } })); } catch (e) { /* none */ }
+        } catch (e) { done = false; }
+    }
+    function tick() {
+        if (done || ++tries > 240) return;                                        // 4 minutes at most
+        try { if (sessionStorage.getItem('svc_demo_done') === TYPE && live() > 0) { done = true; return; } } catch (e) { /* ignore */ }
+        if (ready()) { seed(); if (done) return; }
+        setTimeout(tick, 1000);
+    }
+    window.__svcDemoType = TYPE;
+    window.__svcDemoSeed = seed;
+    setTimeout(tick, 1500);
+})();
+</script>

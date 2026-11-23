@@ -1,0 +1,1246 @@
+<!-- INVENTORY WORKSPACE, SERIAL UNITS, VARIANTS, IMPORT WIZARD (Shop, zip 292) ---------------------------------------------------------------
+     Screens and checkout hooks on top of the tested engine in src/shared/functions.js (serial*, variant*, import*). Synced lists: serialUnits, importBatches
+     (functions/api/_merge.js). Nothing here changes how a plain item is sold: only an item ticked "This item has a unique identifier per item" is affected.
+       1. Product editor checkbox (kept through an edit - the editor rebuilds the item object, which would otherwise drop the flag).
+       2. Receive serial units: scan / type / paste / file, "7 of 10 registered", row-numbered errors, idempotent batch.
+       3. Checkout: the cashier must pick the REAL unit(s); the sale marks exactly those units sold. Void / unvoid / return follow the unit.
+       4. Units screen: search by identifier, history, return, inspection, damage / repair / write-off, supplier return, identifier correction, conflicts.
+       5. Inventory workspace: overview cards, searchable table, item detail, variant generator, stock adjustment, low stock.
+       6. Import wizard: upload, type, mapping, preview, confirm, chunked run, results, rejected rows, templates.
+     Event delegation only (data-ip-act). Every hook is guarded: a page lacking something does nothing. -->
+<style id="ip-css">
+#ip-ov{position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.55);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:12px}
+#ip-ov.on{display:flex}
+#ip-card{background:var(--card-bg,#fff);color:var(--text,#2c3e50);border-radius:16px;max-width:1040px;width:100%;margin:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);overflow:hidden}
+.ip-head{display:flex;align-items:center;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#0b3d91,#1d7bff);color:#fff;flex-wrap:wrap}
+.ip-head h3{margin:0;font-size:18px;flex:1;color:#fff;min-width:160px}
+.ip-x{border:0;background:rgba(255,255,255,.22);color:#fff;width:38px;height:38px;border-radius:10px;font-size:18px;cursor:pointer}
+.ip-nav{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:#eef3fb;border-bottom:1px solid #dbe4f3}
+.ip-nav button{border:1px solid #c5d3ea;background:#fff;color:#1c3a6b;border-radius:20px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:38px}
+.ip-nav button.on{background:#1d7bff;border-color:#1d7bff;color:#fff}
+.ip-body{padding:14px 16px 18px}
+.ip-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 14px}
+.ip-stat{border:1px solid #dbe4f3;border-radius:12px;padding:10px 12px;background:#f7faff}
+.ip-stat b{display:block;font-size:22px;color:#0b3d91}.ip-stat span{font-size:12px;color:#5b6b85}
+.ip-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px}
+.ip-in,.ip-sel,.ip-ta{padding:9px 11px;border:1px solid #c9d3e3;border-radius:9px;font-size:14px;background:#fff;color:#1f2d3d;max-width:100%}
+.ip-badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:#e8f0fe;color:#1c3a6b}.ip-badge.ok{background:#e3f6ea;color:#1e8449}.ip-badge.bad{background:#fdecea;color:#b03a2e}
+#ip-sr{position:fixed;inset:0;z-index:100001;background:rgba(15,23,42,.6);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:12px}#ip-sr.on{display:flex}
+#ip-sr-card{background:var(--card-bg,#fff);color:var(--text,#2c3e50);border-radius:16px;max-width:720px;width:100%;margin:auto;box-shadow:0 18px 60px rgba(0,0,0,.4);overflow:hidden}
+#ip-sr-card .sr-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:14px 16px;background:linear-gradient(135deg,#0b3d91,#1b6ad6);color:#fff}#ip-sr-card .sr-head h3{margin:0;font-size:17px;color:#fff}
+#ip-sr-card .sr-body{padding:14px 16px 18px}#ip-sr-card textarea{width:100%;min-height:130px !important;font-family:ui-monospace,Consolas,monospace;font-size:15px !important;box-sizing:border-box}
+#ip-sr-card .sr-x{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:8px;min-width:40px;min-height:40px;font-size:18px;cursor:pointer}
+@media (max-width:620px){#ip-sr{padding:0}#ip-sr-card{border-radius:0;min-height:calc(100vh / var(--pos-z,1))}}
+.ip-ta{width:100%;min-height:120px;font-family:ui-monospace,Consolas,monospace;box-sizing:border-box}
+.ip-btn{border:0;border-radius:9px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:38px;background:#1d7bff;color:#fff}
+.ip-btn.sec{background:#e8eef9;color:#1c3a6b}.ip-btn.warn{background:#e67e22}.ip-btn.bad{background:#c0392b}.ip-btn[disabled]{opacity:.5;cursor:not-allowed}
+.ip-table{width:100%;border-collapse:collapse;font-size:13.5px}
+.ip-table th{text-align:left;padding:8px;background:#eef3fb;color:#1c3a6b;white-space:nowrap}
+.ip-table td{padding:8px;border-bottom:1px solid #e6ecf5;vertical-align:top}
+.ip-table tr[data-ip-act]{cursor:pointer}.ip-table tr[data-ip-act]:hover{background:#f3f8ff}
+.ip-scroll{overflow-x:auto}
+.ip-badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:800;background:#e8eef9;color:#1c3a6b;margin-right:4px}
+.ip-badge.g{background:#d5f5e3;color:#1e8449}.ip-badge.o{background:#fdebd0;color:#b9770e}.ip-badge.r{background:#fadbd8;color:#922b21}.ip-badge.p{background:#e8daef;color:#5b2c6f}
+.ip-box{border:1px solid #dbe4f3;border-radius:12px;padding:12px 14px;margin:0 0 12px;background:#fff}
+.ip-box h4{margin:0 0 8px;color:#0b3d91}
+.ip-err{border-left:4px solid #e74c3c;background:#fdedec;color:#922b21;padding:8px 10px;border-radius:6px;font-size:13px;margin:6px 0}
+.ip-ok{border-left:4px solid #27ae60;background:#eafaf1;color:#1e8449;padding:8px 10px;border-radius:6px;font-size:13px;margin:6px 0}
+.ip-warn{border-left:4px solid #e67e22;background:#fef5e7;color:#7e5109;padding:8px 10px;border-radius:6px;font-size:13px;margin:6px 0}
+.ip-hint{font-size:12.5px;color:#6b7a90;margin:4px 0 8px}
+.ip-prog{height:12px;background:#e6ecf5;border-radius:8px;overflow:hidden;margin:8px 0}.ip-prog i{display:block;height:100%;background:linear-gradient(90deg,#1d7bff,#27ae60)}
+.ip-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.ip-grid2 label{font-size:12.5px;font-weight:700;color:#455a78;display:block;margin-bottom:3px}
+.ip-pick{display:flex;gap:10px;align-items:center;justify-content:space-between;border:2px solid #dbe4f3;border-radius:10px;padding:10px 12px;margin:6px 0;cursor:pointer;background:#fff}
+.ip-pick.on{border-color:#27ae60;background:#eafaf1}
+.ip-mono{font-family:ui-monospace,Consolas,monospace;font-weight:700}
+.ip-ed{border:1px solid #b8d0f5;background:#f2f7ff;border-radius:10px;padding:10px 12px;margin:8px 0}
+.ip-ed label{display:flex;gap:8px;align-items:flex-start;font-weight:700;cursor:pointer}
+.ip-ed small{display:block;font-weight:400;color:#5b6b85;margin:4px 0 0 26px}
+.ip-entry{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+.ip-entry button{flex:1;min-width:150px}
+@media (max-width:620px){#ip-ov{padding:0}#ip-card{border-radius:0;min-height:calc(100vh / var(--pos-z,1))}.ip-table{font-size:12.5px}}
+/* zip 345: the IMEI / serial dropdown on a cart line */
+.ip-cartpick{margin:8px 0 2px;display:grid;gap:6px}
+.ip-cartpick label{display:block;font-size:12px;font-weight:700;color:var(--muted,#6b7f84);margin:0 0 2px}
+.ip-cartpick select{width:100%;box-sizing:border-box;min-height:42px;font-size:15px;font-family:ui-monospace,Consolas,Menlo,monospace;border-radius:10px;padding:6px 10px}
+.ip-cartpick select{font-size:14px;letter-spacing:-.2px}
+#cart-table td:has(> .ip-cartpick){min-width:215px}
+.ip-cartpick select.ip-bad{border-color:#d4483b}
+.ip-cartpick .ip-ok{font-size:12px;color:#1e8449;margin:0}
+.ip-cartpick .ip-warn{font-size:12.5px;color:#b03a2e;margin:0}
+</style>
+<script>
+(function () {
+    'use strict';
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var kes = function (n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE', { maximumFractionDigits: 2 }); };
+    var r3 = function (n) { return typeof stockRound3 === 'function' ? stockRound3(n) : Math.round(n * 1000) / 1000; };
+    var toast = function (m, bad) { try { showToast(m, !!bad); } catch (e) { /* cosmetic */ } };
+    var S = { view: 'home', q: '', filter: 'all', cat: '', page: 0, code: null, uq: '', ust: 'all', uid: null, rcv: null, imp: null, gen: null, adj: null, pick: null };
+    var SEL = {};                       // cartKey -> [unit ids] chosen at checkout
+    var PAGE = 25;
+
+    // ---------------------------------------------------------------- data access
+    function inv() { return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : []; }
+    function units() { return (typeof serialUnits !== 'undefined' && Array.isArray(serialUnits)) ? serialUnits : []; }
+    function prod(code) { return inv().find(function (p) { return p && p.code === code; }) || null; }
+    function varOf(p, vid) { return (p && vid) ? ((p.variants || []).find(function (v) { return v && v.id === vid; }) || null) : null; }
+    function who() { try { return (typeof activeServerName === 'function' && activeServerName()) || ''; } catch (e) { return ''; } }
+    function isMgr() {
+        try {
+            if (typeof isAdminServing === 'function' && isAdminServing()) return true;
+            var me = typeof currentServer !== 'undefined' && currentServer && staff.find(function (s) { return s.id === currentServer.id; });
+            return !!(me && me.isManager);
+        } catch (e) { return false; }
+    }
+    function push() { try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next push carries it */ } }
+    function saveUnits() { try { safeSetItem('pos_serial_units', JSON.stringify(serialUnits)); } catch (e) { /* retried on the next save */ } push(); }
+    function saveInv() { try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* retried */ } push(); try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ } }
+    function saveBatches() { try { safeSetItem('pos_import_batches', JSON.stringify(importBatches)); } catch (e) { /* retried */ } push(); }
+    function logMove(code, name, delta, reason) {
+        if (!delta) return;
+        try { logStockMovement(code, name, delta, reason, 'qty'); safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* the unit history still has it */ }
+    }
+    function recalc(p) { if (p && p.hasVariants && Array.isArray(p.variants)) p.qty = r3(p.variants.reduce(function (a, v) { return a + (Number(v && v.qty) || 0); }, 0)); }
+    function bump(p, v, d) { var t = v || p; t.qty = r3((Number(t.qty) || 0) + d); recalc(p); }
+    function lowLevel(t) { var x = Number(t.reorderLevel); if (!(x > 0)) x = Number(t.minStock); return x > 0 ? x : 0; }
+    function typeLabel(id) { return ({ imei: 'IMEI', serial: 'Serial no.', mac: 'MAC', other: 'ID' })[id] || String(id || 'ID').toUpperCase(); }
+    function idText(u) { return (u.ids || []).map(function (i) { return i.value; }).join(' / '); }
+    function dt(ms) { try { return ms ? new Date(ms).toLocaleString('en-KE', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''; } catch (e) { return ''; } }
+    function stBadge(s) { var c = s === 'in_stock' ? 'g' : s === 'sold' ? 'p' : (s === 'damaged' || s === 'written_off') ? 'r' : 'o'; return '<span class="ip-badge ' + c + '">' + esc((serialStatuses()[s] || s)) + '</span>'; }
+    function tracked(p, v) { try { return serialIsTracked(p, v); } catch (e) { return false; } }
+    function pUnits(p, v) { return units().filter(function (u) { return u && u.code === p.code && (u.variantId || null) === (v ? v.id : null); }); }
+    function anyUnits(p) { return units().filter(function (u) { return u && u.code === p.code; }); }
+    function inStockUnits(p, v) { return pUnits(p, v).filter(function (u) { return u.status === 'in_stock'; }).sort(function (a, b) { return (a.receivedAt || 0) - (b.receivedAt || 0); }); }
+    function hash(text) {
+        var simple = function () { var h = 5381; for (var i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0; return 'h' + (h >>> 0).toString(16) + '-' + text.length; };
+        try { if (window.crypto && crypto.subtle && window.TextEncoder) return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function (b) { return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); }, function () { return simple(); }); } catch (e) { /* below */ }
+        return Promise.resolve(simple());
+    }
+
+    // ---------------------------------------------------------------- 1. product editor: "This item has a unique identifier per item"
+    function ensureEditorBox() {
+        if (document.getElementById('inv-serialized')) return;
+        var g = document.getElementById('inv-variants-group'); if (!g || !g.parentNode) return;
+        var d = document.createElement('div'); d.className = 'form-group ip-ed'; d.id = 'inv-serialized-group';
+        d.innerHTML = '<label><input type="checkbox" id="inv-serialized" style="width:auto;margin-top:3px"> <span>🔢 This item has a unique identifier per item</span></label>' +
+            '<small>Use for phones, laptops and other items where each physical unit has its own IMEI or serial number. Every unit is registered when it arrives and the cashier must pick the exact unit at the till. The quantity then comes from the registered units.</small>' +
+            '<div id="inv-serial-list-wrap" style="display:none;margin-top:10px"><label for="inv-serial-list" style="font-weight:700">📱 IMEI / serial numbers of the units you have now</label>' +
+            '<textarea id="inv-serial-list" data-z345="1" rows="6" placeholder="One unit per line, e.g.&#10;356938035643809&#10;356938035643810&#10;A phone with two IMEIs: put both on one line with | between them" style="width:100%;min-height:130px;font-family:ui-monospace,Consolas,monospace"></textarea>' +
+            '<small id="inv-serial-count" style="display:block;margin-top:4px"></small><small>The number of lines becomes the quantity in stock. You can also paste a list or scan with a barcode scanner (it adds a line). Leave empty to add the numbers later.</small></div>';
+        g.parentNode.insertBefore(d, g.nextSibling);
+        var cb = d.querySelector('#inv-serialized'), ta = d.querySelector('#inv-serial-list'), wrap = d.querySelector('#inv-serial-list-wrap'), cnt = d.querySelector('#inv-serial-count');
+        function showHide() { var on = !!cb.checked; wrap.style.display = on ? '' : 'none'; if (on) countIt(); }
+        function countIt() { var n = 0; try { n = serialParseList(ta.value).length; } catch (e) { n = 0; } cnt.textContent = n ? n + ' unit(s) typed' : ''; }
+        cb.addEventListener('change', showHide); ta.addEventListener('input', countIt);
+        ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.ctrlKey) e.preventDefault(); });
+        d.__showHide = showHide;
+    }
+    function syncEditorBox() {
+        var cb = document.getElementById('inv-serialized'); if (!cb) return;
+        var code = ((document.getElementById('inv-code') || {}).value || '').trim(), name = ((document.getElementById('inv-name') || {}).value || '').trim().toLowerCase();
+        var p = code ? inv().find(function (x) { return x && String(x.code).toLowerCase() === code.toLowerCase(); }) : (name ? inv().find(function (x) { return x && String(x.name || '').trim().toLowerCase() === name; }) : null);
+        if (p) cb.checked = !!p.serialized;
+        try { var g = document.getElementById('inv-serialized-group'); if (g && g.__showHide) g.__showHide(); } catch (e) { /* cosmetic */ }
+    }
+    function wrapSave() {
+        if (typeof saveInventoryItem !== 'function' || saveInventoryItem.__ip || window.__ipSaveWrapped) return;
+        window.__ipSaveWrapped = true;
+        var orig = saveInventoryItem;
+        var w = function () {
+            ensureEditorBox();
+            var cb = document.getElementById('inv-serialized'), want = !!(cb && cb.checked);
+            try { /* zip 345: typed serials ARE the quantity - fill the quantity box so the form does not ask for it twice */
+                var ta0 = document.getElementById('inv-serial-list'), q0 = document.getElementById('inv-qty'), n0 = ta0 ? serialParseList(ta0.value).length : 0;
+                if (want && n0 && q0 && !(document.getElementById('inv-has-variants') && document.getElementById('inv-has-variants').checked)) { if (Number(q0.value) !== n0) q0.value = n0; }
+            } catch (e0) { /* the form validates as before */ }
+            var codeVal = ((document.getElementById('inv-code') || {}).value || '').trim(), nameVal = ((document.getElementById('inv-name') || {}).value || '').trim();
+            var before = inv().length, beforeP = codeVal ? (inv().find(function (x) { return x && String(x.code).toLowerCase() === codeVal.toLowerCase(); }) || null) : null;
+            var snap = beforeP ? JSON.parse(JSON.stringify(beforeP)) : null;
+            if (snap && !!snap.serialized !== want) {
+                if (want && Number(snap.qty) > 0 && !confirm('Turn on unique-identifier tracking for "' + snap.name + '"?\n\n' + snap.qty + ' unit(s) are in stock today. They stay in stock and count in the quantity, but they cannot be sold until each one has its IMEI / serial number registered (Inventory workspace > Receive serial units).')) return;
+                if (!want && snap.serialized && anyUnits(snap).length && !confirm('Stop tracking unique identifiers for "' + snap.name + '"? The registered units and their history are kept, but the quantity is no longer derived from them.')) return;
+            }
+            var typed0 = ((document.getElementById('inv-serial-list') || {}).value || '').trim();
+            var r = orig.apply(this, arguments);
+            try {
+                var p = null;
+                if (codeVal) p = inv().find(function (x) { return x && String(x.code).toLowerCase() === codeVal.toLowerCase(); }) || null;
+                if (!p && inv().length > before) p = inv()[inv().length - 1];
+                if (!p && nameVal) p = inv().find(function (x) { return x && String(x.name || '').trim().toLowerCase() === nameVal.toLowerCase(); }) || null;
+                if (p && p.type !== 'service') {
+                    var changed = false;
+                    if (snap && snap.code === p.code) {
+                        // the editor rebuilds the item: carry back everything it does not know about
+                        ['serialUnregistered', 'reorderLevel', 'reorderQty'].forEach(function (k) { if (snap[k] != null && p[k] == null) { p[k] = snap[k]; changed = true; } });
+                        if (Array.isArray(snap.variants) && Array.isArray(p.variants)) p.variants.forEach(function (v) { var o = snap.variants.find(function (x) { return x && (x.id === v.id || (x.code && x.code === v.code)); }); if (o) ['attrs', 'active', 'reorderLevel', 'serialized', 'barcode'].forEach(function (k) { if (o[k] !== undefined && v[k] === undefined) { v[k] = o[k]; changed = true; } }); });
+                    }
+                    if (want !== !!p.serialized) {
+                        p.serialized = want; changed = true;
+                        if (want && !(Number(p.serialUnregistered) > 0) && !anyUnits(p).length && Number(p.qty) > 0 && !p.hasVariants) p.serialUnregistered = Number(p.qty);
+                        if (want && p.hasVariants) (p.variants || []).forEach(function (v) { if (!(Number(v.serialUnregistered) > 0) && !pUnits(p, v).length && Number(v.qty) > 0) v.serialUnregistered = Number(v.qty); });
+                    }
+                    if (p.serialized && !p.hasVariants) { var q = serialQtyFor(units(), p, null); if (Number(p.qty) !== q) { p.qty = q; changed = true; } }
+                    if (changed) saveInv();
+                    // zip 345: serial numbers typed in the Add form are registered now (they ARE the quantity); with none typed, ask for them right away
+                    var typed = typed0;
+                    if (p.serialized && !p.hasVariants) {
+                        if (typed) {
+                            if (!snap) { p.qty = 0; p.serialUnregistered = 0; saveInv(); }
+                            srTyped(p, null, typed);
+                            try { document.getElementById('inv-serial-list').value = ''; document.getElementById('inv-serial-count').textContent = ''; } catch (e4) { /* cosmetic */ }
+                        } else if (!snap || Number(p.serialUnregistered) > 0 || !anyUnits(p).length) {
+                            var pc = p.code; setTimeout(function () { try { S.rcv = newRcv(pc, ''); open('receive'); if (typeof showToast === 'function') showToast('Now type or scan the IMEI / serial number of each unit, so "' + p.name + '" can be sold.'); } catch (e3) { /* the item page has the same button */ } }, 400);
+                        }
+                    }
+                }
+            } catch (e) { /* the save itself already succeeded */ }
+            try { if (cb && !document.getElementById('inv-code').value) cb.checked = false; } catch (e) { /* cosmetic */ }
+            return r;
+        };
+        w.__ip = true; window.saveInventoryItem = w;
+    }
+
+    // ---------------------------------------------------------------- shell
+    function shell() {
+        var o = document.getElementById('ip-ov');
+        if (!o) {
+            o = document.createElement('div'); o.id = 'ip-ov'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true'); o.setAttribute('aria-label', 'Inventory workspace');
+            o.innerHTML = '<div id="ip-card"></div>';
+            document.body.appendChild(o);
+            o.addEventListener('click', onClick); o.addEventListener('input', onInput); o.addEventListener('change', onInput);
+            o.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target && e.target.id === 'ip-scan') { e.preventDefault(); scanEnter(e.target.value); e.target.value = ''; } });
+        }
+        return o;
+    }
+    function open(view, opt) {
+        var o = shell(); o.classList.add('on'); S.view = view || 'home'; if (opt) Object.keys(opt).forEach(function (k) { S[k] = opt[k]; }); render();
+    }
+    function close() { var o = document.getElementById('ip-ov'); if (o) o.classList.remove('on'); if (S.pick && S.pick.resolve) { var f = S.pick.resolve; S.pick = null; f(null); } }
+    function nav() {
+        var items = [['home', '📦 Overview'], ['units', '🔢 Serial units'], ['receive', '📥 Receive serial units'], ['import', '⬆️ Import wizard']];
+        return '<div class="ip-nav">' + items.map(function (i) { return '<button type="button" data-ip-act="go" data-v="' + i[0] + '" class="' + (S.view === i[0] || (i[0] === 'home' && S.view === 'item') ? 'on' : '') + '">' + i[1] + '</button>'; }).join('') + '</div>';
+    }
+    function render() {
+        var c = document.getElementById('ip-card'); if (!c) return;
+        var fn = { home: vHome, item: vItem, units: vUnits, unit: vUnit, receive: vReceive, import: vImport, gen: vGen, adj: vAdj, pick: vPick }[S.view] || vHome;
+        var title = { home: 'Inventory workspace', item: 'Item', units: 'Serial units', unit: 'Unit', receive: 'Receive serial units', import: 'Import wizard', gen: 'Generate variants', adj: 'Adjust stock', pick: 'Choose the unit' }[S.view] || 'Inventory workspace';
+        var keep = document.activeElement && document.activeElement.id, pos = null;
+        try { if (keep && document.activeElement.setSelectionRange) pos = [document.activeElement.selectionStart, document.activeElement.selectionEnd]; } catch (e) { /* none */ }
+        c.innerHTML = '<div class="ip-head"><h3>' + esc(title) + '</h3><button type="button" class="ip-x" data-ip-act="close" aria-label="Close">✕</button></div>' + (S.view === 'pick' ? '' : nav()) + '<div class="ip-body">' + fn() + '</div>';
+        if (keep) { var el = document.getElementById(keep); if (el) { el.focus(); try { if (pos && el.setSelectionRange) el.setSelectionRange(pos[0], pos[1]); } catch (e) { /* not a text field */ } } }
+    }
+
+    // ---------------------------------------------------------------- 5. overview + table
+    function sellable(p) { return p && p.type !== 'service' && !p._deleted; }
+    function rowsFor() {
+        var q = S.q.trim().toLowerCase(), n = (typeof serialNorm === 'function') ? serialNorm(S.q) : '';
+        var viaSerial = n.length >= 4 ? units().filter(function (u) { return (u.ids || []).some(function (i) { return i.norm.indexOf(n) >= 0; }); }).map(function (u) { return u.code; }) : [];
+        return inv().filter(sellable).filter(function (p) {
+            if (S.cat && String(p.category || '') !== S.cat) return false;
+            if (S.filter === 'low' && !(lowLevel(p) > 0 && (Number(p.qty) || 0) <= lowLevel(p))) return false;
+            if (S.filter === 'out' && (Number(p.qty) || 0) > 0) return false;
+            if (S.filter === 'serial' && !p.serialized && !(p.variants || []).some(function (v) { return v && v.serialized; })) return false;
+            if (S.filter === 'variants' && !p.hasVariants) return false;
+            if (!q) return true;
+            return String(p.name || '').toLowerCase().indexOf(q) >= 0 || String(p.code || '').toLowerCase().indexOf(q) >= 0 || String(p.barcode || '').toLowerCase().indexOf(q) >= 0 ||
+                (p.variants || []).some(function (v) { return v && (String(v.code || '').toLowerCase().indexOf(q) >= 0 || String(v.name || '').toLowerCase().indexOf(q) >= 0 || String(v.barcode || '').toLowerCase().indexOf(q) >= 0); }) || viaSerial.indexOf(p.code) >= 0;
+        });
+    }
+    function stats() {
+        var items = inv().filter(sellable), vars = 0, qty = 0, val = 0, low = 0;
+        items.forEach(function (p) {
+            qty += Number(p.qty) || 0;
+            if (p.hasVariants && Array.isArray(p.variants)) { vars += p.variants.length; p.variants.forEach(function (v) { val += (Number(v.qty) || 0) * (Number(v.wholesalePrice) || Number(p.wholesalePrice) || 0); }); }
+            else val += (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0);
+            if (lowLevel(p) > 0 && (Number(p.qty) || 0) <= lowLevel(p)) low++;
+        });
+        var u = units(), avail = u.filter(function (x) { return x.status === 'in_stock'; }).length;
+        return { products: items.length, variants: vars, units: u.length, avail: avail, sold: u.filter(function (x) { return x.status === 'sold'; }).length, qty: r3(qty), val: val, low: low, conflicts: u.filter(function (x) { return x.conflict; }).length };
+    }
+    function vHome() {
+        var st = stats(), rows = rowsFor(), pages = Math.max(1, Math.ceil(rows.length / PAGE)); if (S.page >= pages) S.page = pages - 1;
+        var cats = {}; inv().forEach(function (p) { if (sellable(p) && p.category) cats[p.category] = 1; });
+        var h = '<div class="ip-cards">' +
+            '<div class="ip-stat"><b>' + st.products + '</b><span>Products</span></div>' +
+            '<div class="ip-stat"><b>' + st.variants + '</b><span>Variants (inside products)</span></div>' +
+            '<div class="ip-stat"><b>' + st.units + '</b><span>Registered units · ' + st.avail + ' available · ' + st.sold + ' sold</span></div>' +
+            '<div class="ip-stat"><b>' + st.qty + '</b><span>Total quantity on hand</span></div>' +
+            '<div class="ip-stat"><b>' + kes(st.val) + '</b><span>Stock value at cost</span></div>' +
+            '<div class="ip-stat" data-ip-act="filter" data-f="low" style="cursor:pointer"><b style="color:' + (st.low ? '#c0392b' : '#0b3d91') + '">' + st.low + '</b><span>Low stock (tap to list)</span></div>' +
+            (st.conflicts ? '<div class="ip-stat" data-ip-act="go" data-v="units" data-f="conflict" style="cursor:pointer;border-color:#e74c3c"><b style="color:#c0392b">' + st.conflicts + '</b><span>Unit conflicts (double sale)</span></div>' : '') + '</div>';
+        h += '<div class="ip-tools"><input class="ip-in" id="ip-q" type="search" placeholder="Search name, code, barcode, variant or IMEI / serial" value="' + esc(S.q) + '" style="flex:1;min-width:200px">' +
+            '<select class="ip-sel" id="ip-cat"><option value="">All categories</option>' + Object.keys(cats).sort().map(function (c) { return '<option' + (S.cat === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('') + '</select>' +
+            '<select class="ip-sel" id="ip-filter">' + [['all', 'All items'], ['low', 'Low stock'], ['out', 'Out of stock'], ['serial', 'Serialized'], ['variants', 'Has variants']].map(function (f) { return '<option value="' + f[0] + '"' + (S.filter === f[0] ? ' selected' : '') + '>' + f[1] + '</option>'; }).join('') + '</select></div>';
+        h += '<div class="ip-scroll"><table class="ip-table"><thead><tr><th>Item</th><th>Code</th><th>Category</th><th>Type</th><th>Qty</th><th>Cost</th><th>Price</th><th>Value</th></tr></thead><tbody>' +
+            rows.slice(S.page * PAGE, S.page * PAGE + PAGE).map(function (p) {
+                var ser = p.serialized || (p.variants || []).some(function (v) { return v && v.serialized; }), cnt = ser ? serialCounts(units(), p.code, null) : null;
+                var low = lowLevel(p) > 0 && (Number(p.qty) || 0) <= lowLevel(p);
+                var qtyTxt = esc(String(Number(p.qty) || 0)) + (ser ? '<br><small>' + cnt.in_stock + ' available / ' + cnt.total + ' registered</small>' : '');
+                return '<tr data-ip-act="item" data-code="' + esc(p.code) + '"><td><b>' + esc(p.name) + '</b></td><td class="ip-mono">' + esc(p.code) + '</td><td>' + esc(p.category || '') + '</td><td>' +
+                    (p.hasVariants ? '<span class="ip-badge">' + (p.variants || []).length + ' variants</span>' : '') + (ser ? '<span class="ip-badge p">Serialized</span>' : '') + (!p.hasVariants && !ser ? '<span class="ip-badge">Plain</span>' : '') + '</td>' +
+                    '<td' + (low ? ' style="color:#c0392b;font-weight:800"' : '') + '>' + qtyTxt + (low ? ' ⚠️' : '') + '</td><td>' + (p.hasVariants ? '' : kes(p.wholesalePrice)) + '</td><td>' + (p.hasVariants ? 'from ' : '') + kes(p.price) + '</td><td>' + (p.hasVariants ? '' : kes((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0))) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' + (rows.length ? '' : '<p class="ip-hint">No items match.</p>');
+        h += '<div class="ip-tools" style="justify-content:space-between;margin-top:10px"><span class="ip-hint">' + rows.length + ' item(s) · page ' + (S.page + 1) + ' of ' + pages + '</span><span><button type="button" class="ip-btn sec" data-ip-act="page" data-d="-1"' + (S.page ? '' : ' disabled') + '>← Prev</button> <button type="button" class="ip-btn sec" data-ip-act="page" data-d="1"' + (S.page + 1 < pages ? '' : ' disabled') + '>Next →</button></span></div>';
+        h += '<p class="ip-hint">Stock take, transfers and purchases keep using their own tabs: Stock Take, Restock and Returned Goods.</p>';
+        return h;
+    }
+
+    // ---------------------------------------------------------------- item detail
+    function vItem() {
+        var p = prod(S.code); if (!p) return '<p>Item not found.</p><button class="ip-btn sec" data-ip-act="go" data-v="home">← Back</button>';
+        var ser = !!p.serialized, c = serialCounts(units(), p.code, null), mg = isMgr();
+        var h = '<button type="button" class="ip-btn sec" data-ip-act="go" data-v="home">← All items</button>';
+        h += '<div class="ip-box" style="margin-top:10px"><h4>' + esc(p.name) + ' <span class="ip-mono" style="font-size:13px">' + esc(p.code) + '</span></h4>' +
+            '<div class="ip-cards" style="margin:0"><div class="ip-stat"><b>' + (Number(p.qty) || 0) + '</b><span>Quantity ' + (ser ? '(registered in stock + not yet identified)' : 'on hand') + '</span></div>' +
+            '<div class="ip-stat"><b>' + kes(p.price) + '</b><span>Selling price</span></div><div class="ip-stat"><b>' + kes(p.wholesalePrice) + '</b><span>Cost</span></div>' +
+            (lowLevel(p) ? '<div class="ip-stat"><b>' + lowLevel(p) + '</b><span>Reorder level</span></div>' : '') + '</div>' +
+            '<div class="ip-tools" style="margin-top:10px">' + (p.hasVariants ? '' : '<button type="button" class="ip-btn sec" data-ip-act="adj" data-code="' + esc(p.code) + '">± Adjust stock</button>') +
+            (!p.serialized && !(p.variants || []).length ? '<button type="button" class="ip-btn sec" data-ip-act="gen" data-code="' + esc(p.code) + '">🔀 Generate variants</button>' : '<button type="button" class="ip-btn sec" data-ip-act="gen" data-code="' + esc(p.code) + '">🔀 Add / generate variants</button>') +
+            '<button type="button" class="ip-btn sec" data-ip-act="serialtoggle" data-code="' + esc(p.code) + '">' + (ser ? '🔢 Stop tracking identifiers' : '🔢 Track a unique identifier per item') + '</button></div>';
+        if (Number(p.serialUnregistered) > 0) h += '<div class="ip-warn">' + p.serialUnregistered + ' unit(s) are in stock but have no IMEI / serial registered yet. They count in the quantity but cannot be sold until registered.</div>';
+        h += '</div>';
+        if (ser || anyUnits(p).length) h += '<div class="ip-box"><h4>🔢 Units</h4><p class="ip-hint">Total registered ' + c.total + ' · available ' + c.available + ' · sold ' + c.sold + ' · awaiting inspection ' + c.awaiting_inspection + ' · damaged ' + c.damaged + ' · under repair ' + c.under_repair + '</p>' +
+            '<button type="button" class="ip-btn" data-ip-act="receive" data-code="' + esc(p.code) + '">📥 Receive units</button> <button type="button" class="ip-btn sec" data-ip-act="go" data-v="units" data-code="' + esc(p.code) + '">View units</button></div>';
+        if (p.hasVariants) {
+            h += '<div class="ip-box"><h4>Variants</h4><div class="ip-scroll"><table class="ip-table"><thead><tr><th>Variant</th><th>Code</th><th>Attributes</th><th>Qty</th><th>Cost</th><th>Price</th><th>Reorder</th><th>Serial</th><th></th></tr></thead><tbody>' +
+                (p.variants || []).map(function (v) {
+                    var vs = v.serialized !== undefined ? v.serialized : p.serialized, vc = serialCounts(units(), p.code, v.id);
+                    return '<tr><td><b>' + esc(v.name) + '</b>' + (v.active === false ? ' <span class="ip-badge r">Inactive</span>' : '') + '</td><td class="ip-mono">' + esc(v.code || '') + '</td><td>' + esc(Object.keys(v.attrs || {}).map(function (k) { return k + ': ' + v.attrs[k]; }).join(', ')) + '</td><td>' + (Number(v.qty) || 0) +
+                        (vs ? '<br><small>' + vc.in_stock + ' avail / ' + vc.total + ' reg</small>' : '') + '</td><td>' + kes(v.wholesalePrice) + '</td><td>' + kes(v.price) + '</td><td>' + (v.reorderLevel != null ? esc(v.reorderLevel) : '') + '</td><td>' + (vs ? '✅' : '') + '</td>' +
+                        '<td style="white-space:nowrap">' + (vs ? '<button type="button" class="ip-btn sec" data-ip-act="receive" data-code="' + esc(p.code) + '" data-vid="' + esc(v.id) + '">📥</button> ' : '') + '<button type="button" class="ip-btn sec" data-ip-act="adj" data-code="' + esc(p.code) + '" data-vid="' + esc(v.id) + '"' + (vs ? ' disabled' : '') + '>±</button> ' +
+                        (mg ? '<button type="button" class="ip-btn sec" data-ip-act="vactive" data-code="' + esc(p.code) + '" data-vid="' + esc(v.id) + '">' + (v.active === false ? 'Activate' : 'Deactivate') + '</button>' : '') + '</td></tr>';
+                }).join('') + '</tbody></table></div></div>';
+        }
+        var mv = (typeof stockMovementLog !== 'undefined' ? stockMovementLog : []).filter(function (m) { return m && (m.code === p.code || (p.variants || []).some(function (v) { return v && v.code && v.code === m.code; })); }).slice(-25).reverse();
+        h += '<div class="ip-box"><h4>Recent stock movements</h4>' + (mv.length ? '<div class="ip-scroll"><table class="ip-table"><thead><tr><th>When</th><th>Change</th><th>Reason</th><th>By</th></tr></thead><tbody>' + mv.map(function (m) {
+            return '<tr><td>' + esc(dt(Date.parse(m.timestamp))) + '</td><td style="color:' + (m.delta > 0 ? '#1e8449' : '#c0392b') + ';font-weight:800">' + (m.delta > 0 ? '+' : '') + esc(m.delta) + '</td><td>' + esc(m.reason || '') + '</td><td>' + esc(m.by || '') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="ip-hint">No movements recorded.</p>') + '</div>';
+        return h;
+    }
+
+    // ---------------------------------------------------------------- variant generator
+    function vGen() {
+        var G = S.gen; if (!G) return '';
+        var p = prod(G.code); if (!p) return '<p>Item not found.</p>';
+        var combos = [], dup = [];
+        try { combos = variantGenerate(G.defs.filter(function (d) { return d.name.trim() && d.values.trim(); }).map(function (d) { return { name: d.name, values: d.values.split(',').map(function (x) { return x.trim(); }).filter(Boolean) }; })); } catch (e) { combos = []; }
+        G.combos = combos;
+        var h = '<button type="button" class="ip-btn sec" data-ip-act="item" data-code="' + esc(p.code) + '">← ' + esc(p.name) + '</button>';
+        if (!p.hasVariants && (Number(p.qty) || 0) > 0 && !p.serialized) h += '<div class="ip-err">"' + esc(p.name) + '" is a plain item with ' + p.qty + ' in stock. Adding variants would hide that stock: count it into a variant first (use Adjust stock after generating, then remove the plain stock), or generate and then move the stock. Nothing is guessed, so this is refused.</div>';
+        h += '<p class="ip-hint">Describe the attributes (for example Colour: Black, Blue and Storage: 128GB, 256GB). Untick any combination you do not sell.</p>';
+        G.defs.forEach(function (d, i) {
+            h += '<div class="ip-grid2" style="margin-bottom:6px"><div><label>Attribute ' + (i + 1) + ' name</label><input class="ip-in" data-ip-def="' + i + '" data-k="name" value="' + esc(d.name) + '" placeholder="e.g. Colour" style="width:100%"></div><div><label>Values (comma separated)</label><input class="ip-in" data-ip-def="' + i + '" data-k="values" value="' + esc(d.values) + '" placeholder="Black, Blue, Green" style="width:100%"></div></div>';
+        });
+        h += '<button type="button" class="ip-btn sec" data-ip-act="gendef">+ Another attribute</button>';
+        h += '<div class="ip-grid2" style="margin:10px 0"><div><label>Selling price for every new variant</label><input class="ip-in" id="ip-gprice" type="number" min="0" step="any" value="' + esc(G.price) + '" style="width:100%"></div><div><label>Cost price</label><input class="ip-in" id="ip-gcost" type="number" min="0" step="any" value="' + esc(G.cost) + '" style="width:100%"></div></div>';
+        if (combos.length) {
+            h += '<div class="ip-box"><h4>' + combos.length + ' combination(s)</h4>' + combos.map(function (c, i) {
+                var d = variantFindDuplicate(p, c, null), off = G.off[i] || !!d;
+                return '<label class="ip-pick' + (off ? '' : ' on') + '" style="cursor:' + (d ? 'not-allowed' : 'pointer') + '"><span><input type="checkbox" data-ip-combo="' + i + '"' + (off ? '' : ' checked') + (d ? ' disabled' : '') + '> <b>' + esc(variantLabel(c)) + '</b>' + (d ? ' <span class="ip-badge r">Already exists</span>' : '') + '</span></label>';
+            }).join('') + '</div>';
+        }
+        if (G.err) h += '<div class="ip-err">' + esc(G.err) + '</div>';
+        var chosen = combos.filter(function (c, i) { return !G.off[i] && !variantFindDuplicate(p, c, null); }).length;
+        h += '<button type="button" class="ip-btn" data-ip-act="gencreate"' + (chosen && isMgr() ? '' : ' disabled') + '>Create ' + chosen + ' variant(s)</button>' + (isMgr() ? '' : ' <span class="ip-hint">Only a manager or admin can create variants.</span>');
+        return h;
+    }
+    function genCreate() {
+        var G = S.gen, p = prod(G.code); if (!p) return;
+        if (!p.hasVariants && (Number(p.qty) || 0) > 0 && !p.serialized) { G.err = 'This plain item has stock. Nothing was changed.'; render(); return; }
+        if (!isMgr()) { G.err = 'Only a manager or admin can create variants.'; render(); return; }
+        var price = parseFloat(G.price) || 0, cost = parseFloat(G.cost) || 0, n = 0, now = Date.now();
+        (G.combos || []).forEach(function (c, i) {
+            if (G.off[i] || variantFindDuplicate(p, c, null)) return;
+            p.variants = p.variants || [];
+            p.variants.push({ id: 'v-' + now.toString(36) + '-' + i, name: variantLabel(c), code: '', price: price || Number(p.price) || 0, image: null, wholesaleSellingPrice: 0, wholesalePrice: cost || Number(p.wholesalePrice) || 0, qty: 0, dualUnit: false, attrs: c, active: true });
+            n++;
+        });
+        if (n) { p.hasVariants = true; recalc(p); var ps = p.variants.map(function (v) { return Number(v.price) || 0; }).filter(function (x) { return x > 0; }); if (ps.length) p.price = Math.min.apply(null, ps); saveInv(); toast(n + ' variant(s) created.'); }
+        S.gen = null; S.code = p.code; S.view = 'item'; render();
+    }
+
+    // ---------------------------------------------------------------- stock adjustment (non-serialized)
+    function vAdj() {
+        var A = S.adj, p = A && prod(A.code); if (!p) return '';
+        var v = varOf(p, A.vid), cur = Number((v || p).qty) || 0;
+        var h = '<button type="button" class="ip-btn sec" data-ip-act="item" data-code="' + esc(p.code) + '">← ' + esc(p.name) + '</button>';
+        h += '<div class="ip-box" style="margin-top:10px"><h4>' + esc(p.name) + (v ? ' · ' + esc(v.name) : '') + '</h4><p>Now in stock: <b>' + cur + '</b></p>';
+        if (tracked(p, v)) return h + '<div class="ip-warn">This item is tracked by identifier. Receive, return or write off individual units in the Serial units screen: the quantity follows them.</div></div>';
+        if (!isMgr()) return h + '<div class="ip-warn">Only a manager or admin can adjust stock. Staff can count with Stock Take.</div></div>';
+        h += '<div class="ip-grid2"><div><label>What happened</label><select class="ip-sel" id="ip-adjkind" style="width:100%">' + [['add:Found / counted extra', 'Add: found / counted extra'], ['add:Correction (increase)', 'Add: correction'], ['remove:Damaged', 'Remove: damaged'], ['remove:Expired', 'Remove: expired'], ['remove:Lost / stolen', 'Remove: lost / stolen'], ['remove:Write-off', 'Remove: write-off'], ['remove:Correction (decrease)', 'Remove: correction']].map(function (o) { return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
+            '<div><label>Quantity</label><input class="ip-in" id="ip-adjqty" type="number" min="0" step="any" style="width:100%"></div><div><label>Note (optional)</label><input class="ip-in" id="ip-adjnote" style="width:100%"></div></div>';
+        if (A.err) h += '<div class="ip-err">' + esc(A.err) + '</div>';
+        return h + '<button type="button" class="ip-btn" data-ip-act="adjsave" style="margin-top:10px">Save adjustment</button></div>';
+    }
+    function adjSave() {
+        var A = S.adj, p = prod(A.code), v = varOf(p, A.vid); if (!p || !isMgr()) return;
+        var kind = document.getElementById('ip-adjkind').value.split(':'), q = parseFloat(document.getElementById('ip-adjqty').value), note = document.getElementById('ip-adjnote').value.trim();
+        if (!(q > 0)) { A.err = 'Enter a quantity above 0.'; render(); return; }
+        var d = kind[0] === 'add' ? q : -q, cur = Number((v || p).qty) || 0;
+        if (cur + d < -0.0005) { A.err = 'That would take the stock below zero (' + cur + ' now).'; render(); return; }
+        bump(p, v, d); saveInv();
+        logMove(v ? (v.code || p.code) : p.code, v ? p.name + ' ' + v.name : p.name, d, 'Adjustment: ' + kind[1] + (note ? ' - ' + note : ''));
+        toast('Stock adjusted.'); S.adj = null; S.code = p.code; S.view = 'item'; render();
+    }
+
+    // ---------------------------------------------------------------- 4. serial units screen
+    function vUnits() {
+        var all = units(), q = S.uq, filt = S.ust, c = {};
+        all.forEach(function (u) { c[u.status] = (c[u.status] || 0) + 1; });
+        var list = (q ? serialSearch(all, q) : all.slice()).filter(function (u) { return u && (S.code ? u.code === S.code : true) && (filt === 'all' ? true : filt === 'conflict' ? !!u.conflict : u.status === filt); }).sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+        var h = '';
+        if (S.code) h += '<div class="ip-ok">Showing units of <b>' + esc((prod(S.code) || {}).name || S.code) + '</b> <button type="button" class="ip-btn sec" data-ip-act="uclear">Show all</button></div>';
+        h += '<div class="ip-tools"><input class="ip-in" id="ip-uq" type="search" placeholder="Search IMEI / serial (full or part) or product" value="' + esc(q) + '" style="flex:1;min-width:220px"></div>';
+        h += '<div class="ip-tools">' + [['all', 'All'], ['in_stock', 'In stock'], ['sold', 'Sold'], ['awaiting_inspection', 'Awaiting inspection'], ['damaged', 'Damaged'], ['under_repair', 'Under repair'], ['returned_to_supplier', 'Returned to supplier'], ['written_off', 'Written off'], ['conflict', 'Conflicts']].map(function (f) {
+            var n = f[0] === 'all' ? all.length : f[0] === 'conflict' ? all.filter(function (u) { return u.conflict; }).length : (c[f[0]] || 0);
+            return '<button type="button" class="ip-btn ' + (filt === f[0] ? '' : 'sec') + '" data-ip-act="ust" data-s="' + f[0] + '">' + f[1] + ' (' + n + ')</button>'; }).join('') + '</div>';
+        h += '<div class="ip-scroll"><table class="ip-table"><thead><tr><th>Identifier</th><th>Product</th><th>Status</th><th>Received</th><th>Sale</th></tr></thead><tbody>' + list.slice(0, 200).map(function (u) {
+            return '<tr data-ip-act="unit" data-id="' + esc(u.id) + '"><td class="ip-mono">' + esc(idText(u)) + (u.conflict ? ' <span class="ip-badge r">CONFLICT</span>' : '') + '</td><td>' + esc(u.name || u.code) + '</td><td>' + stBadge(u.status) + '</td><td>' + esc(dt(u.receivedAt)) + '</td><td>' + esc(u.saleId || '') + '</td></tr>'; }).join('') + '</tbody></table></div>' +
+            (list.length ? '' : '<p class="ip-hint">No units match. Register units with "Receive serial units".</p>') + (list.length > 200 ? '<p class="ip-hint">Showing the first 200 of ' + list.length + ': search to narrow down.</p>' : '');
+        return h;
+    }
+    function vUnit() {
+        var u = units().find(function (x) { return x && x.id === S.uid; }); if (!u) return '<p>Unit not found.</p>';
+        var mg = isMgr(), acts = [];
+        function A(to, label, cls, needMgr) { if (serialCanTransition(u.status, to) && (!needMgr || mg)) acts.push('<button type="button" class="ip-btn ' + (cls || 'sec') + '" data-ip-act="uact" data-to="' + to + '">' + label + '</button>'); }
+        if (u.status === 'sold') acts.push('<button type="button" class="ip-btn warn" data-ip-act="uact" data-to="returned">↩️ Customer return</button>');
+        A('in_stock', '✅ Pass inspection: back in stock', '', true); A('damaged', 'Mark damaged', 'warn', true); A('under_repair', 'Send to repair', 'sec', true); A('returned_to_supplier', 'Return to supplier', 'sec', true); A('written_off', 'Write off', 'bad', true);
+        var h = '<button type="button" class="ip-btn sec" data-ip-act="go" data-v="units">← Units</button><div class="ip-box" style="margin-top:10px"><h4>' + esc(u.name || u.code) + ' ' + stBadge(u.status) + (u.conflict ? ' <span class="ip-badge r">CONFLICT: ' + esc(u.conflict) + '</span>' : '') + '</h4>' +
+            (u.ids || []).map(function (i) { return '<div>' + esc(typeLabel(i.type)) + ': <span class="ip-mono">' + esc(i.value) + '</span></div>'; }).join('') +
+            '<p class="ip-hint">Received ' + esc(dt(u.receivedAt)) + (u.supplier ? ' from ' + esc(u.supplier) : '') + (mg ? ' · cost ' + kes(u.cost) : '') + (u.saleId ? ' · sale ' + esc(u.saleId) : '') + '</p></div>';
+        if (S.uerr) h += '<div class="ip-err">' + esc(S.uerr) + '</div>';
+        if (acts.length || mg) {
+            h += '<div class="ip-box"><h4>Actions</h4><div class="ip-grid2"><div><label>Reason (required)</label><input class="ip-in" id="ip-ureason" style="width:100%" placeholder="e.g. screen cracked / customer changed mind"></div><div><label>Condition / note</label><input class="ip-in" id="ip-unote" style="width:100%"></div></div><div class="ip-tools" style="margin-top:8px">' + acts.join('') +
+                (mg ? '<button type="button" class="ip-btn sec" data-ip-act="ufix">✏️ Correct identifier</button>' : '') + '</div>' + (mg ? '' : '<p class="ip-hint">Damage, repair, write-off, supplier returns and corrections need a manager or admin.</p>') + '</div>';
+        }
+        h += '<div class="ip-box"><h4>History</h4>' + (u.history || []).slice().reverse().map(function (e) { return '<div style="padding:6px 0;border-bottom:1px solid #eef2f8"><b>' + esc((serialStatuses()[e.to] || e.to)) + '</b> · ' + esc(dt(e.at)) + ' · ' + esc(e.by || '') + '<br><small>' + esc(e.reason || '') + (e.note ? ' · ' + esc(e.note) : '') + (e.ref ? ' · ref ' + esc(e.ref) : '') + '</small></div>'; }).join('') + '</div>';
+        return h;
+    }
+    // central unit status change: also keeps the product quantity and the stock ledger in step (the sale path moves its own stock)
+    function applyUnit(u, to, o) {
+        var r = serialTransition(u, to, { by: who(), reason: o.reason, note: o.note, ref: o.ref || null });
+        if (!r.ok) return r;
+        var i = serialUnits.findIndex(function (x) { return x.id === u.id; }); serialUnits[i] = r.unit;
+        if (u.status !== 'sold' && to !== 'sold') {
+            var d = (to === 'in_stock' ? 1 : 0) - (u.status === 'in_stock' ? 1 : 0), p = prod(u.code);
+            if (d && p) { var v = varOf(p, u.variantId); bump(p, v, d); saveInv(); logMove(v ? (v.code || p.code) : p.code, v ? p.name + ' ' + v.name : p.name, d, 'Unit ' + idText(u) + ': ' + (serialStatuses()[to] || to) + (o.reason ? ' - ' + o.reason : '')); }
+        }
+        saveUnits(); return r;
+    }
+    function unitAct(to) {
+        var u = units().find(function (x) { return x && x.id === S.uid; }); if (!u) return;
+        var reason = (document.getElementById('ip-ureason') || {}).value || '', note = (document.getElementById('ip-unote') || {}).value || '';
+        if (!reason.trim()) { S.uerr = 'A reason is required.'; render(); return; }
+        if (to !== 'returned' && !isMgr()) { S.uerr = 'Only a manager or admin can do this.'; render(); return; }
+        var r;
+        if (to === 'returned') { r = serialReturnUnit(u, { by: who(), reason: reason.trim(), condition: note.trim() }); if (r.ok) { var i = serialUnits.findIndex(function (x) { return x.id === u.id; }); serialUnits[i] = r.unit; saveUnits(); } }
+        else r = applyUnit(u, to, { reason: reason.trim(), note: note.trim() });
+        if (!r.ok) { S.uerr = r.error; render(); return; }
+        S.uerr = ''; toast('Unit updated.'); render();
+    }
+    function unitFix() {
+        var u = units().find(function (x) { return x && x.id === S.uid; }); if (!u || !isMgr()) return;
+        var reason = ((document.getElementById('ip-ureason') || {}).value || '').trim();
+        if (!reason) { S.uerr = 'A reason is required to correct an identifier.'; render(); return; }
+        var cur = idText(u), val = prompt('Correct identifier(s) for this unit (separate two with | ):', (u.ids || []).map(function (i) { return i.value; }).join(' | '));
+        if (val === null) return;
+        var vals = val.split(/[|+]/).map(function (x) { return x.trim(); }).filter(Boolean);
+        var others = units().filter(function (x) { return x.id !== u.id; }), v = serialValidateBatch(others, [vals], {});
+        if (!v.ok) { S.uerr = v.errors[0].msg; render(); return; }
+        var now = Date.now(), ids = v.units[0].ids.map(function (x, k) { return { type: (u.ids[k] && u.ids[k].type) || x.type, value: x.value, norm: x.norm }; });
+        var nu = Object.assign({}, u, { ids: ids, updatedAt: now, history: (u.history || []).concat([{ id: 'h-' + now + '-fix', at: now, by: who(), from: u.status, to: u.status, reason: 'Identifier corrected: ' + reason, ref: null, note: 'was ' + cur }]) });
+        serialUnits[serialUnits.findIndex(function (x) { return x.id === u.id; })] = nu; saveUnits(); S.uerr = ''; toast('Identifier corrected. The old value is kept in the history.'); render();
+    }
+
+    // ---------------------------------------------------------------- 2. receive serial units
+    function recvTargets() {
+        var out = [];
+        inv().filter(sellable).forEach(function (p) {
+            if (p.hasVariants) (p.variants || []).forEach(function (v) { if (v && tracked(p, v)) out.push({ code: p.code, vid: v.id, label: p.name + ' · ' + v.name }); });
+            else if (p.serialized) out.push({ code: p.code, vid: '', label: p.name });
+        });
+        return out;
+    }
+    function newRcv(code, vid) {
+        var t = recvTargets(), first = t.find(function (x) { return x.code === code && (x.vid || '') === (vid || ''); }) || t[0];
+        return { key: first ? first.code + '|' + (first.vid || '') : '', expected: '', text: '', supplier: '', ref: '', cost: '', type: 'imei', batchId: 'rcv-' + (localStorage.getItem('pos_device_id') || 'dev').slice(-6) + '-' + Date.now().toString(36), done: 0, msg: '' };
+    }
+    function parseKey(k) { var a = String(k || '').split('|'); return { code: a[0], vid: a[1] || '' }; }
+    function vReceive() {
+        if (!S.rcv) S.rcv = newRcv();
+        var R = S.rcv, t = recvTargets();
+        if (!t.length) return '<div class="ip-warn">No item is set to track a unique identifier yet. Open an item and tick <b>This item has a unique identifier per item</b> (Add New Items form), or use <b>Track a unique identifier per item</b> on the item here.</div>';
+        var k = parseKey(R.key), p = prod(k.code), v = varOf(p, k.vid);
+        var rows = serialParseList(R.text), exp = parseInt(R.expected, 10);
+        var res = serialValidateBatch(units(), rows, { type: R.type, expected: Number.isFinite(exp) && exp > 0 ? Math.max(0, exp - R.done) : undefined });
+        R.res = res;
+        var unreg = Number((v || p || {}).serialUnregistered) || 0;
+        var h = '<div class="ip-box"><div class="ip-grid2"><div><label>Item / variant</label><select class="ip-sel" id="ip-rkey" style="width:100%">' + t.map(function (x) { var kk = x.code + '|' + (x.vid || ''); return '<option value="' + esc(kk) + '"' + (kk === R.key ? ' selected' : '') + '>' + esc(x.label) + '</option>'; }).join('') + '</select></div>' +
+            '<div><label>Units expected in this delivery (optional)</label><input class="ip-in" id="ip-rexp" type="number" min="1" step="1" value="' + esc(R.expected) + '" style="width:100%" placeholder="e.g. 10"></div>' +
+            '<div><label>Identifier type</label><select class="ip-sel" id="ip-rtype" style="width:100%">' + [['imei', 'IMEI'], ['serial', 'Serial number'], ['mac', 'MAC address'], ['other', 'Other']].map(function (o) { return '<option value="' + o[0] + '"' + (R.type === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
+            '<div><label>Supplier</label><input class="ip-in" id="ip-rsup" value="' + esc(R.supplier) + '" style="width:100%"></div><div><label>Delivery / invoice reference</label><input class="ip-in" id="ip-rref" value="' + esc(R.ref) + '" style="width:100%"></div>' +
+            '<div><label>Cost per unit (KES)</label><input class="ip-in" id="ip-rcost" type="number" min="0" step="any" value="' + esc(R.cost) + '" placeholder="' + esc(String((v || p || {}).wholesalePrice || 0)) + '" style="width:100%"></div></div></div>';
+        if (unreg > 0) h += '<div class="ip-warn">' + unreg + ' unit(s) already counted in stock have no identifier yet. Registered units are matched to them first, so the quantity does not double.</div>';
+        h += '<div class="ip-box"><h4>Scan, type or paste identifiers</h4><p class="ip-hint">One unit per line (or separated by commas). A phone with two IMEIs: put both on one line with | between them. A barcode scanner works in the first box: scan, it adds the line.</p>' +
+            '<input class="ip-in" id="ip-scan" placeholder="Scan or type an identifier, then Enter" style="width:100%;margin-bottom:8px" autocomplete="off">' +
+            '<textarea class="ip-ta" id="ip-rtext" placeholder="356938035643809&#10;356938035643810 | 356938035643811">' + esc(R.text) + '</textarea>' +
+            '<div class="ip-tools" style="margin-top:6px"><label class="ip-btn sec" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">📄 Upload a file (CSV / TXT / Excel)<input type="file" id="ip-rfile" accept=".csv,.txt,.xlsx,.xls" style="display:none"></label></div></div>';
+        var total = Number.isFinite(exp) && exp > 0 ? exp : 0, reg = R.done;
+        h += '<div class="ip-box"><h4>' + (total ? (reg + res.count) + ' of ' + total + ' registered' : (res.count + ' ready to register' + (reg ? ' · ' + reg + ' registered so far' : ''))) + '</h4>' +
+            (total ? '<div class="ip-prog"><i style="width:' + Math.min(100, Math.round((reg + res.count) / total * 100)) + '%"></i></div>' : '') +
+            '<p class="ip-hint">' + res.count + ' valid line(s) · ' + res.errors.length + ' problem(s). Problem lines stay in the box and are not registered.</p>' +
+            res.errors.slice(0, 50).map(function (e) { return '<div class="ip-err">Line ' + e.row + ': ' + esc(e.msg) + '</div>'; }).join('') + (R.msg ? '<div class="ip-ok">' + esc(R.msg) + '</div>' : '') +
+            '<button type="button" class="ip-btn" data-ip-act="rcvsave"' + (res.count && p ? '' : ' disabled') + '>Register ' + res.count + ' unit(s)</button></div>';
+        return h;
+    }
+    function rcvSave() {
+        var R = S.rcv, k = parseKey(R.key), p = prod(k.code), v = varOf(p, k.vid); if (!p || !R.res || !R.res.count) return;
+        var rows = serialParseList(R.text), good = R.res.units, goodRows = {};
+        good.forEach(function (u) { goodRows[u.row] = 1; });
+        var cost = parseFloat(R.cost); if (!(cost >= 0)) cost = Number((v || p).wholesalePrice) || 0;
+        var now = Date.now(), made = serialMakeUnits(good.map(function (u) { return { row: u.row, ids: u.ids.map(function (i) { return { type: R.type, value: i.value, norm: i.norm }; }) }; }), { batchId: R.batchId, code: p.code, variantId: v ? v.id : null, name: v ? p.name + ' ' + v.name : p.name, cost: cost, supplier: R.supplier, ref: R.ref || R.batchId, by: who(), now: now, reason: 'Received' + (R.supplier ? ' from ' + R.supplier : '') });
+        // ids are derived from batch + line number: lines already registered by an earlier press of the button are never created twice
+        var n = 0; made.forEach(function (u) { if (!serialUnits.some(function (x) { return x.id === u.id; })) { serialUnits.push(u); n++; } });
+        // fresh batch for the NEXT press (line numbers restart with the remaining lines)
+        var tgt = v || p, unreg = Number(tgt.serialUnregistered) || 0, conv = Math.min(unreg, n);
+        if (conv) tgt.serialUnregistered = unreg - conv;
+        var add = n - conv; if (add) { tgt.qty = r3((Number(tgt.qty) || 0) + add); recalc(p); }
+        saveInv(); saveUnits();
+        logMove(v ? (v.code || p.code) : p.code, v ? p.name + ' ' + v.name : p.name, add, 'Received ' + n + ' serialized unit(s)' + (R.supplier ? ' from ' + R.supplier : '') + (R.ref ? ' ref ' + R.ref : '') + (conv ? ' (' + conv + ' matched earlier un-identified stock)' : ''));
+        R.done += n; R.text = rows.filter(function (r, i) { return !goodRows[i + 1]; }).map(function (r) { return r.join(' | '); }).join('\n');
+        R.batchId = 'rcv-' + (localStorage.getItem('pos_device_id') || 'dev').slice(-6) + '-' + Date.now().toString(36);
+        R.msg = n + ' unit(s) registered.'; toast(R.msg); render();
+    }
+    function scanEnter(val) {
+        if (S.view !== 'receive' || !S.rcv) return; val = String(val || '').trim(); if (!val) return;
+        S.rcv.text = (S.rcv.text ? S.rcv.text.replace(/\s+$/, '') + '\n' : '') + val; render(); var s = document.getElementById('ip-scan'); if (s) s.focus();
+    }
+    function readFileText(file) {
+        return new Promise(function (res, rej) {
+            if (/\.xlsx?$/i.test(file.name) && typeof loadSheetJs === 'function') {
+                var fr = new FileReader(); fr.onload = function () { loadSheetJs().then(function () { try { var wb = window.XLSX.read(fr.result, { type: 'array' }), ws = wb.Sheets[wb.SheetNames[0]]; res(window.XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' })); } catch (e) { rej(e); } }, rej); }; fr.onerror = rej; fr.readAsArrayBuffer(file);
+            } else { var f2 = new FileReader(); f2.onload = function () { res(String(f2.result || '')); }; f2.onerror = rej; f2.readAsText(file); }
+        });
+    }
+
+    // ---------------------------------------------------------------- 3. checkout: choose the real unit
+    function trackedLines(entries) {
+        var out = [];
+        (entries || []).forEach(function (e) {
+            if (!e || e.isService) return;
+            var p = prod(e.code); if (!p || p.type === 'service') return;
+            var v = varOf(p, e.variantId);
+            if (tracked(p, v)) out.push({ e: e, p: p, v: v, qty: Number(e.qty) || 0 });
+        });
+        return out;
+    }
+    function selValid(L) {
+        var ids = SEL[L.e.cartKey || L.e.code] || [];
+        if (ids.length !== L.qty) return false;
+        return ids.every(function (id) { var u = units().find(function (x) { return x && x.id === id; }); return u && u.status === 'in_stock' && u.code === L.p.code && (u.variantId || null) === (L.v ? L.v.id : null); });
+    }
+    function vPick() {
+        var P = S.pick; if (!P) return '';
+        var L = P.line, avail = P.pool || inStockUnits(L.p, L.v), q = (P.q || '').trim(), n = serialNorm(q);
+        var taken = {}; Object.keys(SEL).forEach(function (k) { if (k !== (L.e.cartKey || L.e.code)) (SEL[k] || []).forEach(function (id) { taken[id] = 1; }); });
+        var list = avail.filter(function (u) { return !taken[u.id] && (!n || (u.ids || []).some(function (i) { return i.norm.indexOf(n) >= 0; })); });
+        var unreg = Number((L.v || L.p).serialUnregistered) || 0;
+        var h = '<div class="ip-box"><h4>' + esc(P.title || (L.p.name + (L.v ? ' · ' + L.v.name : ''))) + '</h4><p>' + (P.pool ? esc(L.p.name) + '. ' : '') + 'Choose <b>' + L.qty + '</b> unit(s) being sold. <b>' + P.sel.length + '</b> of ' + L.qty + ' chosen.</p>' +
+            '<input class="ip-in" id="ip-pq" placeholder="Scan or type the IMEI / serial to find the unit" value="' + esc(P.q || '') + '" style="width:100%" autocomplete="off"></div>';
+        if (!P.pool && avail.length < L.qty) h += '<div class="ip-err">Only ' + avail.length + ' registered unit(s) are in stock for this item' + (unreg ? ' (' + unreg + ' more are counted but have no IMEI registered yet and cannot be sold)' : '') + '. Register the rest in Receive serial units, or lower the quantity.</div>';
+        if (P.err) h += '<div class="ip-err">' + esc(P.err) + '</div>';
+        h += list.slice(0, 60).map(function (u) { var on = P.sel.indexOf(u.id) >= 0; return '<div class="ip-pick' + (on ? ' on' : '') + '" data-ip-act="ppick" data-id="' + esc(u.id) + '"><span class="ip-mono">' + esc(idText(u)) + '</span><span class="ip-hint" style="margin:0">' + esc(dt(u.receivedAt)) + '</span><b>' + (on ? '✅' : '○') + '</b></div>'; }).join('') +
+            (list.length ? '' : '<p class="ip-hint">No unit matches.</p>');
+        h += '<div class="ip-tools" style="margin-top:12px"><button type="button" class="ip-btn" data-ip-act="pdone"' + (P.sel.length === L.qty ? '' : ' disabled') + '>Use these units</button><button type="button" class="ip-btn sec" data-ip-act="pcancel">Cancel sale</button></div>';
+        return h;
+    }
+    function pickUnits(line, preset, title, pool) {
+        return new Promise(function (resolve) {
+            S.pick = { line: line, sel: (preset || []).slice(), q: '', err: '', resolve: resolve, title: title, pool: pool || null };
+            open('pick');
+            setTimeout(function () { var e = document.getElementById('ip-pq'); if (e) e.focus(); }, 30);
+        });
+    }
+    function pickToggle(id) {
+        var P = S.pick; if (!P) return; var i = P.sel.indexOf(id);
+        if (i >= 0) P.sel.splice(i, 1); else if (P.sel.length < P.line.qty) P.sel.push(id); else { P.err = 'You already chose ' + P.line.qty + '. Untick one first.'; render(); return; }
+        P.err = ''; render();
+    }
+    function pickFinish(ok) {
+        var P = S.pick; if (!P) return; var f = P.resolve; S.pick = null; var o = document.getElementById('ip-ov'); if (o) o.classList.remove('on');
+        f(ok ? P.sel : null);
+    }
+    async function gate(entries) {
+        var lines = trackedLines(entries); if (!lines.length) return true;
+        for (var i = 0; i < lines.length; i++) if (!(Number.isInteger(lines[i].qty) && lines[i].qty > 0)) { toast('"' + lines[i].p.name + '" is tracked by IMEI / serial: sell whole units only.', true); return false; }
+        try { if (navigator.onLine !== false && typeof pullState === 'function') await Promise.race([pullState(), new Promise(function (r) { setTimeout(r, 1500); })]); } catch (e) { /* offline: the merge flags a double sale later */ }
+        for (i = 0; i < lines.length; i++) {
+            var L = lines[i], key = L.e.cartKey || L.e.code;
+            if (selValid(L)) continue;
+            var chosen = await pickUnits(L, (SEL[key] || []).filter(function (id) { var u = units().find(function (x) { return x.id === id; }); return u && u.status === 'in_stock'; }));
+            if (!chosen) return false;
+            SEL[key] = chosen;
+        }
+        var chk = serialCheckSale(units(), lines.map(function (L) { return { code: L.p.code, variantId: L.v ? L.v.id : null, qty: L.qty, unitIds: SEL[L.e.cartKey || L.e.code], name: L.p.name }; }), {});
+        if (!chk.ok) { toast(chk.errors[0], true); lines.forEach(function (L) { delete SEL[L.e.cartKey || L.e.code]; }); return false; }
+        return true;
+    }
+    function attach(a, b, entries) {
+        var lines = trackedLines(entries); if (!lines.length) return;
+        var rec = [], now = Date.now(), sid = a.id || a.refNumber || ('sale-' + now), conflict = false;
+        lines.forEach(function (L) {
+            var key = L.e.cartKey || L.e.code;
+            (SEL[key] || []).forEach(function (id) {
+                var i = serialUnits.findIndex(function (x) { return x && x.id === id; }); if (i < 0) return;
+                var u = serialUnits[i], r = serialTransition(u, 'sold', { by: who(), reason: 'Sold', ref: sid, now: now, patch: { saleId: sid, soldAt: now } });
+                if (r.ok) serialUnits[i] = r.unit; else { conflict = true; serialUnits[i] = Object.assign({}, u, { conflict: 'double-sale', updatedAt: now }); }
+                rec.push({ unitId: id, code: L.p.code, variantId: L.v ? L.v.id : null, ids: (u.ids || []).map(function (x) { return { type: x.type, value: x.value }; }) });
+            });
+            delete SEL[key];
+        });
+        if (!rec.length) return;
+        a.serialUnits = rec; if (b && b !== a) b.serialUnits = rec;
+        if (conflict) { a.serialConflict = true; if (b) b.serialConflict = true; toast('A selected unit was sold on another till at the same time. The sale is saved: check Serial units > Conflicts.', true); }
+        saveUnits();
+    }
+    function unitFlip(sale, from, to, why) {
+        var changed = 0, now = Date.now();
+        (sale.serialUnits || []).forEach(function (r) {
+            var i = serialUnits.findIndex(function (x) { return x && x.id === r.unitId; }); if (i < 0) return;
+            var u = serialUnits[i]; if (u.status !== from) return;
+            if (from === 'sold' && u.saleId && u.saleId !== (sale.id || sale.refNumber)) return;
+            var e = { id: 'h-' + now + '-' + changed + '-' + String(who()).slice(0, 8), at: now, by: who(), from: from, to: to, reason: why, ref: sale.id || sale.refNumber || null, note: '' };
+            serialUnits[i] = Object.assign({}, u, { status: to, saleId: to === 'sold' ? (sale.id || sale.refNumber) : null, history: (u.history || []).concat([e]), updatedAt: now });
+            changed++;
+        });
+        if (changed) saveUnits(); return changed;
+    }
+    function wrapSaleHooks() {
+        if (typeof performVoidSale === 'function' && !performVoidSale.__ip) {
+            var ov = performVoidSale, wv = function (saleId) {
+                var sale = null, was = false; try { sale = findSaleForVoid(saleId, pendingVoidSaleSource); was = !!(sale && sale.voided); } catch (e) { /* below */ }
+                var r = ov.apply(this, arguments);
+                try { if (sale && !was && sale.voided && Array.isArray(sale.serialUnits)) { var n = unitFlip(sale, 'sold', 'in_stock', 'Sale voided'); if (n) toast(n + ' unit(s) are back in stock.'); } } catch (e) { /* the void itself is done */ }
+                return r;
+            }; wv.__ip = true; window.performVoidSale = wv;
+        }
+        if (typeof performUnvoidSale === 'function' && !performUnvoidSale.__ip) {
+            var ou = performUnvoidSale, wu = function (saleId) {
+                var sale = null, was = false; try { sale = findSaleForVoid(saleId, pendingVoidSaleSource); was = !!(sale && sale.voided); } catch (e) { /* below */ }
+                var r = ou.apply(this, arguments);
+                try {
+                    if (sale && was && !sale.voided && Array.isArray(sale.serialUnits)) {
+                        var n = unitFlip(sale, 'in_stock', 'sold', 'Sale restored');
+                        if (n < sale.serialUnits.length) toast('Some units of this sale were sold again meanwhile: check Serial units.', true);
+                    }
+                } catch (e) { /* done */ }
+                return r;
+            }; wu.__ip = true; window.performUnvoidSale = wu;
+        }
+        if (typeof restockReturnedItem === 'function' && !restockReturnedItem.__ip) {
+            var orr = restockReturnedItem, wr = function (product, qty, sel, reason) {
+                try {
+                    var v = varOf(product, sel && sel.variantId);
+                    if (product && tracked(product, v) && qty > 0) {
+                        var sale = null, ref = sel && sel.sourceRefNumber;
+                        if (ref) sale = (typeof salesLog !== 'undefined' ? salesLog : []).find(function (s) { return s && s.refNumber === ref; }) || (typeof bills !== 'undefined' ? bills : []).find(function (s) { return s && s.refNumber === ref; }) || null;
+                        var cand = [];
+                        if (sale && Array.isArray(sale.serialUnits)) sale.serialUnits.forEach(function (r) { if (r.code === product.code && (r.variantId || null) === (v ? v.id : null)) { var u = units().find(function (x) { return x && x.id === r.unitId && x.status === 'sold'; }); if (u) cand.push(u); } });
+                        if (cand.length) {
+                            var why = (reason || 'Customer return') + (ref ? ' (receipt ' + ref + ')' : '');
+                            var done = function (list) { var n = 0; list.forEach(function (u) { var r = serialReturnUnit(u, { by: who(), reason: why, condition: '' }); if (r.ok) { serialUnits[serialUnits.findIndex(function (x) { return x.id === u.id; })] = r.unit; n++; } }); if (n) { saveUnits(); toast(n + ' unit(s) are awaiting inspection: they go back on sale once a manager passes them (Serial units).'); } };
+                            if (cand.length <= qty) { done(cand); var rest = qty - cand.length; if (rest > 0) return orr.call(this, product, rest, sel, reason); return true; }
+                            pickUnits({ e: { cartKey: 'ret' }, p: product, v: v, qty: qty }, [], 'Which unit came back?', cand).then(function (ids) { if (ids) done(cand.filter(function (u) { return ids.indexOf(u.id) >= 0; })); else toast('The returned unit was not chosen. Record it in Serial units > the unit > Customer return.', true); });
+                            return true;
+                        }
+                        // no unit recorded for this sale (sold before tracking): the stock comes back un-identified and cannot be sold until registered
+                        var res = orr.apply(this, arguments);
+                        (v || product).serialUnregistered = (Number((v || product).serialUnregistered) || 0) + qty; saveInv();
+                        return res;
+                    }
+                } catch (e) { /* fall through to the normal return */ }
+                return orr.apply(this, arguments);
+            }; wr.__ip = true; window.restockReturnedItem = wr;
+        }
+        if (typeof completeRestock === 'function' && !completeRestock.__ip) {
+            var oc = completeRestock, wc = function () {
+                var ctx = window.__srRestock || null;
+                if (!ctx) {
+                    try {
+                        var ls = restockTracked();
+                        if (ls.length) {
+                            var odd = ls.find(function (l) { return Math.abs(l.need - Math.round(l.need)) > 1e-9; });
+                            if (odd) { toast('"' + odd.p.name + '" has a serial number per unit, so the quantity must be a whole number.', true); return; }
+                            ls.forEach(function (l) { l.need = Math.round(l.need); });
+                            srOpenAdd(ls, { title: 'Type the serial numbers of this delivery', intro: 'These items have a serial number / IMEI per unit. Type one for each unit you are receiving (the count must match the quantity).', goLabel: 'Add stock and save serials', deferred: true, reason: 'Restock',
+                                onDone: function (d) {
+                                    window.__srRestock = d; var before = d.lines.map(function (l) { return Number((l.v || l.p).qty) || 0; });
+                                    try { oc.apply(window, []); } finally { window.__srRestock = null; }
+                                    d.lines.forEach(function (l, i) { l.added = r3((Number((l.v || l.p).qty) || 0) - before[i]); });
+                                    if (d.lines.some(function (l) { return l.added > 0; })) d.finish(); else toast('The restock was not completed, so no serial numbers were saved.', true);
+                                } });
+                            return;
+                        }
+                    } catch (e) { /* normal restock */ }
+                }
+                return oc.apply(this, arguments);
+            }; wc.__ip = true; window.completeRestock = wc;
+        }
+        if (typeof buildReceiptDoc === 'function' && !buildReceiptDoc.__ip) {
+            var ob = buildReceiptDoc, wb = function (sale, hooks) {
+                hooks = Object.assign({}, hooks || {});
+                if (sale && Array.isArray(sale.serialUnits) && sale.serialUnits.length) {
+                    var prev = hooks.itemSubLines;
+                    hooks.itemSubLines = function (l, s) {
+                        var a = prev ? (prev(l, s) || []) : [], out = [];
+                        (sale.serialUnits || []).forEach(function (r) { if (r.code === l.code && (r.variantId || null) === (l.variantId || null)) out.push((r.ids || []).map(function (i, k) { return typeLabel(i.type) + (r.ids.length > 1 ? ' ' + (k + 1) : '') + ': ' + i.value; }).join('  ')); });
+                        return a.concat(out);
+                    };
+                }
+                return ob.call(this, sale, hooks);
+            }; wb.__ip = true; window.buildReceiptDoc = wb;
+        }
+    }
+
+    // ---------------------------------------------------------------- 6. import wizard
+    function newImp() { return { step: 1, type: 'catalogue', mode: 'add', policy: 'skip', cpolicy: 'both', opening: false, rows: [], headers: [], map: {}, plan: null, fileName: '', hash: '', override: false, prog: 0, running: false, result: null, err: '', batch: null }; }
+    function vImport() {
+        if (!S.imp) S.imp = newImp();
+        var I = S.imp, h = '';
+        var steps = ['Type', 'File', 'Map columns', 'Preview', 'Run'];
+        h += '<div class="ip-tools">' + steps.map(function (s, i) { return '<span class="ip-badge' + (I.step === i + 1 ? ' g' : '') + '">' + (i + 1) + '. ' + s + '</span>'; }).join('') + '</div>';
+        if (I.err) h += '<div class="ip-err">' + esc(I.err) + '</div>';
+        if (I.step === 1) {
+            h += '<div class="ip-box"><h4>What are you importing?</h4><div class="ip-grid2"><div><label>Import type</label><select class="ip-sel" id="ip-itype" style="width:100%">' + [['catalogue', 'Products & variants (one row per item - same layout as Export)'], ['batches', 'Batches & expiry dates'], ['products', 'Products (plain items, your own columns)'], ['variants', 'Variants into an existing product (your own columns)'], ['stock', 'Stock quantities'], ['serials', 'Serialized units (IMEI / serial numbers)']].map(function (o) { return '<option value="' + o[0] + '"' + (I.type === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
+                (I.type === 'catalogue' ? '<div><label>What to do</label><select class="ip-sel" id="ip-cpolicy" style="width:100%">' + [['both', 'Add new items and update existing ones'], ['create', 'Only add new items (existing ones are skipped)'], ['update', 'Only update existing items (new ones are skipped)']].map(function (o) { return '<option value="' + o[0] + '"' + (I.cpolicy === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
+                    '<div><label style="display:flex;gap:8px;align-items:flex-start;margin-top:18px"><input type="checkbox" id="ip-opening"' + (I.opening ? ' checked' : '') + (isMgr() ? '' : ' disabled') + '> <span>Record the "Quantity on hand" of NEW items as their opening stock' + (isMgr() ? '' : ' <i>(Admin or a manager only)</i>') + '</span></label></div>' : '') +
+                (I.type === 'batches' ? '<div><label>Stock mode</label><select class="ip-sel" id="ip-imode" style="width:100%">' + [['add', 'Received stock - adds these batches to what is there'], ['opening', 'Opening stock - only for items with no stock yet'], ['assign', 'Split stock already on hand into these batches (no stock change)']].map(function (o) { return '<option value="' + o[0] + '"' + (I.mode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' : '') +
+                (I.type === 'stock' ? '<div><label>Stock mode</label><select class="ip-sel" id="ip-imode" style="width:100%"><option value="add"' + (I.mode === 'add' ? ' selected' : '') + '>Add received stock</option><option value="opening"' + (I.mode === 'opening' ? ' selected' : '') + '>Opening stock (refused if the item already has stock)</option></select></div>' : '') +
+                (I.type === 'products' || I.type === 'variants' ? '<div><label>If the product / variant already exists</label><select class="ip-sel" id="ip-ipolicy" style="width:100%"><option value="skip"' + (I.policy === 'skip' ? ' selected' : '') + '>Skip it</option><option value="update_info"' + (I.policy === 'update_info' ? ' selected' : '') + '>Update name, price, cost (never stock)</option></select></div>' : '') + '</div>' +
+                '<p class="ip-hint">Nothing changes until you have seen a preview and pressed Import. Updating an item never changes its stock: stock only moves through opening stock or received batches, and each change is logged.</p>' +
+                (I.type === 'catalogue' || I.type === 'batches' ? '<p class="ip-hint"><b>Easiest way:</b> Export below, change what you need in Excel, save as CSV and import it back. Leave a cell empty to keep what is stored; type <code>[clear]</code> to empty it. Products are matched by SKU and variants by Variant ID or Variant SKU - never by name.</p>' : '') +
+                '<div class="ip-tools"><button type="button" class="ip-btn sec" data-ip-act="xport" data-t="catalogue">⬇️ Export products & variants</button><button type="button" class="ip-btn sec" data-ip-act="xport" data-t="batches">⬇️ Export batches & expiry</button><button type="button" class="ip-btn sec" data-ip-act="xport" data-t="snapshot">⬇️ Stock on hand (snapshot)</button><button type="button" class="ip-btn sec" data-ip-act="xport" data-t="moves">⬇️ Stock movements</button></div>' +
+                '<div class="ip-tools"><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="catalogue">⬇️ Products & variants template</button><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="simple">⬇️ Simple items template</button><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="batches">⬇️ Batches template</button><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="guide">⬇️ How to fill the files</button></div>' +
+                '<div class="ip-tools"><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="products">⬇️ Products template</button><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="variants">⬇️ Variants template</button><button type="button" class="ip-btn sec" data-ip-act="tpl" data-t="serials">⬇️ Serial units template</button></div>' +
+                '<button type="button" class="ip-btn" data-ip-act="istep" data-s="2">Next: choose the file →</button></div>';
+        } else if (I.step === 2) {
+            h += '<div class="ip-box"><h4>Choose the file</h4><p class="ip-hint">CSV or Excel. The first row must be the column names.</p><label class="ip-btn" style="display:inline-flex;gap:6px;cursor:pointer">📄 Choose file<input type="file" id="ip-ifile" accept=".csv,.txt,.xlsx,.xls" style="display:none"></label> ' + (I.fileName ? '<b>' + esc(I.fileName) + '</b> · ' + I.rows.length + ' data row(s)' : '') + '<div class="ip-tools" style="margin-top:10px"><button type="button" class="ip-btn sec" data-ip-act="istep" data-s="1">← Back</button></div></div>';
+        } else if (I.step === 3) {
+            h += '<div class="ip-box"><h4>Match your columns</h4><p class="ip-hint">We guessed the matches. Change any that are wrong; leave unused fields as "(none)".</p><div class="ip-grid2">' + importFields().map(function (f) {
+                return '<div><label>' + esc(f[1]) + '</label><select class="ip-sel" data-ip-map="' + f[0] + '" style="width:100%"><option value="">(none)</option>' + I.headers.map(function (hd, i) { return '<option value="' + i + '"' + (I.map[f[0]] === i ? ' selected' : '') + '>' + esc(hd || ('Column ' + (i + 1))) + '</option>'; }).join('') + '</select></div>'; }).join('') + '</div>' +
+                '<div class="ip-tools" style="margin-top:10px"><button type="button" class="ip-btn sec" data-ip-act="istep" data-s="2">← Back</button><button type="button" class="ip-btn" data-ip-act="iplan">Preview →</button></div></div>';
+        } else if (I.step === 4 && I.plan) {
+            var P = I.plan, bad = P.rows.filter(function (r) { return r.op === 'error'; });
+            h += '<div class="ip-cards"><div class="ip-stat"><b>' + P.total + '</b><span>Rows read</span></div><div class="ip-stat"><b style="color:#1e8449">' + P.creatable + '</b><span>Will be imported</span></div><div class="ip-stat"><b style="color:#b9770e">' + P.skipped + '</b><span>Skipped</span></div><div class="ip-stat"><b style="color:#c0392b">' + P.failed + '</b><span>Rejected (not imported)</span></div></div>';
+            if (P.type === 'catalogue') h += '<div class="ip-hint"><b>' + P.newProducts + '</b> new product(s) · <b>' + P.newVariants + '</b> new variant(s) · <b>' + P.updates + '</b> existing item(s) to update' + (P.openingRows ? ' · <b>' + P.openingRows + '</b> new item(s) get opening stock (logged)' : '') + '. Stock of existing items is never changed.</div>';
+            if (P.type === 'batches') h += '<div class="ip-hint">' + (P.mode === 'assign' ? 'Batch details are given to stock already on hand: <b>no quantity changes</b>.' : '<b>' + P.units + '</b> unit(s) will be added to stock as ' + (P.mode === 'opening' ? 'opening stock' : 'received stock') + ', each batch logged as a stock movement.') + '</div>';
+            if (I.dup) h += '<div class="ip-warn">This exact file was already imported (' + esc(dt(I.dup.at)) + ', ' + (I.dup.status === 'running' ? 'not finished' : 'finished') + '). ' + (I.dup.status === 'running' ? 'Pressing Import resumes it where it stopped.' : '<label><input type="checkbox" id="ip-iover"' + (I.override ? ' checked' : '') + '> Import it again anyway</label>') + '</div>';
+            h += '<div class="ip-scroll" style="max-height:340px;overflow:auto"><table class="ip-table"><thead><tr><th>Row</th><th>Result</th><th>Details</th></tr></thead><tbody>' + P.rows.slice(0, 150).map(function (r) {
+                return '<tr><td>' + r.n + '</td><td>' + (r.op === 'error' ? '<span class="ip-badge r">Rejected</span>' : r.op === 'skip' ? '<span class="ip-badge o">Skipped</span>' : '<span class="ip-badge g">' + esc(String(r.op).replace('_', ' ')) + '</span>') + '</td><td>' + esc((r.errors.concat(r.warns)).join(' · ')) + '</td></tr>'; }).join('') + '</tbody></table></div>' + (P.rows.length > 150 ? '<p class="ip-hint">First 150 rows shown. All rows are checked.</p>' : '');
+            h += '<div class="ip-tools" style="margin-top:10px"><button type="button" class="ip-btn sec" data-ip-act="istep" data-s="' + (fixedFmt(I.type) ? 1 : 3) + '">← Back</button>' + (P.failed ? '<button type="button" class="ip-btn sec" data-ip-act="irej">⬇️ Download rejected rows</button>' : '') +
+                '<button type="button" class="ip-btn" data-ip-act="irun"' + (P.creatable && (!I.dup || I.dup.status === 'running' || I.override) ? '' : ' disabled') + '>Import ' + P.creatable + ' row(s)</button></div>';
+        } else if (I.step === 5) {
+            if (I.running) h += '<div class="ip-box"><h4>Importing…</h4><div class="ip-prog"><i style="width:' + I.prog + '%"></i></div><p class="ip-hint">' + I.prog + '%. Keep this window open. If it is interrupted, upload the same file again and it resumes.</p></div>';
+            else if (I.result) {
+                var R = I.result;
+                h += '<div class="ip-ok"><b>Import finished.</b></div><div class="ip-cards"><div class="ip-stat"><b>' + R.created + '</b><span>Created</span></div><div class="ip-stat"><b>' + R.updated + '</b><span>Updated</span></div><div class="ip-stat"><b>' + R.unitsCreated + '</b><span>Units registered</span></div><div class="ip-stat"><b>' + R.skipped + '</b><span>Skipped</span></div><div class="ip-stat"><b style="color:#c0392b">' + R.failed + '</b><span>Rejected</span></div></div>' +
+                    '<div class="ip-tools">' + (R.failed ? '<button type="button" class="ip-btn sec" data-ip-act="irej">⬇️ Download rejected rows</button>' : '') + '<button type="button" class="ip-btn" data-ip-act="inew">Import another file</button><button type="button" class="ip-btn sec" data-ip-act="go" data-v="home">Back to inventory</button></div>';
+            }
+        }
+        var past = (typeof importBatches !== 'undefined' ? importBatches : []).slice().sort(function (a, b) { return (b.at || 0) - (a.at || 0); }).slice(0, 5);
+        if (past.length) h += '<div class="ip-box"><h4>Recent imports</h4>' + past.map(function (b) { return '<div class="ip-hint">' + esc(dt(b.at)) + ' · ' + esc(b.type) + ' · ' + esc(b.fileName || '') + ' · ' + (b.counts ? b.counts.created + ' created, ' + b.counts.failed + ' rejected' : '') + ' · ' + esc(b.status || '') + '</div>'; }).join('') + '</div>';
+        return h;
+    }
+    function ctxFor(I) { return { inventory: inv(), units: units(), mode: I.mode, policy: I.type === 'catalogue' ? I.cpolicy : I.policy, opening: !!(I.opening && isMgr()), wholeOnly: true }; }
+    function fixedFmt(t) { return t === 'catalogue' || t === 'batches'; }
+    function planFor(I) {
+        if (I.type === 'catalogue') return cataloguePlan([I.headers].concat(I.rows), ctxFor(I));
+        if (I.type === 'batches') return batchPlan([I.headers].concat(I.rows), ctxFor(I));
+        return importPlan(I.rows, I.map, I.type, ctxFor(I));
+    }
+    function applyFor(I, part, o) {
+        if (I.type === 'catalogue') return catalogueApply(part, { inventory: inventory }, o);
+        if (I.type === 'batches') return batchApply(part, { inventory: inventory }, o);
+        return importApply(part, { inventory: inventory, units: serialUnits }, o);
+    }
+    function xport(t) {
+        var day = (typeof todayDateString === 'function' ? todayDateString() : new Date().toISOString().slice(0, 10));
+        if (t === 'catalogue') { var rows = catalogueExportRows(inv()); if (rows.length < 2) { toast('No items to export.', true); return; } dl('products-and-variants-' + day + '.csv', csvOut(rows)); toast('Exported ' + (rows.length - 1) + ' item(s). Import this same file back after editing it.'); return; }
+        if (t === 'batches') { var b = batchExportRows(inv()); if (b.length < 2) { toast('No batches recorded yet.', true); return; } dl('batches-and-expiry-' + day + '.csv', csvOut(b)); return; }
+        if (t === 'snapshot') {
+            var s2 = [['Snapshot taken', 'Product SKU', 'Variant SKU', 'Item', 'Unit', 'Quantity on hand', 'Cost price', 'Stock value at cost', 'Selling price', 'Stock value at selling price']], at = new Date().toISOString();
+            inv().forEach(function (p) {
+                if (!p || p.removed || p._deleted || (p.type || 'item') === 'service') return;
+                var line = function (t2, vsku, name) { var q = Number(t2.qty) || 0, c = Number(t2.wholesalePrice) || 0, pr = Number(t2.price) || 0; s2.push([at, p.code || '', vsku, name, p.unit || 'pcs', q, c, Math.round(q * c * 100) / 100, pr, Math.round(q * pr * 100) / 100]); };
+                if (p.hasVariants && (p.variants || []).length) p.variants.forEach(function (v) { if (v && !v._deleted) line(v, v.code || '', p.name + ' - ' + (v.name || '')); }); else line(p, '', p.name || '');
+            });
+            dl('stock-on-hand-' + day + '.csv', csvOut(s2)); return;
+        }
+        if (t === 'moves') {
+            var log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            var m = [['Date and time', 'Code', 'Item', 'Change', 'Type', 'Reason', 'Movement ID']].concat(log.filter(function (x) { return x && !x._deleted; }).map(function (x) { return [x.timestamp || '', x.code || '', x.name || '', x.delta, x.type || '', x.reason || '', x.id || '']; }));
+            if (m.length < 2) { toast('No stock movements recorded yet.', true); return; }
+            dl('stock-movements-' + day + '.csv', csvOut(m)); return;
+        }
+    }
+    function csvOut(rows) { return rows.map(function (r) { return r.map(function (c) { c = String(c == null ? '' : c); return /[",\n\r]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(','); }).join('\r\n'); }
+    function dl(name, text) { try { downloadBlob(new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }), name); } catch (e) { toast('Could not start the download.', true); } }
+    function template(t) {
+        var T = {
+            products: [['Product name', 'SKU', 'Category', 'Cost price', 'Selling price', 'Quantity', 'Reorder level', 'Barcode', 'Supplier', 'Serialized'], ['Sample Phone', 'PH-001', 'Phones', '15000', '18000', '0', '2', '', 'Mobile Distributors', 'yes']],
+            variants: [['Parent SKU', 'Variant SKU', 'Variant name', 'Colour', 'Storage', 'Cost price', 'Selling price', 'Quantity', 'Reorder level'], ['PH-001', 'PH-001-BLK-128', '', 'Black', '128GB', '15000', '18000', '0', '2']],
+            serials: [['SKU', 'IMEI', 'IMEI 2', 'Identifier type'], ['PH-001-BLK-128', '356938035643809', '356938035643810', 'imei']],
+            catalogue: catalogueExportRows([
+                { code: 'SWT', name: 'School Sweater', category: 'Uniforms', subCat: 'Sweaters', unit: 'pcs', vatCategory: 'A', hasVariants: true, variants: [
+                    { id: '', code: 'SWT-BLU-28', name: 'Blue / 28', attrs: { Colour: 'Blue', Size: '28' }, wholesalePrice: 600, price: 900, reorderLevel: 3, qty: 10 },
+                    { id: '', code: 'SWT-BLU-30', name: 'Blue / 30', attrs: { Colour: 'Blue', Size: '30' }, wholesalePrice: 630, price: 950, reorderLevel: 3, qty: 8 },
+                    { id: '', code: 'SWT-WHT-28', name: 'White / 28', attrs: { Colour: 'White', Size: '28' }, wholesalePrice: 600, price: 900, qty: 0 }] },
+                { code: 'MILK-500', name: 'Milk 500ml', category: 'Dairy', unit: 'pcs', vatCategory: 'A', barcode: '6161100000011', wholesalePrice: 45, price: 60, minimumPrice: 58, reorderLevel: 12, expiryDate: '2026-12-31', qty: 24 }]),
+            simple: [['Product SKU', 'Product name', 'Category', 'Unit', 'Barcode', 'Cost price', 'Selling price', 'Reorder level', 'Quantity on hand'], ['RICE-2KG', 'Pishori rice 2kg', 'Food', 'pcs', '', '320', '400', '5', '20']],
+            batches: [['Product SKU', 'Product name', 'Batch number', 'Expiry date', 'Quantity', 'Batch ID'], ['MILK-500', 'Milk 500ml', 'L-2210', '2026-12-31', '24', ''], ['MILK-500', 'Milk 500ml', 'L-2215', '15/01/2027', '12', '']],
+        };
+        if (t === 'guide') { try { downloadBlob(new Blob([importGuideText()], { type: 'text/plain;charset=utf-8' }), 'mydukapos-import-guide.txt'); } catch (e) { toast('Could not start the download.', true); } return; }
+        dl('mydukapos-import-' + t + '-template.csv', csvOut(T[t] || T.products));
+    }
+    function importGuideText() {
+        return ['MyDukaPOS - filling the import files', '',
+            'PRODUCTS & VARIANTS file (one row per item you sell)',
+            '  Product SKU      REQUIRED for variants. The product\'s own code. All sizes/colours of one product share it.',
+            '  Product name     Required for a NEW product.',
+            '  Category, Sub-category, Unit (pcs, pack, box, carton, kg, g, litre, ml, metre, pair ...)   optional',
+            '  Variant ID       Filled in by Export - leave it as it is. It is how a variant is recognised when you import the file back.',
+            '  Variant SKU      The variant\'s own code, e.g. SWT-BLU-28. Must be unique in the shop.',
+            '  Variant name     Optional: made from the attributes when empty (Blue / 28).',
+            '  Attr: <name>     One column per attribute, e.g. "Attr: Colour", "Attr: Size", "Attr: Brand", "Attr: Material". Add as many as you need.',
+            '                   A plain item (no variants) leaves Variant ID, Variant SKU, Variant name and every Attr column empty.',
+            '  Barcode          Optional. Must be unique.',
+            '  Cost price, Selling price, Wholesale selling price, Minimum price, Reorder level   numbers, optional',
+            '  VAT category     One letter A-E (A = 16%).',
+            '  Expiry date      YYYY-MM-DD or DD/MM/YYYY. Each variant row has its own (empty = does not expire); for several dates of one plain item use the Batches file.',
+            '  Active           yes / no.',
+            '  Quantity on hand Shown by Export. On import it is used ONLY for NEW items, and only when "Record the Quantity on hand of NEW items as',
+            '                   their opening stock" is ticked. The stock of an existing item is never changed by this file.',
+            '  Empty cell = keep what is stored.   [clear] = empty that field.',
+            '',
+            'BATCHES & EXPIRY file (one row per batch of a plain item)',
+            '  Product SKU (required), Batch number, Expiry date, Quantity (required, above 0), Batch ID (filled in by Export - leave it).',
+            '  Modes: Received stock (adds), Opening stock (items with no stock yet), Split stock already on hand (no stock change; the batches must add',
+            '  up exactly to the stock not yet in a batch - use this after importing the products file with opening stock).',
+            '',
+            'Moving a whole shop: 1) Export products & variants and Export batches. 2) Import the products file with opening stock ticked.',
+            '3) Import the batches file with "Split stock already on hand".'].join('\r\n');
+    }
+    async function loadImportFile(file) {
+        var I = S.imp; I.err = '';
+        try {
+            var data = await readFileText(file), rows;
+            if (Array.isArray(data)) rows = data; else rows = (typeof parseCsvText === 'function') ? parseCsvText(data) : data.split(/\r?\n/).map(function (l) { return l.split(','); });
+            rows = rows.filter(function (r) { return r.some(function (c) { return String(c).trim(); }); });
+            if (rows.length < 2) { I.err = 'The file has no data rows under the column names.'; render(); return; }
+            I.headers = rows[0].map(function (x) { return String(x).trim(); }); I.rows = rows.slice(1); I.fileName = file.name;
+            I.hash = await hash(JSON.stringify(rows) + '|' + I.type + '|' + I.mode + '|' + I.cpolicy + '|' + (I.opening ? 1 : 0));
+            I.map = importGuessMapping(I.headers); I.dup = (importBatches || []).find(function (b) { return b.hash === I.hash; }) || null; I.override = false;
+            I.step = 3;
+            if (fixedFmt(I.type)) { I.plan = planFor(I); if (I.plan.headerError) { I.err = I.plan.headerError; I.plan = null; I.step = 2; } else I.step = 4; }
+        } catch (e) { I.err = 'Could not read that file: ' + (e && e.message || e); }
+        render();
+    }
+    function doPlan() {
+        var I = S.imp; I.err = '';
+        var m = I.map; if (fixedFmt(I.type)) { try { I.plan = planFor(I); if (I.plan.headerError) { I.err = I.plan.headerError; I.plan = null; } else I.step = 4; } catch (e) { I.err = 'Could not check the file: ' + (e && e.message || e); } render(); return; }
+        if (I.type === 'products' && m.name === undefined && m.sku === undefined) { I.err = 'Match at least the Product name or SKU column.'; render(); return; }
+        if (I.type !== 'products' && m.sku === undefined && m.variantSku === undefined && m.parentSku === undefined) { I.err = 'Match the SKU column.'; render(); return; }
+        try { I.plan = planFor(I); I.step = 4; } catch (e) { I.err = 'Could not check the file: ' + (e && e.message || e); }
+        render();
+    }
+    async function runImport() {
+        var I = S.imp, P = I.plan; if (!P || I.running) return;
+        var dup = I.dup, resume = dup && dup.status === 'running', id = resume ? dup.id : ('imp-' + Date.now().toString(36)), done = resume ? (dup.rowKeys || []).slice() : [];
+        if (dup && !resume && !I.override) { I.err = 'This file was already imported. Tick "Import it again anyway" to repeat it.'; render(); return; }
+        // re-plan against the CURRENT stock: a plan made minutes ago must not be applied to stock that changed meanwhile
+        var plan = planFor(I);
+        var batch = resume ? dup : { id: id, hash: I.hash, type: I.type, mode: I.mode, policy: I.policy, fileName: I.fileName, status: 'running', counts: { created: 0, updated: 0, skipped: 0, failed: 0, unitsCreated: 0 }, rowKeys: [], by: who(), at: Date.now(), updatedAt: Date.now() };
+        if (!resume) importBatches.push(batch);
+        I.running = true; I.step = 5; I.prog = 0; render();
+        var tot = { created: 0, updated: 0, skipped: 0, failed: 0, unitsCreated: 0, rejected: [] }, CH = 500;
+        for (var s = 0; s < plan.rows.length; s += CH) {
+            var part = Object.assign({}, plan, { rows: plan.rows.slice(s, s + CH) });
+            var r = applyFor(I, part, { importId: id, by: who(), doneKeys: done });
+            r.movements.forEach(function (m) { logMove(m.code, m.name, m.delta, m.reason); });
+            ['created', 'updated', 'skipped', 'failed', 'unitsCreated'].forEach(function (k) { tot[k] += r[k]; });
+            tot.rejected = tot.rejected.concat(r.rejected);
+            r.rowKeys.forEach(function (k) { done.push(k); });
+            batch.rowKeys = done.slice(); batch.counts = { created: tot.created, updated: tot.updated, skipped: tot.skipped, failed: tot.failed, unitsCreated: tot.unitsCreated }; batch.updatedAt = Date.now();
+            saveInv(); saveUnits(); saveBatches();
+            I.prog = Math.min(100, Math.round(Math.min(plan.rows.length, s + CH) / plan.rows.length * 100)); render();
+            await new Promise(function (res) { setTimeout(res, 0); });
+        }
+        batch.status = 'done'; batch.doneAt = Date.now(); batch.rowKeys = done.slice(-5000); saveBatches();
+        I.running = false; I.result = tot; I.plan = plan; render();
+    }
+    function rejectedCsv() {
+        var I = S.imp, P = I.plan; if (!P) return;
+        var rows = [I.headers.concat(['Why it was rejected'])];
+        P.rows.filter(function (r) { return r.op === 'error'; }).forEach(function (r) { rows.push((I.rows[r.n - 2] || []).concat([r.errors.join(' | ')])); });
+        dl('rejected-rows.csv', csvOut(rows));
+    }
+
+    // ---------------------------------------------------------------- events
+    function onInput(e) {
+        var t = e.target; if (!t) return;
+        if (t.id === 'ip-q') { S.q = t.value; S.page = 0; render(); }
+        else if (t.id === 'ip-cat') { S.cat = t.value; S.page = 0; render(); }
+        else if (t.id === 'ip-filter') { S.filter = t.value; S.page = 0; render(); }
+        else if (t.id === 'ip-uq') { S.uq = t.value; render(); }
+        else if (t.id === 'ip-pq' && S.pick) { S.pick.q = t.value; render(); }
+        else if (S.rcv && /^ip-r(key|exp|type|sup|ref|cost|text)$/.test(t.id)) {
+            var R = S.rcv, k = t.id.slice(4); R[{ key: 'key', exp: 'expected', type: 'type', sup: 'supplier', ref: 'ref', cost: 'cost', text: 'text' }[k]] = t.value;
+            if (e.type === 'change' || t.id === 'ip-rtext') render();
+        }
+        else if (t.id === 'ip-rfile' && t.files && t.files[0]) { readFileText(t.files[0]).then(function (d) { var rows = Array.isArray(d) ? d : d.split(/\r?\n/).map(function (l) { return l.split(/[,;\t]/); }); var txt = rows.map(function (r) { return (Array.isArray(r) ? r : [r]).map(function (x) { return String(x).trim(); }).filter(Boolean).join(' | '); }).filter(Boolean); if (/^[^0-9]*imei|serial|identifier/i.test(txt[0] || '')) txt.shift(); S.rcv.text = (S.rcv.text ? S.rcv.text.replace(/\s+$/, '') + '\n' : '') + txt.join('\n'); render(); }, function () { toast('Could not read that file.', true); }); }
+        else if (S.imp && t.id === 'ip-ifile' && t.files && t.files[0]) loadImportFile(t.files[0]);
+        else if (S.imp && t.id === 'ip-itype') { S.imp.type = t.value; render(); }
+        else if (S.imp && t.id === 'ip-imode') S.imp.mode = t.value;
+        else if (S.imp && t.id === 'ip-ipolicy') S.imp.policy = t.value;
+        else if (S.imp && t.id === 'ip-cpolicy') S.imp.cpolicy = t.value;
+        else if (S.imp && t.id === 'ip-opening') S.imp.opening = !!t.checked && isMgr();
+        else if (S.imp && t.id === 'ip-iover') S.imp.override = t.checked;
+        else if (S.imp && t.getAttribute && t.getAttribute('data-ip-map') !== null) { var f = t.getAttribute('data-ip-map'); if (t.value === '') delete S.imp.map[f]; else S.imp.map[f] = parseInt(t.value, 10); }
+        else if (S.gen && t.getAttribute && t.getAttribute('data-ip-def') !== null) { S.gen.defs[+t.getAttribute('data-ip-def')][t.getAttribute('data-k')] = t.value; if (e.type === 'change') render(); }
+        else if (S.gen && t.id === 'ip-gprice') S.gen.price = t.value;
+        else if (S.gen && t.id === 'ip-gcost') S.gen.cost = t.value;
+        else if (S.gen && t.getAttribute && t.getAttribute('data-ip-combo') !== null) { S.gen.off[+t.getAttribute('data-ip-combo')] = !t.checked; render(); }
+    }
+    function onClick(e) {
+        var t = e.target; if (!t || !t.closest) return;
+        if (t.id === 'ip-ov') { if (S.view === 'pick') pickFinish(false); else close(); return; }
+        var b = t.closest('[data-ip-act]'); if (!b) return;
+        var act = b.getAttribute('data-ip-act'), d = function (k) { return b.getAttribute('data-' + k); };
+        if (b.disabled) return;
+        if (act === 'close') { if (S.view === 'pick') pickFinish(false); else close(); }
+        else if (act === 'go') { S.view = d('v'); if (d('code')) S.code = d('code'); else if (S.view !== 'item') S.code = (S.view === 'units' ? S.code : null); if (d('f')) S.ust = d('f'); if (S.view === 'receive' && !S.rcv) S.rcv = newRcv(); if (S.view === 'import' && !S.imp) S.imp = newImp(); render(); }
+        else if (act === 'filter') { S.filter = d('f'); S.page = 0; render(); }
+        else if (act === 'page') { S.page = Math.max(0, S.page + parseInt(d('d'), 10)); render(); }
+        else if (act === 'item') { S.code = d('code'); S.view = 'item'; render(); }
+        else if (act === 'unit') { S.uid = d('id'); S.uerr = ''; S.view = 'unit'; render(); }
+        else if (act === 'ust') { S.ust = d('s'); render(); }
+        else if (act === 'uclear') { S.code = null; render(); }
+        else if (act === 'uact') unitAct(d('to'));
+        else if (act === 'ufix') unitFix();
+        else if (act === 'receive') { S.rcv = newRcv(d('code'), d('vid')); S.view = 'receive'; render(); }
+        else if (act === 'rcvsave') rcvSave();
+        else if (act === 'ppick') pickToggle(d('id'));
+        else if (act === 'pdone') pickFinish(true);
+        else if (act === 'pcancel') pickFinish(false);
+        else if (act === 'adj') { S.adj = { code: d('code'), vid: d('vid') || '', err: '' }; S.view = 'adj'; render(); }
+        else if (act === 'adjsave') adjSave();
+        else if (act === 'gen') { S.gen = { code: d('code'), defs: [{ name: '', values: '' }, { name: '', values: '' }], price: '', cost: '', off: {}, combos: [], err: '' }; S.view = 'gen'; render(); }
+        else if (act === 'gendef') { S.gen.defs.push({ name: '', values: '' }); render(); }
+        else if (act === 'gencreate') genCreate();
+        else if (act === 'vactive') { var p = prod(d('code')), v = varOf(p, d('vid')); if (v && isMgr()) { v.active = v.active === false; v.updatedAt = Date.now(); saveInv(); render(); } }
+        else if (act === 'serialtoggle') { var q = prod(d('code')); if (q && isMgr()) { if (!q.serialized) { if (Number(q.qty) > 0 && !q.hasVariants && !confirm('"' + q.name + '" has ' + q.qty + ' in stock. Turn on identifier tracking? These units stay counted but cannot be sold until each IMEI / serial is registered.')) return; q.serialized = true; if (!q.hasVariants && !anyUnits(q).length && Number(q.qty) > 0) q.serialUnregistered = Number(q.qty); if (q.hasVariants) (q.variants || []).forEach(function (vv) { if (!pUnits(q, vv).length && Number(vv.qty) > 0 && !(Number(vv.serialUnregistered) > 0)) vv.serialUnregistered = Number(vv.qty); }); } else { if (!confirm('Stop tracking identifiers for "' + q.name + '"? Registered units and history are kept.')) return; q.serialized = false; } q.updatedAt = Date.now(); saveInv(); render(); } else toast('Only a manager or admin can change this.', true); }
+        else if (act === 'istep') { S.imp.step = parseInt(d('s'), 10); S.imp.err = ''; render(); }
+        else if (act === 'iplan') doPlan();
+        else if (act === 'irun') runImport();
+        else if (act === 'irej') rejectedCsv();
+        else if (act === 'inew') { S.imp = newImp(); render(); }
+        else if (act === 'tpl') template(d('t'));
+        else if (act === 'xport') xport(d('t'));
+    }
+
+    // ---------------------------------------------------------------- entry points
+    function addEntryBar() {
+        var tab = document.getElementById('inventory-list-tab'); if (!tab || document.getElementById('ip-entry')) return;
+        var d = document.createElement('div'); d.id = 'ip-entry'; d.className = 'panel'; d.style.marginBottom = '16px';
+        d.innerHTML = '<h3>📦 Inventory workspace</h3><p style="margin:0 0 8px;color:#7f8c8d;font-size:13px">Overview, variants, items with an IMEI / serial number per unit, and bulk import.</p><div class="ip-entry">' +
+            '<button type="button" class="ip-btn" data-ip-open="home">📦 Open workspace</button><button type="button" class="ip-btn sec" data-ip-open="units">🔢 Serial units</button><button type="button" class="ip-btn sec" data-ip-open="receive">📥 Receive serial units</button><button type="button" class="ip-btn sec" data-ip-open="import">⬆️ Import wizard</button></div>';
+        tab.insertBefore(d, tab.firstChild);
+        d.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('[data-ip-open]'); if (!b) return; var v = b.getAttribute('data-ip-open'); if (v === 'receive' && !S.rcv) S.rcv = newRcv(); if (v === 'import' && !S.imp) S.imp = newImp(); open(v); });
+    }
+
+    // ---------------------------------------------------------------- 3b. checkout: pick the IMEI / serial straight on the cart line (zip 345)
+    // One dropdown per piece being sold (quantity 2 = two dropdowns), listing the units that are in stock and not already chosen on another line or
+    // box. What is chosen is held in SEL, exactly like the pop-up list - the pop-up only opens at checkout for a line that has no choice yet.
+    function cartPickKey(e) { return e.cartKey || e.code; }
+    function cartPickHtml(L) {
+        var key = cartPickKey(L.e), qty = L.qty, avail = inStockUnits(L.p, L.v);
+        var taken = {}; Object.keys(SEL).forEach(function (k) { if (k !== key) (SEL[k] || []).forEach(function (id) { taken[id] = 1; }); });
+        var have = (SEL[key] || []).filter(function (id) { return avail.some(function (u) { return u.id === id; }); }).slice(0, qty);
+        SEL[key] = have;
+        var jsKey = String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        if (!Number.isInteger(qty) || qty < 1 || qty > 12) return '';
+        var h = '<div class="ip-cartpick" data-ip-key="' + esc(key) + '">';
+        for (var i = 0; i < qty; i++) {
+            var mine = have[i] || '';
+            h += '<div>' + (qty > 1 ? '<label>Unit ' + (i + 1) + ' of ' + qty + ' - IMEI / serial</label>' : '<label>IMEI / serial number being sold</label>') +
+                '<select class="' + (mine ? '' : 'ip-bad') + '" onchange="ipCartPick(\'' + jsKey + '\',' + i + ',this.value)"><option value="">' + (avail.length ? 'Choose the IMEI / serial...' : 'None in stock - register units first') + '</option>' +
+                avail.filter(function (u) { return !taken[u.id] && (u.id === mine || have.indexOf(u.id) < 0); }).map(function (u) { return '<option value="' + esc(u.id) + '"' + (u.id === mine ? ' selected' : '') + '>' + esc(idText(u)) + '</option>'; }).join('') + '</select></div>';
+        }
+        h += (have.length === qty ? '<p class="ip-ok">\u2713 ' + qty + ' unit' + (qty > 1 ? 's' : '') + ' chosen</p>' : '<p class="ip-warn">' + (qty - have.length) + ' more to choose before you complete the sale.</p>') + '</div>';
+        return h;
+    }
+    window.ipCartPick = function (key, idx, id) {
+        var arr = (SEL[key] || []).slice(); while (arr.length < idx) arr.push('');
+        if (id) arr[idx] = id; else arr.splice(idx, 1);
+        SEL[key] = arr.filter(Boolean);
+        try { if (typeof renderCart === 'function') renderCart(); } catch (e) { /* redrawn on the next change */ }
+    };
+    function decorateCart() {
+        try {
+            var tbody = document.querySelector('#cart-table tbody'); if (!tbody || typeof currentCart === 'undefined') return;
+            var entries = Object.values(currentCart), rows = tbody.querySelectorAll('tr');
+            if (!entries.length || rows.length !== entries.length) return;
+            entries.forEach(function (e, i) {
+                var td = rows[i].querySelector('.cart-cell-name') || rows[i].firstElementChild; if (!td || td.querySelector('.ip-cartpick')) return;
+                if (!e || e.isService) return;
+                var p = prod(e.code); if (!p || p.type === 'service') return; var v = varOf(p, e.variantId); if (!tracked(p, v)) return;
+                var html = cartPickHtml({ e: e, p: p, v: v, qty: Number(e.qty) || 0 }); if (html) td.insertAdjacentHTML('beforeend', html);
+            });
+        } catch (err) { /* the pop-up at checkout still asks */ }
+    }
+    function wrapCartRender() {
+        if (typeof renderCartBody === 'function' && !renderCartBody.__ip) {
+            var orig = renderCartBody, w = function () { var r = orig.apply(this, arguments); decorateCart(); return r; };
+            w.__ip = true; window.renderCartBody = w;
+            try { renderCart(); } catch (e) { /* drawn on the next change */ }
+        }
+    }
+    function boot() {
+        try { ensureEditorBox(); addEntryBar(); wrapSave(); wrapSaleHooks(); wrapCartRender(); wrapQtyEdit(); } catch (e) { /* every screen is optional */ }
+        ['inv-code', 'inv-name'].forEach(function (id) { var el = document.getElementById(id); if (el && !el.__ip) { el.__ip = 1; el.addEventListener('input', syncEditorBox); el.addEventListener('change', syncEditorBox); } });
+    }
+
+    // ---------------------------------------------------------------- 3c. serial numbers typed where they matter (zip 345)
+    // Add form (typed list), Restock (one box per tracked line), Edit quantity (up = type the new serials, down = pick which serial left).
+    var SR = null, SRN = 0;
+    function srShell() {
+        var o = document.getElementById('ip-sr');
+        if (!o) { o = document.createElement('div'); o.id = 'ip-sr'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true'); o.innerHTML = '<div id="ip-sr-card"></div>'; document.body.appendChild(o); o.addEventListener('click', srClick); o.addEventListener('input', srInput); }
+        return o;
+    }
+    function srClose(cancel) { var o = document.getElementById('ip-sr'); if (o) o.classList.remove('on'); var c = SR; SR = null; if (cancel && c && c.onCancel) { try { c.onCancel(); } catch (e) { /* none */ } } }
+    function srRefresh() { try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* cosmetic */ } try { var m = document.getElementById('inventory-edit-modal'); if (m && m.style.display !== 'none' && typeof renderInventoryEditModalFields === 'function') renderInventoryEditModalFields(); } catch (e) { /* cosmetic */ } }
+    function srName(l) { return l.p.name + (l.v ? ' · ' + l.v.name : ''); }
+    function srRegister(p, v, good, meta) {
+        meta = meta || {};
+        var cost = parseFloat(meta.cost); if (!(cost >= 0)) cost = Number((v || p).wholesalePrice) || 0;
+        var now = Date.now(), made = serialMakeUnits(good.map(function (u) { return { row: u.row, ids: u.ids.map(function (i) { return { type: meta.type || 'imei', value: i.value, norm: i.norm }; }) }; }), { batchId: 'sr-' + (localStorage.getItem('pos_device_id') || 'dev').slice(-6) + '-' + now.toString(36) + '-' + (++SRN), code: p.code, variantId: v ? v.id : null, name: v ? p.name + ' ' + v.name : p.name, cost: cost, supplier: meta.supplier || '', ref: meta.ref || '', by: who(), now: now, reason: meta.reason || 'Received' });
+        var n = 0; made.forEach(function (u) { if (!units().some(function (x) { return x.id === u.id; })) { serialUnits.push(u); n++; } });
+        var tgt = v || p, unreg = Number(tgt.serialUnregistered) || 0, conv = Math.min(unreg, n);
+        if (conv) tgt.serialUnregistered = unreg - conv;
+        var add = n - conv; if (add) { tgt.qty = r3((Number(tgt.qty) || 0) + add); recalc(p); }
+        saveInv(); saveUnits();
+        logMove(v ? (v.code || p.code) : p.code, v ? p.name + ' ' + v.name : p.name, add, (meta.reason || 'Received') + ': ' + n + ' serialized unit(s)' + (conv ? ' (' + conv + ' already counted)' : ''));
+        return n;
+    }
+    // validate the typed lines of every line of the pop-up together (no serial twice, even across lines)
+    function srCheck(lines, type) {
+        var pending = [], ok = true, errs = [];
+        lines.forEach(function (l, i) {
+            var rows = serialParseList(l.text || '');
+            l.err = '';
+            if (l.need != null && rows.length !== l.need) { l.err = 'Type exactly ' + l.need + ' serial number(s) - you typed ' + rows.length + '.'; ok = false; l.res = null; return; }
+            if (!rows.length) { l.err = 'Type at least one serial number.'; ok = false; l.res = null; return; }
+            var res = serialValidateBatch(units().concat(pending), rows, { type: type });
+            l.res = res;
+            if (res.errors.length) { l.err = res.errors.slice(0, 6).map(function (e) { return 'Line ' + e.row + ': ' + e.msg; }).join('  '); ok = false; return; }
+            res.units.forEach(function (u, k) { pending.push({ id: 'tmp-' + i + '-' + k, status: 'in_stock', code: l.p.code, variantId: l.v ? l.v.id : null, ids: u.ids.map(function (x) { return { type: type, value: x.value, norm: x.norm }; }) }); });
+        });
+        return ok;
+    }
+    // lines: [{p, v, need|null, text, cost}]   opts: { title, intro, deferred, onDone, onCancel, type }
+    function srOpenAdd(lines, opts) {
+        srShell().classList.add('on');
+        SR = { mode: 'add', lines: lines, opts: opts || {}, type: (opts && opts.type) || 'imei', onCancel: opts && opts.onCancel, err: '' };
+        srRender();
+    }
+    function srRender() {
+        var c = document.getElementById('ip-sr-card'); if (!c || !SR) return;
+        var h = '<div class="sr-head"><h3>' + esc(SR.mode === 'add' ? (SR.opts.title || 'Type the serial numbers') : 'Which serial number is leaving?') + '</h3><button type="button" class="sr-x" data-sr="cancel" aria-label="Close">✕</button></div><div class="sr-body">';
+        if (SR.mode === 'add') {
+            h += '<p class="ip-hint" style="margin-top:0">' + esc(SR.opts.intro || 'One unit per line. A phone with two IMEIs: put both on one line with | between them. A barcode scanner types a line for you.') + '</p>';
+            h += '<label style="font-weight:700">Type of number</label> <select id="ip-sr-type" class="ip-sel">' + [['imei', 'IMEI'], ['serial', 'Serial number'], ['mac', 'MAC address'], ['other', 'Other']].map(function (o) { return '<option value="' + o[0] + '"' + (SR.type === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
+            SR.lines.forEach(function (l, i) {
+                var n = serialParseList(l.text || '').length;
+                h += '<div class="ip-box" style="margin-top:10px"><h4 style="margin:0 0 6px">' + esc(srName(l)) + (l.need != null ? ' <span class="ip-badge ' + (n === l.need ? 'ok' : '') + '">' + n + ' of ' + l.need + ' typed</span>' : ' <span class="ip-badge">' + n + ' typed</span>') + '</h4>' +
+                    '<textarea data-sr-i="' + i + '" rows="5" placeholder="356938035643809&#10;356938035643810&#10;...">' + esc(l.text || '') + '</textarea>' + (l.err ? '<div class="ip-err" style="margin-top:6px">' + esc(l.err) + '</div>' : '') + '</div>';
+            });
+            if (SR.err) h += '<div class="ip-err">' + esc(SR.err) + '</div>';
+            h += '<div class="ip-tools" style="margin-top:12px"><button type="button" class="ip-btn" data-sr="go">' + esc(SR.opts.goLabel || 'Save these serial numbers') + '</button><button type="button" class="ip-btn sec" data-sr="cancel">Cancel</button></div>';
+        } else {
+            var R = SR.rm, list = inStockUnits(R.p, R.v), q = (R.q || '').trim(), nq = serialNorm(q), unreg = Number((R.v || R.p).serialUnregistered) || 0;
+            var need = R.need - R.unregTake;
+            h += '<p class="ip-hint" style="margin-top:0">' + esc(srName(R)) + ': the quantity goes down by <b>' + R.need + '</b>. Tick the serial number(s) that left stock (<b>' + R.sel.length + ' of ' + need + '</b> chosen).</p>';
+            if (unreg > 0) h += '<label style="font-weight:700">Units with no serial registered yet (you have ' + unreg + '): </label> <input type="number" id="ip-sr-unreg" class="ip-in" min="0" max="' + Math.min(unreg, R.need) + '" value="' + R.unregTake + '" style="width:80px">';
+            h += '<input class="ip-in" id="ip-sr-find" placeholder="Scan or type part of the serial to find it" value="' + esc(R.q || '') + '" style="width:100%;margin:8px 0" autocomplete="off">';
+            var shown = list.filter(function (u) { return !nq || (u.ids || []).some(function (i) { return i.norm.indexOf(nq) >= 0; }); });
+            h += shown.slice(0, 80).map(function (u) { var on = R.sel.indexOf(u.id) >= 0; return '<div class="ip-pick' + (on ? ' on' : '') + '" data-sr="tog" data-id="' + esc(u.id) + '"><span class="ip-mono">' + esc(idText(u)) + '</span><span>' + (on ? '✔ leaving' : 'tap to choose') + '</span></div>'; }).join('') || '<p class="ip-hint">No unit matches.</p>';
+            h += '<label style="font-weight:700;display:block;margin-top:10px">Why is it leaving stock?</label><select id="ip-sr-why" class="ip-sel" style="width:100%"><option>Lost or stolen</option><option>Damaged</option><option>Returned to supplier</option><option>Entered by mistake</option><option>Other</option></select>' +
+                '<input class="ip-in" id="ip-sr-note" placeholder="More detail (required)" value="' + esc(R.note || '') + '" style="width:100%;margin-top:6px">';
+            if (SR.err) h += '<div class="ip-err" style="margin-top:8px">' + esc(SR.err) + '</div>';
+            h += '<div class="ip-tools" style="margin-top:12px"><button type="button" class="ip-btn" data-sr="rmgo">Remove from stock (manager)</button><button type="button" class="ip-btn sec" data-sr="cancel">Cancel</button></div>';
+        }
+        c.innerHTML = h + '</div>';
+    }
+    function srInput(e) {
+        var t = e.target; if (!SR || !t) return;
+        if (SR.mode === 'add') {
+            if (t.id === 'ip-sr-type') { SR.type = t.value; return; }
+            var i = t.getAttribute && t.getAttribute('data-sr-i'); if (i !== null && i !== undefined) {
+                SR.lines[+i].text = t.value;
+                // live count without redrawing (keeps the cursor where it is)
+                var n = serialParseList(t.value).length, l = SR.lines[+i], b = t.parentNode.querySelector('.ip-badge');
+                if (b) { b.textContent = n + (l.need != null ? ' of ' + l.need : '') + ' typed'; b.className = 'ip-badge' + (l.need != null && n === l.need ? ' ok' : ''); }
+            }
+        } else {
+            var R = SR.rm;
+            if (t.id === 'ip-sr-find') { R.q = t.value; var f = t.selectionStart; srRender(); var el = document.getElementById('ip-sr-find'); if (el) { el.focus(); try { el.setSelectionRange(f, f); } catch (x) { /* none */ } } }
+            else if (t.id === 'ip-sr-unreg') { var v = Math.max(0, Math.min(parseInt(t.value, 10) || 0, R.need, Number((R.v || R.p).serialUnregistered) || 0)); R.unregTake = v; while (R.sel.length > R.need - v) R.sel.pop(); srRender(); }
+            else if (t.id === 'ip-sr-note') R.note = t.value;
+        }
+    }
+    function srClick(e) {
+        var t = e.target; if (!t || !t.closest) return;
+        if (t.id === 'ip-sr') return;
+        var b = t.closest('[data-sr]'); if (!b || !SR) return;
+        var act = b.getAttribute('data-sr');
+        if (act === 'cancel') { srClose(true); return; }
+        if (act === 'go') srGo();
+        else if (act === 'tog') { var R = SR.rm, id = b.getAttribute('data-id'), k = R.sel.indexOf(id), need = R.need - R.unregTake; if (k >= 0) R.sel.splice(k, 1); else if (R.sel.length < need) R.sel.push(id); else { SR.err = 'You already chose ' + need + '. Untick one first.'; srRender(); return; } SR.err = ''; srRender(); }
+        else if (act === 'rmgo') srRemoveGo();
+    }
+    function srGo() {
+        var typeEl = document.getElementById('ip-sr-type'); if (typeEl) SR.type = typeEl.value;
+        if (!srCheck(SR.lines, SR.type)) { SR.err = 'Fix the lines marked in red. Nothing was saved yet.'; srRender(); return; }
+        var S0 = SR, lines = S0.lines, type = S0.type, opts = S0.opts;
+        var finish = function () { var n = 0; lines.forEach(function (l) { n += srRegister(l.p, l.v, l.res.units, { type: type, cost: l.cost, reason: opts.reason || 'Received', supplier: l.supplier, ref: l.ref }); }); srClose(false); toast(n + ' unit(s) registered with their serial numbers.'); srRefresh(); if (opts.afterSave) { try { opts.afterSave(); } catch (e) { /* none */ } } };
+        if (opts.deferred) { srClose(false); try { opts.onDone({ lines: lines, finish: function () { lines.forEach(function (l) { var tgt = l.v || l.p; if (l.added > 0) tgt.serialUnregistered = (Number(tgt.serialUnregistered) || 0) + l.added; }); saveInv(); finish(); } }); } catch (e) { toast('Something went wrong - nothing was lost, check the stock.', true); } return; }
+        finish();
+    }
+    function srRemoveGo() {
+        var R = SR.rm, need = R.need - R.unregTake, why = (document.getElementById('ip-sr-why') || {}).value || 'Other', note = ((document.getElementById('ip-sr-note') || {}).value || '').trim(); R.note = note;
+        if (R.sel.length !== need) { SR.err = 'Choose ' + need + ' serial number(s) - you chose ' + R.sel.length + '.'; srRender(); return; }
+        if (!note) { SR.err = 'Write the detail of why it is leaving.'; srRender(); return; }
+        if (!isMgr()) { SR.err = 'Only a manager or admin can remove stock. Ask them to sign in, then try again.'; srRender(); return; }
+        var reason = why + ' - ' + note, bad = null;
+        R.sel.forEach(function (id) { if (bad) return; var u = units().find(function (x) { return x && x.id === id; }); if (!u) return; var r = applyUnit(u, 'written_off', { reason: reason }); if (!r.ok) bad = r.error; });
+        if (bad) { SR.err = bad; srRender(); return; }
+        if (R.unregTake > 0) { var tgt = R.v || R.p; tgt.serialUnregistered = Math.max(0, (Number(tgt.serialUnregistered) || 0) - R.unregTake); bump(R.p, R.v, -R.unregTake); saveInv(); logMove(R.v ? (R.v.code || R.p.code) : R.p.code, srName(R), -R.unregTake, 'Removed ' + R.unregTake + ' unit(s) without a serial: ' + reason); }
+        srClose(false); toast(R.need + ' unit(s) removed from stock.'); srRefresh();
+    }
+    // typed in the Add form
+    function srTyped(p, v, text) {
+        var rows = serialParseList(text), res = serialValidateBatch(units(), rows, { type: 'imei' });
+        var goodRows = {}; res.units.forEach(function (u) { goodRows[u.row] = 1; });
+        var n = res.units.length ? srRegister(p, v, res.units, { type: 'imei', reason: 'Received' }) : 0;
+        var left = rows.filter(function (r, i) { return !goodRows[i + 1]; }).map(function (r) { return r.join(' | '); }).join('\n');
+        srRefresh();
+        if (left) { toast(n + ' registered. ' + (rows.length - n) + ' line(s) had a problem - fix them in the next screen.', true); srOpenAdd([{ p: p, v: v, need: null, text: left, err: res.errors.slice(0, 6).map(function (e) { return 'Line ' + e.row + ': ' + e.msg; }).join('  ') }], { title: 'Fix these serial numbers', intro: 'These lines were not saved. Correct or delete them.' }); }
+        else toast(n + ' unit(s) registered. "' + p.name + '" can now be sold.');
+    }
+    function srQtyChange(p, v, value) {
+        var q = parseFloat(value); if (!isFinite(q) || q < 0) return false;
+        var cur = Number((v || p).qty) || 0, delta = r3(q - cur); if (delta === 0) return false;
+        if (Math.abs(delta - Math.round(delta)) > 1e-9) { toast('This item is counted in whole units (one serial number each).', true); srRefresh(); return true; }
+        delta = Math.round(delta);
+        srRefresh();
+        if (delta > 0) {
+            var ls = [{ p: p, v: v, need: delta, text: '' }];
+            srOpenAdd(ls, { title: 'Quantity goes up by ' + delta, intro: 'You are adding ' + delta + ' unit(s) to "' + srName(ls[0]) + '". Type the serial number of each new unit (one per line).', goLabel: 'Add ' + delta + ' unit(s)', reason: 'Stock added (edit)' });
+        } else {
+            srShell().classList.add('on');
+            SR = { mode: 'remove', err: '', rm: { p: p, v: v, need: -delta, sel: [], unregTake: 0, q: '', note: '' } };
+            var inStockN = inStockUnits(p, v).length, un = Number((v || p).serialUnregistered) || 0;
+            if (inStockN + un < -delta) { srClose(false); toast('There are not that many units to remove.', true); return true; }
+            if (inStockN < -delta) SR.rm.unregTake = Math.min(un, -delta - inStockN);
+            srRender();
+        }
+        return true;
+    }
+    function wrapQtyEdit() {
+        if (typeof updateInventoryField === 'function' && !updateInventoryField.__ipq) {
+            var o = updateInventoryField, w = function (code, field, value) {
+                try { if (field === 'qty') { var p = prod(code); if (p && !p.hasVariants && tracked(p, null) && srQtyChange(p, null, value)) return; } } catch (e) { /* normal edit */ }
+                return o.apply(this, arguments);
+            }; w.__ipq = true; window.updateInventoryField = w;
+        }
+        if (typeof updateVariantField === 'function' && !updateVariantField.__ipq) {
+            var ov = updateVariantField, wv = function (code, vid, field, value) {
+                try { if (field === 'qty') { var p = prod(code), v = varOf(p, vid); if (p && v && tracked(p, v) && srQtyChange(p, v, value)) return; } } catch (e) { /* normal edit */ }
+                return ov.apply(this, arguments);
+            }; wv.__ipq = true; window.updateVariantField = wv;
+        }
+    }
+    function restockTracked() {
+        var out = [];
+        (typeof restockDraft !== 'undefined' ? restockDraft : []).forEach(function (r) {
+            var c = String(r.code || '').trim(), n = String(r.name || '').trim().toLowerCase(), q = parseFloat(r.qty); if (!(q > 0)) return;
+            var hit = typeof restockVariantByCode === 'function' && c ? restockVariantByCode(c) : null;
+            var p = hit ? hit.item : inv().find(function (x) { return x && ((c && String(x.code).toLowerCase() === c.toLowerCase()) || (!c && n && String(x.name || '').trim().toLowerCase() === n)); });
+            var v = hit ? hit.variant : null;
+            if (p && tracked(p, v)) out.push({ p: p, v: v, need: q, cost: r.cost, text: '' });
+        });
+        return out;
+    }
+    // ---------------------------------------------------------------- 4. purchases: identifiers BEFORE stock
+    // A purchase line for an item that tracks a unique identifier cannot add stock without its identifiers. The arrival screen asks for them (one box per line, the
+    // same checks as the receiving screen), keeps them, then runs the arrival again. Stock still goes up exactly once: the unit rows ARE the quantity.
+    var POIDS = {};                    // purchase line id -> parsed rows
+    function poTarget(item) {
+        var vh = (typeof poFindVariant === 'function') ? poFindVariant(item.code, item.name) : null;
+        if (vh && tracked(vh.p, vh.v)) return { p: vh.p, v: vh.v };
+        if (vh) return null;
+        var p = (typeof poFindProduct === 'function') ? poFindProduct(item.code, item.name) : null;
+        return p && tracked(p, null) ? { p: p, v: null } : null;
+    }
+    function purchaseGate(order, picks) {
+        var need = [];
+        (picks || []).forEach(function (pk) {
+            var t = poTarget(pk.item); if (!t) return;
+            var rows = POIDS[pk.item.id];
+            if (!rows || rows.count !== pk.qty) need.push({ pk: pk, t: t });
+        });
+        if (!need.length) return true;
+        var root = document.getElementById('ip-po-ids'); if (root) root.remove();
+        root = document.createElement('div'); root.id = 'ip-po-ids'; root.className = 'modal-overlay'; root.style.cssText = 'display:flex;z-index:100000;';
+        root.innerHTML = '<div class="modal-content" style="max-width:560px;width:94%;max-height:calc(90vh / var(--pos-z,1));overflow:auto;padding:16px;border-radius:14px;"><h3 style="margin:0 0 6px">🔢 Identifiers needed before stock goes up</h3>' +
+            '<p style="font-size:13px;color:#7f8c8d;margin:0 0 8px">These items track an IMEI / serial number per unit. Enter one per line (two IMEIs on one phone: put both on one line with | between them). The stock is added only when the count matches what arrived.</p>' +
+            need.map(function (n, i) { return '<div style="margin:8px 0"><b>' + esc(n.t.p.name + (n.t.v ? ' · ' + n.t.v.name : '')) + '</b> — ' + n.pk.qty + ' unit(s)<textarea data-ip-poids="' + i + '" rows="4" style="width:100%;font-family:monospace;padding:8px;box-sizing:border-box" placeholder="356938035643809"></textarea><div class="ip-err" data-ip-poerr="' + i + '"></div></div>'; }).join('') +
+            '<div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="ip-btn sec" data-ip-pocancel="1">Cancel</button><button type="button" class="ip-btn" data-ip-posave="1">Save identifiers &amp; receive</button></div></div>';
+        document.body.appendChild(root);
+        root.addEventListener('click', function (e) {
+            if (e.target.closest('[data-ip-pocancel]') || e.target === root) { root.remove(); return; }
+            if (!e.target.closest('[data-ip-posave]')) return;
+            var ok = true, staged = [];
+            need.forEach(function (n, i) {
+                var ta = root.querySelector('[data-ip-poids="' + i + '"]'), er = root.querySelector('[data-ip-poerr="' + i + '"]');
+                var rows = serialParseList(ta.value), taken = units().concat(staged.reduce(function (a, st) { return a.concat(st.fake); }, []));
+                var res = serialValidateBatch(taken, rows, { type: 'imei', expected: n.pk.qty });
+                er.innerHTML = '';
+                if (res.errors.length || res.count !== n.pk.qty) { ok = false; er.innerHTML = res.errors.slice(0, 5).map(function (x) { return 'Line ' + x.row + ': ' + esc(x.msg); }).join('<br>') + (res.count !== n.pk.qty ? '<br>' + res.count + ' valid of ' + n.pk.qty + ' expected.' : ''); return; }
+                staged.push({ id: n.pk.item.id, rows: rows, res: res, fake: res.units.map(function (u) { return { id: 'tmp', ids: u.ids, status: 'in_stock', code: n.t.p.code }; }) });
+            });
+            if (!ok) return;
+            staged.forEach(function (st) { POIDS[st.id] = { rows: st.rows, units: st.res.units, count: st.res.count }; });
+            root.remove();
+            try { poConfirmArrival(); } catch (x) { toast('Could not continue the arrival: ' + x.message, true); }
+        });
+        return false;
+    }
+    function purchaseApply(order, item, qty) {
+        var rec = POIDS[item.id]; var t = poTarget(item); if (!t || !rec) return;
+        var made = serialMakeUnits(rec.units.map(function (u) { return { row: u.row, ids: u.ids.map(function (i) { return { type: i.type || 'imei', value: i.value, norm: i.norm }; }) }; }),
+            { batchId: 'po-' + order.id + '-' + item.id + '-' + (Number(item.receivedQty) || 0), code: t.p.code, variantId: t.v ? t.v.id : null, name: t.v ? t.p.name + ' ' + t.v.name : t.p.name, cost: Number(item.cost) || 0, supplier: order.supplierName || '', ref: order.orderNo, by: who(), now: Date.now(), reason: 'Received on ' + order.orderNo });
+        var n = 0; made.forEach(function (u) { if (!units().some(function (x) { return x.id === u.id; })) { serialUnits.push(u); n++; } });
+        delete POIDS[item.id];
+        saveUnits();      // the quantity already went up by qty in the purchase: the units are exactly that quantity
+    }
+    window.serialPurchaseGate = purchaseGate; window.serialPurchaseApply = purchaseApply;
+    window.serialGate = gate; window.serialAttach = attach;
+    window.invProOpen = open;
+    window.invProState = S; window.invProSel = SEL;
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    document.addEventListener('focusin', function (e) { try { if (e.target && e.target.closest && e.target.closest('#add-item-tab')) { ensureEditorBox(); syncEditorBox(); } } catch (x) { /* cosmetic */ } });
+    setTimeout(boot, 1500); setTimeout(boot, 6000);
+})();
+</script>

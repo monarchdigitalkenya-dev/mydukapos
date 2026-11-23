@@ -1,0 +1,466 @@
+<!-- AQUA BOTTLES -----------------------------------------------------------------------------------------------------------------------------------
+     zip 365, Aqua POS. Finished water is kept PER BOTTLE: "500ml Bale (Case) - 24 pcs — Grip" has its own stock, price, stock take line and
+     Sales Counter card, separate from "— Aqua clear". These are ordinary products (code = the plain item's code + a suffix) with:
+       bottleOf    = the plain item they come from (e.g. the "500ml Sealed Bottle"), bottleMatId = the bottle material (Materials, category Bottle),
+       clientId / clientName = set when that bottle is a client's own branded bottle (e.g. Jays Hexa): counted in Inventory and Stock Take,
+                   but NOT shown on the Sales Counter or Price List.
+     A bale is linked to its own sealed bottle (as the plain bale is linked to the plain bottle), so selling a bale or loose bottles of the same
+     bottle draws on one pool. Production of the plain item goes to the bottle actually picked (created on first use). The plain item keeps any
+     older stock and drops off the Sales Counter once it is empty and bottle items exist for it.
+     📋 Paste stock balances (Production tab): paste a list like "500ml Aqua clear 38bales" - each line SETS that bottle's stock (like a stock
+     take), after a preview you can correct. Read on the device (offline, free); lines it cannot read can be sent to the AI reader.
+     Shared via `npm run sync` (Aqua POS only); never hand-edit it inside the app. -->
+<style>
+    .aqb-ov { position: fixed; inset: 0; z-index: 10060; background: rgba(15, 23, 42, .55); display: none; align-items: flex-start; justify-content: center; padding: 18px 10px; overflow-y: auto; }
+    .aqb-ov.on { display: flex; }
+    .aqb-box { background: #fff; color: #1f2d3d; width: 100%; max-width: 1040px; border-radius: 16px; padding: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
+    .aqb-box h3 { margin: 0 0 4px; font-size: 19px; }
+    .aqb-sub { margin: 0 0 12px; color: #5d6d7e; font-size: 13.5px; }
+    .aqb-box textarea { width: 100%; box-sizing: border-box; min-height: 210px; border: 1px solid #cfd8dc; border-radius: 10px; padding: 10px; font: 15px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+    .aqb-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    .aqb-b { min-height: 42px; padding: 0 16px; border-radius: 10px; border: 1px solid #cfd8dc; background: #fff; font-weight: 700; cursor: pointer; font-size: 14px; }
+    .aqb-b.go { background: #0e7c86; border-color: #0e7c86; color: #fff; }
+    .aqb-b.ai { background: linear-gradient(135deg, #6d28d9, #2563eb); border-color: transparent; color: #fff; }
+    .aqb-b:disabled { opacity: .5; cursor: not-allowed; }
+    .aqb-t { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13.5px; }
+    .aqb-t th { text-align: left; background: #f1f5f9; padding: 7px 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: #475569; }
+    .aqb-t td { padding: 7px 8px; border-bottom: 1px solid #eef2f5; vertical-align: top; }
+    .aqb-t select, .aqb-t input { width: 100%; box-sizing: border-box; min-height: 38px; border: 1px solid #cfd8dc; border-radius: 8px; padding: 4px 8px; font-size: 14px; background: #fff; }
+    .aqb-t tr.bad td { background: #fff5f5; }
+    .aqb-t td:nth-child(3) { min-width: 210px; } .aqb-t td:nth-child(4) { min-width: 160px; } .aqb-t td:nth-child(5) { min-width: 200px; }
+    .aqb-t td:nth-child(5) input { min-width: 80px; } .aqb-t td:nth-child(5) select { min-width: 100px; }
+    .aqb-t tr.cl td { background: #faf5ff; }
+    .aqb-src { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; color: #334155; }
+    .aqb-pill { display: inline-block; font-size: 11px; font-weight: 800; border-radius: 999px; padding: 1px 8px; background: #e0f2f1; color: #0e7c86; margin-left: 4px; }
+    .aqb-pill.new { background: #fef3c7; color: #92400e; }
+    .aqb-pill.cl { background: #ede9fe; color: #5b21b6; }
+    .aqb-err { color: #b91c1c; font-weight: 700; min-height: 18px; margin-top: 8px; }
+    .aqb-ok { color: #15803d; font-weight: 700; }
+    .aqb-hint { color: #64748b; font-size: 12.5px; }
+    .aqb-card { margin: 0 0 14px; padding: 14px 16px; border-radius: 14px; border: 1px dashed #0e7c86; background: repeating-linear-gradient(135deg, #f0fdfa 0 12px, #ecfeff 12px 24px); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .aqb-card b { font-size: 15px; }
+    @media (max-width: 640px) {
+        .aqb-t thead { display: none; }
+        .aqb-t, .aqb-t tbody, .aqb-t tr, .aqb-t td { display: block; width: 100%; box-sizing: border-box; }
+        .aqb-t tr { border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 10px; padding: 6px 4px; }
+        .aqb-t td { border: 0; padding: 4px 8px; min-width: 0 !important; }
+        .aqb-t td[data-l]::before { content: attr(data-l); display: block; font-size: 10.5px; font-weight: 800; text-transform: uppercase; color: #64748b; }
+        .aqb-row .aqb-b { flex: 1 1 auto; }
+    }
+</style>
+<div class="aqb-ov" id="aqb-ov"><div class="aqb-box" id="aqb-box"></div></div>
+<script>
+(function () {
+    'use strict';
+    var AB = {};
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+    var toast = function (m, bad) { try { showToast(m, !!bad); } catch (e) { /* no toast */ } };
+    var save = function () { try { queuePush(); } catch (e) { /* the app's offline queue */ } };
+    var AF = function () { return window.AquaFlow; };
+    var AM = function () { return window.AquaMat; };
+    var prods = function () { return (typeof products !== 'undefined' && Array.isArray(products)) ? products : []; };
+    var mats = function () { return (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials)) ? rawMaterials : []; };
+    var custs = function () { return (typeof customers !== 'undefined' && Array.isArray(customers)) ? customers : []; };
+    var live = function (x) { return !!x && !x._deleted && !x.removed; };
+    var norm = function (s) { return String(s == null ? '' : s).toLowerCase().replace(/[‘’“”'"`]/g, '').replace(/[^a-z0-9.]+/g, ' ').trim(); };
+    var BPB = { 300: 24, 330: 24, 350: 24, 500: 24, 600: 24, 750: 12, 1000: 12, 1500: 12, 2000: 6, 5000: 4, 10000: 1, 18900: 1, 20000: 1 };
+
+    function sizeOf(p) { try { return AF().sizeOfProduct(p); } catch (e) { return Number(p && p.sizeML) || 0; } }
+    function kindOf(p) { try { return AF().kindOfProduct(p); } catch (e) { return p && p.category === 'bottled' ? 'sealed' : p && p.category === 'bale' ? (p.baleKind === 'custom' ? 'custom' : 'bale') : ''; } }
+    function sizeLabel(ml) { try { return AF().sizeLabel(ml); } catch (e) { return ml + 'ml'; } }
+    function bpbOf(p, size) { try { if (typeof productBottlesPerBale === 'function' && p) { var v = productBottlesPerBale(p); if (v > 0) return v; } } catch (e) { /* default */ } return (p && Number(p.bottlesPerBale)) || BPB[size] || 12; }
+    function siteNow() { try { return activeSiteId === 'both' ? null : activeSiteId; } catch (e) { return null; } }
+
+    /* the bottle's own words: "Grip blue 1L" -> "Grip blue" */
+    var SIZE_RX = /\b\d+(?:\.\d+)?\s*(?:ml|mls|l|lt|ltr|ltrs|litre|litres|liter|liters)\b/gi;
+    function bottleLabel(m) { var t = String(m && m.name || '').replace(SIZE_RX, ' ').replace(/\s+/g, ' ').trim(); return t || String(m && m.name || 'Bottle'); }
+    AB.bottleLabel = bottleLabel;
+
+    // ------------------------------------------------------------------ the bottle items
+    AB.isVariety = function (p) { return !!(p && p.bottleOf); };
+    AB.varietiesOf = function (code) { return prods().filter(function (p) { return live(p) && p.bottleOf === code; }); };
+    function plainOf(size, kind) {
+        return prods().filter(function (p) { return live(p) && !p.bottleOf && sizeOf(p) === size && kindOf(p) === kind && !p.customQuote && p.type !== 'service'; })
+            .sort(function (a, b) { return (a.linkedBottleCode ? 0 : 1) - (b.linkedBottleCode ? 0 : 1) || String(a.code).localeCompare(String(b.code)); })[0] || null;
+    }
+    function codeFor(base, label) {
+        var suf = String(label).toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 8) || 'B', code = base + '-' + suf, n = 2;
+        while (prods().some(function (p) { return p.code === code; })) code = base + '-' + suf + (n++);
+        return code;
+    }
+    function nameFor(plain, m) { return String(plain.name).replace(/\s+—\s+.*$/, '') + ' — ' + bottleLabel(m) + (m.clientId ? ' (client: ' + (m.clientName || 'client') + ')' : ''); }
+    function cloneRecipe(plain, m) {
+        var r = JSON.parse(JSON.stringify(Array.isArray(plain.productionRecipe) ? plain.productionRecipe : []));
+        r.forEach(function (ln) { if (ln && ln.category === 'bottle') { ln.eligible = [m.id]; ln.materialId = m.id; } });
+        return r;
+    }
+    function makeVariety(plain, m, linkCode) {
+        var v = JSON.parse(JSON.stringify(plain));
+        ['stock', 'siteTimes', 'bottleStockBySite'].forEach(function (k) { v[k] = {}; });
+        v.qty = 0; if (v.trackBottles) { v.bottleStock = 0; v.fullBales = 0; v.halfBales = 0; v.looseBottles = 0; }
+        delete v._deleted; delete v.removed; delete v.archived;
+        v.code = codeFor(plain.code, bottleLabel(m)); v.name = nameFor(plain, m);
+        v.bottleOf = plain.code; v.bottleMatId = m.id; v.clientId = m.clientId || null; v.clientName = m.clientId ? (m.clientName || '') : null;
+        v.productionRecipe = cloneRecipe(plain, m);
+        if (linkCode) v.linkedBottleCode = linkCode; else delete v.linkedBottleCode;     /* never share the plain bottle's pool */
+        v.createdAt = Date.now(); v.updatedAt = Date.now();
+        prods().push(v);
+        return v;
+    }
+    /* make sure the plain items of a size exist (only used when the business has none yet, e.g. 1.5L): no price yet, set it in the Price List */
+    function ensurePlain(size) {
+        var s = plainOf(size, 'sealed'), b = plainOf(size, 'bale'), site = siteNow() || (typeof productionSiteId === 'function' ? productionSiteId() : null), made = [];
+        if (!s) {
+            s = { code: codeFor('W' + size, 'SEALED'), name: sizeLabel(size) + ' Sealed Bottle', category: 'bottled', sizeML: size, price: 0, wholesalePrice: 0, qty: 0, stock: {}, siteTimes: {}, priceTiers: [], bom: [], vatCategory: 'A', productionRecipe: [], createdAt: Date.now(), updatedAt: Date.now() };
+            if (site) s.siteId = site; prods().push(s); made.push(s);
+        }
+        if (!b) {
+            var bpb = BPB[size] || 12;
+            b = { code: codeFor('W' + size, 'BALE'), name: sizeLabel(size) + ' Bale (Case) - ' + bpb + ' pcs', category: 'bale', sizeML: size, bottlesPerBale: bpb, linkedBottleCode: s.code, price: 0, wholesalePrice: 0, qty: 0, stock: {}, siteTimes: {}, priceTiers: [], bom: [], vatCategory: 'A', productionRecipe: [], createdAt: Date.now(), updatedAt: Date.now() };
+            if (site) b.siteId = site; prods().push(b); made.push(b);
+        }
+        try { AF().syncRecipes(); } catch (e) { /* recipes link on the next pass */ }
+        return { sealed: s, bale: b, made: made };
+    }
+    /* the sealed + bale items for one bottle at one size (created the first time): returns { sealed, bale } */
+    AB.ensureFor = function (size, m) {
+        if (!m || !size) return null;
+        var pb = plainOf(size, 'bale'), linked = pb && pb.linkedBottleCode ? prods().filter(function (x) { return live(x) && x.code === pb.linkedBottleCode; })[0] : null;
+        var pl = { sealed: linked || plainOf(size, 'sealed'), bale: pb };
+        if (!pl.sealed && !pl.bale) pl = ensurePlain(size);
+        var out = {};
+        if (pl.sealed) out.sealed = AB.varietiesOf(pl.sealed.code).filter(function (v) { return v.bottleMatId === m.id; })[0] || makeVariety(pl.sealed, m);
+        if (pl.bale) {
+            out.bale = AB.varietiesOf(pl.bale.code).filter(function (v) { return v.bottleMatId === m.id; })[0];
+            if (!out.bale) out.bale = makeVariety(pl.bale, m, pl.bale.linkedBottleCode && out.sealed && pl.sealed && pl.bale.linkedBottleCode === pl.sealed.code ? out.sealed.code : null);
+        }
+        /* keep names / client marks in step with the bottle */
+        [out.sealed, out.bale].forEach(function (v) { if (!v) return; var pp = prods().filter(function (x) { return x.code === v.bottleOf; })[0]; if (!pp) return; var nm = nameFor(pp, m); if (v.name !== nm || (v.clientId || null) !== (m.clientId || null)) { v.name = nm; v.clientId = m.clientId || null; v.clientName = m.clientId ? (m.clientName || '') : null; v.updatedAt = Date.now(); } });
+        return out;
+    };
+    /* a bottle's client changed in Materials: its items follow */
+    AB.refreshBottle = function (matId) {
+        var m = mats().filter(function (x) { return x.id === matId; })[0]; if (!m) return;
+        prods().forEach(function (v) { if (!live(v) || v.bottleMatId !== matId) return; var pp = prods().filter(function (x) { return x.code === v.bottleOf; })[0]; if (!pp) return; var nm = nameFor(pp, m); if (v.name !== nm || (v.clientId || null) !== (m.clientId || null)) { v.name = nm; v.clientId = m.clientId || null; v.clientName = m.clientId ? (m.clientName || '') : null; v.updatedAt = Date.now(); } });
+    };
+    function qtyNow(p) { try { if (typeof effectiveQtyOf === 'function') return effectiveQtyOf(p); } catch (e) { /* plain */ } return Number(p && p.qty) || 0; }
+    /* Sales Counter / search: a client's bottle is not offered; a plain item with bottle items and nothing left of its own is hidden */
+    AB.hideOnCounter = function (p) {
+        if (!p) return false;
+        if (p.bottleOf && p.clientId) return true;
+        if (p.bottleOf && !(Number(p.price) > 0) && !(Array.isArray(p.priceTiers) && p.priceTiers.length)) return true;   /* no price yet: never a KES 0 sale */
+        if (!p.bottleOf && AB.varietiesOf(p.code).length && !(qtyNow(p) > 0)) return true;
+        return false;
+    };
+    /* Price List: the bottle items carry the prices; a client's bottle and the plain item (once it has bottle items) are left out */
+    AB.hideOnPriceList = function (p) { if (!p) return false; if (p.bottleOf && p.clientId) return true; if (!p.bottleOf && AB.varietiesOf(p.code).length) return true; return false; };
+
+    /* per-bottle stock is ON for an item once it has bottle items (after a paste or a run) or the owner switched it on (perBottle) */
+    AB.perBottleOn = function (p) { return !!(p && !p.bottleOf && (p.perBottle || AB.varietiesOf(p.code).length || (p.linkedBottleCode && (function () { var s = prods().filter(function (x) { return x.code === p.linkedBottleCode; })[0]; return !!(s && (s.perBottle || AB.varietiesOf(s.code).length)); })()))); };
+    AB.anyOn = function () { return prods().some(function (p) { return live(p) && (p.bottleOf || p.perBottle); }); };
+    AB.switchOn = function (on) {
+        var n = 0;
+        prods().forEach(function (p) { if (!live(p) || p.bottleOf) return; var k = kindOf(p); if (k !== 'sealed' && k !== 'bale') return; if (!!p.perBottle !== !!on) { p.perBottle = !!on; p.updatedAt = Date.now(); n++; } });
+        save(); try { AF().renderFlow(); } catch (e) { /* redrawn later */ }
+        toast(on ? '🍼 Stock per bottle is on: each run goes to the bottle you pick.' : 'Stock per bottle is off for new runs (bottle items you already have stay).');
+        return n;
+    };
+    /* "how much was produced for this order" counts the bottle items of the same plain item too */
+    function rootOf(code) { var p = prods().filter(function (x) { return x.code === code; })[0]; return p && p.bottleOf ? p.bottleOf : code; }
+    // ------------------------------------------------------------------ production goes to the bottle picked
+    function bottleLine(p) { return (Array.isArray(p.productionRecipe) ? p.productionRecipe : []).filter(function (r) { return r && r.lineId && r.category === 'bottle'; })[0]; }
+    AB.redirect = function (o) {
+        var A = AM(); if (!A || !o || !o.code) return o;
+        var p = prods().filter(function (x) { return x.code === o.code; })[0];
+        if (!p || p.bottleOf) return o;
+        var k = kindOf(p); if (k !== 'sealed' && k !== 'bale') return o;
+        if (!AB.perBottleOn(p)) return o;                                   /* this business still keeps one stock per size */
+        var ln = bottleLine(p); if (!ln) return o;
+        var plan; try { plan = A.plan(p, Number(o.qty) || 1, o.picks || {}, o.overrides || {}, o.site); } catch (e) { return o; }
+        var row = plan && plan.lines.filter(function (r) { return r.category === 'bottle'; })[0], m = row && row.material;
+        if (!m) return o;
+        var vs = AB.ensureFor(sizeOf(p), m), v = vs && (k === 'sealed' ? vs.sealed : vs.bale); if (!v) return o;
+        /* the same choices, matched by what each line is (bottle, cap, seal...) */
+        var picks = {}, byCat = {};
+        (p.productionRecipe || []).forEach(function (r) { if (r && r.lineId && o.picks && o.picks[r.lineId] !== undefined) byCat[r.category] = o.picks[r.lineId]; });
+        (v.productionRecipe || []).forEach(function (r) { if (r && r.lineId && byCat[r.category] !== undefined) picks[r.lineId] = byCat[r.category]; });
+        var bl = bottleLine(v); if (bl) picks[bl.lineId] = m.id;
+        var ov = {}; if (o.overrides) { (p.productionRecipe || []).forEach(function (r) { if (r && o.overrides[r.lineId] !== undefined) { var t = (v.productionRecipe || []).filter(function (x) { return x && x.category === r.category; })[0]; if (t) ov[t.lineId] = o.overrides[r.lineId]; } }); }
+        return Object.assign({}, o, { code: v.code, picks: picks, overrides: ov, bottleRedirectFrom: p.code });
+    };
+
+    // ------------------------------------------------------------------ 📋 paste stock balances
+    var UNIT_RX = /(\d+(?:[.,]\d+)?)\s*(bales?|bls?|cases?|ctns?|cartons?|packs?|bottles?|btls?|pcs?|pieces?|units?)?\.?\s*$/i;
+    var SIZE_IN = /(\d+(?:\.\d+)?)\s*(ml|mls|l|lt|ltr|ltrs|litre|litres|liter|liters)\b/i;
+    function readSize(t) {
+        var m = String(t).match(SIZE_IN); if (!m) return { size: 0, rest: t };
+        var n = parseFloat(m[1]), u = m[2].toLowerCase(), size = /^ml/.test(u) ? Math.round(n) : Math.round(n * 1000);
+        return { size: size, rest: (t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim() };
+    }
+    function words(t) { return norm(t).replace(/\b(plain|bottle|bottles|water|the)\b/g, ' ').split(/\s+/).filter(function (w) { return w.length > 1; }); }
+    /* how well typed words fit a bottle's name: shared words / words typed (each "a/b" alternative tried) */
+    function score(text, m) {
+        var mw = words(bottleLabel(m)); if (!mw.length) return 0;
+        var best = 0;
+        String(text).split(/\s*[\/|]\s*|\s+or\s+/i).concat([String(text).replace(/[\/|]/g, ' ')]).forEach(function (alt) {
+            var tw = words(alt); if (!tw.length) return;
+            var hit = 0; tw.forEach(function (w) { if (mw.some(function (x) { return x === w || (w.length >= 4 && (x.indexOf(w) === 0 || w.indexOf(x) === 0)); })) hit++; });
+            var back = 0; mw.forEach(function (x) { if (tw.some(function (w) { return x === w || (w.length >= 4 && (x.indexOf(w) === 0 || w.indexOf(x) === 0)); })) back++; });
+            var s = (hit / tw.length) * 0.6 + (back / mw.length) * 0.4; if (s > best) best = s;
+        });
+        return best;
+    }
+    function bottlesOfSize(size) {
+        var site = siteNow();
+        return mats().filter(function (m) {
+            if (!live(m) || m.category !== 'bottle') return false;
+            try { if (site && typeof matSiteId === 'function' && matSiteId(m) !== site) return false; } catch (e) { /* any site */ }
+            var ks = Array.isArray(m.forItems) ? m.forItems : [];
+            if (ks.some(function (k) { return Number(String(k).split(':')[0]) === size; })) return true;
+            var s2 = readSize(m.name).size; return s2 === size;
+        });
+    }
+    /* a client whose name shares a word with the line (e.g. "Jays" -> "Jays Kitchen") */
+    function clientIn(text) {
+        var tw = words(text).filter(function (w) { return w.length >= 4 && !/^(grip|aqua|clear|blue|green|plain|hexa|round|square|antik|banana|white)$/.test(w); });
+        if (!tw.length) return null;
+        return custs().filter(function (c) { if (!live(c) || !c.name) return false; var cw = words(c.name); return tw.some(function (w) { return cw.indexOf(w) !== -1; }); })[0] || null;
+    }
+    AB.parse = function (text) {
+        var out = { date: '', rows: [], skipped: [] };
+        String(text || '').split(/\r?\n/).forEach(function (raw, i) {
+            var line = raw.replace(/\t/g, ' ').replace(/[•*·]+/g, ' ').replace(/\s+/g, ' ').trim(); if (!line) return;
+            if (!/\d/.test(line)) return;                                     /* a heading ("Packaged Water balances") */
+            var dm = line.match(/(?:as\s*(?:@|at|of)|date[d:]?)\s*([0-3]?\d[\/.\-][01]?\d[\/.\-](?:\d{4}|\d{2}))/i) || (!/\d+\s*(bales?|bottles?|pcs)/i.test(line) && line.match(/\b([0-3]?\d[\/.\-][01]?\d[\/.\-](?:\d{4}|\d{2}))\b/));
+            if (dm && !UNIT_RX.test(line.replace(dm[0], ''))) { out.date = dm[1]; return; }
+            if (dm) { out.date = out.date || dm[1]; line = line.replace(dm[0], ' ').trim(); }
+            var sz = readSize(line);
+            var um = sz.rest.match(UNIT_RX);
+            if (!sz.size || !um) { out.skipped.push({ n: i + 1, text: raw.trim(), why: !sz.size ? 'no size (500ml, 1ltr...)' : 'no quantity' }); return; }
+            var qty = parseFloat(um[1].replace(',', '.')), unit = /^(bottles?|btls?|pcs?|pieces?|units?)$/i.test(um[2] || '') ? 'bottles' : 'bales';
+            var name = sz.rest.slice(0, um.index).replace(/[-:=]+\s*$/, '').trim();
+            out.rows.push(AB.matchRow({ n: i + 1, text: raw.trim(), size: sz.size, name: name, qty: qty, unit: unit }));
+        });
+        return out;
+    };
+    AB.matchRow = function (r) {
+        var cands = bottlesOfSize(r.size).map(function (m) { return { m: m, s: score(r.name, m) }; }).sort(function (a, b) { return b.s - a.s; });
+        var best = cands[0];
+        r.matId = best && best.s >= 0.5 ? best.m.id : '';
+        r.sure = !!(best && best.s >= 0.75 && (!cands[1] || cands[1].s < best.s));
+        var m = r.matId ? mats().filter(function (x) { return x.id === r.matId; })[0] : null;
+        var named = clientIn(r.name);
+        /* "Jays Hexa" names a client: a general "Hexa plain" bottle is not theirs - it becomes the client's own bottle */
+        if (named && m && m.clientId !== named.id) { m = null; r.matId = ''; r.sure = false; }
+        var c = m && m.clientId ? custs().filter(function (x) { return x.id === m.clientId; })[0] : named;
+        r.clientId = m && m.clientId ? m.clientId : (c ? c.id : '');
+        r.newName = r.name ? r.name.replace(/\s+/g, ' ') + ' ' + sizeLabel(r.size) : '';
+        return r;
+    };
+
+    var P = null;           // the open paste: { text, plan, site }
+    function ov(h) { $('aqb-box').innerHTML = h; $('aqb-ov').classList.add('on'); }
+    AB.close = function () { $('aqb-ov').classList.remove('on'); $('aqb-box').innerHTML = ''; };
+    AB.openPaste = function () {
+        var site = siteNow();
+        ov('<h3>📋 Paste stock balances</h3><p class="aqb-sub">Paste the balances exactly as you have them, one bottle per line, e.g. <b>500ml Aqua clear 38bales</b> or <b>1ltr Grip blue 26 bales</b>. Each bottle\'s stock is <b>set</b> to the number you paste (like a stock take). You see everything before anything changes.</p>' +
+            (site ? '' : '<div class="aqb-err">Pick Production (or the Shop) at the top first: the balances are for one place.</div>') +
+            '<textarea id="aqb-text" placeholder="Packaged Water balances as @ 04/5/2026&#10;&#10;1ltr Grip blue 26bales&#10;500ml Aqua clear 38bales&#10;1500ml Grip clear 4bales" spellcheck="false">' + esc(P && P.text || '') + '</textarea>' +
+            '<div class="aqb-row"><button class="aqb-b go" onclick="AquaBottles.preview()"' + (site ? '' : ' disabled') + '>👀 Read and check</button><button class="aqb-b" onclick="AquaBottles.close()">Cancel</button></div>');
+        setTimeout(function () { var t = $('aqb-text'); if (t) t.focus(); }, 30);
+    };
+    function bottleOptions(size, sel) {
+        var list = bottlesOfSize(size);
+        return '<option value="">➕ New bottle (name below)</option>' + list.map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === sel ? ' selected' : '') + '>' + esc(m.name) + (m.clientId ? ' (client)' : '') + '</option>'; }).join('');
+    }
+    function clientOptions(sel) {
+        var cl = custs().filter(function (c) { return live(c) && c.name; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+        return '<option value="">No - general bottle</option><option value="__new">➕ New client…</option>' + cl.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === sel ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
+    }
+    function curStockText(r) {
+        if (!r.matId) return 'new';
+        var m = mats().filter(function (x) { return x.id === r.matId; })[0]; if (!m) return '';
+        var pl = plainOf(r.size, 'bale') || plainOf(r.size, 'sealed'); if (!pl) return '0';
+        var v = AB.varietiesOf(pl.code).filter(function (x) { return x.bottleMatId === m.id; })[0]; if (!v) return '0';
+        return String(Math.round(qtyNow(v) * 100) / 100) + (kindOf(v) === 'bale' ? ' bales' : ' bottles');
+    }
+    AB.preview = function () {
+        var t = $('aqb-text'); P = P || {}; P.text = t ? t.value : P.text; P.site = siteNow();
+        P.plan = AB.parse(P.text);
+        renderPreview();
+    };
+    function renderPreview() {
+        var pl = P.plan, rows = pl.rows;
+        var sizes = {}; rows.forEach(function (r) { sizes[r.size] = 1; });
+        var h = '<h3>👀 Check before saving</h3><p class="aqb-sub">' + rows.length + ' line' + (rows.length === 1 ? '' : 's') + ' read' + (pl.date ? ' · balances as at <b>' + esc(pl.date) + '</b>' : '') + '. Change anything that is wrong, then press Save.</p>';
+        h += '<table class="aqb-t"><thead><tr><th>You typed</th><th>Size</th><th>Bottle</th><th>Client\'s bottle?</th><th>Set stock to</th><th>Now</th></tr></thead><tbody>';
+        rows.forEach(function (r, i) {
+            h += '<tr class="' + (r.clientId ? 'cl' : '') + (!r.matId && !r.newName ? ' bad' : '') + '"><td data-l="You typed" class="aqb-src">' + esc(r.text) + '</td>' +
+                '<td data-l="Size"><b>' + esc(sizeLabel(r.size)) + '</b></td>' +
+                '<td data-l="Bottle"><select onchange="AquaBottles.set(' + i + ',\'matId\',this.value)">' + bottleOptions(r.size, r.matId) + '</select>' +
+                (r.matId ? (r.sure ? '' : '<div class="aqb-hint">⚠️ Best guess - please check</div>') : '<input style="margin-top:4px" value="' + esc(r.newName) + '" placeholder="new bottle name" onchange="AquaBottles.set(' + i + ',\'newName\',this.value)"><div class="aqb-hint"><span class="aqb-pill new">new</span> added to Materials as a bottle</div>') + '</td>' +
+                '<td data-l="Client\'s bottle?"><select onchange="AquaBottles.set(' + i + ',\'clientId\',this.value)">' + clientOptions(r.clientId) + '</select>' + (r.clientId ? '<div class="aqb-hint"><span class="aqb-pill cl">client</span> counted, not on the Sales Counter</div>' : '') + '</td>' +
+                '<td data-l="Set stock to"><div style="display:flex;gap:6px"><input type="number" min="0" step="any" value="' + esc(r.qty) + '" onchange="AquaBottles.set(' + i + ',\'qty\',this.value)" style="max-width:110px"><select onchange="AquaBottles.set(' + i + ',\'unit\',this.value)" style="max-width:110px"><option value="bales"' + (r.unit === 'bales' ? ' selected' : '') + '>bales</option><option value="bottles"' + (r.unit === 'bottles' ? ' selected' : '') + '>bottles</option></select></div></td>' +
+                '<td data-l="Now" class="aqb-hint">' + esc(curStockText(r)) + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        if (!rows.length) h += '<div class="aqb-err">No line could be read. Each line needs a size (500ml, 1ltr…), the bottle name and a number (e.g. 38bales).</div>';
+        if (pl.skipped.length) h += '<div style="margin-top:10px"><b>Lines not read (' + pl.skipped.length + ')</b>' + pl.skipped.map(function (s) { return '<div class="aqb-hint">Line ' + s.n + ': <span class="aqb-src">' + esc(s.text) + '</span> - ' + esc(s.why) + '</div>'; }).join('') + '<div class="aqb-row" style="margin-top:6px"><button class="aqb-b ai" id="aqb-ai" onclick="AquaBottles.ai()">✨ Read these lines with AI</button><span class="aqb-hint">Needs internet. Only these lines are sent.</span></div></div>';
+        var plainSizes = Object.keys(sizes).map(Number).filter(function (s) { var a = plainOf(s, 'sealed'), b = plainOf(s, 'bale'); return (a && qtyNow(a) > 0) || (b && qtyNow(b) > 0 && !b.linkedBottleCode); });
+        if (plainSizes.length) h += '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:13.5px"><input type="checkbox" id="aqb-zero" checked style="width:20px;height:20px;flex:none"> <span>This list is the full balance: set the old stock that has <b>no bottle chosen</b> for ' + plainSizes.map(sizeLabel).join(', ') + ' to 0 (otherwise it would be counted twice).</span></label>';
+        h += '<div class="aqb-err" id="aqb-err"></div><div class="aqb-row"><button class="aqb-b go" onclick="AquaBottles.apply()"' + (rows.length ? '' : ' disabled') + '>💾 Save balances</button><button class="aqb-b" onclick="AquaBottles.openPaste()">← Edit the text</button><button class="aqb-b" onclick="AquaBottles.close()">Cancel</button></div>';
+        ov(h);
+    }
+    AB.set = function (i, k, v) {
+        var r = P && P.plan && P.plan.rows[i]; if (!r) return;
+        if (k === 'qty') r.qty = Math.max(0, Number(v) || 0);
+        else if (k === 'matId') { r.matId = v; r.sure = true; var m = mats().filter(function (x) { return x.id === v; })[0]; if (m && m.clientId) r.clientId = m.clientId; renderPreview(); return; }
+        else if (k === 'clientId') {
+            if (v === '__new') {
+                var nm = String(prompt('Name of the client (as in My Customers):', (words(r.name)[0] || '').replace(/^./, function (x) { return x.toUpperCase(); })) || '').trim();
+                if (!nm) { renderPreview(); return; }
+                var ex = custs().filter(function (c) { return live(c) && norm(c.name) === norm(nm); })[0];
+                if (!ex) { ex = { id: 'c-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: nm, phone: '', tokens: 0, createdAt: Date.now(), updatedAt: Date.now() }; custs().push(ex); P.newClients = (P.newClients || 0) + 1; }
+                v = ex.id;
+            }
+            r.clientId = v;
+            /* a general bottle never becomes a client's: this line gets its own client bottle */
+            var mm = r.matId ? mats().filter(function (x) { return x.id === r.matId; })[0] : null;
+            if (v && mm && mm.clientId !== v) { r.matId = ''; if (!r.newName) r.newName = (r.name || 'Client bottle') + ' ' + sizeLabel(r.size); }
+            if (!v && mm && mm.clientId) { r.matId = ''; }
+            renderPreview(); return;
+        }
+        else r[k] = v;
+    };
+    /* the lines the device could not read go to the AI reader (the same one as Import from Excel); its answers are matched here, on the device */
+    AB.ai = function () {
+        var sk = P && P.plan && P.plan.skipped; if (!sk || !sk.length) return;
+        var b = $('aqb-ai'); if (b) { b.disabled = true; b.textContent = '✨ Reading…'; }
+        var text = 'Item | Balance\n' + sk.map(function (s) { return s.text + ' | '; }).join('\n');
+        var url = typeof apiUrl === 'function' ? apiUrl('/api/ai-capture-list') : '/api/ai-capture-list';
+        fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stockDebtImport: { textDocument: text, itemsOnly: true } }) })
+            .then(function (res) { return res.json().then(function (d) { if (!res.ok || d.error) throw new Error(d.error || 'The AI reader is not available right now.'); return d; }); })
+            .then(function (d) {
+                var got = 0, left = [];
+                (d.stock_items || []).forEach(function (it) {
+                    var t = (it.name + ' ' + (it.sku || '')).trim(), sz = readSize(t), q = Number(it.closing_qty) || Number(it.opening_qty) || 0;
+                    if (!sz.size || !(q >= 0)) return;
+                    var unit = /bottle|btl|pcs|piece/i.test(t) ? 'bottles' : 'bales';
+                    P.plan.rows.push(AB.matchRow({ n: 0, text: '✨ ' + it.name + (it.sku ? ' ' + it.sku : '') + ' → ' + q, size: sz.size, name: sz.rest.replace(/\b(bales?|bottles?|pcs)\b/gi, '').trim(), qty: q, unit: unit })); got++;
+                });
+                if (got) P.plan.skipped = left;
+                toast(got ? '✨ AI read ' + got + ' line(s). Check them, then Save.' : 'The AI could not read those lines either. Type them as: 500ml Aqua clear 38bales', !got);
+                renderPreview();
+            })
+            .catch(function (e) { toast((e && e.message) || 'Could not reach the AI reader. Check the internet, or retype those lines.', true); if (b) { b.disabled = false; b.textContent = '✨ Read these lines with AI'; } });
+    };
+    function setQty(v, site, qty, note) {
+        var before = 0;
+        try { before = typeof stockAt === 'function' ? stockAt(v, site) : Number(v.qty) || 0; } catch (e) { before = Number(v.qty) || 0; }
+        if (typeof setStockAt === 'function') setStockAt(v, site, qty); else { v.stock = v.stock || {}; v.stock[site] = qty; }
+        try { if (typeof activeSiteId !== 'undefined' && activeSiteId === site) v.qty = qty; } catch (e) { v.qty = qty; }
+        v.updatedAt = Date.now();
+        var d = Math.round((qty - before) * 1000) / 1000;
+        if (d) { try { logStockMovement(v.code, v.name, d, note, site); } catch (e2) { /* the stock is set either way */ } }
+        return d;
+    }
+    function setTracked(v, site, bottles, note) {
+        var before = 0; try { before = typeof bottleStockAt === 'function' ? bottleStockAt(v, site) : Number(v.bottleStock) || 0; } catch (e) { before = 0; }
+        try { if (typeof setBottleStockAt === 'function') setBottleStockAt(v, site, bottles); } catch (e) { /* older build */ }
+        try { if (activeSiteId === site) { v.bottleStock = bottles; if (typeof syncBaleTrackingFields === 'function') syncBaleTrackingFields(v); } } catch (e2) { v.bottleStock = bottles; }
+        v.updatedAt = Date.now();
+        var bpb = bpbOf(v, sizeOf(v)), d = (bottles - before) / (bpb || 1);
+        if (d) { try { logStockMovement(v.code, v.name, Math.round(d * 1000) / 1000, note, site); } catch (e3) { /* logged best-effort */ } }
+    }
+    /* SET one bottle's stock: bales are stored as sealed bottles when the bale is linked to its bottle (one pool) */
+    function setBalance(size, m, qty, unit, site, note) {
+        var vs = AB.ensureFor(size, m); if (!vs) throw new Error('No item for ' + sizeLabel(size));
+        var bale = vs.bale, sealed = vs.sealed, bpb = bpbOf(bale || sealed, size);
+        var bottles = unit === 'bottles' ? qty : qty * bpb;
+        if (bale && bale.trackBottles) { setTracked(bale, site, bottles, note); return; }
+        if (bale && bale.linkedBottleCode && sealed && bale.linkedBottleCode === sealed.code) { setQty(sealed, site, bottles, note); return; }
+        if (bale && unit !== 'bottles') { setQty(bale, site, qty, note); return; }
+        if (sealed) { setQty(sealed, site, bottles, note); return; }
+        if (bale) setQty(bale, site, bottles / (bpb || 1), note);
+    }
+    AB.apply = function () {
+        var pl = P && P.plan, site = P && P.site, err = function (t) { var e = $('aqb-err'); if (e) e.textContent = t; };
+        if (!pl || !pl.rows.length) return err('Nothing to save.');
+        if (!site) return err('Pick Production (or the Shop) at the top first.');
+        try { if (typeof isAdminServing === 'function' && !isAdminServing()) return err('Only the Admin can set stock balances.'); } catch (e) { /* allowed */ }
+        var bad = pl.rows.filter(function (r) { return !r.matId && !String(r.newName || '').trim(); })[0];
+        if (bad) return err('Line "' + bad.text + '": choose the bottle or type a name for the new one.');
+        var seen = {}, dup = null;
+        pl.rows.forEach(function (r) { var k = r.size + ':' + (r.matId || norm(r.newName)); if (seen[k]) dup = r; seen[k] = 1; });
+        if (dup) return err('The bottle on "' + dup.text + '" is listed twice. Keep one line per bottle.');
+        var zero = $('aqb-zero') && $('aqb-zero').checked;
+        var note = 'Balances' + (pl.date ? ' as at ' + pl.date : '') + ' (pasted in Production)';
+        var snap = JSON.stringify(prods()), msnap = JSON.stringify(mats()), done = 0, made = 0;
+        try {
+            if (typeof commitQtyView === 'function') commitQtyView(activeSiteId);
+            pl.rows.forEach(function (r) {
+                var m = r.matId ? mats().filter(function (x) { return x.id === r.matId; })[0] : null;
+                if (!m) {
+                    var res = AF().saveMaterial({ name: String(r.newName).trim(), cat: 'bottle', sizes: [r.size], kinds: ['sealed', 'bale'] });
+                    if (!res.ok) throw new Error(res.error); m = res.material; made++;
+                }
+                var c = r.clientId ? custs().filter(function (x) { return x.id === r.clientId; })[0] : null;
+                if ((m.clientId || '') !== (c ? c.id : '')) { m.clientId = c ? c.id : null; m.clientName = c ? c.name : null; m.updatedAt = Date.now(); AB.refreshBottle(m.id); }
+                setBalance(r.size, m, Number(r.qty) || 0, r.unit, site, note); done++;
+            });
+            pl.rows.forEach(function (r) { ['sealed', 'bale'].forEach(function (k) { var p0 = plainOf(r.size, k); if (p0 && !p0.perBottle) { p0.perBottle = true; p0.updatedAt = Date.now(); } }); });
+            if (zero) {
+                var sizes = {}; pl.rows.forEach(function (r) { sizes[r.size] = 1; });
+                Object.keys(sizes).map(Number).forEach(function (s) {
+                    ['sealed', 'bale'].forEach(function (k) { var p = plainOf(s, k); if (!p) return; if (k === 'bale' && p.linkedBottleCode) return; if (p.trackBottles) setTracked(p, site, 0, note + ' - no bottle chosen'); else setQty(p, site, 0, note + ' - no bottle chosen'); });
+                });
+            }
+            if (typeof syncQtyView === 'function') syncQtyView(activeSiteId);
+            if (typeof syncLinkedBaleQuantities === 'function') syncLinkedBaleQuantities();
+        } catch (e) {
+            prods().length = 0; JSON.parse(snap).forEach(function (p) { prods().push(p); });
+            mats().length = 0; JSON.parse(msnap).forEach(function (m) { mats().push(m); });
+            try { if (typeof syncQtyView === 'function') syncQtyView(activeSiteId); } catch (e2) { /* restored */ }
+            return err('Nothing was changed: ' + (e && e.message || e));
+        }
+        save();
+        AB.close(); P = null;
+        var unpriced = prods().filter(function (p) { return live(p) && p.bottleOf && !p.clientId && !(Number(p.price) > 0) && !(Array.isArray(p.priceTiers) && p.priceTiers.length); }).map(function (p) { return sizeLabel(sizeOf(p)); }).filter(function (x, i, a) { return a.indexOf(x) === i; });
+        toast('✅ ' + done + ' bottle balance(s) saved' + (made ? ', ' + made + ' new bottle(s) added to Materials' : '') + '.' + (unpriced.length ? ' ' + unpriced.join(', ') + ' has no price yet: set it in Inventory before it shows on the Sales Counter.' : ''));
+        refreshScreens();
+    };
+    function refreshScreens() {
+        ['renderAllItemsGrid', 'renderInventoryTab', 'renderProductsTable', 'renderStockTakeTab', 'renderProductionTab'].forEach(function (f) { try { if (typeof window[f] === 'function') window[f](); } catch (e) { /* that screen redraws when opened */ } });
+        try { if (AM()) AM().render(); } catch (e) { /* ok */ }
+    }
+    AB.refresh = refreshScreens;
+
+    // ------------------------------------------------------------------ wiring
+    var wired = false;
+    function wire() {
+        if (wired) return;
+        var A = AM(), F = AF(); if (!A || !F || typeof F.renderFlow !== 'function') return;
+        var oStatus = A.orderStatus;
+        A.orderStatus = function (ref, code) {
+            if (!ref || typeof productionLog === 'undefined') return oStatus.apply(this, arguments);
+            var root = rootOf(code), produced = 0;
+            productionLog.forEach(function (r) { if (r && r.orderRef === ref && rootOf(r.targetId) === root && !r.reversedBy && r.status !== 'reversed') produced += Number(r.qty) || 0; });
+            return { produced: produced };
+        };
+        var oProduce = A.produce;
+        A.produce = function (o) { var o2 = o; try { o2 = AB.redirect(o); } catch (e) { o2 = o; } return oProduce.call(this, o2); };
+        var oFlow = F.renderFlow;
+        F.renderFlow = function () {
+            var r = oFlow.apply(this, arguments), root = $('aqf-root');
+            if (root && !root.querySelector('.aqb-card')) root.insertAdjacentHTML('afterbegin', '<div class="aqb-card"><div style="flex:1;min-width:200px"><b>📋 Paste stock balances</b><div class="aqb-hint">Paste a list like “500ml Aqua clear 38bales” and each bottle\'s stock is set to it. Every bottle keeps its own stock.</div></div><button class="aqb-b go" onclick="AquaBottles.openPaste()">📋 Paste balances</button>' + (AB.anyOn() ? '<span class="aqb-hint" style="flex-basis:100%">🍼 Stock per bottle is on: each run goes to the bottle you pick.</span>' : '<button class="aqb-b" onclick="AquaBottles.switchOn(true)" title="Each run goes to the bottle picked (Grip, Aqua clear...) instead of one stock per size">🍼 Keep stock per bottle</button>') + '</div>');
+            return r;
+        };
+        wired = true;
+        try { F.renderFlow(); } catch (e) { /* drawn when the tab opens */ }
+    }
+    window.AquaBottles = AB;
+    document.addEventListener('click', function (e) { if (e.target && e.target.id === 'aqb-ov') AB.close(); });
+    wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 900); setTimeout(wire, 2600); });
+})();
+</script>

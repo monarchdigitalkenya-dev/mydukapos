@@ -67,7 +67,7 @@ export function phoneHint(v) {
 
 export function tillRow(r) {
   return { code: r.code, amount: r.amount, paidAt: r.paid_at, name: r.name || '', ref: r.ref || '', phoneHint: r.phone_hint || '', receivedAt: r.received_at,
-    status: r.status, targetType: r.target_type || '', targetId: r.target_id || '', targetLabel: r.target_label || '', appliedBy: r.applied_by || '', appliedAt: r.applied_at || 0 };
+    status: r.status, source: (r.status === 'STK' || r.target_type === 'stk') ? 'stk' : 'direct', targetType: r.target_type || '', targetId: r.target_id || '', targetLabel: r.target_label || '', appliedBy: r.applied_by || '', appliedAt: r.applied_at || 0 };
 }
 
 // Insert-once. -> { inserted }
@@ -121,7 +121,10 @@ export async function listTill(db, clientId, { status = '', before = 0, limit = 
   const { results } = await db.prepare(sql).bind(...args).all();
   const rows = (results || []).map(tillRow);
   const more = rows.length > lim;
-  return { payments: rows.slice(0, lim), more, next: more ? rows[lim - 1].paidAt : 0 };
+  // zip 283: how many direct payments are still waiting to be matched (the till's button badge), independent of the page size
+  let unlinked = 0;
+  try { const c = await db.prepare(`SELECT COUNT(*) AS n FROM till_payments WHERE client_id = ? AND status = 'UNLINKED'`).bind(clientId).first(); unlinked = (c && Number(c.n)) || 0; } catch (e) { /* the badge falls back to the rows */ }
+  return { payments: rows.slice(0, lim), more, next: more ? rows[lim - 1].paidAt : 0, unlinked };
 }
 
 export async function purgeOldApplied(db, clientId, now = Date.now(), days = APPLIED_KEEP_DAYS) {
@@ -218,4 +221,13 @@ export async function stkPayerName(env, clientId, { code, checkoutId }) {
     const r = await db.prepare(`SELECT code, name FROM till_payments WHERE client_id = ? AND ((? <> '' AND code = ?) OR (? <> '' AND target_id = ?)) ORDER BY (name IS NOT NULL AND name <> '') DESC LIMIT 1`).bind(clientId, c, c, id, id).first();
     return r ? { name: r.name || '', code: /^W/.test(r.code) && !c ? '' : r.code } : { name: '', code: '' };
   } catch (e) { return { name: '', code: '' }; }
+}
+
+// zip 378: a money amount from a payment provider -> number. parseFloat("22,000.00") is 22, so a payment with a thousands separator was recorded as
+// KES 22 and every sale it paid was flagged "paid less than the sale". Commas, spaces and a currency word are removed first.
+export function parseMoney(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  const m = /-?\d[\d,]*(?:\.\d+)?/.exec(String(v == null ? '' : v));    // the first number in it: "KES. 22,000.00" -> 22000
+  const n = m ? Number(m[0].replace(/,/g, '')) : 0;
+  return Number.isFinite(n) ? n : 0;
 }

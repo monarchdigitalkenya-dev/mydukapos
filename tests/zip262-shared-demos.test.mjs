@@ -57,10 +57,13 @@ test('visitors cannot change the shared demo on the server, and another shop is 
   assert.equal(s.sharedDemo, true);
 });
 
-test('the demo password cannot protect a new real shop', async () => {
+test('a real shop may use 0000 as its password: it is stored like any other', async () => {
   const e = env();
-  const r = await syncPost({ request: req('/api/pos-sync', 'REAL1', 'POST', { pwHash: DEMO_PASSWORD_HASH, updatedAt: Date.now() }), env: e, waitUntil() {} });
-  assert.equal(r.status, 400); assert.equal((await r.json()).code, 'demo_password_reserved');
+  const r = await syncPost({ request: req('/api/pos-sync', 'REAL1', 'POST', { pwHash: DEMO_PASSWORD_HASH, adminPwHash: DEMO_PASSWORD_HASH, businessName: 'Mama Duka', updatedAt: Date.now() }), env: e, waitUntil() {} });
+  const j = await r.json();
+  assert.equal(r.status, 200); assert.equal(j.passwordRefused, undefined);
+  const g = await (await syncGet({ request: req('/api/pos-sync', 'REAL1'), env: e, waitUntil() {} })).json();
+  assert.equal(g.businessName, 'Mama Duka'); assert.equal(g.pwHash, DEMO_PASSWORD_HASH); assert.equal(g.adminPwHash, DEMO_PASSWORD_HASH);
 });
 
 test('the gallery list is public, cacheable and carries login instructions', async () => {

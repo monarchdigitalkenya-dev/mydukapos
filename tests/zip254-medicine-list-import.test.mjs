@@ -22,11 +22,13 @@ for (const app of APPS) {
   test(`${app}: a medicine list imports packs, variants, low-stock levels and zero stock/price`, async () => {
     const { w, errors, close } = await boot(app, { wait: 900 });
     w.eval('showToast = function () {}; showBusyBanner = function () {}; hideBusyBanner = function () {}; detectCsvColumnsAI = async function () { return null; }');
+    const before = w.eval('inventory.length');   // zip 381: the hospital starts with its preloaded ward services (zip 367)
     await w.eval('beginInventoryFileImportInner(' + JSON.stringify(ROWS) + ', "drugs.xlsx")');
     w.eval('commitCaptureReview()');
+    w.eval('commitCaptureReview()');   // zip 381: since zip 324 the first press warns that new items have no selling price; the second saves
     const inv = JSON.parse(w.eval('JSON.stringify(inventory)'));
     const by = (n) => inv.find((p) => p.name === n);
-    assert.equal(inv.length, 9);
+    assert.equal(inv.length - before, 9);
     const a = by('Abz 400mg');
     assert.ok(a && by('10% Dextrose 500ml'), 'a plain dose becomes part of the name');
     assert.equal(a.wholesalePrice, 50); assert.equal(a.minStock, 5); assert.equal(a.qty, 0); assert.equal(a.price, 0);

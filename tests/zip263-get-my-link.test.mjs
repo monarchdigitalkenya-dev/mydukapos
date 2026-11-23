@@ -166,3 +166,11 @@ test('Paywave Express: the prompt does not make a link; "accepted" without a rec
     assert.equal(list[0].receipt, 'QAB1234XYZ', 'the M-Pesa receipt is kept (it is on the licence)');
   } finally { globalThis.fetch = real; }
 });
+
+test('zip 276: a gateway that cannot send the prompt falls back to "I\'ve paid"; an unknown outcome never starts a second prompt', async () => {
+  const w = await world({ stk: true });
+  const real = globalThis.fetch; globalThis.fetch = async () => new Response('nope', { status: 500 });
+  try {
+    const s = await w.call(buyer); assert.equal(s.r.status, 200); assert.equal(s.j.method, 'claim');
+  } finally { globalThis.fetch = real; }
+});

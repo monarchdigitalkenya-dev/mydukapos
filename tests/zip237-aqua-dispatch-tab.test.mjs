@@ -17,13 +17,13 @@ async function app() {
   return b;
 }
 
-test('T1: the nav has a Dispatch tab and the movement tabs sit together after it, in the Logistics block', () => {
+test('T1: the nav has a Dispatch tab and the movement tabs sit together after it, in the Sell & Deliver folder', () => {
   const html = fs.readFileSync('water/index.html', 'utf8');
   const ids = [...html.matchAll(/<button id="([a-z-]+)-tab-btn" class="tab-link/g)].map(m => m[1]);
   const i = ids.indexOf('dispatch');
   assert.ok(i >= 0);
   assert.deepEqual(ids.slice(i, i + 5), ['dispatch', 'deliveries', 'returns', 'restocking', 'tank']);
-  assert.match(html, /GROUPS\.splice\(2, 0, \{ id: 'logistics'/);
+  assert.match(html, /\{ id: 'sell', label: 'Sell & Deliver', icon: '[^']+', tabs: \['dispatch-tab', 'deliveries-tab', '(online-orders-tab', ')?returns-tab'\] \}/);   // zip 381: Online Orders (zip 368) joined this folder   // zip 304: moving goods to customers sits in Sell & Deliver; restocking and the tank in Stock
 });
 
 test('T2: Dispatch panels moved: Factory stock + Dispatch History are inside dispatch-tab, not production-tab', async () => {

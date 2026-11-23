@@ -25,7 +25,7 @@ for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html']) {
     const pull = a.w.eval('pullState()');
     await sleep(150);
     a.w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-    const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane';
+    const nameEl = a.w.document.getElementById('bill-customer-name-input'); if (nameEl) nameEl.value = 'Jane'; { const p = a.w.document.getElementById('sms-checkout-phone-input'); if (p) p.value = '0712345678'; }
     await a.w.eval('checkoutCart()');
     release(); hold = null;
     await pull; await sleep(1500); await idle(a); await sleep(500);
@@ -44,7 +44,7 @@ for (const app of ['index.html', 'hotel/index.html', 'hospital/index.html', 'pha
     const b = await boot(app, { storage: { pos_inventory: INV }, wait: 900 }); const { w } = b;
     w.eval("showToast = function () {}; window.confirm = () => true; window.print = () => {}; if (typeof queuePrintJob === 'function') queuePrintJob = function () { return Promise.resolve(); }");
     w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-    const nm = w.document.getElementById('bill-customer-name-input'); if (nm) nm.value = 'Jane';
+    const nm = w.document.getElementById('bill-customer-name-input'); if (nm) nm.value = 'Jane'; { const p = w.document.getElementById('sms-checkout-phone-input'); if (p) p.value = '0712345678'; }
     await w.eval('checkoutCart()');
     const id = w.eval('bills[0].id');
     w.eval(`openBillSettleModal('sale', '${id}')`);
@@ -174,12 +174,12 @@ test('a bill made while the device storage is full is kept, the cashier is told,
   await w.eval('salesJournalReady');
   const filled = w.eval(FILL);
   assert.ok(filled > 0);
-  w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'"); w.document.getElementById('bill-customer-name-input').value = 'Jane';
+  w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'"); w.document.getElementById('bill-customer-name-input').value = 'Jane'; w.document.getElementById('sms-checkout-phone-input').value = '0712345678';
   await w.eval('checkoutCart()');
   assert.equal(w.eval('bills.length'), 1, 'the bill exists on screen');
   assert.equal(w.eval("localStorage.getItem('pos_bills')"), null, 'but could not be stored');
   // a second bill is made while it is still full: the LATEST list (both bills) is what must be written later
-  w.eval("addToCart('A1'); currentPaymentMethod = 'bill'"); w.document.getElementById('bill-customer-name-input').value = 'Joe';
+  w.eval("addToCart('A1'); currentPaymentMethod = 'bill'"); w.document.getElementById('bill-customer-name-input').value = 'Joe'; w.document.getElementById('sms-checkout-phone-input').value = '0722333444';   // a different person must have a different phone (a shared phone asks the cashier, by design)
   await w.eval('checkoutCart()');
   await until(() => !!w.document.getElementById('storage-full-bar'), 12000);
   assert.ok(w.document.getElementById('storage-full-bar'), 'the red bar says the storage is full');
@@ -196,7 +196,7 @@ for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html']) {
     const b = await boot(app, { storage: { pos_inventory: INV }, wait: 900 }); const { w } = b;
     w.eval("showToast = function () {}; window.confirm = () => true; window.print = () => {}; if (typeof queuePrintJob === 'function') queuePrintJob = function () { return Promise.resolve(); }");
     w.eval("addToCart('A1'); addToCart('A1'); currentPaymentMethod = 'bill'");
-    const nm = w.document.getElementById('bill-customer-name-input'); if (nm) nm.value = 'Jane';
+    const nm = w.document.getElementById('bill-customer-name-input'); if (nm) nm.value = 'Jane'; { const p = w.document.getElementById('sms-checkout-phone-input'); if (p) p.value = '0712345678'; }
     w.document.getElementById('bill-upfront-amount-input').value = '60';
     await w.eval('checkoutCart()');
     const id = w.eval('bills[0].id');

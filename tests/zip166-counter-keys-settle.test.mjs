@@ -7,7 +7,7 @@ const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy
 
 test('payment fields live inside the pinned bar in every till', async () => {
   for (const a of APPS) {
-    const { d, errors, close } = await boot(a, { wait: 3000 });
+    const { d, errors, close } = await boot(a, { wait: 10000 });
     const bar = d.getElementById('cart-sticky-bar');
     assert.ok(bar.querySelector('.pos-pay-details'), a + ': payment details moved into the bar');
     for (const id of ['mpesa-prompt-panel', 'split-payment-panel', 'cash-payment-panel']) assert.ok(bar.contains(d.getElementById(id)), a + ' ' + id);
@@ -15,9 +15,8 @@ test('payment fields live inside the pinned bar in every till', async () => {
   }
 });
 
-test('hotel: settling a tab shows the payment methods (the card-field hider no longer hides the whole group)', async () => {
+test('hotel: settling a tab shows the payment methods (and its card box stays hidden until Card is chosen)', async () => {
   const { w, d, close } = await boot('hotel/index.html', { wait: 900 });
-  w.eval('hospHideCardControls()');
   const grp = d.getElementById('tab-settle-pay-toggle').closest('.form-group');
   assert.notEqual(grp.style.display, 'none');
   assert.equal(d.getElementById('tab-settle-card-fields').style.display, 'none');

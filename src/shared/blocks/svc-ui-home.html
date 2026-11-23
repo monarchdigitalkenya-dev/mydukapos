@@ -494,7 +494,7 @@ function svcOpenNewJob(typeKey, opts) {
   function build(values) {
     try { if (rec.handle && rec.handle.destroy) rec.handle.destroy(); } catch (e) { /* ignore */ }
     mount.innerHTML = ''; errs.innerHTML = '';
-    rec.handle = svcRenderForm(mount, tpl, { mode: rec.mode, values: values || {}, ctx: { cfg: svcUiBizCfg() }, onChange: function () { errs.innerHTML = ''; }, onSubmit: function () { svcUiSaveNew(rec); } });
+    rec.handle = svcRenderForm(mount, tpl, { mode: rec.mode, values: values || {}, ctx: { cfg: svcUiBizCfg(), staff: svcUiStaffList }, onChange: function () { errs.innerHTML = ''; }, onSubmit: function () { svcUiSaveNew(rec); } });
     label();
   }
   rec.rebuild = build;
@@ -530,6 +530,17 @@ function svcUiSaveNew(rec) {
   var btns = rec.el.querySelectorAll('[data-svc-act="save"]'); Array.prototype.forEach.call(btns, function (b) { b.disabled = true; });
   var input = { typeKey: rec.type, values: values, idemKey: rec.draftId, source: rec.mode === 'quick' ? 'quick' : 'walkin' };
   if (Array.isArray(values.services) && values.services.length) input.services = values.services;
+  /* zip 345: the people chosen in the staff box(es) go on the job (before this the choice was dropped) */
+  try {
+    var js = [];
+    (rec.tpl.sections || []).forEach(function (sc) { (sc.fields || []).forEach(function (f) {
+      if (!(f.widget === 'staff' || f.type === 'staff')) return;
+      var v = values[f.id];
+      if (Array.isArray(v)) v.forEach(function (x) { if (x && x.staffId) js.push({ staffId: x.staffId, name: x.name || '', roleKey: x.role || '', task: x.task || '' }); });
+      else if (v) js.push({ staffId: String(v), roleKey: f.staffRole || '', task: '' });
+    }); });
+    if (js.length) input.jobStaff = js;
+  } catch (e5) { /* the job is still created; assign from its page */ }
   var res;
   try { res = svcCreateJob(input, { mode: rec.mode }); } catch (e4) { res = { ok: false, errors: [{ msg: String((e4 && e4.message) || e4) }] }; }
   svcUiThen(res, function (r) {
@@ -710,6 +721,11 @@ function svcUiOverviewSections(job, tpl) {
   });
   if (other) html += '<div class="svu-box"><h4>Other details</h4><div class="svu-rows">' + other + '</div></div>';
   return html;
+}
+/* zip 345: every staff member can be chosen when a task is created (the admin decides who does it) */
+function svcUiStaffList() {
+  var list = []; try { if (typeof staff !== 'undefined' && Array.isArray(staff)) list = staff; } catch (e) { list = []; }
+  return list.filter(function (m) { return m && m.id != null && m.name && !m._deleted && m.active !== false; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
 }
 function svcUiStaffOptions() {
   var list = []; try { if (typeof staff !== 'undefined' && Array.isArray(staff)) list = staff; } catch (e) { list = []; }

@@ -37,7 +37,8 @@ test('POS sign-up form: only the WhatsApp number is required', async () => {
     const fs = await import('node:fs');
     const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
     assert.match(html, /id="signup-phone"[^>]*required/, app);
-    assert.match(html, /id="signup-email" placeholder="Email Address \(optional\)"/, app);
+    assert.match(html, /id="signup-email"[^>]*placeholder="Email Address \(optional\)"/, app);   // (zip 186 added name= for autofill between them)
+    assert.doesNotMatch(html.match(/<input[^>]*id="signup-email"[^>]*>/)[0], /\brequired\b/, app + ': email is optional');
     assert.ok(!/Enter your email address\.'; return; \}/.test(html), app + ' still demands an email');
   }
 });

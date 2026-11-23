@@ -1,0 +1,270 @@
+<!-- STORE SALES + STORE HISTORY (zip 293) --------------------------------------------------------------------------------------------
+     1) "Store history" is its OWN tab (#store-history-tab, button after Store) in every app that has a Store - it used to be a panel at the
+        bottom of the Store tab (and missing in Hotel / Hospital / Pharmacy / Production). Search + action filter + summary cards.
+     2) "Sell from Store" on the Sales Counter: pick an item that is in the Store, the quantity, and it goes straight into the cart. The stock
+        leaves the Store through the server's own atomic removeFromStore (purpose "taken to the sales counter"), is credited to this branch's
+        stock and added to the cart; when the sale is recorded the Store history gets a "Sold" line (action logSale, idempotent on the sale id).
+     Attribution is first-in-first-out per item code (a hold is the quantity taken for the counter); a bill left unpaid is logged when it settles.
+     Every function is guarded: a page lacking something does nothing. -->
+<style id="sfs-css">
+.sfs-srch{display:flex;align-items:center;gap:8px;border-left:4px solid #8e44ad;background:rgba(142,68,173,.07)}
+.sfs-srch .sfs-tag{font-size:11px;font-weight:800;color:#fff;background:#8e44ad;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.sfs-srch .sfs-meta{font-size:12px;color:#7f8c8d}
+</style>
+<script id="sfs-js">
+(function () {
+  'use strict';
+  var LABELS = { add: '➕ Added', edit: '✏️ Edited', qty_change: '🔢 Qty corrected', withdraw: '➡️ Withdrawn', delete: '🗑️ Deleted', sale: '💰 Sold', sale_void: '↩️ Sale undone', moved_in: '⬅️ Moved in from a branch', branch_transfer: '🔁 Branch to branch' };
+  var FILTERS = [['all', 'All'], ['sale', '💰 Sold'], ['withdraw', '➡️ Withdrawn'], ['add', '➕ Added'], ['moved_in', '⬅️ Moved in'], ['qty_change', '🔢 Qty'], ['edit', '✏️ Edited'], ['delete', '🗑️ Deleted']];
+  var flt = 'all', logCache = [];
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* ignore */ } }
+  function lsGet(k, d) { try { var v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } }
+  function lsSet(k, v) { try { if (typeof safeSetItem === 'function') safeSetItem(k, JSON.stringify(v)); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
+  function api(body) {
+    return fetch(apiUrl('/api/store'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok && !d.error, data: d }; }); });
+  }
+  function who() { try { return typeof activeServerName === 'function' ? activeServerName() : null; } catch (e) { return null; } }
+
+  /* ---------------- Store history tab ---------------- */
+  function ensureTab() {
+    if ($('store-history-tab')) return;
+    var st = $('store-tab');
+    if (!st) return;
+    var d = document.createElement('div');
+    d.id = 'store-history-tab';
+    d.className = 'tab-content';
+    d.innerHTML = '<div class="panel"><h3>📜 Store History</h3>' +
+      '<p style="margin-bottom:10px;color:#7f8c8d;font-size:14px;">Every add, edit, quantity correction, withdrawal, <b>sale</b> and delete for this store — newest first.</p>' +
+      '<div class="sh-cards" id="sh-cards"></div>' +
+      '<div class="sh-chips" id="sh-chips"></div>' +
+      '<div class="form-group"><input type="text" id="store-log-search-input" placeholder="Search by item or who did it…" oninput="storeHistoryRender()"></div>' +
+      '<div class="table-scroll"><table id="store-log-table"><thead><tr><th>Time</th><th>Action</th><th>Item</th><th>Detail</th><th>By</th></tr></thead>' +
+      '<tbody><tr><td colspan="5" class="empty-state">Loading…</td></tr></tbody></table></div></div>';
+    st.parentNode.insertBefore(d, st.nextSibling);
+    var b = $('store-tab-btn');
+    if (b && !$('store-history-tab-btn')) {
+      var nb = document.createElement('button');
+      nb.id = 'store-history-tab-btn'; nb.className = 'tab-link'; nb.setAttribute('data-tab', 'store-history-tab');
+      nb.setAttribute('onclick', "guardedSwitchTab(event, 'store-history-tab')");
+      nb.textContent = '📜 Store History';
+      b.parentNode.insertBefore(nb, b.nextSibling);
+    }
+    var ch = $('sh-chips');
+    if (ch) ch.innerHTML = FILTERS.map(function (f) { return '<button type="button" class="sh-chip' + (f[0] === flt ? ' on' : '') + '" data-f="' + f[0] + '" onclick="storeHistoryFilter(\'' + f[0] + '\')">' + f[1] + '</button>'; }).join('');
+  }
+  async function loadLog() {
+    try {
+      var r = await api({ action: 'getLog' });
+      logCache = r.ok ? (r.data.log || []) : logCache;
+    } catch (e) { /* offline: show the last list */ }
+    return logCache;
+  }
+  window.storeHistoryFilter = function (f) {
+    flt = f;
+    Array.prototype.forEach.call(document.querySelectorAll('#sh-chips .sh-chip'), function (c) { c.classList.toggle('on', c.getAttribute('data-f') === f); });
+    window.storeHistoryRender(true);
+  };
+  window.storeHistoryRender = async function (cached) {
+    ensureTab();
+    var tb = document.querySelector('#store-log-table tbody');
+    if (!tb) return;
+    var log = cached === true ? logCache : await loadLog();
+    var q = (($('store-log-search-input') || {}).value || '').trim().toLowerCase();
+    var n = function (a) { return log.filter(function (e) { return e.action === a; }).length; };
+    var cards = $('sh-cards');
+    if (cards) cards.innerHTML =
+      '<div class="sh-card" style="background:linear-gradient(135deg,#8e44ad,#6c3483)"><b>' + log.length + '</b><span>entries</span></div>' +
+      '<div class="sh-card" style="background:linear-gradient(135deg,#27ae60,#1e8449)"><b>' + n('sale') + '</b><span>sold</span></div>' +
+      '<div class="sh-card" style="background:linear-gradient(135deg,#3498db,#21618c)"><b>' + n('withdraw') + '</b><span>withdrawn</span></div>' +
+      '<div class="sh-card" style="background:linear-gradient(135deg,#f39c12,#d68910)"><b>' + n('add') + '</b><span>added</span></div>';
+    var rows = log.filter(function (e) {
+      if (flt !== 'all' && e.action !== flt) return false;
+      return !q || (e.itemName || '').toLowerCase().indexOf(q) >= 0 || (e.servedBy || '').toLowerCase().indexOf(q) >= 0 || (e.detail || '').toLowerCase().indexOf(q) >= 0;
+    });
+    tb.innerHTML = !log.length ? '<tr><td colspan="5" class="empty-state">No store activity yet.</td></tr>'
+      : !rows.length ? '<tr><td colspan="5" class="empty-state">No matches.</td></tr>'
+      : rows.map(function (e) {
+        return '<tr><td>' + new Date(e.timestamp).toLocaleString('en-GB') + '</td><td><span class="sh-pill ' + esc(e.action) + '">' + (LABELS[e.action] || esc(e.action)) + '</span></td><td>' +
+          esc(e.itemName) + '</td><td>' + esc(e.detail) + '</td><td>' + esc(e.servedBy || '?') + '</td></tr>';
+      }).join('');
+  };
+  // the old name stays valid (the Store tab and older code call it)
+  window.renderStoreLogTab = function () { return window.storeHistoryRender(); };
+
+  /* ---------------- Store items in the Sales Counter search (no separate button) ----------------
+     Typing in the sales search shows the Store's matching items under the inventory results, tagged "Store". Tapping one takes 1 out of the Store
+     (the quantity can be changed in the cart) and puts it in the sale; the sale then shows as "Sold" in Store history. */
+  var items = [], itemsAt = 0, fetching = false;
+  function refreshStore(force) {
+    if (fetching || (!force && Date.now() - itemsAt < 20000) || typeof loadStoreItems !== 'function') return;
+    fetching = true;
+    Promise.resolve(loadStoreItems(true)).then(function (l) { items = Array.isArray(l) ? l : items; itemsAt = Date.now(); })
+      .catch(function () { /* offline: keep the last list */ })
+      .then(function () { fetching = false; try { decorate(); } catch (e) { /* cosmetic */ } });
+  }
+  function storeMatches(q) {
+    return (items || []).filter(function (i) { return (i.qty || 0) > 0 && (!q || (i.name || '').toLowerCase().indexOf(q) >= 0 || (i.code || '').toLowerCase().indexOf(q) >= 0); }).slice(0, 8);
+  }
+  var decorating = false;
+  function decorate() {
+    var box = $('search-results'), inp = $('sales-search');
+    if (!box || !inp || decorating) return;
+    var q = (inp.value || '').trim().toLowerCase();
+    Array.prototype.forEach.call(box.querySelectorAll('[data-sfs]'), function (n) { n.parentNode.removeChild(n); });
+    if (!q) return;
+    var rows = storeMatches(q);
+    if (!rows.length) return;
+    decorating = true;
+    try {
+      // "No matching products found." is no longer true when the Store has it
+      Array.prototype.forEach.call(box.querySelectorAll('.search-item'), function (n) { if (!n.hasAttribute('data-sfs') && /No matching products found/.test(n.textContent) && n.children.length === 0) n.parentNode.removeChild(n); });
+      rows.forEach(function (i) {
+        var d = document.createElement('div');
+        d.className = 'search-item sfs-srch'; d.setAttribute('data-sfs', '1'); d.setAttribute('role', 'button'); d.tabIndex = 0;
+        d.innerHTML = '<span class="sfs-tag">🏬 Store</span><span style="flex:1;min-width:0;"><b>' + esc(i.name) + '</b><br><span class="sfs-meta">' + esc(i.code || '') + (i.code ? ' · ' : '') + 'In Store: ' + esc(i.qty) + ' ' + esc(i.unit || 'pcs') + (i.price ? ' · KES ' + Number(i.price).toFixed(2) : '') + '</span></span>';
+        var go = function (ev) { if (ev) { ev.preventDefault(); ev.stopPropagation(); } window.sfsPick(i.id); };
+        d.addEventListener('click', go);
+        d.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') go(ev); });
+        box.appendChild(d);
+      });
+      box.style.display = 'block';
+    } finally { decorating = false; }
+  }
+  window.sfsPick = function (id) { return window.sfsTake(id, 1); };
+  function findProduct(w) {
+    return inventory.find(function (p) { return w.code && String(p.code).toLowerCase() === String(w.code).toLowerCase(); }) ||
+      inventory.find(function (p) { return String(p.name).toLowerCase() === String(w.name).toLowerCase(); });
+  }
+  window.sfsTake = async function (id, qty) {
+    qty = parseFloat(qty);
+    if (!(qty > 0)) { toast('Enter how many to sell.', true); return; }
+    var it = (items || []).find(function (x) { return x.id === id; });
+    if (it && qty > (it.qty || 0)) { toast('Only ' + it.qty + ' ' + (it.unit || 'pcs') + ' in the Store.', true); return; }
+    try {
+      var r = await api({ action: 'removeFromStore', idemKey: 'sf-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), items: [{ storeItemId: id, qty: qty }], servedBy: who(), purpose: 'taken to the sales counter' });
+      if (!r.ok) { toast(r.data.error || 'Could not take that from the Store.', true); return; }
+      if (typeof storeItemsCache !== 'undefined') storeItemsCache = r.data.items || storeItemsCache;
+      items = r.data.items || items;
+      var holds = lsGet('pos_store_counter', []);
+      var added = 0;
+      (r.data.withdrawn || []).forEach(function (w) {
+        try { if (typeof storeApplyWithdrawn === 'function') storeApplyWithdrawn(w); } catch (e) { /* ignore */ }
+        var vm = /^(.+)::([^:]+)$/.exec(String(w.code || ''));
+        var par = vm && inventory.find(function (x) { return x.code === vm[1] && x.hasVariants; });
+        if (par && (par.variants || []).some(function (v) { return v.id === vm[2]; })) {   // a variant line: back to that variant, into the cart as that variant
+          holds.push({ code: par.code, variantId: vm[2], name: w.name, unit: w.unit || 'pcs', qty: w.qty, left: w.qty, storeItemId: w.storeItemId || id, at: Date.now() });
+          // only apps whose cart understands variants (addToCart has a variantId parameter) put it in the cart; the others just credit the variant
+          if (typeof addToCart === 'function' && addToCart.length >= 4) {
+            addToCart(par.code, null, null, vm[2]);
+            var vkey = par.code + '::variant::' + vm[2];
+            if (typeof currentCart !== 'undefined' && currentCart[vkey]) { currentCart[vkey].qty = (currentCart[vkey].qty - 1) + w.qty; if (typeof renderCart === 'function') renderCart(); added++; }
+          }
+          return;
+        }
+        var p = findProduct(w);
+        if (!p) return;
+        holds.push({ code: p.code, name: w.name, unit: w.unit || 'pcs', qty: w.qty, left: w.qty, storeItemId: w.storeItemId || id, at: Date.now() });
+        var key = (typeof cartKeyFor === 'function') ? cartKeyFor(p.code) : p.code;
+        if (typeof addToCart === 'function') addToCart(p.code);
+        if (typeof currentCart !== 'undefined' && currentCart[key]) { currentCart[key].qty = (currentCart[key].qty - 1) + w.qty; if (typeof renderCart === 'function') renderCart(); }
+        added++;
+      });
+      lsSet('pos_store_counter', holds.slice(-200));
+      try { if (typeof safeSetItem === 'function') safeSetItem('pos_inventory', JSON.stringify(inventory)); if (typeof queuePush === 'function') queuePush(); if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) { /* ignore */ }
+      try { if (typeof storeConfirmReceived === 'function') storeConfirmReceived(r.data.withdrawn); } catch (e) { /* ignore */ }
+      try { var sb = $('sales-search'); if (sb && typeof window.liveSearch === 'function') window.liveSearch(sb.value); } catch (e) { /* cosmetic */ }
+      toast(added ? '🏬 Added from the Store to this sale.' : 'Taken from the Store, but the item could not be put in the cart - find it in inventory.', !added);
+      if (added) { try { var sb2 = $('sales-search'); if (sb2) { sb2.value = ''; if (typeof window.liveSearch === 'function') window.liveSearch(''); } } catch (e) { /* cosmetic */ } }
+    } catch (e) { toast('Could not reach the server — nothing was taken.', true); }
+  };
+
+
+  /* ---------------- log the sale into Store history ---------------- */
+  var scanning = false;
+  async function flush() {
+    var pend = lsGet('pos_store_sale_queue', []);
+    if (!pend.length) return;
+    var keep = [];
+    for (var i = 0; i < pend.length; i++) {
+      try { var r = await api(Object.assign({ action: 'logSale', servedBy: who() }, pend[i])); if (!r.ok) keep.push(pend[i]); } catch (e) { keep.push(pend[i]); }
+    }
+    lsSet('pos_store_sale_queue', keep);
+  }
+  window.storeScanSales = function () {
+    if (scanning) return;
+    scanning = true;
+    try {
+      var holds = lsGet('pos_store_counter', []);
+      if (!holds.length || typeof salesLog === 'undefined') return;
+      var done = lsGet('pos_store_logged', []);
+      var from = Math.min.apply(null, holds.map(function (h) { return h.at; })) - 60000;
+      var queue = lsGet('pos_store_sale_queue', []), changed = false;
+      salesLog.slice(-120).forEach(function (rec) {
+        if (!rec || !rec.id || done.indexOf(rec.id) >= 0) return;
+        if (new Date(rec.timestamp || 0).getTime() < from) return;
+        var lines = [];
+        (rec.items || []).forEach(function (l) {
+          var h = holds.find(function (x) { return x.code === l.code && (x.variantId || '') === (l.variantId || '') && x.left > 0; });
+          if (!h) return;
+          var q = Math.min(Number(l.qty) || 0, h.left);
+          if (q <= 0) return;
+          h.left -= q;
+          lines.push({ storeItemId: h.storeItemId, name: h.name, unit: h.unit, qty: q, amount: Math.round(q * (Number(l.price) || 0) * 100) / 100 });
+        });
+        done.push(rec.id);
+        if (lines.length) { queue.push({ saleId: rec.id, receipt: rec.refNumber || '', lines: lines }); changed = true; }
+      });
+      lsSet('pos_store_logged', done.slice(-400));
+      lsSet('pos_store_counter', holds.filter(function (h) { return h.left > 0 && Date.now() - h.at < 30 * 864e5; }));
+      if (changed) { lsSet('pos_store_sale_queue', queue); setTimeout(flush, 0); }
+    } catch (e) { /* never block a sale */ } finally { scanning = false; }
+  };
+  // run after every sales-log save (the till writes it once per recorded sale)
+  try {
+    var orig = window.safeSetItem;
+    if (typeof orig === 'function' && !orig.__sfs) {
+      var wrapped = function (key) { var r = orig.apply(this, arguments); if (key === 'pos_sales_log') setTimeout(window.storeScanSales, 0); return r; };
+      wrapped.__sfs = true;
+      window.safeSetItem = wrapped;
+    }
+  } catch (e) { /* ignore */ }
+  // open the history tab -> draw it
+  try {
+    var sw = window.switchTab;
+    if (typeof sw === 'function' && !sw.__sfs) {
+      var w2 = function (evt, id) { var r = sw.apply(this, arguments); if (id === 'store-history-tab') window.storeHistoryRender(); return r; };
+      w2.__sfs = true;
+      window.switchTab = w2;
+    }
+  } catch (e) { /* ignore */ }
+
+  // wrap the till's search (every app has its own liveSearch) so Store items follow whatever it shows; a mutation watcher re-adds them if the
+  // search redraws its list later (e.g. when it adds another branch's stock)
+  function hook() {
+    try {
+      var ls = window.liveSearch;
+      if (typeof ls === 'function' && !ls.__sfs) {
+        var w3 = function (query) { var r = ls.apply(this, arguments); refreshStore(false); try { decorate(); } catch (e) { /* cosmetic */ } return r; };
+        w3.__sfs = true; window.liveSearch = w3;
+      }
+      var box = $('search-results');
+      if (box && !box.__sfsObs && typeof MutationObserver === 'function') {
+        box.__sfsObs = new MutationObserver(function () { if (!decorating && !box.querySelector('[data-sfs]')) decorate(); });
+        box.__sfsObs.observe(box, { childList: true });
+      }
+      var inp = $('sales-search');
+      if (inp && !inp.__sfsFocus) { inp.__sfsFocus = 1; inp.addEventListener('focus', function () { refreshStore(false); }); }
+    } catch (e) { /* ignore */ }
+  }
+  function boot() {
+    ensureTab(); hook();
+    var old = $('sfs-open'); if (old && old.parentNode) old.parentNode.removeChild(old);   // the old "Sell from Store" button is gone
+    setTimeout(function () { ensureTab(); hook(); }, 1500);
+    setInterval(function () { hook(); flush(); }, 20000);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

@@ -1,0 +1,295 @@
+<!-- HMIS EDIT (zip 363) -------------------------------------------------------------------------------------------------------
+     Everything that was preloaded can be changed or removed by the hospital:
+       - Medicines & supplies and Services / price list (the Kenya starter catalogue): rename, change any price, delete one or many, adjust prices by a
+         percentage, filter (preloaded / added by me, with or without stock), export to CSV. Items with stock on hand are never removed in bulk.
+         Removed starter items are remembered (this device) so "Load Kenya starter catalogue" does not bring them back; "Restore removed" does.
+       - Referral hospitals: add, edit, remove, reset to the original list. The edited list feeds the "Refer patient" suggestions AND the public website
+         page (press Publish now in Website Management to update the website).
+       - Laboratory tests: already editable in the Lab catalogue (edit price, switch off); linked from here.
+     Works on the normal stock list (pos_inventory), so sync, stock, cashier and reports behave exactly as they do for items typed in by hand. -->
+<style id="hedit-css">
+#hedit-ov{position:fixed;inset:0;z-index:100050;background:rgba(15,30,45,.62);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:10px}
+#hedit-ov.on{display:flex}
+#hedit-ov .he-in{background:var(--bg-surface,#fff);color:var(--dark,#2c3e50);border-radius:16px;width:100%;max-width:1080px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+#hedit-ov .he-head{background:linear-gradient(135deg,#1a5276,#1e6fd0);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px}
+#hedit-ov .he-head h3{margin:0;flex:1;font-size:18px;color:#fff}
+#hedit-ov .he-x{border:0;background:rgba(255,255,255,.22);color:#fff;width:38px;height:38px;border-radius:9px;font-size:18px;cursor:pointer}
+#hedit-ov .he-body{padding:12px 16px 18px}
+#hedit-ov .he-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+#hedit-ov .he-tab{border:1px solid #cfd8dc;background:var(--bg-surface,#fff);color:inherit;border-radius:18px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:38px}
+#hedit-ov .he-tab.on{background:#1e6fd0;border-color:#1e6fd0;color:#fff}
+#hedit-ov .he-note{background:#eaf6f2;border-left:4px solid #1e6fd0;border-radius:8px;padding:8px 12px;font-size:13px;margin:0 0 10px}
+#hedit-ov .he-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px}
+#hedit-ov .he-bar input[type=search],#hedit-ov .he-bar select,#hedit-ov .he-bar input[type=number]{margin:0;padding:8px;border:1px solid #cfd8dc;border-radius:8px;font-size:14px;background:var(--bg-surface,#fff);color:inherit;min-height:38px;box-sizing:border-box}
+#hedit-ov .he-bar input[type=search]{flex:1 1 200px}
+#hedit-ov button.he-b{width:auto;margin:0;padding:8px 13px;border-radius:9px;border:1px solid transparent;font-weight:700;cursor:pointer;background:#1e6fd0;color:#fff;min-height:38px;font-size:13px}
+#hedit-ov button.he-b.sec{background:var(--bg-surface,#fff);color:inherit;border-color:#cfd6dc}
+#hedit-ov button.he-b.red{background:#e74c3c}
+#hedit-ov button.he-b.org{background:#e67e22}
+#hedit-ov .he-tbl{width:100%;border-collapse:collapse;font-size:13px}
+#hedit-ov .he-tbl th{background:#f1f5f7;color:#34495e;text-align:left;padding:6px 8px;font-size:12px;position:sticky;top:0}
+#hedit-ov .he-tbl td{border-bottom:1px solid #e5e8ea;padding:4px 6px;vertical-align:middle}
+#hedit-ov .he-tbl input[type=text],#hedit-ov .he-tbl input[type=number],#hedit-ov .he-tbl select{width:100%;margin:0;padding:6px;border:1px solid #d5dde2;border-radius:7px;font-size:13px;background:var(--bg-surface,#fff);color:inherit;box-sizing:border-box;min-height:34px}
+#hedit-ov .he-tbl input[type=checkbox]{width:18px;height:18px;margin:0}
+#hedit-ov .he-tbl td[data-l]::before{display:none}
+#hedit-ov .he-code{font-family:Consolas,monospace;font-size:12px;color:#5d6d7e;white-space:nowrap}
+#hedit-ov .he-wrap{overflow:auto;max-height:62vh;border:1px solid #e1e6ea;border-radius:10px}
+#hedit-ov .he-tag{display:inline-block;border-radius:9px;padding:1px 7px;font-size:11px;font-weight:700;background:#e8f4fd;color:#1a5276}
+#hedit-ov .he-tag.stock{background:#fff0d6;color:#9a5b00}
+#hedit-ov .he-del{border:0;background:transparent;font-size:16px;cursor:pointer;color:#c0392b;min-width:34px;min-height:34px}
+#hedit-ov .he-cnt{font-size:12.5px;color:#7f8c8d}
+@media (max-width:700px){#hedit-ov{padding:0}#hedit-ov .he-in{border-radius:0}#hedit-ov .he-body{padding:10px}
+ #hedit-ov .he-tbl thead{display:none}#hedit-ov .he-tbl tbody tr:not(.he-rrow){display:grid;grid-template-columns:28px 1fr 38px;gap:4px 8px;border:1px solid #e1e6ea;border-radius:10px;padding:8px;margin:0 0 8px;align-items:center}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td{border:0;padding:0}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(1){grid-area:1/1}#hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(2){grid-area:1/2}#hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(4){grid-area:1/3}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(3){grid-area:2/2/3/4}#hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(5){grid-area:3/2/4/4}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(6),#hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(7){display:none}
+ #hedit-ov .he-tbl td.he-hide.he-code{display:block}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td[data-l]{grid-column:1/-1;display:block}#hedit-ov .he-tbl td[data-l]::before{content:attr(data-l);display:block;font-size:11px;color:#6b7c8a;margin-bottom:2px}
+ #hedit-ov .he-tbl tbody tr:not(.he-rrow) td:nth-child(3) input{max-width:none}}
+</style>
+<script id="hedit-js">
+(function () {
+    'use strict';
+    if (window.__hedit) return; window.__hedit = true;
+    var TOMB = 'pos_hcat_removed', PAGE = 120;
+    var S = { tab: 'item', q: '', cat: '', src: 'all', stock: 'any', sel: {}, shown: PAGE, rq: '' };
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+    function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+    function isPre(it) { return !!it && (it.seeded === 'ke-2026' || /^K[MS]\d{4}$/.test(String(it.code || ''))); }
+    function inv() { try { return Array.isArray(inventory) ? inventory : []; } catch (e) { return []; } }
+    function tomb() { try { return JSON.parse(localStorage.getItem(TOMB) || '[]') || []; } catch (e) { return []; } }
+    function addTomb(codes) { try { var t = tomb(); codes.forEach(function (c) { if (t.indexOf(c) < 0) t.push(c); }); localStorage.setItem(TOMB, JSON.stringify(t)); } catch (e) { /* device only */ } }
+    window.hcatRemovedCodes = tomb;
+    function persist() {
+        try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { toast('Storage is full - could not save.', true); return false; }
+        try { queuePush(); } catch (e2) { /* synced on the next change */ }
+        ['renderInventoryTable', 'renderPharmacy', 'renderCounter'].forEach(function (fn) { try { if (typeof window[fn] === 'function') window[fn](); } catch (e3) { /* not on screen */ } });
+        return true;
+    }
+    function aud(a, b, c) { try { logAudit(a, b, c); } catch (e) { /* best effort */ } }
+
+    /* ---------------------------------------------------------------------------------------------- items */
+    function rows() {
+        var q = S.q.toLowerCase().trim();
+        return inv().filter(function (it) {
+            if (!it || it.code == null) return false;
+            if (String(it.code).indexOf('HM-') === 0) return false;               // the meal / nursing charge types are managed elsewhere
+            var svc = it.type === 'service';
+            if ((S.tab === 'service') !== svc) return false;
+            if (S.cat && (it.category || '') !== S.cat) return false;
+            if (S.src === 'pre' && !isPre(it)) return false;
+            if (S.src === 'mine' && isPre(it)) return false;
+            var st = Number(it.qty) || 0;
+            if (S.stock === 'has' && st <= 0) return false;
+            if (S.stock === 'none' && st > 0) return false;
+            if (q && (String(it.name || '') + ' ' + it.code + ' ' + (it.category || '')).toLowerCase().indexOf(q) < 0) return false;
+            return true;
+        });
+    }
+    function cats() {
+        var m = {}; inv().forEach(function (it) { if (it && it.code != null && String(it.code).indexOf('HM-') !== 0 && ((S.tab === 'service') === (it.type === 'service'))) m[it.category || ''] = 1; });
+        return Object.keys(m).sort();
+    }
+    function itemsView() {
+        var list = rows(), shown = list.slice(0, S.shown), svc = S.tab === 'service';
+        var nSel = Object.keys(S.sel).length;
+        var h = '<div class="he-note">' + (svc
+            ? '<b>Services &amp; price list.</b> Change any name or price, or remove services you do not offer. The cashier, consultation picker and reports use this list straight away.'
+            : '<b>Medicines &amp; supplies.</b> Change any name or price, or remove medicines you will never stock. Stock quantity starts at 0 - receive stock as usual. Items that have stock on hand are never removed in bulk.') + '</div>'
+            + '<div class="he-bar"><input type="search" id="he-q" placeholder="Search name, code or category" value="' + esc(S.q) + '">'
+            + '<select id="he-cat"><option value="">All categories</option>' + cats().map(function (c) { return '<option' + (c === S.cat ? ' selected' : '') + ' value="' + esc(c) + '">' + esc(c || '(none)') + '</option>'; }).join('') + '</select>'
+            + '<select id="he-src"><option value="all">All items</option><option value="pre"' + (S.src === 'pre' ? ' selected' : '') + '>Preloaded only</option><option value="mine"' + (S.src === 'mine' ? ' selected' : '') + '>Added by us</option></select>'
+            + (svc ? '' : '<select id="he-stock"><option value="any">Any stock</option><option value="has"' + (S.stock === 'has' ? ' selected' : '') + '>Has stock</option><option value="none"' + (S.stock === 'none' ? ' selected' : '') + '>No stock</option></select>')
+            + '</div>'
+            + '<div class="he-bar"><span class="he-cnt">' + list.length + ' item' + (list.length === 1 ? '' : 's') + ' match' + (nSel ? ' · <b>' + nSel + ' selected</b>' : '') + '</span>'
+            + '<button type="button" class="he-b sec" data-he="selall">☑ Select all ' + list.length + ' shown by filter</button><button type="button" class="he-b sec" data-he="selnone">Clear</button>'
+            + '<button type="button" class="he-b red" data-he="delsel"' + (nSel ? '' : ' disabled') + '>🗑 Remove selected</button>'
+            + '<input type="number" id="he-pct" placeholder="\u00B1 %" step="1" style="width:84px"><button type="button" class="he-b org" data-he="pct">± Change prices</button>'
+            + '<button type="button" class="he-b sec" data-he="csv">⬇ Export CSV</button>'
+            + (tomb().length ? '<button type="button" class="he-b sec" data-he="restore">↩ Restore ' + tomb().length + ' removed</button>' : '') + '</div>'
+            + '<div class="he-wrap"><table class="he-tbl"><thead><tr><th></th><th>Name</th><th style="width:110px">Price (KES)</th><th></th><th style="width:96px">Code</th><th style="width:130px">Category</th>' + (svc ? '' : '<th style="width:96px">Qty in stock</th><th style="width:96px">Buying price</th><th style="width:120px">Batch no.</th><th style="width:140px">Expiry</th>') + '</tr></thead><tbody>'
+            + shown.map(function (it) {
+                var c = String(it.code).replace(/"/g, '&quot;');
+                return '<tr><td><input type="checkbox" data-he-sel="' + c + '"' + (S.sel[it.code] ? ' checked' : '') + ' aria-label="Select"></td>'
+                    + '<td><input type="text" data-he-name="' + c + '" value="' + esc(it.name) + '"></td>'
+                    + '<td><input type="number" min="0" step="0.01" data-he-price="' + c + '" value="' + esc(it.price) + '"></td>'
+                    + '<td><button type="button" class="he-del" data-he-del="' + c + '" title="Remove" aria-label="Remove">🗑</button></td>'
+                    + '<td class="he-code he-hide">' + esc(it.code) + (isPre(it) ? '' : ' <span class="he-tag">ours</span>') + '</td><td class="he-hide">' + esc(it.category || '') + '</td>'
+                    + (svc ? '' : '<td data-l="Qty in stock"><input type="number" min="0" step="any" data-he-qty="' + c + '" value="' + esc(Number(it.qty) || 0) + '" title="Amount available. Change it to correct the stock (recorded as a stock movement)."></td>'
+                        + '<td data-l="Buying price"><input type="number" min="0" step="0.01" data-he-buy="' + c + '" value="' + esc(it.wholesalePrice || 0) + '"></td>'
+                        + '<td data-l="Batch no."><input type="text" maxlength="40" data-he-batch="' + c + '" value="' + esc(batchOf(it).no) + '" placeholder="batch"></td>'
+                        + '<td data-l="Expiry"><input type="date" data-he-exp="' + c + '" value="' + esc(batchOf(it).exp) + '"></td>') + '</tr>';
+            }).join('') + '</tbody></table></div>'
+            + (list.length > shown.length ? '<div style="text-align:center;margin-top:10px"><button type="button" class="he-b sec" data-he="more">Show ' + Math.min(PAGE, list.length - shown.length) + ' more (' + (list.length - shown.length) + ' hidden)</button></div>' : '');
+        return h;
+    }
+    /* zip 366: batch / quantity / buying price can be edited straight in this list. The soonest-expiring batch is the one shown and edited. */
+    var NOEXP = '9999-12-31';
+    function batchList(it) { return Array.isArray(it && it.batches) ? it.batches.filter(function (b) { return b && (Number(b.qty) || 0) > 0; }) : []; }
+    function mainBatch(it) { var l = batchList(it); if (!l.length) l = Array.isArray(it && it.batches) ? it.batches.filter(Boolean) : []; if (!l.length) return null; return l.slice().sort(function (a, b) { return String(a.expiryDate || NOEXP).localeCompare(String(b.expiryDate || NOEXP)); })[0]; }
+    function batchOf(it) { var b = mainBatch(it); if (b) return { no: String(b.batchNumber || b.batchNo || ''), exp: b.expiryDate && b.expiryDate !== NOEXP ? String(b.expiryDate).slice(0, 10) : '' }; return { no: String((it && it.batchNo) || ''), exp: it && it.expiryDate && it.expiryDate !== NOEXP ? String(it.expiryDate).slice(0, 10) : '' }; }
+    function newId() { try { return genSaleId(); } catch (e) { return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); } }
+    function r3(n) { return Math.round((Number(n) || 0) * 1000) / 1000; }
+    function syncExpiry(it) { try { if (typeof recomputeItemExpiryFromBatches === 'function') recomputeItemExpiryFromBatches(it); } catch (e) { /* cosmetic */ } }
+    // an item with stock but no batch row gets one (so the pharmacy's expiry views work) as soon as a batch number or an expiry is given
+    function ensureBatch(it) {
+        if (batchList(it).length || !((it.batchNo || it.expiryDate) && (Number(it.qty) || 0) > 0)) return;
+        it.batches = [{ id: newId(), batchNumber: it.batchNo || '', batchNo: it.batchNo || '', expiryDate: it.expiryDate || NOEXP, qty: r3(it.qty) }]; syncExpiry(it);
+    }
+    function setQty(it, nq) {
+        var old = Number(it.qty) || 0; nq = r3(nq); if (nq === old) return false;
+        it.qty = nq;
+        if (Array.isArray(it.batches) && it.batches.length) { try { if (typeof stockAlignBatches === 'function') stockAlignBatches(it); } catch (e) { /* the quantity stands */ } } else ensureBatch(it);
+        try { if (typeof logStockMovement === 'function') logStockMovement(it.code, it.name, r3(nq - old), 'Edited in the hospital list', 'qty'); } catch (e2) { /* the audit line below still records it */ }
+        aud('Stock quantity edited', it.name, old + ' → ' + nq); return true;
+    }
+    function find(code) { return inv().find(function (x) { return x && String(x.code) === String(code); }); }
+    function removeCodes(codes) {
+        var set = {}; codes.forEach(function (c) { set[c] = 1; });
+        var pre = codes.filter(function (c) { return isPre(find(c)); });
+        inventory = inv().filter(function (it) { return !(it && set[it.code]); });
+        addTomb(pre);
+        codes.forEach(function (c) { delete S.sel[c]; });
+        persist();
+    }
+    function rowsAction(kind) {
+        var list = rows(), codes;
+        if (kind === 'selall') { list.forEach(function (it) { S.sel[it.code] = 1; }); return draw(); }
+        if (kind === 'selnone') { S.sel = {}; return draw(); }
+        if (kind === 'more') { S.shown += PAGE; return draw(); }
+        if (kind === 'delsel') {
+            codes = Object.keys(S.sel); if (!codes.length) return;
+            var withStock = codes.filter(function (c) { var it = find(c); return it && (Number(it.qty) || 0) > 0; });
+            var ok = codes.filter(function (c) { return withStock.indexOf(c) < 0; });
+            if (!ok.length) { toast('All of the selected items have stock on hand, so none were removed.', true); return; }
+            if (!confirm('Remove ' + ok.length + ' item' + (ok.length > 1 ? 's' : '') + ' from the stock list permanently?' + (withStock.length ? '\n\n' + withStock.length + ' selected item(s) have stock and will be kept.' : '') + '\n\nPast sales and bills are not affected.')) return;
+            removeCodes(ok); aud('Catalogue items removed', ok.length + ' item(s)', ok.slice(0, 5).join(', ')); toast(ok.length + ' item(s) removed.' + (withStock.length ? ' ' + withStock.length + ' with stock kept.' : '')); return draw();
+        }
+        if (kind === 'pct') {
+            var p = parseFloat(($('he-pct') || {}).value);
+            if (!isFinite(p) || p === 0 || p < -90 || p > 500) { toast('Type a percentage such as 10 (raise by 10%) or -5 (lower by 5%).', true); return; }
+            var targets = Object.keys(S.sel).length ? Object.keys(S.sel).map(find).filter(Boolean) : list;
+            if (!targets.length) return;
+            if (!confirm((p > 0 ? 'Raise' : 'Lower') + ' the price of ' + targets.length + ' item' + (targets.length > 1 ? 's' : '') + ' by ' + Math.abs(p) + '%?' + (Object.keys(S.sel).length ? '' : '\n\n(Nothing is ticked, so this applies to everything the filter shows.)'))) return;
+            targets.forEach(function (it) { var np = (Number(it.price) || 0) * (1 + p / 100); it.price = np >= 20 ? Math.round(np) : r2(np); });
+            persist(); aud('Catalogue prices changed', targets.length + ' item(s)', (p > 0 ? '+' : '') + p + '%'); toast('Prices updated for ' + targets.length + ' item(s).'); return draw();
+        }
+        if (kind === 'csv') {
+            var out = [['code', 'name', 'category', 'unit', 'type', 'price', 'buying_price', 'stock']].concat(list.map(function (it) { return [it.code, it.name, it.category || '', it.unit || '', it.type, it.price, it.wholesalePrice || '', it.type === 'service' ? '' : (it.qty || 0)]; }));
+            var csv = out.map(function (r) { return r.map(function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n');
+            var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = (S.tab === 'service' ? 'services' : 'medicines') + '-' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000); return;
+        }
+        if (kind === 'restore') {
+            if (!confirm('Bring back the removed starter items (they come back with stock 0 and the original prices)?')) return;
+            try { localStorage.removeItem(TOMB); } catch (e) { /* none */ }
+            try { if (typeof hcatLoad === 'function') hcatLoad(); } catch (e2) { /* none */ }
+            return draw();
+        }
+    }
+
+    /* ---------------------------------------------------------------------------------------------- referral hospitals */
+    function recRef() { try { return hmisConfig.find(function (x) { return x && x.id === 'ref_hosp'; }) || null; } catch (e) { return null; } }
+    function refList() {
+        var r = recRef(); if (r && r.data && Array.isArray(r.data.list)) return r.data.list;
+        return (window.KE_REFERRALS || []).map(function (h) { return Object.assign({}, h); });
+    }
+    function refEdited() { return !!recRef(); }
+    function refSave(list) {
+        var r = recRef(); if (!r) { r = { id: 'ref_hosp', type: 'reflist', data: {}, updatedAt: 0 }; hmisConfig.push(r); }
+        r.data = { list: list }; r.updatedAt = Date.now(); try { r.updatedBy = activeServerName(); } catch (e) { /* none */ }
+        try { safeSetItem('pos_hmis_config', JSON.stringify(hmisConfig)); queuePush(); } catch (e2) { toast('Storage is full - could not save.', true); }
+        window.__hrxRefVer = (window.__hrxRefVer || 0) + 1;
+    }
+    window.hmisReferrals = refList;
+    function refView() {
+        var q = S.rq.toLowerCase().trim(), list = refList();
+        var vis = list.map(function (h, i) { return { h: h, i: i }; }).filter(function (x) { return !q || (x.h.n + ' ' + x.h.t + ' ' + x.h.c + ' ' + x.h.r + ' ' + x.h.k).toLowerCase().indexOf(q) >= 0; });
+        var inp = function (i, f, v, w) { return '<td><input type="text" data-he-rf="' + i + '" data-f="' + f + '" value="' + esc(v) + '"' + (w ? ' style="min-width:' + w + 'px"' : '') + '></td>'; };
+        return '<div class="he-note"><b>Referral hospitals.</b> This list fills the "Refer patient" suggestions and the public website\'s Referral hospitals page. Edit any detail, remove hospitals you never refer to, or add your own. After changing it, press <b>Publish now</b> in Website Management so the website shows the new list.</div>'
+            + '<div class="he-bar"><input type="search" id="he-rq" placeholder="Search hospital, town, county" value="' + esc(S.rq) + '"><button type="button" class="he-b" data-he="radd">➕ Add a hospital</button>'
+            + (refEdited() ? '<button type="button" class="he-b sec" data-he="rreset">↩ Reset to the original list</button>' : '') + '<span class="he-cnt">' + vis.length + ' of ' + list.length + (refEdited() ? ' · edited' : ' · original list') + '</span></div>'
+            + '<div class="he-wrap"><table class="he-tbl"><thead><tr><th>Hospital</th><th>Town</th><th>County</th><th>Region</th><th>Type</th><th style="width:60px">Level</th><th>Notes</th><th></th></tr></thead><tbody>'
+            + vis.slice(0, 200).map(function (x) {
+                return '<tr class="he-rrow">' + inp(x.i, 'n', x.h.n, 220) + inp(x.i, 't', x.h.t, 110) + inp(x.i, 'c', x.h.c, 100) + inp(x.i, 'r', x.h.r, 100) + inp(x.i, 'k', x.h.k, 130) + inp(x.i, 'l', x.h.l) + inp(x.i, 's', x.h.s, 200)
+                    + '<td><button type="button" class="he-del" data-he-rdel="' + x.i + '" title="Remove" aria-label="Remove">🗑</button></td></tr>';
+            }).join('') + '</tbody></table></div>';
+    }
+    function refChange(i, f, v) {
+        var list = refList().map(function (h) { return Object.assign({}, h); }); if (!list[i]) return;
+        v = String(v).trim(); if (f === 'n' && !v) { toast('A hospital needs a name.', true); return draw(); }
+        list[i][f] = v; refSave(list); aud('Referral hospital edited', list[i].n, f);
+    }
+
+    /* ---------------------------------------------------------------------------------------------- window */
+    function ensure() {
+        var el = $('hedit-ov'); if (el) return el;
+        el = document.createElement('div'); el.id = 'hedit-ov'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true');
+        el.innerHTML = '<div class="he-in"><div class="he-head"><h3>✏️ Edit what came preloaded</h3><button type="button" class="he-x" data-he="close" aria-label="Close">✕</button></div><div class="he-body" id="he-body"></div></div>';
+        el.addEventListener('click', function (e) {
+            var t = e.target; if (t === el) return el.classList.remove('on');
+            var b;
+            if ((b = t.closest('[data-he]'))) {
+                var k = b.getAttribute('data-he');
+                if (k === 'close') return el.classList.remove('on');
+                if (k === 'radd') { var l = refList().map(function (h) { return Object.assign({}, h); }); l.unshift({ n: 'New hospital', t: '', c: '', r: '', k: 'Other', l: '', s: '' }); refSave(l); S.rq = ''; return draw(); }
+                if (k === 'rreset') { if (!confirm('Discard your changes and go back to the original referral list?')) return; try { hmisConfig = hmisConfig.filter(function (x) { return !(x && x.id === 'ref_hosp'); }); safeSetItem('pos_hmis_config', JSON.stringify(hmisConfig)); queuePush(); } catch (e2) { /* none */ } window.__hrxRefVer = (window.__hrxRefVer || 0) + 1; return draw(); }
+                if (k === 'lab') { el.classList.remove('on'); try { var lb = document.querySelector('[data-lc-open],[onclick*="lcOpen"],[onclick*="LabCatalog"]'); if (lb) lb.click(); else toast('Open Laboratory → Lab catalogue to edit test prices.'); } catch (e3) { /* none */ } return; }
+                return rowsAction(k);
+            }
+            if ((b = t.closest('[data-he-tab]'))) { S.tab = b.getAttribute('data-he-tab'); S.sel = {}; S.q = ''; S.cat = ''; S.src = 'all'; S.stock = 'any'; S.shown = PAGE; return draw(); }
+            if ((b = t.closest('[data-he-del]'))) { var c = b.getAttribute('data-he-del'), it = find(c); if (!it) return; if ((Number(it.qty) || 0) > 0 && !confirm('"' + it.name + '" has ' + it.qty + ' in stock. Remove it anyway?')) return; if (!((Number(it.qty) || 0) > 0) && !confirm('Remove "' + it.name + '" from the stock list?')) return; removeCodes([c]); aud('Catalogue item removed', it.name, c); toast('Removed.'); return draw(); }
+            if ((b = t.closest('[data-he-rdel]'))) { var ix = +b.getAttribute('data-he-rdel'), ls = refList().map(function (h) { return Object.assign({}, h); }); if (!ls[ix] || !confirm('Remove "' + ls[ix].n + '" from the referral list?')) return; var gone = ls.splice(ix, 1)[0]; refSave(ls); aud('Referral hospital removed', gone.n, ''); return draw(); }
+            if ((b = t.closest('[data-he-sel]'))) { var cc = b.getAttribute('data-he-sel'); if (b.checked) S.sel[cc] = 1; else delete S.sel[cc]; return draw(true); }
+        });
+        el.addEventListener('change', function (e) {
+            var t = e.target, v;
+            if (t.id === 'he-cat') { S.cat = t.value; S.shown = PAGE; S.sel = {}; return draw(); }
+            if (t.id === 'he-src') { S.src = t.value; S.shown = PAGE; S.sel = {}; return draw(); }
+            if (t.id === 'he-stock') { S.stock = t.value; S.shown = PAGE; S.sel = {}; return draw(); }
+            if ((v = t.getAttribute('data-he-name'))) { var it = find(v); if (!it) return; var nm = t.value.trim(); if (!nm) { t.value = it.name; return; } if (nm !== it.name) { aud('Catalogue item renamed', it.name + ' → ' + nm, v); it.name = nm; persist(); } return; }
+            if ((v = t.getAttribute('data-he-price'))) { var it2 = find(v); if (!it2) return; var np = parseFloat(t.value); if (!isFinite(np) || np < 0) { t.value = it2.price; return; } if (np !== Number(it2.price)) { aud('Catalogue price changed', it2.name, it2.price + ' → ' + np); it2.price = np; persist(); } return; }
+            if ((v = t.getAttribute('data-he-qty'))) { var q1 = find(v); if (!q1) return; var nq = parseFloat(t.value); if (!isFinite(nq) || nq < 0) { t.value = Number(q1.qty) || 0; return; } if (setQty(q1, nq)) persist(); t.value = Number(q1.qty) || 0; return; }
+            if ((v = t.getAttribute('data-he-buy'))) { var b1 = find(v); if (!b1) return; var nb = parseFloat(t.value); if (!isFinite(nb) || nb < 0) { t.value = b1.wholesalePrice || 0; return; } if (nb !== Number(b1.wholesalePrice || 0)) { aud('Buying price changed', b1.name, (b1.wholesalePrice || 0) + ' → ' + nb); b1.wholesalePrice = nb; persist(); } return; }
+            if ((v = t.getAttribute('data-he-batch'))) { var h1 = find(v); if (!h1) return; var no = t.value.trim().slice(0, 40), mb = mainBatch(h1); if (mb) { mb.batchNumber = no; if ('batchNo' in mb) mb.batchNo = no; } h1.batchNo = no; ensureBatch(h1); aud('Batch number edited', h1.name, no); persist(); return; }
+            if ((v = t.getAttribute('data-he-exp'))) { var x1 = find(v); if (!x1) return; var ex = t.value || '', mb2 = mainBatch(x1); if (mb2) mb2.expiryDate = ex || NOEXP; x1.expiryDate = ex || ''; ensureBatch(x1); if (mb2) syncExpiry(x1); aud('Expiry date edited', x1.name, ex || 'none'); persist(); return; }
+            if (t.hasAttribute('data-he-rf')) return refChange(+t.getAttribute('data-he-rf'), t.getAttribute('data-f'), t.value);
+        });
+        var qT = null;
+        el.addEventListener('input', function (e) {
+            var t = e.target;
+            if (t.id === 'he-q' || t.id === 'he-rq') { var isR = t.id === 'he-rq'; if (isR) S.rq = t.value; else { S.q = t.value; S.shown = PAGE; S.sel = {}; } clearTimeout(qT); qT = setTimeout(function () { var pos = t.selectionStart; draw(); var n = $(isR ? 'he-rq' : 'he-q'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e2) { /* none */ } } }, 250); }
+        });
+        document.body.appendChild(el); return el;
+    }
+    function draw(keepScroll) {
+        var body = $('he-body'); if (!body) return;
+        var wrap = body.querySelector('.he-wrap'), top = wrap ? wrap.scrollTop : 0;
+        body.innerHTML = '<div class="he-tabs"><button type="button" class="he-tab' + (S.tab === 'item' ? ' on' : '') + '" data-he-tab="item">💊 Medicines &amp; supplies</button><button type="button" class="he-tab' + (S.tab === 'service' ? ' on' : '') + '" data-he-tab="service">🩺 Services &amp; price list</button><button type="button" class="he-tab' + (S.tab === 'ref' ? ' on' : '') + '" data-he-tab="ref">🏥 Referral hospitals</button><button type="button" class="he-tab" data-he="lab">🧪 Lab tests →</button></div>'
+            + (S.tab === 'ref' ? refView() : itemsView());
+        if (keepScroll) { var w2 = body.querySelector('.he-wrap'); if (w2) w2.scrollTop = top; }
+    }
+    function open(tab) { S.tab = tab || S.tab || 'item'; S.sel = {}; ensure().classList.add('on'); draw(); if (window.hrxPageify) window.hrxPageify($('hedit-ov'), 'hrx-edit', 'on'); }
+    window.hmisStockSet = function (code, qty) { var it = find(code); if (!it || !isFinite(qty) || qty < 0) return false; if (!setQty(it, qty)) return false; persist(); return true; };   // zip 367: used by the Price List
+    window.hmisEdit = { open: open, rows: rows, refList: refList };
+
+    /* a button on the Kenya starter catalogue card (stock list) */
+    function addButton() {
+        var card = $('hcat-load-card'); if (!card || $('hedit-open-btn')) return;
+        var b = document.createElement('button'); b.type = 'button'; b.id = 'hedit-open-btn'; b.textContent = '✏️ Edit / remove preloaded items';
+        b.style.cssText = 'border:1px solid #1e6fd0;background:#fff;color:#12489a;border-radius:10px;padding:9px 14px;font-weight:700;cursor:pointer;min-height:40px';
+        b.addEventListener('click', function () { open('item'); });
+        card.appendChild(b);
+    }
+    setInterval(addButton, 2500);
+    // the "Refer patient" box gets a small link to the editor
+    setInterval(function () {
+        var inp = $('referral-to-input'); if (!inp || $('hedit-ref-link')) return;
+        var a = document.createElement('a'); a.id = 'hedit-ref-link'; a.href = '#'; a.textContent = '✏️ Edit hospital list'; a.style.cssText = 'font-size:12px;display:inline-block;margin-top:3px';
+        a.addEventListener('click', function (ev) { ev.preventDefault(); open('ref'); });
+        inp.insertAdjacentElement('afterend', a);
+    }, 2500);
+})();
+</script>
